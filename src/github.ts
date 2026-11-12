@@ -1750,14 +1750,16 @@ export async function postReview(
     .filter(f => diff && f.line > 0 && isOnChangedLine(f, diff))
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
     .slice(0, MAX_NON_BLOCKING_INLINE));
+  const inlineComments: typeof validComments = [];
   for (const f of nonBlocking) {
     if (inline.has(f)) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      inlineComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
       threadFindings.push(f);
     } else {
       bodyFindings.push(f);
     }
   }
+  validComments.push(...inlineComments);
 
   // An incomplete round keeps its record for diagnostics. What it shows reads as it does without one.
   const round = context?.meta.incomplete ? undefined : context;
@@ -1784,7 +1786,9 @@ export async function postReview(
    */
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
-    const lead = formatLead(result, blockerCounts, { threads, listed: [...bodyFindings, ...notes], carried, hold }, limitWarning, unreadRecords);
+    // Without their threads, the body lists them, so the verdict line still counts them.
+    const listed = [...bodyFindings, ...notes, ...(withoutLineThreads ? inline : [])];
+    const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -1860,7 +1864,7 @@ export async function postReview(
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline));
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), inlineComments.map(highlight));
   onPosted?.();
   // A blocker whose line comment GitHub refused gets a file-level thread on its file.
   const retried = review.lineComments ? [] : lineBlockers;
@@ -1915,10 +1919,14 @@ async function submitReview(
   bodyWithoutLineComments: () => string = () => body,
   /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
   recordWithoutLineComments: () => string = () => record,
+  /** The line comments that get no thread when the review posts without them. The caller posts a blocker as a file-level thread instead. */
+  unthreaded: typeof validComments = validComments,
 ): Promise<{ id: number; body: string; lineComments: boolean }> {
   const event = mapVerdictToEvent(verdict);
   const fit = (text: string, trailer = record): string => truncateBody(text, REVIEW_BODY_BUDGET - trailer.length);
   const compose = (text: string, trailer = record): string => appendReviewFooter(`${text}${trailer}`, reviewedCommitFooter);
+  const listUnthreaded = (heading: string, line: (c: typeof unthreaded[number]) => string): string =>
+    unthreaded.length > 0 ? `\n\n**${heading}**\n${unthreaded.map(c => `- ${line(c)}`).join('\n')}` : '';
   assertWritesAllowed();
   try {
     const { data: review } = await octokit.rest.pulls.createReview({
@@ -1941,9 +1949,8 @@ async function submitReview(
     // If it's a line validation error, retry without inline comments
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
-      const allAsBody = validComments.map(c => `- ${commentHeadline(c.body)}`).join('\n');
       const bare = recordWithoutLineComments();
-      const lineErrFallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Inline comments could not be posted:**\n${allAsBody}`, bare);
+      const lineErrFallbackBody = fit(`${bodyWithoutLineComments()}${listUnthreaded('Inline comments could not be posted:', c => commentHeadline(c.body))}`, bare);
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -1972,9 +1979,8 @@ async function submitReview(
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
-    const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`).join('\n');
     const bare = recordWithoutLineComments();
-    const fallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Findings (could not post inline):**\n${findingSummary}`, bare);
+    const fallbackBody = fit(`${bodyWithoutLineComments()}${listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`)}`, bare);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,

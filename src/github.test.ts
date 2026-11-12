@@ -918,34 +918,44 @@ describe('postReview reviewed-commit footer', () => {
     const createReviewMock = jest.fn()
       .mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'))
       .mockResolvedValueOnce({ data: { id: 9 } });
+    const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 10 } });
     const octokit = {
-      rest: { pulls: { createReview: createReviewMock, createReviewComment: jest.fn().mockResolvedValue({ data: { id: 10 } }) } },
+      rest: { pulls: { createReview: createReviewMock, createReviewComment } },
     } as unknown as Parameters<typeof postReview>[0];
 
+    const finding = (severity: Finding['severity'], title: string, line: number, tags?: Finding['tags']): Finding => ({ severity, title, file: 'src/a.ts', line, description: 'Desc.', reviewers: [], tags });
     const result: ReviewResult = {
       verdict: 'REQUEST_CHANGES',
       outcome: 'ADDRESS_FIRST',
       summary: 'Summary.',
-      findings: [{
-        severity: 'blocker',
-        title: 'Issue',
-        file: 'src/a.ts',
-        line: 10,
-        description: 'Desc.',
-        reviewers: [],
-      }],
+      findings: [finding('blocker', 'Issue', 10), finding('warning', 'Minor', 11, ['follow-up'])],
       highlights: [],
       reviewComplete: true,
       agentNames: [],
     };
+    const diff: ParsedDiff = {
+      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 2, newStart: 10, newLines: 2, content: '' }] }],
+      totalAdditions: 2,
+      totalDeletions: 0,
+    };
 
-    await postReview(octokit, 'acme', 'widgets', 1, fullSha, result);
-    const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
+    await postReview(octokit, 'acme', 'widgets', 1, fullSha, result, diff);
+    const [refused, fallback] = createReviewMock.mock.calls.map(([args]) => args);
+    const fallbackBody = fallback.body as string;
+    expect(refused.comments).toHaveLength(2);
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
-    expect(fallbackBody).toContain('**Inline comments could not be posted:**\n- \u{1F6AB} **Blocker** **Issue**');
-    // A thread is only counted in the body, so the comment GitHub refused is listed only as not posted.
-    expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\*/u);
+    // The blocker gets a file-level thread instead, so only the warning is listed as not posted.
+    expect(createReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.includes('**Issue**')])).toEqual([['src/a.ts', 'file', true]]);
+    expect(fallbackBody).toContain('**Inline comments could not be posted:**\n- \u26A0\uFE0F **Warning, not blocking** **Minor**');
+    expect(fallbackBody).not.toContain('**Blocker** **Issue**');
+    expect(refused.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker, plus 1 warning in threads\.\n\n\*\*What blocks:\*\*/u);
+    expect(fallbackBody).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\*/u);
     expect(fallbackBody).not.toContain('[Issue]');
+
+    // With only blockers among the line comments, every one has a thread and the body lists none as not posted.
+    createReviewMock.mockClear().mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff')).mockResolvedValueOnce({ data: { id: 9 } });
+    await postReview(octokit, 'acme', 'widgets', 1, fullSha, { ...result, findings: [result.findings[0]] }, diff);
+    expect(createReviewMock.mock.calls[1][0].body).not.toContain('could not be posted');
   });
 
   it('keeps the footer at the bottom when APPROVE falls back to COMMENT due to permissions', async () => {
@@ -987,6 +997,7 @@ describe('postReview reviewed-commit footer', () => {
     expect(fallbackBody).not.toContain('[Minor]');
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
     expect(fallbackBody).toContain('**Findings (could not post inline):**\n- \u26A0\uFE0F **Warning, not blocking** **Minor** (`src/a\'.ts:10`)');
+    expect(fallbackBody).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\./u);
   });
 
   it('preserves the footer even when the review body exceeds the truncation limit', async () => {
@@ -4471,10 +4482,13 @@ describe('postReview fallback paths', () => {
         findings: { count: 3, severityCounts: { blocker: 3 }, entries: findings.map(f => ({ fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, severity: 'blocker' as const })) },
       });
       const places = (body: string) => (JSON.parse(extractReviewRecords(body).records[0]) as RoundContext).findings.entries.map(e => e.posted);
+      let lastBody = '';
       const post = async (createReview: jest.Mock, createReviewComment: jest.Mock) => {
         const { octokit, updateReview } = makeOctokit(createReviewComment, createReview);
         await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context);
-        return [...createReview.mock.calls, ...updateReview.mock.calls].map(([args]) => places(args.body as string));
+        const bodies = [...createReview.mock.calls, ...updateReview.mock.calls].map(([args]) => args.body as string);
+        lastBody = bodies.at(-1)!;
+        return bodies.map(places);
       };
       const taken = () => jest.fn().mockResolvedValue({ data: { id: 1 } });
       const refusedOnce = (error: Error) => jest.fn().mockRejectedValueOnce(error).mockResolvedValue({ data: { id: 7 } });
@@ -4491,11 +4505,14 @@ describe('postReview fallback paths', () => {
       // The line comments are refused: the first attempt never posts, and the blocker gets a file-level thread on its file.
       const retried = taken();
       expect(await post(refusedOnce(lineError), retried)).toEqual([all, all]);
+      expect(lastBody).not.toContain('could not');
       expect(retried.mock.calls.map(([c]) => [c.path, c.subject_type, parseFindingData(c.body)?.detached])).toEqual([
         ['src/a.ts', 'file', undefined], ['src/a.ts', 'file', true], ['src/a.ts', 'file', undefined],
       ]);
       // Both are refused.
       expect(await post(refusedOnce(lineError), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([all, all, ['body', 'body', 'body']]);
+      expect(lastBody).not.toContain('Inline comments could not be posted');
+      expect(lastBody).toMatch(/\*\*Blockers that could not be posted as threads:\*\*[\s\S]*\*\*On changed line\*\*/);
       // Only the thread on another file is refused, so only that blocker falls back to the body.
       const onlyOwnFile = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
         if (parseFindingData(body)?.detached) throw new Error('refused');
@@ -4504,6 +4521,7 @@ describe('postReview fallback paths', () => {
       expect(await post(taken(), onlyOwnFile)).toEqual([all, ['thread', 'thread', 'body']]);
       // GitHub refuses the review event, and the comment posted instead carries no line comment, so the blocker gets a file-level thread too.
       expect((await post(refusedOnce(eventError), taken())).at(-1)).toEqual(all);
+      expect(lastBody).not.toContain('could not');
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
@@ -5141,6 +5159,7 @@ describe('postReview non-blocking findings', () => {
     expect(refused.comments).toHaveLength(1);
     expect(bare.comments).toEqual([]);
     expect(bare.body).toContain('**Inline comments could not be posted:**\n- \u26A0\uFE0F **Warning, not blocking** **On old code**');
+    expect(bare.body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\./u);
     expect(JSON.parse(extractReviewRecords(bare.body).records[0]).findings.entries).toEqual([expect.objectContaining({ posted: 'body', citedLine: { hash: expect.any(String), count: 1 } })]);
     expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed|Found this round/);
     // From the second round, the findings new to this round are "Found this round". A restatement of a finding an earlier
