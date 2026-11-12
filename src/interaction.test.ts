@@ -876,6 +876,8 @@ describe('handleReviewCommentReply', () => {
     // A thread that could not be opened stays resolved, with no note and no marker, so a later check can open it.
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true, false],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID', true, true, false],
+    // After "Fixed." the answer follows the thread's real state: it says that resolving does not clear it, not that it stays open.
+    ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined, true, true, false],
   ])('resolves the thread after %j from a %s reply by %s, PR author %s, finding %s, with reason %s', async (reply, association, sender, prAuthor, kind, reason, resolved = false, authorResolved = false, reopens = true, resolver = undefined as string | undefined) => {
     setContext({
       comment: { id: 1, body: 'Done in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },

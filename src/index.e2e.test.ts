@@ -1490,12 +1490,13 @@ describe('runFullReview end to end', () => {
       expect(thread.isResolved).toBe(true);
     });
 
-    it.each<[string, 'addressed' | 'not_addressed' | 'a maintainer resolves' | 'the author resolves again', string[]]>([
+    it.each<[string, 'addressed' | 'not_addressed' | 'a maintainer resolves' | 'the author resolves again' | 'the reopen fails', string[]]>([
       ['a round whose judge marks it addressed clears it', 'addressed', ['DISMISSED', 'APPROVED']],
       ['a round whose judge does not keeps it blocking', 'not_addressed', ['DISMISSED', 'CHANGES_REQUESTED']],
       ['a maintainer who resolves it clears it for the round on the push', 'a maintainer resolves', ['DISMISSED', 'APPROVED']],
       ['the author who resolves it again and replies again hears nothing more', 'the author resolves again', ['CHANGES_REQUESTED']],
-    ])('reopens a blocker thread the author resolved when her reply gets "Fixed.", says that the next review decides, and %s', async (_label, next, reviews) => {
+      ['a reopen that fails leaves it resolved, which the answer says, for the next check to reopen', 'the reopen fails', ['CHANGES_REQUESTED']],
+    ])('answers "Fixed." in a blocker thread the author resolved without asking for a maintainer or a fix, and %s', async (_label, next, reviews) => {
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
       const [thread] = mockGitHub.threads;
@@ -1505,19 +1506,27 @@ describe('runFullReview end to end', () => {
       mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
       mockGitHub.commitDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
       const fixed = 'Fixed. `add` checks the range before it sums.';
+      const failed = next === 'the reopen fails';
+      mockGitHub.refuseReopen = failed;
       await replyInThread(thread, 'Fixed in c3c3c3c.', fixed);
+      mockGitHub.refuseReopen = false;
 
       // The thread opens again, marked as reopened. The answer does not ask for a maintainer or a fix after confirming one.
       const staysOpen = 'This is a blocking finding, so the thread stays open until the next review confirms the fix, or someone other than the PR author with write access closes it.';
+      // A thread that could not be opened is not called open, and stays unmarked.
+      const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until the next review confirms the fix, or someone other than the PR author with write access clears it.';
       const bodies = () => thread.comments.map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''));
-      expect(bodies().at(-1)).toBe(`${fixed}\n\n${staysOpen}\n\n<!-- manki -->\n<!-- manki-fixed:${mockGitHub.headSha} -->\n${REOPENED_MARKER}`);
+      expect(bodies().at(-1)).toBe(`${fixed}\n\n${failed ? keepsBlocking : staysOpen}\n\n<!-- manki -->\n<!-- manki-fixed:${mockGitHub.headSha} -->${failed ? '' : `\n${REOPENED_MARKER}`}`);
       expect(bodies().join('\n')).not.toContain('Reopened.');
-      expect(thread.isResolved).toBe(false);
+      expect(thread.isResolved).toBe(failed);
       // Confirming the fix clears nothing: the thread blocks until a round marks it addressed or a maintainer clears it.
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
       const answered = thread.comments.length;
 
-      if (next === 'a maintainer resolves') {
+      if (failed) {
+        // The check on the resolve event finds the thread resolved by its author and unmarked, so it reopens it with the reply.
+        await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER) });
+      } else if (next === 'a maintainer resolves') {
         await resolveThread(thread, 'bob');
         Object.assign(mockLLM.replies, READY_REPLIES);
         await reviewRound();
@@ -1535,9 +1544,10 @@ describe('runFullReview end to end', () => {
       }
 
       expect(core.setFailed).not.toHaveBeenCalled();
-      expect(thread.comments.slice(answered).filter(c => c.author.login !== 'alice')).toEqual([]);
+      expect(thread.comments.slice(answered).filter(c => c.author.login !== 'alice').map(c => c.body))
+        .toEqual(failed ? [`${REOPENED} ${PUSH_A_FIX}\n\n<!-- manki -->\n${REOPENED_MARKER}`] : []);
       expect([thread.isResolved, thread.resolvedBy?.login]).toEqual({
-        addressed: [true, APP_LOGIN], not_addressed: [false, undefined], 'a maintainer resolves': [true, 'bob'], 'the author resolves again': [true, 'alice'],
+        addressed: [true, APP_LOGIN], not_addressed: [false, undefined], 'a maintainer resolves': [true, 'bob'], 'the author resolves again': [true, 'alice'], 'the reopen fails': [false, undefined],
       }[next]);
       expect(postedReviews().map(r => r.state)).toEqual(reviews);
     });
