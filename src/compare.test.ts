@@ -1,8 +1,8 @@
 import { runComparisons } from './compare';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
-import { LLMClient, SendMessageOptions } from './providers';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
+import { fakeClient, HANG } from './test-utils';
 
 jest.mock('@actions/core');
 
@@ -23,24 +23,6 @@ const implementationQuestion = (name: string, trait?: string): SiblingImplementa
     { owner: 'ImagePart', file: 'src/image.rs', line: 8, changed: false, code: '8:  fn from_wire() {\n9:      Ok(p)\n10:  }' },
   ],
 });
-
-const HANG = 'hang until aborted';
-
-/** A client that answers each call with the reply `reply` picks for its user message, and keeps every call. `HANG` waits for the call's signal. */
-function fakeClient(reply: (user: string) => string | Error, repoTools = true): LLMClient & { calls: Array<{ system: string; user: string; options?: SendMessageOptions }> } {
-  const calls: Array<{ system: string; user: string; options?: SendMessageOptions }> = [];
-  return {
-    repoTools,
-    calls,
-    async sendMessage(system, user, options) {
-      calls.push({ system, user, options });
-      const answer = reply(user);
-      if (answer instanceof Error) throw answer;
-      if (answer === HANG) return new Promise((_, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
-      return { content: answer };
-    },
-  };
-}
 
 const FINDING = JSON.stringify([{
   severity: 'blocker', title: 'A worker held in `retired` is claimed again', file: 'src/claim.py', line: 2,

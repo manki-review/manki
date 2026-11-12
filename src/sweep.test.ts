@@ -1,6 +1,6 @@
-import { LLMClient, SendMessageOptions } from './providers';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { runSweeps, startsSweep } from './sweep';
+import { fakeClient } from './test-utils';
 import { Finding, SweepMode } from './types';
 import { RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE } from './writing-rules';
 
@@ -14,21 +14,6 @@ const blocker = (title: string, overrides: Partial<Finding> = {}): Finding => ({
 const found = (file: string, line: number, title = 'Another key misses a field') => ({
   severity: 'blocker', title, file, line, description: 'The key leaves out the tenant.', evidence: [`${file}:${line} builds the key`], proof: [`${file}:${line}`],
 });
-
-/** A client that answers each call with the reply `reply` picks for its user message, and keeps every call. */
-function fakeClient(reply: (user: string) => unknown, repoTools = true): LLMClient & { calls: Array<{ system: string; user: string; options?: SendMessageOptions }> } {
-  const calls: Array<{ system: string; user: string; options?: SendMessageOptions }> = [];
-  return {
-    repoTools,
-    calls,
-    async sendMessage(system, user, options) {
-      calls.push({ system, user, options });
-      const answer = reply(user);
-      if (answer instanceof Error) throw answer;
-      return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
-    },
-  };
-}
 
 const rawDiff = 'diff --git a/src/cache.ts b/src/cache.ts\n@@ -8,3 +8,4 @@\n+const key = `${user}:${page}`;\n';
 

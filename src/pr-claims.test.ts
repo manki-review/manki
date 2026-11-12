@@ -7,33 +7,13 @@ import { join } from 'path';
 import './review';
 import { parsePRDiff } from './diff';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
-import { LLMClient, SendMessageOptions } from './providers';
+import { LLMClient } from './providers';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { gitWorkspace } from './test-utils';
+import { fakeClient, gitWorkspace, HANG } from './test-utils';
 import { PrClaim } from './types';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
-
-const HANG = 'hang until aborted';
-
-type Call = { system: string; user: string; options?: SendMessageOptions };
-
-/** A client that answers each call with the reply `reply` picks for its user message, and keeps every call. `HANG` waits for the call's signal. */
-function fakeClient(reply: (user: string, calls: Call[]) => string | Error | { content: string; truncated: true }, repoTools = true): LLMClient & { calls: Call[] } {
-  const calls: Call[] = [];
-  return {
-    repoTools,
-    calls,
-    async sendMessage(system, user, options) {
-      calls.push({ system, user, options });
-      const answer = reply(user, calls);
-      if (answer instanceof Error) throw answer;
-      if (answer === HANG) return new Promise((_, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
-      return typeof answer === 'string' ? { content: answer } : answer;
-    },
-  };
-}
 
 /** A diff that adds `lines` to `path`, the first one on line 1. */
 const diffAdding = (path: string, lines: string[]) =>
