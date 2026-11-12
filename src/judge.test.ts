@@ -6025,6 +6025,10 @@ const GRADING_CASES = [
   'unseen-note',
   'shown-note',
   'cited-test-note',
+  'doubted-wrong-total',
+  'doubted-heading-count',
+  'doubted-lost-segment',
+  'doubted-status-percent',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
@@ -6041,7 +6045,14 @@ interface GradingFixture {
   pr?: { title: string; body: string };
   /** For a finding the judge grades `warning`: whether the code shown proves it, so that no tool check is needed before it is posted. */
   proven?: boolean;
+  /** For a finding that rests on code the judge cannot see: the grade it earns once a check confirms that code is as the finding says. */
+  ifConfirmed?: 'blocker' | 'warning';
 }
+
+/** The grade each doubted fixture earns once its doubt holds: serious damage blocks, and a wrong figure in a line of text does not. */
+const IF_CONFIRMED: Readonly<Record<string, GradingFixture['ifConfirmed']>> = {
+  'doubted-wrong-total': 'blocker', 'doubted-heading-count': 'warning', 'doubted-lost-segment': 'blocker', 'doubted-status-percent': 'warning',
+};
 
 const PRIOR_ROUND_CASES: readonly string[] = ['grade-stable', 'own-proposal-objection', 'own-proposal-worse'];
 
@@ -6064,7 +6075,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, and a missing-test note that cites the test file, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, and a finding on unseen code that does or does not earn a blocker once that code is confirmed, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
@@ -6076,6 +6087,7 @@ describe('judge grading fixture corpus', () => {
     expect(fixture.priorRound !== undefined).toBe(PRIOR_ROUND_CASES.includes(fixture.case));
     expect(fixture.pr !== undefined).toBe(fixture.case === 'declared-gap');
     expect(fixture.proven).toBe({ 'proven-warning': true, 'unproven-warning': false }[fixture.case as string]);
+    expect(fixture.ifConfirmed).toBe(IF_CONFIRMED[fixture.case]);
     const appliesFix = computeProvenanceMap(gradingPriorRounds(fixture), fixture.prDiff)
       .some(e => e.file === fixture.finding.file && fixture.finding.line >= e.lineStart && fixture.finding.line <= e.lineEnd);
     expect(appliesFix).toBe(fixture.case.startsWith('own-proposal-'));
@@ -6107,6 +6119,8 @@ describe('judge grading fixture corpus', () => {
     const unreached = unprovenReason({ ...graded, overCheckLimit: true });
     if (fixture.proven) expect([unprovenReason(graded), unreached]).toEqual([undefined, undefined]);
     if (fixture.proven === false) expect(unreached).toBe('not_checked');
+    // Without tools the doubt holds the finding at a warning either way. What differs is whether a check that confirms the doubt raises it.
+    if (fixture.ifConfirmed) expect(graded && pendingGrade(graded) === 'blocker' ? 'blocker' : 'warning').toBe(fixture.ifConfirmed);
   }, 600_000);
 });
 

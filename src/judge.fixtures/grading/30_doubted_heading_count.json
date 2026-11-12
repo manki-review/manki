@@ -1,0 +1,19 @@
+{
+  "name": "doubted-heading-count",
+  "case": "doubted-heading-count",
+  "allowed": [
+    "warning"
+  ],
+  "ifConfirmed": "warning",
+  "finding": {
+    "title": "`projects_heading` counts archived projects that the list hides",
+    "file": "app/helpers/projects_helper.rb",
+    "line": 5,
+    "description": "The new heading shows `user.projects.count`. The index action in `app/controllers/projects_controller.rb` lists `user.projects.active`, so a user with 9 active and 3 archived projects sees \"Projects (12)\" above a list of 9 rows.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/app/helpers/projects_helper.rb b/app/helpers/projects_helper.rb\nindex 1111111..2222222 100644\n--- a/app/helpers/projects_helper.rb\n+++ b/app/helpers/projects_helper.rb\n@@ -3,5 +3,5 @@\n module ProjectsHelper\n   def projects_heading(user)\n-    \"Projects\"\n+    \"Projects (#{user.projects.count})\"\n   end\n end\n"
+}

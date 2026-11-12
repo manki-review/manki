@@ -1,0 +1,19 @@
+{
+  "name": "doubted-status-percent",
+  "case": "doubted-status-percent",
+  "allowed": [
+    "warning"
+  ],
+  "ifConfirmed": "warning",
+  "finding": {
+    "title": "`statusText` can show 101% at the end of an upload",
+    "file": "app/src/main/kotlin/app/ui/UploadStatus.kt",
+    "line": 10,
+    "description": "The new status line prints `job.percentDone()`. In `UploadJob.kt` that method rounds `sent * 100.0 / total` up, and `sent` includes the multipart trailer bytes that `total` leaves out, so the last update of every upload reads 101% before the line changes to the done text.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/app/src/main/kotlin/app/ui/UploadStatus.kt b/app/src/main/kotlin/app/ui/UploadStatus.kt\nindex 1111111..2222222 100644\n--- a/app/src/main/kotlin/app/ui/UploadStatus.kt\n+++ b/app/src/main/kotlin/app/ui/UploadStatus.kt\n@@ -8,5 +8,5 @@\n /** The line shown under the progress bar while a file uploads. */\n fun statusText(job: UploadJob): String =\n-    \"Uploading ${job.fileName}\"\n+    \"Uploading ${job.fileName} (${job.percentDone()}%)\"\n \n fun doneText(job: UploadJob): String = \"Uploaded ${job.fileName}\"\n"
+}

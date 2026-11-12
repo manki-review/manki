@@ -1,0 +1,19 @@
+{
+  "name": "doubted-lost-segment",
+  "case": "doubted-lost-segment",
+  "allowed": [
+    "warning"
+  ],
+  "ifConfirmed": "blocker",
+  "finding": {
+    "title": "`compact` drops segments that still hold live records",
+    "file": "src/store/compact.rs",
+    "line": 22,
+    "description": "The PR keeps a segment only while `index.refs(s.id) > 0`. `Index::refs` in `src/store/index.rs` counts the records written since the last checkpoint, so a segment whose records all predate the checkpoint has 0 refs and `compact` drops it with its data.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/src/store/compact.rs b/src/store/compact.rs\nindex 1111111..2222222 100644\n--- a/src/store/compact.rs\n+++ b/src/store/compact.rs\n@@ -20,5 +20,5 @@\n /// Drops the segments that hold nothing worth keeping.\n pub(crate) fn compact(segments: &mut Vec<Segment>, index: &Index) {\n-    segments.retain(|s| !s.is_empty());\n+    segments.retain(|s| index.refs(s.id) > 0);\n     log::debug!(\"{} segments left\", segments.len());\n }\n"
+}
