@@ -721,6 +721,12 @@ export interface Refutation {
   codeDigest: string;
   /** The model that answered. A record from before models were stored has none. */
   model?: string;
+  /**
+   * Whether the call of a check that ended unsettled ended on its step budget: it was told to wrap up or took every
+   * tool step. `yes` states that count alone, so it also holds for a call that was done anyway. It is `unknown` when the
+   * client does not report the steps of a call. Unset on a check that settled, and on a record from before this was stored.
+   */
+  stepsUsedUp?: 'yes' | 'no' | 'unknown';
 }
 
 /**
@@ -823,6 +829,11 @@ export function citesEvidence(evidence: FindingEvidence | undefined): boolean {
 export interface OpenLead {
   checked: string;
   left: string;
+}
+
+/** Returns `lead` with a stand-in for each part its reviewer left empty, so text built from it never shows an empty value. */
+export function leadText(lead: OpenLead): OpenLead {
+  return { checked: lead.checked || 'nothing', left: lead.left || 'not said' };
 }
 
 /**

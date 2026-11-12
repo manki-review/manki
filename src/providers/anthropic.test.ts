@@ -574,6 +574,11 @@ describe('sendViaOAuth — error paths', () => {
     expect(systemPromptFile).toContain('- Read a **reference** when the changed code implements or mirrors it, such as a spec, a file or wire format, another implementation or an API this code talks to. Compare both directions of each contract: what this code produces against what the reference accepts, and the reverse, along with limits, field order, field types and versions.');
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps?.map(step => step.tool)).toEqual(['Read', 'mcp__manki__git_history', 'Read', 'mcp__manki__read_file']);
+    // A call with tools whose model called none reports an empty list, which tells it from a client that reports no
+    // steps at all. A call without tools reports none.
+    setupSpawnMock({ stdout: 'ok' });
+    expect((await client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15, related: undefined } })).toolSteps).toEqual([]);
+    expect((await client.sendMessage('sys', 'user')).toolSteps).toBeUndefined();
     expect(response.filesRead).toEqual(['src/a.rs', 'dashpay/dash:src/net.cpp']);
     expect(response.relatedReads).toEqual({ 'dashpay/dash': 3 });
 

@@ -473,7 +473,7 @@ export class AnthropicClient implements LLMClient {
       latencyMs: Date.now() - startTime,
       model: this.model,
       truncated,
-      ...(toolSteps.length > 0 && { toolSteps }),
+      ...((toolSteps.length > 0 || options?.repoTools) && { toolSteps }),
       ...readings(),
     };
   }

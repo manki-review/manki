@@ -2894,7 +2894,7 @@ describe('runReview', () => {
           if (f.line === 7) return { ...f, severity: 'blocker' as const, rule, refutation: refuted('disproved') };
           if (f.file === 'src/b.ts') return { ...f, severity: 'ignore' as const, refutation: refuted('disproved') };
           if (f.line === 9) return { ...f, tags: [SECURITY_TAG], refutation: refuted('unsettled') };
-          return { ...f, refutation: refuted('unsettled') };
+          return { ...f, refutation: { ...refuted('unsettled'), stepsUsedUp: 'yes' as const } };
         }),
       }));
 
@@ -2918,6 +2918,8 @@ describe('runReview', () => {
       ]);
       // Each lead records the refuter's answer, so a lead listed and never posted still counts in the statistics.
       expect(result.leads?.map(l => l.refutation?.outcome)).toEqual(['confirmed', 'disproved', 'unsettled', undefined, 'unsettled', 'disproved', 'disproved', 'disproved']);
+      // A lead that is only listed keeps whether its unsettled check used up its tool steps.
+      expect(result.leads?.[2].refutation?.stepsUsedUp).toBe('yes');
     });
 
     it('lists a warning lead without sending it to a judge that has no tools to settle it', async () => {
@@ -6607,20 +6609,26 @@ describe('recordCalls', () => {
       { ...finder, fallback: true, attempt: 2, promptDigest, model: 'gpt-5', toolSteps: [{ tool: 'Read', durationMs: 3 }], durationMs: 60, ...usage, costUsd: null },
     ]);
 
-    // A call with tools keeps its step budget, and whether it used enough steps to be told to wrap up. A client
-    // without tools ignores them, so it records no budget.
+    // A call with tools keeps its step budget, and whether it used enough steps to be told to wrap up. A budget of 3
+    // has no step that carries the note. A client without tools ignores them, so it records no budget.
     const budgeted: LLMCall[] = [];
-    for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps, related: undefined } });
+    for (const steps of [4, 5, 3]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps, related: undefined } });
     await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4, related: undefined } }).catch(() => undefined);
     // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
     const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 }, filesRead: ['src/a.ts'] }), repoTools: true } as unknown as LLMClient;
     await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } });
+    // A call with tools whose model called none reports an empty list, and its record holds no steps and no wrap-up.
+    const idle = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'claude-opus-5-5', toolSteps: [] }), repoTools: true } as unknown as LLMClient;
+    const unused: LLMCall[] = [];
+    await recordCalls(idle, finder, unused).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } });
+    expect(['toolSteps' in unused[0], 'wrapUpNoted' in unused[0], unused[0].stepBudget]).toEqual([false, false, 3]);
     // A call that failed keeps the related repo reads and files read its error carries.
     const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 }, filesRead: ['src/b.ts'] });
     const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;
     await recordCalls(failing, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } }).catch(() => undefined);
     expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads, c.filesRead])).toEqual([
-      [4, true, true, undefined, undefined], [5, undefined, true, undefined, undefined], [undefined, undefined, false, undefined, undefined],
+      [4, true, true, undefined, undefined], [5, undefined, true, undefined, undefined], [3, undefined, true, undefined, undefined],
+      [undefined, undefined, false, undefined, undefined],
       [3, undefined, true, { 'o/r': 2 }, ['src/a.ts']], [3, undefined, true, { 'o/r': 1 }, ['src/b.ts']],
     ]);
     expect(budgeted.at(-1)).toMatchObject({ failed: true, error: 'Codex CLI timed out' });

@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1080,7 +1080,7 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExist
   if (preExisting) lines.push(`- **Pre-existing, the reviewer says**: ${sanitizeForPromptEmbed(preExisting)}`);
   if (rule) lines.push(`- **Quoted rule**, from \`${sanitizeForPromptEmbed(rule.file)}\`: ${sanitizeForPromptEmbed(rule.quote.replace(/\s+/g, ' '))}`);
   if (lead && leadSince) lines.push(`- **Earlier lead**: first raised in round ${leadSince}, and no check has settled it since.`);
-  if (lead) lines.push(`- **Open lead**: checked ${sanitizeForPromptEmbed(lead.checked || 'nothing')}. Left: ${sanitizeForPromptEmbed(lead.left || 'not said')}.`);
+  if (lead) lines.push(`- **Open lead**: checked ${sanitizeForPromptEmbed(leadText(lead).checked)}. Left: ${sanitizeForPromptEmbed(leadText(lead).left)}.`);
   else if (notChecked) lines.push('- **Not checked yet**: the reviewer ran out of tool steps before it finished checking.');
   return lines;
 }

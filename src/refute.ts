@@ -10,11 +10,12 @@ import { ruleGrade } from './judge';
 import { extractJSON } from './json';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
-import { LLMClient } from './providers';
+import { LLMClient, LLMResponse } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
-import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
+import { wrapUpNoted } from './tool-steps';
+import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -154,12 +155,23 @@ function citesFindingCode(file: string, proof: readonly string[], diff?: ParsedD
 }
 
 /**
+ * Returns `check` with whether its call ended on its step budget, when it ended unsettled: the call was told to wrap up
+ * or took every step. Only a reply that lists its steps tells.
+ */
+function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutation {
+  if (outcomeOf(check) !== 'unsettled') return check;
+  if (!toolSteps) return { ...check, stepsUsedUp: 'unknown' };
+  const ended = wrapUpNoted(toolSteps.length, REFUTE_STEPS) || toolSteps.length >= REFUTE_STEPS;
+  return { ...check, stepsUsedUp: ended ? 'yes' : 'no' };
+}
+
+/**
  * Returns the refutation an earlier round stored in `field` for the same finding, when it covers every file the finding
  * now cites and none of those files changed since. Only the latest such answer counts, so no older one is ever reused
  * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
  * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
- * covers the PR's files only and the related repo can have changed, or when it is a disproof that no longer cites the
- * finding's code.
+ * covers the PR's files only and the related repo can have changed, when it is a disproof that no longer cites the
+ * finding's code, or when it ended unsettled on its step budget, since it may only have run out of steps.
  */
 function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);
@@ -171,7 +183,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
       && codeDigest(workspace, refutation.files) === refutation.codeDigest)?.refutation;
     if (!refutation) continue;
-    const reusable = !citesRelatedRepo(refutation) && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff));
+    const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes' && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff));
     return reusable ? refutation : undefined;
   }
   return undefined;
@@ -198,7 +210,7 @@ function buildRefuteMessage(finding: Finding, unchanged: boolean, usesOutsideDif
     `- **Description**: ${sanitizeForPromptEmbed(finding.description)}`,
     ...(finding.evidence?.checks.length ? [`- **Reviewer evidence**: ${finding.evidence.checks.map(sanitizeForPromptEmbed).join(' | ')}`] : []),
     ...(finding.evidence?.proof.length ? [`- **Proving lines cited**: ${finding.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
-    ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(finding.lead.checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(finding.lead.left)}`] : []),
+    ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(leadText(finding.lead).checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(leadText(finding.lead).left)}`] : []),
     ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
     ...(finding.doubts ? ['- **Premises the judge doubts**, to answer in order:', ...finding.doubts.map((d, i) => `  ${i + 1}. ${sanitizeForPromptEmbed(d.premise)}`)] : []),
     ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
@@ -598,7 +610,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
         }),
-        reply => ({ ...parseRefutation(reply.content, workspace, finding, diff, related), ...(reply.model && { model: reply.model }) }),
+        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related), ...(reply.model && { model: reply.model }) }, reply),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
