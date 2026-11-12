@@ -1510,9 +1510,10 @@ export async function runJudgeAgent(
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
   // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting), staysPreExisting)
+  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting), staysPreExisting)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
-    .map(f => doubtUnprovenRule(gradeConfirmedRule(f, config.review?.rules), config.review?.rules));
+    // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
+    .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules));
   const suppress = (list: Finding[], quiet = false) => {
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
@@ -1605,7 +1606,6 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
 export function mapJudgedToFindings(
   original: Finding[],
   judged: JudgedFinding[],
-  provenanceMap?: ProvenanceEntry[],
   priorFindings: PriorFinding[] = [],
   staysPreExisting?: (copy: Finding) => boolean,
 ): Finding[] {
@@ -1631,7 +1631,6 @@ export function mapJudgedToFindings(
       const verdict = ruleVerdict(finding, match);
       finding.rule = { ...o.rule, verdict, ...(verdict === 'unproven' && match.ruleUnseen && { unseen: match.ruleUnseen }) };
     }
-    Object.assign(finding, applyOwnProposal(finding, provenanceMap));
     const sameAs = priorKey(priorFindings, match.sameAs);
     const variantOf = sameAs ? undefined : priorKey(priorFindings, match.variantOf);
     if (sameAs) finding.sameAs = sameAs;
@@ -1887,12 +1886,11 @@ function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): Pro
 
 /**
  * Drops a finding below `warning` on code that applies a prior-round `suggestedFix`, so Manki does not
- * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays. So does
- * a note that `breaksRule`, which `gradeConfirmedRule` raises.
+ * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays.
  */
-function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): Finding {
+export function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): Finding {
   const match = ownProposalOf(finding, provenanceMap);
-  if (!match || !isNote(finding.severity) || breaksRule(finding)) return finding;
+  if (!match || !isNote(finding.severity)) return finding;
   const safeTitle = match.originatingTitle.replace(/[\n\r`]/g, ' ').slice(0, 200);
   const note = `Own-proposal follow-up: implements round ${match.originatingRound} finding "${safeTitle}"`;
   return {
