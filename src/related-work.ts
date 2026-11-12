@@ -15,6 +15,8 @@ const MAX_RELATED_PRS = 5;
 const MAX_RELATED_ISSUES = 5;
 // GitHub search takes at most five operators, so six terms joined by OR.
 const MAX_SEARCH_TERMS = 6;
+/** GitHub refuses a search query of more than 256 characters, not counting its operators and qualifiers. */
+const MAX_QUERY_CHARS = 256;
 const MIN_TITLE_WORD_LENGTH = 5;
 const MAX_EXCERPT = 400;
 const MAX_OWN_BODY = 1500;
@@ -128,20 +130,31 @@ async function searchIssues(octokit: Octokit, { owner, repo, title, body, diff }
     .map(issue => ({ kind: 'issue', number: issue.number, title: issue.title, excerpt: excerpt(issue.body, MAX_EXCERPT) }));
 }
 
-/** Returns the words to search issues for: a few names the diff declares, then the title's longer words, then more names. */
+/**
+ * Returns the words to search issues for: a few names the diff declares, then the title's longer words, then more names.
+ * A term that no longer fits `MAX_QUERY_CHARS` is left out, so a long name cannot make GitHub refuse the search.
+ */
 function searchTerms(title: string, diff: ParsedDiff): string[] {
   const names = declaredNames(diff).filter(name => /^\w+$/.test(name));
   const words = title.replace(CONVENTIONAL_PREFIX, '').split(/\W+/).filter(word => word.length >= MIN_TITLE_WORD_LENGTH);
   const half = MAX_SEARCH_TERMS / 2;
   const terms: string[] = [];
+  let chars = 0;
   for (const term of [...names.slice(0, half), ...words, ...names.slice(half)]) {
-    if (!terms.some(t => t.toLowerCase() === term.toLowerCase())) terms.push(term);
+    if (terms.length === MAX_SEARCH_TERMS) break;
+    if (chars + term.length + 1 > MAX_QUERY_CHARS || terms.some(t => t.toLowerCase() === term.toLowerCase())) continue;
+    chars += term.length + 1;
+    terms.push(term);
   }
-  return terms.slice(0, MAX_SEARCH_TERMS);
+  return terms;
 }
 
+/** Returns the first `max` characters of `body` without its HTML comments. */
 function excerpt(body: string | null | undefined, max: number): string {
-  return (body ?? '').replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, max);
+  const text = body ?? '';
+  // Past the last `-->` no comment ends, and there each `<!--` would be read on to the end of the body.
+  const closed = text.lastIndexOf('-->') + 3;
+  return (text.slice(0, closed).replace(/<!--[\s\S]*?-->/g, '') + text.slice(closed)).trim().slice(0, max);
 }
 
 function skipReason(error: unknown): string {

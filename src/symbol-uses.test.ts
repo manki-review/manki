@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -112,7 +112,52 @@ describe('listUsesOutsideDiff', () => {
     expect(record?.symbols?.find(s => s.name === 'Order')).toMatchObject({ declared: 'core/src/order.rs:1', uses: expect.arrayContaining(['billing/src/invoice.rs:1']) });
     expect(record?.types).toEqual(['core/src/order.rs:1: struct Order { version, discount, line_items, gift_note }']);
     expect(JSON.stringify(record)).not.toContain('is_some');
-  });
+
+    // A manifest larger than a parsed file may be is not read, and neither is a package name longer than any registry
+    // allows. Such a package may depend on the changed one, so its use ranks with the dependents, before a namesake.
+    const change = { 'core/src/order.rs': ORDER('pub discount: Option<u16>, // percent from version 2') };
+    const base = { ...CRATES, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') };
+    const withDependents = ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'promo/src/lib.rs:6', 'core/src/stats.rs:2', 'README.md:1', 'promo/src/lib.rs:2'];
+    const discountUses = (uses: UsesOutsideDiff) => uses.record?.symbols?.find(s => s.name === 'discount')?.uses;
+    const notRead = () => jest.mocked(core.info).mock.calls.map(([message]) => message).filter(message => message.includes('did not read the manifest'));
+    for (const manifest of [{ 'promo/Cargo.toml': `[package]\nname = "promo"\n${'# filler\n'.repeat(120_000)}` }, { 'core/Cargo.toml': `[package]\nname = "${'n'.repeat(257)}"\n` }]) {
+      expect(discountUses(await usesFor({ ...base, ...manifest }, change))).toEqual(withDependents);
+    }
+    expect(notRead()).toEqual(['Uses outside the diff: did not read the manifest of promo, so its package may depend on any other: Cargo.toml is larger than 1 MB']);
+
+    // A line that ends in a carriage return has its comment read like any other: a name only in it ranks after code.
+    const crlf = await usesFor({ ...base, 'core/src/notes.rs': 'pub fn noted(o: &Order) -> u8 {\r\n    1 // o.discount is not read\r\n}\r\n' }, change);
+    expect(discountUses(crlf)).toEqual(['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'core/src/stats.rs:2', 'promo/src/lib.rs:6', 'core/src/notes.rs:2', 'README.md:1', 'promo/src/lib.rs:2']);
+
+    // A manifest that is a link to a file outside the checkout is not read either, whatever that file says.
+    const outside = mkdtempSync(join(tmpdir(), 'manki-outside-'));
+    const { root, diff } = gitWorkspace(base, change);
+    try {
+      writeFileSync(join(outside, 'Cargo.toml'), CRATES['promo/Cargo.toml']);
+      rmSync(join(root, 'promo/Cargo.toml'));
+      symlinkSync(join(outside, 'Cargo.toml'), join(root, 'promo/Cargo.toml'));
+      expect(discountUses(await listUsesOutsideDiff(root, diff, { loadApi }))).toEqual(withDependents);
+      expect(notRead().at(-1)).toBe('Uses outside the diff: did not read the manifest of promo, so its package may depend on any other: promo/Cargo.toml is outside the repository');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+
+    // One round reads and searches at most 64 MB of manifest text. A package whose manifest falls past that may depend
+    // on the changed one, so its use ranks before the uses of the packages that were read and name no dependency.
+    const crates = Object.fromEntries(Array.from({ length: 36 }, (_, i) => `p${String(i).padStart(2, '0')}`).flatMap(dir => [
+      [`${dir}/Cargo.toml`, `[package]\nname = "${dir}"\n${'# filler\n'.repeat(116_000)}`],
+      [`${dir}/src/lib.rs`, 'pub struct Coupon {\n    pub discount: u8,\n}\n\nfn kind(c: &Coupon) -> u8 {\n    c.discount\n}\n'],
+    ]));
+    const many = await usesFor({ ...base, ...crates }, change);
+    expect(jest.mocked(core.info).mock.calls.map(([message]) => message).filter(message => message.includes('of manifest text'))).toEqual([
+      'Uses outside the diff: the limit of 64 MB of manifest text was reached at p32, so from here on a package may depend on any other',
+    ]);
+    expect(discountUses(many)).toEqual([
+      'billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'p32/src/lib.rs:6', 'p33/src/lib.rs:6', 'p34/src/lib.rs:6', 'p35/src/lib.rs:6',
+      'promo/src/lib.rs:6', 'core/src/stats.rs:2', 'p00/src/lib.rs:6', 'p01/src/lib.rs:6', 'p02/src/lib.rs:6',
+    ]);
+  }, 120_000);
 
   it('shows a redefined field\'s uses from other files before a fourth from one file, and ranks a same-named field of another type last, in Rust, Python, TypeScript and Go', async () => {
     const reads = (line: (i: number) => string) => Array.from({ length: 5 }, (_, i) => line(i)).join('\n');
@@ -259,6 +304,48 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('core/src/cart.rs:1: struct Cart { products, wishlist }');
     expect(section).not.toContain('Pricing');
     expect(section).not.toContain('Inventory');
+
+    // A change past a cap of the search is not searched whole. The section says how much of it was at the place the cap
+    // cut, so no reader takes a list for all there is. A change within every cap keeps the wording for a whole search.
+    const whole = 'Manki searched the PR\'s head commit for each symbol the diff changes and lists where it is used';
+    const typesHeading = (section: string) => section.match(/### Types Behind the Fields the Diff Uses\n\n(.*)\n/)?.[1];
+    const everyType = 'Types declaring a field the changed lines read or change, each with all its fields.';
+    const info = () => jest.mocked(core.info).mock.calls.map(([message]) => message).filter(message => message.includes('past a limit'));
+    expect([section.includes(whole), typesHeading(section), info()]).toEqual([true, everyType, []]);
+    const handlers = (value: number) => Array.from({ length: 90 }, (_, i) => `export function handler${i}() { return ${value}; }\n`).join('');
+    const symbols = await usesFor({ 'src/handlers.ts': handlers(1), 'src/call.ts': 'handler0();\n' }, { 'src/handlers.ts': handlers(2) });
+    expect(symbols.section).toContain('Manki searched the PR\'s head commit for 80 of the 90 symbols the diff changes and lists where each is used');
+    expect(info()).toEqual(['Uses outside the diff: the change is past a limit of the search, which took 80 of 90 changed symbols']);
+    const kinds = Array.from({ length: 8 }, (_, i) => `export interface Kind${i} {\n${[0, 1, 2].map(j => `  weight${i}x${j}: number;\n`).join('')}}\n`).join('');
+    const total = (body: string) => `export function total(k: Kinds): number {\n  return ${body};\n}\n`;
+    const sum = (fields: number) => total(Array.from({ length: fields }, (_, n) => `k.weight${Math.floor(n / 3)}x${n % 3}`).join(' + '));
+    const reads = await usesFor({ 'src/kinds.ts': kinds, 'src/total.ts': total('0') }, { 'src/total.ts': sum(24) });
+    expect(reads.section).toContain(whole);
+    expect(typesHeading(reads.section)).toBe('6 of the 7 types found declaring a field the changed lines read or change, each with all its fields. The types were looked up for 20 of the 24 fields the changed lines read.');
+    expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 20 of 24 read fields, 6 of 7 types');
+    const fewer = await usesFor({ 'src/kinds.ts': kinds, 'src/total.ts': total('0') }, { 'src/total.ts': sum(20) });
+    expect(typesHeading(fewer.section)).toBe('6 of the 7 types found declaring a field the changed lines read or change, each with all its fields.');
+    // Only the 3 likeliest types of one field are listed, and none for a field that more than 6 types declare, so the
+    // heading counts every type found and says for how many fields it lists none.
+    const shapes = (n: number) => Array.from({ length: n }, (_, i) => `export interface Shape${i} {\n  corner_count: number;\n}\n`).join('');
+    const area = (body: string) => `export function area(s: Shape0, k: Kind0): number {\n  return ${body};\n}\n`;
+    const likeliest = await usesFor({ 'src/shapes.ts': shapes(4), 'src/area.ts': area('0') }, { 'src/area.ts': area('s.corner_count') });
+    expect(typesHeading(likeliest.section)).toBe('3 of the 4 types found declaring a field the changed lines read or change, each with all its fields.');
+    expect(likeliest.record?.types).toEqual([0, 1, 2].map(i => `src/shapes.ts:${3 * i + 1}: interface Shape${i} { corner_count }`));
+    const tooMany = await usesFor({ 'src/shapes.ts': shapes(7), 'src/kinds.ts': kinds, 'src/area.ts': area('0') }, { 'src/area.ts': area('s.corner_count + k.weight0x0') });
+    expect(typesHeading(tooMany.section)).toBe('Types declaring a field the changed lines read or change, each with all its fields. No type is listed for 1 read field that more than 6 types declare.');
+    expect(tooMany.record?.types).toEqual(['src/kinds.ts:1: interface Kind0 { weight0x0, weight0x1, weight0x2 }']);
+    const store = `pub struct Store {\n${Array.from({ length: 9 }, (_, i) => `    pub jobs${i}: HashMap<u8, u8>,\n`).join('')}}\n`;
+    const run = (body: string) => `fn run(s: &Store, k: u8) {\n${body}}\n`;
+    const lookedUp = await usesFor({ 'src/store.rs': store, 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) });
+    // `run` is too short a name to search for, so the one changed symbol counts as not searched.
+    expect(lookedUp.section).toContain('Manki searched the PR\'s head commit for 0 of the 1 symbol the diff changes and lists where each is used');
+    expect(typesHeading(lookedUp.section)).toBe(everyType);
+    expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields');
+    // The log names the limit also when the search lists nothing, since the sibling questions still come from the 8 fields.
+    const logged = info().length;
+    const quiet = await usesFor({ 'src/store.rs': store.replace('pub struct Store', 'struct Store').replace(/pub jobs/g, 'jobs'), 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) }, ['src/store.rs']);
+    expect([quiet.section, info().slice(logged)]).toEqual(['', ['Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields']]);
   });
 
   it('lists the uses of changed TypeScript fields, functions and interfaces, test files after code', async () => {
@@ -787,6 +874,27 @@ ${body}	return true
     const typed = (n: number, type: string) => Array.from({ length: n }, (_, i) => `pub struct T${i} { pub fld_${i}: ${type} }\n`).join('');
     const owned = await usesInLinearTime(n => [{ 'src/typed.rs': typed(n, 'u8'), 'src/hits.rs': 'fn x(t: T0) {}\n'.repeat(n) }, { 'src/typed.rs': typed(n, 'u16') }], 8_000, { smaller: 500 });
     expect(owned.record?.types?.[0]).toBe('src/typed.rs:1: struct T0 { fld_0 }');
+
+    // A looked-up field of a long type beside many collection fields: the long type is read once, not once per sibling.
+    const wideStruct = (n: number, call: string) => `pub struct Wide {\n    pub jobs: HashMap<u8, (${'u8,'.repeat(3 * n)})>,\n${Array.from({ length: n }, (_, i) => `    pub f${i}: Vec<u8>,\n`).join('')}}\n\nfn run(s: &Wide, k: u8) {\n    ${call}\n}\n`;
+    const ranked = await usesInLinearTime(n => [{ 'src/wide.rs': wideStruct(n, 's.jobs.len();') }, { 'src/wide.rs': wideStruct(n, 's.jobs.get(&k);') }], 8_000, { smaller: 500 });
+    expect(ranked.siblings.fields.slice(0, 2).map(q => [q.struct, q.field, q.sibling])).toEqual([['Wide', 'jobs', 'f0'], ['Wide', 'jobs', 'f1']]);
+
+    // One field name changed in many types and untouched in as many others: what the changed types may derive from is
+    // read once for the name, not once per use.
+    const holders = (n: number, prefix: string, type: string) => Array.from({ length: n }, (_, i) => `pub struct ${prefix}${i} {\n    pub user_id: ${type},\n}\n`).join('');
+    const namesakes = await usesInLinearTime(n => [{ 'src/a.rs': holders(n, 'A', 'u32'), 'src/b.rs': holders(n, 'B', 'u32') }, { 'src/a.rs': holders(n, 'A', 'u64') }], 3_000);
+    expect(namesakes.record?.symbols).toEqual([{ name: 'user_id', declared: 'src/a.rs:2', uses: Array.from({ length: 12 }, (_, i) => `src/b.rs:${3 * i + 2}`), notShown: 2_988 }]);
+
+    // A found line with many comment starts before a carriage return: the comment is cut off at its first start.
+    const hashes = (n: number) => ({ ...CRATES, 'core/src/tags.rs': `pub fn tags(o: &Order) -> u8 { o.discount.unwrap_or(0) }${' #a'.repeat(n)}\r\n`, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') });
+    const tagged = await usesInLinearTime(n => [hashes(n), { 'core/src/order.rs': ORDER('pub discount: Option<u16>, // percent from version 2') }], 160_000);
+    expect(tagged.record?.symbols?.find(s => s.name === 'discount')?.uses).toContain('core/src/tags.rs:1');
+
+    // A manifest that starts with many empty lines: its package name is found in one pass over the lines.
+    const blankLines = (n: number) => ({ ...CRATES, 'promo/Cargo.toml': `${'\n'.repeat(n)}[package]\nname = "promo"\n`, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') });
+    const named = await usesInLinearTime(n => [blankLines(n), { 'core/src/order.rs': ORDER('pub discount: Option<u16>, // percent from version 2') }], 200_000);
+    expect(named.record?.symbols?.find(s => s.name === 'discount')?.uses?.at(-1)).toBe('promo/src/lib.rs:2');
   }, 300_000);
 
   it('parses at most 200 files a round and says how many it left unparsed', async () => {
@@ -830,10 +938,29 @@ ${body}	return true
 
     const { root, diff } = gitWorkspace({ 'src/a.rs': 'pub fn compute_total() {}\n' }, { 'src/a.rs': 'pub fn compute_total() { todo!() }\n' });
     try {
-      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual(NOTHING);
+      // A failed search leaves its reason in the round record, which tells it from a change with nothing to list.
+      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ ...NOTHING, referenceNames: ['compute_total'] });
       expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons$/));
+      // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name.
+      rmSync(join(root, '.git'), { recursive: true, force: true });
+      mkdirSync(join(root, '.git'));
+      const broken = await listUsesOutsideDiff(root, diff, { loadApi });
+      expect(broken).toEqual({ ...NOTHING, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
+      expect(core.warning).toHaveBeenLastCalledWith(`Skipped the list of uses outside the diff: ${broken.record?.failed}`);
+      // A `git grep` that a signal ends leaves no exit code, and the reason names the signal.
+      const bin = mkdtempSync(join(tmpdir(), 'manki-bin-'));
+      const path = process.env.PATH;
+      try {
+        writeFileSync(join(bin, 'git'), '#!/bin/sh\nkill -KILL $$\n', { mode: 0o755 });
+        process.env.PATH = bin;
+        expect((await listUsesOutsideDiff(root, diff, { loadApi })).record).toEqual({ failed: 'git grep was killed by SIGKILL' });
+      } finally {
+        process.env.PATH = path;
+        rmSync(bin, { recursive: true, force: true });
+      }
+      expect(broken.record?.failed).not.toContain('compute_total');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -905,7 +1032,7 @@ describe('listRelatedUses', () => {
         referenceUnsearched: ['MAX_HEADER_COUNT'],
       });
       expect((await listRelatedUses([server], ['PAST_THE_CUT'])).record).toEqual({ reference: [{ name: 'PAST_THE_CUT', lines: ['example/server:src/min.js:1'] }] });
-      expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));
+      expect(core.warning).toHaveBeenCalledWith('Skipped the search of the reference repo o/gone: git grep could not start (ENOENT)');
       // The names are searched in one pattern, which is one command argument. The names that no longer fit its size are
       // left out, the first ones kept, so the search runs whatever it is given.
       jest.mocked(core.warning).mockClear();
@@ -1062,7 +1189,8 @@ describe('listRelatedUses', () => {
         reference: [{ name: 'MAX_SIZE', lines: ['example/server:limits.h:1'] }],
         translation: { names: [{ repo: 'example/server', name: 'MAX_SIZE', as: 'Flood', lines: 0, failed: true }] },
       });
-      expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo example\/server for 1 translated name: /));
+      // The warning names the limit the search reached, and not the pattern.
+      expect(core.warning).toHaveBeenCalledWith('Skipped the search of the reference repo example/server for 1 translated name: the search found more than 64 MB of matching lines');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

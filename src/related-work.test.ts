@@ -2,6 +2,7 @@ import * as github from '@actions/github';
 
 import type { LLMClient } from './providers';
 import { classifyRelatedWork, findRelatedWork } from './related-work';
+import { expectLinearTime } from './test-utils';
 import type { DiffFile, ParsedDiff, RelatedWork } from './types';
 
 jest.mock('@actions/core', () => ({ warning: jest.fn(), info: jest.fn(), debug: jest.fn() }));
@@ -66,7 +67,29 @@ describe('findRelatedWork', () => {
     expect(search).toHaveBeenCalledWith({ q: 'repo:o/r is:issue is:open (fetchLinkedIssues OR overlapping OR requests)', per_page: 6, request });
     expect(work.items.filter(i => i.kind === 'issue')).toEqual([{ kind: 'issue', number: 42, title: 'Duplicate PRs go unnoticed', excerpt: '' }]);
     expect(work.skipped).toBeUndefined();
-  });
+
+    // GitHub refuses a query of more than 256 characters. A name that no longer fits is left out and a shorter one after
+    // it still searched, so long names cannot switch the search off. Six terms are searched at most.
+    const long = ['a', 'b', 'c'].map(letter => letter.repeat(120));
+    const names = [...long, 'shortName', 'otherName', 'thirdName', 'fourthName', 'fifthName'];
+    const crowded = makeOctokit([]);
+    await findRelatedWork(crowded.octokit, target(diffOf(file('src/a.ts', names.map(name => `export function ${name}() {`))), { title: 'x' }));
+    expect(crowded.search).toHaveBeenCalledWith(expect.objectContaining({ q: `repo:o/r is:issue is:open (${long[0]} OR ${long[1]} OR shortName)` }));
+    const many = makeOctokit([]);
+    await findRelatedWork(many.octokit, target(diffOf(file('src/a.ts', names.slice(3).concat('sixthName', 'seventhName').map(name => `export function ${name}() {`))), { title: 'x' }));
+    expect(many.search).toHaveBeenCalledWith(expect.objectContaining({ q: 'repo:o/r is:issue is:open (shortName OR otherName OR thirdName OR fourthName OR fifthName OR sixthName)' }));
+
+    // A body keeps the comment starts that nothing closes, and is read once however many of them it holds.
+    const unclosed = (n: number) => `<!-- closed -->kept ${'<!--'.repeat(n)}`;
+    await expectLinearTime(async (n) => {
+      const issues = makeOctokit([], [{ number: 42, title: 'Open', body: unclosed(n) }]);
+      const started = performance.now();
+      const found = await findRelatedWork(issues.octokit, target(diff));
+      const ms = performance.now() - started;
+      expect(found.items).toEqual([{ kind: 'issue', number: 42, title: 'Open', excerpt: unclosed(100).slice('<!-- closed -->'.length, '<!-- closed -->'.length + 400) }]);
+      return ms;
+    }, 130_000);
+  }, 60_000);
 
   it('skips a list that fails or hangs past the deadline and names why, and searches nothing without a term', async () => {
     const { octokit, search } = makeOctokit([]);
