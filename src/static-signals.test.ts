@@ -881,6 +881,7 @@ describe('checkFindingClaims', () => {
       mkdirSync(join(checkout, 'src'), { recursive: true });
       writeFileSync(join(checkout, 'src', 'lib.rs'), 'pub fn a() {}\npub fn b() {}\n');
       writeFileSync(join(checkout, 'src', 'key.rs'), 'let key = `id`;\nlet id = key.len();\n');
+      writeFileSync(join(checkout, 'src', 'long.rs'), Array.from({ length: 30 }, (_, i) => `fn step_${i + 1}() {}\n`).join(''));
       writeFileSync(join(base, 'outside.rs'), `${'x\n'.repeat(50)}`);
       symlinkSync(join(base, 'outside.rs'), join(checkout, 'link.rs'));
       writeFileSync(join(checkout, 'big.rs'), 'x\n'.repeat(600_000));
@@ -926,6 +927,12 @@ describe('checkFindingClaims', () => {
         quoting('o/r:src/lib.rs:2 takes no argument in `pub fn b() {}`, and the change calls `client.b(retries)`'),
         // A quote in double backticks can hold a backtick, and the prose after it is not compared as code.
         quoting('o/r:src/key.rs:1 builds ``let key = `id`;`` and the next line reads `let id = key.len();`'),
+        // An unclosed run of backticks quotes nothing, and the quotes after it still count.
+        quoting('o/r:src/key.rs:1 builds ``let key = `id`; and the next line reads `let id = key.len();`'),
+        // A range of up to 7 lines is compared like a line. A longer one is not, since the quote could sit anywhere in it.
+        quoting('o/r:src/long.rs:1-7 ends before `fn step_10() {}`'),
+        quoting('o/r:src/long.rs:1-7 ends before `fn step_25() {}`'),
+        quoting('o/r:src/long.rs:1-30 holds `fn step_25() {}`'),
         // A citation with none of the quoted parts does not hold the quoted code.
         quoting('o/r:src/lib.rs:2 defines `removed_function() ... other_gone( x )`'),
         // The code may sit a few lines from the cited one.
@@ -944,6 +951,10 @@ describe('checkFindingClaims', () => {
         '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b()` is within 3 lines of the cited line, `removed_function()`, `other_gone( x )` are not.',
         '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b() {}` is within 3 lines of the cited line, `client.b(retries)` is not.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/key.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/key.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-7` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-7` does not hold the quoted code: `fn step_25() {}` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` is in the fetched checkout.',
         '`o/r:src/lib.rs:2` does not hold the quoted code: `removed_function()`, `other_gone( x )` are not within 3 lines of the cited line.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` does not hold the quoted code: `review.body.includes(MARKER)` is not within 3 lines of the cited line.',
