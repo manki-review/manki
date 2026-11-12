@@ -26,7 +26,7 @@ const ERROR_LINE_WINDOW = 3;
 const MAX_CITATIONS = 10;
 /** How far from a cited line of a related repo the code a reviewer quotes for it may sit. */
 const QUOTE_LINE_WINDOW = 3;
-/** A cited range of more lines than this is not compared with a quote, which could sit anywhere in it. It is as many lines as the window around one line. */
+/** In a cited range of more lines than this a quote could sit anywhere, so finding it there says nothing. It is as many lines as the window around one line. */
 const MAX_QUOTED_RANGE = 2 * QUOTE_LINE_WINDOW + 1;
 /** A quote shorter than this, without its whitespace, could match almost any line, and is mostly a name in a sentence. */
 const MIN_QUOTE_CHARS = 6;
@@ -533,10 +533,10 @@ function namesPrFile(workspace: string, cited: Pick<RelatedCitation, 'repo' | 'p
  * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence. An evidence line
  * that starts with a citation and quotes code in backticks, before any further citation, is compared with the fetched
  * lines. The note says "holds the quoted code" only when they hold every quoted part. Otherwise it names each part they
- * hold and each they do not. A range of more than `MAX_QUOTED_RANGE` lines is not compared, and its note says only that
- * it is in the checkout. Citations of one file and first line are one place and get one note, the worst of theirs,
- * so no spelling of a place reads better than another. A citation that `namesPrFile` gets that as a remark, which
- * changes nothing else of its note.
+ * hold and each they do not. In a range of more than `MAX_QUOTED_RANGE` lines a quote could sit anywhere, so finding it
+ * there says nothing, and the note then says only that the range is in the checkout. Citations of one file and first
+ * line are one place and get one note, the worst of theirs, so no spelling of a place reads better than another. A
+ * citation that `namesPrFile` gets that as a remark, which changes nothing else of its note.
  */
 function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }: NonNullable<ClaimSources['related']>): string[] {
   const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
@@ -552,7 +552,7 @@ function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }
   const stated = relatedCitations(`${finding.title}\n${finding.description}`, names);
   // A citation that only an evidence line makes is checked when that line quotes code to compare.
   const all = [...stated, ...[...quotes.values()].map(q => q.cited).filter(q => !stated.some(s => s.citation === q.citation))];
-  // The lower the rank, the worse. A quote that was not compared ranks below one the lines hold, and a citation without a quote says nothing of one.
+  // The lower the rank, the worse. A quote found in a wide range ranks below one the lines hold, and a citation without a quote says nothing of one.
   const check = ({ citation, repo, path, start, end }: RelatedCitation): { rank: number; says: string } => {
     const dir = checkouts.get(repo);
     if (!dir) return { rank: 0, says: `is unchecked: ${repo} was not fetched this round` };
@@ -560,8 +560,9 @@ function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }
     if (missing) return { rank: 0, says: missing };
     const quoted = quotes.get(citation)?.code;
     if (!quoted) return { rank: 4, says: 'is in the fetched checkout' };
-    if (end - start + 1 > MAX_QUOTED_RANGE) return { rank: 2, says: 'is in the fetched checkout' };
     const absent = missingQuotes(dir, path, start, end, quoted);
+    // A quote that is nowhere in a wide range is as certain a miss as in a narrow one. Only a hit there is weak.
+    if (absent.length === 0 && end - start + 1 > MAX_QUOTED_RANGE) return { rank: 2, says: 'is in the fetched checkout' };
     if (absent.length === 0) return { rank: 3, says: 'is in the fetched checkout and holds the quoted code' };
     const held = quoted.filter(part => !absent.includes(part));
     const parts = (list: readonly string[]): string => `${list.map(part => `\`${part}\``).join(', ')} ${list.length === 1 ? 'is' : 'are'}`;

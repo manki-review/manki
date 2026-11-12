@@ -937,10 +937,13 @@ describe('checkFindingClaims', () => {
         quoting('o/r:src/key.rs:1 builds ``let key = `id`;`` and the next line reads `let id = key.len();`'),
         // An unclosed run of backticks quotes nothing, and the quotes after it still count.
         quoting('o/r:src/key.rs:1 builds ``let key = `id`; and the next line reads `let id = key.len();`'),
-        // A range of up to 7 lines is compared like a line. A longer one is not, since the quote could sit anywhere in it.
+        // A range of up to 7 lines is compared like a line. In a longer one the quote could sit anywhere, so finding it there
+        // says nothing. A quote that is nowhere in it is as certain a miss as in a short range, in whole or in part.
         quoting('o/r:src/long.rs:1-7 ends before `fn step_10() {}`'),
         quoting('o/r:src/long.rs:1-7 ends before `fn step_25() {}`'),
         quoting('o/r:src/long.rs:1-30 holds `fn step_25() {}`'),
+        quoting('o/r:src/long.rs:1-20 holds `fn step_30() {}`'),
+        quoting('o/r:src/long.rs:1-20 holds `fn step_12() {} ... fn step_30() {}`'),
         // A citation with none of the quoted parts does not hold the quoted code.
         quoting('o/r:src/lib.rs:2 defines `removed_function() ... other_gone( x )`'),
         // The code may sit a few lines from the cited one.
@@ -978,6 +981,8 @@ describe('checkFindingClaims', () => {
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-7` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-7` does not hold the quoted code: `fn step_25() {}` is not within 3 lines of the cited line.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-20` does not hold the quoted code: `fn step_30() {}` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-20` holds only part of the quoted code: `fn step_12() {}` is within 3 lines of the cited line, `fn step_30() {}` is not.',
         '`o/r:src/lib.rs:2` does not hold the quoted code: `removed_function()`, `other_gone( x )` are not within 3 lines of the cited line.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` does not hold the quoted code: `review.body.includes(MARKER)` is not within 3 lines of the cited line.',
