@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
+import { assertWritesAllowed } from './abort';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
@@ -305,15 +306,27 @@ function unansweredNote(what: 'reply' | 'comment', error: unknown): string {
 }
 
 /**
+ * Says with `post` that a thread `reply` or a PR `comment` got no answer because of `error`. A run that stopped
+ * writing posts nothing, and it is the only one that can fail after its answer, as a check cancelled after it approved.
+ */
+async function sayUnanswered(what: 'reply' | 'comment', error: unknown, post: (body: string) => Promise<unknown>): Promise<void> {
+  try {
+    assertWritesAllowed();
+    await post(unansweredNote(what, error));
+  } catch (noteError) {
+    core.warning(`Failed to say that the ${what} got no answer: ${noteError}`);
+  }
+}
+
+/**
  * Runs `answer` for a comment on PR or issue `issueNumber`. When it throws, says there that the comment got no answer,
- * and throws the error again so the run fails.
+ * as `sayUnanswered` does, and throws the error again so the run fails.
  */
 async function answerOrSayWhy(octokit: Octokit, owner: string, repo: string, issueNumber: number, answer: () => Promise<void>): Promise<void> {
   try {
     await answer();
   } catch (error) {
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: unansweredNote('comment', error) })
-      .catch((noteError: unknown) => core.warning(`Failed to say that the comment got no answer: ${noteError}`));
+    await sayUnanswered('comment', error, body => octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body }));
     throw error;
   }
 }
@@ -481,8 +494,7 @@ export async function handleReviewCommentReply(
     }
   } catch (error) {
     if (ownThread) {
-      await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: comment.id, body: unansweredNote('reply', error) })
-        .catch((noteError: unknown) => core.warning(`Failed to say that the reply got no answer: ${noteError}`));
+      await sayUnanswered('reply', error, body => octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: comment.id, body }));
     }
     throw error;
   }

@@ -8,6 +8,7 @@ import { LLMClient } from './providers';
 import * as memory from './memory';
 import * as ghUtils from './github';
 import * as state from './state';
+import { RunCancelledError, stopWritesOn } from './abort';
 import * as auth from './auth';
 import { REOPENED_MARKER } from './recap';
 import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
@@ -1116,6 +1117,16 @@ describe('handleReviewCommentReply', () => {
     octokit.rest.pulls.createReplyForReviewComment.mockRejectedValueOnce(new Error('GitHub is down'));
     await expect(reply()).rejects.toBe(failure);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to say that the reply got no answer: Error: GitHub is down'));
+
+    // A cancelled run writes nothing more, so it posts no note either.
+    const notes = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.length;
+    const { release } = stopWritesOn(AbortSignal.abort(new RunCancelledError('SIGTERM')));
+    try {
+      await expect(reply()).rejects.toBe(failure);
+    } finally {
+      release();
+    }
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledTimes(notes);
   });
 });
 
@@ -1414,6 +1425,21 @@ describe('handlePRComment error propagation', () => {
     jest.mocked(state.approveOrSayWhy).mockRejectedValueOnce(new Error('GitHub returned 502'));
     await expect(handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig)).rejects.toThrow('GitHub returned 502');
     expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(expect.objectContaining({ body: note.replace('API failure', 'GitHub returned 502') }));
+
+    // A cancelled run posts no note. A check cancelled after it approved fails this way, so no note follows an approval.
+    const notes = jest.mocked(octokit.rest.issues.createComment).mock.calls.length;
+    const cancelled = new RunCancelledError('SIGTERM');
+    const { release } = stopWritesOn(AbortSignal.abort(cancelled));
+    try {
+      jest.mocked(state.approveOrSayWhy).mockRejectedValueOnce(cancelled);
+      await expect(handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig)).rejects.toBe(cancelled);
+      setContext({ comment: { id: 45, body: '@manki what does this change?', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+      await expect(handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1)).rejects.toThrow('API failure');
+    } finally {
+      release();
+    }
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledTimes(notes);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to say that the comment got no answer: RunCancelledError'));
   });
 });
 

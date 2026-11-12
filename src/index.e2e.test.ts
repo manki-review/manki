@@ -1112,6 +1112,33 @@ describe('runFullReview end to end', () => {
     expect(core.info).toHaveBeenCalledWith('The run was cancelled by SIGTERM, writing nothing more to GitHub');
   });
 
+  it('posts no note for a check command that SIGTERM cancels right after its approval', async () => {
+    const listeners = new Map<string | symbol, (signal: NodeJS.Signals) => void>();
+    jest.spyOn(process, 'on').mockImplementation(((event: string | symbol, listener: (signal: NodeJS.Signals) => void) => {
+      listeners.set(event, listener);
+      return process;
+    }) as typeof process.on);
+    Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+    await reviewRound();
+    // A maintainer resolved the only blocking thread, so the check approves.
+    Object.assign(mockGitHub.threads[0], { isResolved: true, resolvedBy: { login: 'bob' } });
+    let writesAtSignal = -1;
+    mockGitHub.onWrite = write => {
+      if (write !== `POST /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/reviews`) return;
+      listeners.get('SIGTERM')!('SIGTERM');
+      writesAtSignal = mockGitHub.writes.length;
+    };
+
+    const command = mockGitHub.addComment('@manki check', 'alice');
+    await dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(command.id) });
+
+    // The approval is the answer. The cancelled run writes nothing after it, so no note says the comment got none.
+    expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED', 'APPROVED']);
+    expect(writesAtSignal).toBeGreaterThan(0);
+    expect(mockGitHub.writes).toHaveLength(writesAtSignal);
+    expect(mockGitHub.comments.map(c => c.body).join('\n')).not.toContain('could not answer');
+  });
+
   it('reads past the first 100 comments and review threads', async () => {
     for (let i = 0; i < 150; i++) mockGitHub.addComment(`Comment ${i}`, 'alice');
     for (let i = 0; i < 120; i++) mockGitHub.addThread('src/math.ts', 2, `Question ${i}`, 'bob', true);
