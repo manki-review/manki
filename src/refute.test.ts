@@ -1232,6 +1232,22 @@ describe('refuteBlockers', () => {
     const asked = await refuteBlockers(fakeClient(unsettled), warnings, { workspace, diff, priorRounds: storedRounds, pair: second, doubtBudget: pairBudget });
     expect(second.calls.map(([title]) => title).sort()).toEqual(['Stored warning', ...eight.slice(0, 7)]);
     expect([asked[0].refutation, overLimit(asked), pairBudget]).toEqual([stored.refutation, ['Unproven 8'], { left: 0 }]);
+    // An unsettled outcome whose call used up its tool steps may only have run out of them, so it is checked again and
+    // takes one of the eight. One with steps left is reused, and so is one from a client that lists no steps.
+    const usedUp = (stepsUsedUp: string) => [{ findings: { entries: [{ title: 'Stored warning', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: { ...stored.refutation, stepsUsedUp } }] }, judge: {} }] as unknown as RoundContext[];
+    for (const [stepsUsedUp, asked, over] of [['yes', ['Stored warning', ...eight.slice(0, 7)], ['Unproven 8']], ['no', eight, []], ['unknown', eight, []]] as const) {
+      const again = fakeClient(unsettled, undefined, { 'Stored warning': 15 });
+      const checked = await refuteBlockers(again, warnings, { workspace, diff, priorRounds: usedUp(stepsUsedUp), doubtBudget: { left: 8 } });
+      expect([stepsUsedUp, again.calls.map(([title]) => title).sort(), overLimit(checked)]).toEqual([stepsUsedUp, [...asked], [...over]]);
+      expect(checked[0].refutation?.stepsUsedUp).toBe(stepsUsedUp);
+    }
+    // A blocker's stored outcome is skipped the same way, and so is the second refuter's, each for itself.
+    const outOfSteps = { outcome: 'unsettled', reason: 'Ran out of tool steps.' };
+    const [short, shortPair] = [fakeClient({ 'Out of steps': outOfSteps }, 'model-a', { 'Out of steps': 15 }), fakeClient({ 'Out of steps': outOfSteps }, 'model-b', { 'Out of steps': 3 })];
+    const [ended] = await refuteBlockers(short, [finding('Out of steps')], { workspace, diff, pair: shortPair });
+    const endedRounds = [{ findings: { entries: [{ title: 'Out of steps', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: ended.refutation, pairRefutation: ended.pairRefutation }] }, judge: {} }] as unknown as RoundContext[];
+    await refuteBlockers(short, [finding('Out of steps')], { workspace, diff, pair: shortPair, priorRounds: endedRounds });
+    expect([ended.refutation?.stepsUsedUp, ended.pairRefutation?.stepsUsedUp, short.calls.length, shortPair.calls.length]).toEqual(['yes', 'no', 2, 1]);
     // A warning a later step drops at its grade takes none either, since no check runs on it.
     const dropped = fakeClient(unsettled);
     const hiding = await refuteBlockers(dropped, warnings, { workspace, diff, hiddenLater: f => f.title === 'Stored warning' });
