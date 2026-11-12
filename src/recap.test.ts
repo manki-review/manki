@@ -266,6 +266,21 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
+
+    // A thread posted on another file for a blocker without a line stands for the whole file, so the same title on any
+    // line repeats it once someone allowed to cleared it. A title that only overlaps does not, and neither does a line-less
+    // thread on the finding's own file.
+    const blocker = makeFinding({ ...findings[0], severity: 'blocker' });
+    const wholeFile = makePrevious({ ...previous[0], line: 0, severity: 'blocker', detached: true });
+    expect(deduplicateFindings([blocker], [wholeFile]).duplicates.map(d => d.matchType)).toEqual(['exact']);
+    expect(deduplicateFindings([{ ...blocker, title: 'Missing null-check before dereference' }], [wholeFile]).duplicates).toHaveLength(1);
+    expect(deduplicateFindings([{ ...blocker, title: 'Missing null check before the dereference in the loader' }], [wholeFile]).unique).toHaveLength(1);
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, detached: undefined }]).unique).toHaveLength(1);
+    // The thread still has to be cleared: one the PR author resolved alone stays open and hides nothing.
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, status: 'open' }]).unique).toHaveLength(1);
+    // With a line, such a thread matches by that line like any other.
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, line: 45 }]).unique).toHaveLength(1);
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, line: 66 }]).duplicates).toHaveLength(1);
   });
 
   it('does not match different file even with matching title', () => {

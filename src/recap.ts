@@ -1226,6 +1226,9 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
 
   if (finding.file !== previous.file) return null;
 
+  // A thread posted on another file for a finding without a line stands for the whole file. No line narrows the match there, so the title has to be the same.
+  if (previous.detached && !previous.line) return titleToSlug(finding.title) === titleToSlug(previous.title) ? matchType : null;
+
   // Relax line proximity when word overlap is strong (>= 70%)
   const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;
   if (Math.abs(finding.line - currentFindingLine(previous)) > maxLineDelta) return null;
