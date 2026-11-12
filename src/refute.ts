@@ -7,7 +7,7 @@ import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } f
 import { fenceText } from './github';
 import { ruleGrade } from './judge';
 import { extractJSON } from './json';
-import { resolveInRoot } from './mcp-server';
+import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
@@ -93,15 +93,15 @@ function refutationFiles(file: string, proof: readonly string[] = []): string[] 
   return [...new Set([file, ...proof.map(locationFile)])].sort();
 }
 
-/** Keeps the locations whose file is in the workspace and holds the cited line, so no made-up citation settles anything. */
+/**
+ * Keeps the locations whose file is in the workspace and holds the cited line, so no made-up citation settles anything.
+ * A file `readFileInRoot` does not read, such as one over its size limit, holds no line.
+ */
 function existingLocations(workspace: string, proof: readonly string[]): string[] {
   return proof.filter(location => {
     const [line] = locationLines(location);
-    try {
-      return line >= 1 && line <= readFileSync(resolveInRoot(workspace, locationFile(location)).absolute, 'utf-8').split('\n').length;
-    } catch {
-      return false;
-    }
+    const file = readFileInRoot(workspace, locationFile(location));
+    return !!file && file !== 'too large' && line >= 1 && line <= file.text.split('\n').length;
   });
 }
 

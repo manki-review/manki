@@ -1058,6 +1058,7 @@ describe('refuteBlockers', () => {
       'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
       ...Object.fromEntries(notThere.map(at => [`Cites ${at}`, answer('confirmed', at)])),
       'File too large to read': answer('confirmed', 'acme/reports:src/big.ts:1'),
+      'Own file too large to read': answer('confirmed', 'src/big.ts:1'),
       'Premise only': { outcome: 'unsettled', reason: 'r', proof: [], premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine] }] },
       'Many lines': { outcome: 'confirmed', reason: 'r', proof: rowLines, premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine, ...rowLines.slice(0, 9)] }] },
       'Made-up lines first': answer('confirmed', ...rowLines.slice(0, 10).map(line => `${line}00`), consumerLine),
@@ -1078,8 +1079,10 @@ describe('refuteBlockers', () => {
         ['Path leaves the checkout', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
       ]);
       // The stored location is the file's own path in the checkout, which is what the posted link is built from. A line that cannot exist proves nothing.
-      const odd = await refuteBlockers(client, ['Path with a dot segment', 'File too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
-      expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined]]);
+      // A file over 1 MiB is not read, in a related repo or in the PR, so a line of it proves nothing.
+      writeFileSync(join(workspace, 'src', 'big.ts'), 'row\n'.repeat(300_000));
+      const odd = await refuteBlockers(client, ['Path with a dot segment', 'File too large to read', 'Own file too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
+      expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual([['confirmed', undefined, ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined, undefined], ['unsettled', undefined, undefined]]);
       // A cited line that is not there is no proof, so the check settles nothing.
       const cited = await refuteBlockers(client, notThere.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
       expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(notThere.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
