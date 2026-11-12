@@ -110,11 +110,11 @@ export function trackCliProcess(): () => void {
 
 /**
  * Records how long this workflow run waited before the action started. The wait covers the queue for a runner and the
- * job's steps before Manki. A run that cannot be read leaves the wait unrecorded.
+ * job's steps before Manki. A run that cannot be read leaves the wait unrecorded, and the promise never rejects.
  */
 export async function recordQueueWait(octokit: Octokit): Promise<void> {
-  const { owner, repo } = github.context.repo;
   try {
+    const { owner, repo } = github.context.repo;
     const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: github.context.runId });
     // A re-run keeps `created_at` of the first attempt.
     const queuedAt = Date.parse(data.run_started_at ?? data.created_at);

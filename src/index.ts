@@ -2258,6 +2258,7 @@ async function main(): Promise<void> {
   // Read before the dispatched event replaces the inputs in the context.
   let dispatched: ReturnType<typeof dispatchedInputs> | undefined;
   let stopSampler: (() => void) | undefined;
+  let queueWait: Promise<void> | undefined;
 
   try {
     if (isPostPhase) {
@@ -2269,7 +2270,8 @@ async function main(): Promise<void> {
       const octokit = await workflowOctokit();
       if (await restoreDispatchedEvent(octokit) === 'run') {
         stopSampler = startMemorySampler();
-        await recordQueueWait(octokit);
+        // Only the round record and the last log line read the wait, so the event is handled while the lookup runs.
+        queueWait = recordQueueWait(octokit);
         await run();
       }
     }
@@ -2279,6 +2281,7 @@ async function main(): Promise<void> {
   } finally {
     if (stopSampler) {
       stopSampler();
+      await queueWait;
       core.info(formatRunner(runnerDiagnostics(), true));
     }
     removeSeededAuthFiles();

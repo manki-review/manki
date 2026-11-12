@@ -98,6 +98,12 @@ describe('run diagnostics', () => {
     await recordQueueWait(octokitWithRun(failing));
     expect(runnerDiagnostics()).not.toHaveProperty('queuedMs');
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('Resource not accessible by integration'));
+    // A caller may leave the lookup running, so it never rejects, also when the repository of the run is unknown.
+    const { repo } = github.context;
+    Object.defineProperty(github.context, 'repo', { configurable: true, get: () => { throw new Error('context.repo requires a GITHUB_REPOSITORY environment variable'); } });
+    await expect(recordQueueWait(octokitWithRun(failing))).resolves.toBeUndefined();
+    Object.defineProperty(github.context, 'repo', { configurable: true, value: repo });
+    expect(runnerDiagnostics()).not.toHaveProperty('queuedMs');
 
     const started = Date.now() - process.uptime() * 1000;
     // A re-run keeps the first attempt's `created_at`, so the wait counts from `run_started_at`.
