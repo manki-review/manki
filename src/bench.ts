@@ -759,9 +759,14 @@ function summarize(cases: CaseReport[]): VariantSummary {
   };
 }
 
+/** The ids of the key items of a reported case that only a restatement of an earlier finding matches. */
+function repeatItemIds(c: CaseReport): Set<string> {
+  return new Set(c.items.filter(item => item.tier === 'must_keep_open' || item.tier === 'must_not_repeat').map(item => item.id));
+}
+
 /** The findings of a reported run that match no key item. */
 function unmatchedFindings(c: CaseReport, run: RunScore): RunScore['findings'] {
-  const repeatIds = new Set(c.items.filter(item => item.tier === 'must_keep_open' || item.tier === 'must_not_repeat').map(item => item.id));
+  const repeatIds = repeatItemIds(c);
   const matched = matchedFindings(run.matches, id => repeatIds.has(id));
   return run.findings.filter((_, n) => !matched.has(n));
 }
