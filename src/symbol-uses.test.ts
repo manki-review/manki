@@ -394,6 +394,21 @@ describe('listUsesOutsideDiff', () => {
     ]);
     expect(overlong.referenceNames).toEqual(['real_field_here', 'real_function_here']);
     expect(JSON.stringify(overlong)).not.toContain('aaaa');
+
+    // Names that each fit an identifier can still be too long to search for together, since a `$` takes two bytes of the
+    // pattern. The ones left out are named as not searched, in the section and in the record.
+    const wide = Array.from({ length: 100 }, (_, i) => `${'$'.repeat(150)}${i}`);
+    const shape = (type: string) => `export interface WideShape {\n  realFieldHere: ${type};\n${wide.map(f => `  ${f}: number;\n`).join('')}}\n`;
+    const crowded = await usesFor({ 'src/shape.ts': shape('number'), 'src/read.ts': 'export const read = (s: WideShape) => s.realFieldHere;\n' }, { 'src/shape.ts': shape('string') });
+    expect(core.warning).not.toHaveBeenCalled();
+    expect(crowded.record?.symbols).toEqual([
+      { name: 'realFieldHere', declared: 'src/shape.ts:2', uses: ['src/read.ts:1'] },
+      { name: 'WideShape', declared: 'src/shape.ts:1', uses: ['src/read.ts:1'] },
+    ]);
+    // The list holds the first 80 symbols, so 78 of the fields. The first 50 fill the pattern to just under 15 KiB, which
+    // still fits the Windows command line of 32,767 characters when quoting doubles it.
+    expect(crowded.record?.unsearched).toEqual(wide.slice(50, 78));
+    expect(crowded.section).toContain(`\n\nNot searched, since these names are too long to search for together: \`${wide[50]}\`, `);
   });
 
   it('names what the diff changes and reads and what its comments mention for the reference search, leaving out tests', async () => {
@@ -890,8 +905,14 @@ describe('listRelatedUses', () => {
       // left out, the first ones kept, so the search runs whatever it is given.
       jest.mocked(core.warning).mockClear();
       const flood = Array.from({ length: 2_000 }, (_, i) => `FLOOD_${i}_${'A'.repeat(140)}`);
-      const bounded = await listRelatedUses([server], [...flood.slice(0, 100), 'MAX_SIZE', ...flood.slice(100)]);
+      const bounded = await listRelatedUses([server], [...flood.slice(0, 20), 'MAX_SIZE', ...flood.slice(20)]);
       expect(bounded.section).toContain('### `MAX_SIZE`\n\n```\nexample/server:src/serialize.h:1: static constexpr uint64_t MAX_SIZE = 0x02000000;\n');
+      // A name the pattern had no room for was not searched, so it is named as that and never as a name no line holds.
+      const { referenceMissing = [], referenceUnsearched = [] } = bounded.record ?? {};
+      expect([referenceMissing[0], referenceMissing.length > 20, referenceUnsearched.length > 1_000, [...referenceMissing, ...referenceUnsearched]]).toEqual([flood[0], true, true, flood]);
+      expect(bounded.section).toContain(`\nNo reference line holds: \`${flood[0]}\`, `);
+      expect(bounded.section).toContain(`\n\nNot searched, since these names are too long to search for together: \`${referenceUnsearched[0]}\`, `);
+      expect(bounded.section).toContain(`, and ${referenceUnsearched.length - 20} more.\nNo reference line holds: `);
       // A name longer than an identifier is not searched and not named, alone or next to others. A name of 160
       // characters is the longest one searched.
       const huge = `HUGE_${'A'.repeat(200_000)}`;
@@ -1014,6 +1035,14 @@ describe('listRelatedUses', () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-reference-'));
     try {
       writeFileSync(join(dir, 'limits.h'), 'static const int MAX_SIZE = 10;\n');
+      // A guess the pattern had no room for was not searched, so the record keeps it as failed, not as one that found no line.
+      const guesses = Array.from({ length: 60 }, (_, i) => `Guess${i}_${'G'.repeat(150)}`);
+      const crowded = await listRelatedUses([{ repo: 'example/server', kind: 'reference', dir }], ['MAX_SIZE'], { names: new Map([['example/server', new Map([['MAX_SIZE', guesses]])]]) });
+      const searchedAs = crowded.record?.translation?.names ?? [];
+      expect([searchedAs.length, searchedAs[0], searchedAs.at(-1)]).toEqual([
+        60, { repo: 'example/server', name: 'MAX_SIZE', as: guesses[0], lines: 0 }, { repo: 'example/server', name: 'MAX_SIZE', as: guesses[59], lines: 0, failed: true },
+      ]);
+      expect(core.warning).not.toHaveBeenCalled();
       // A plain word on a line larger than a search may return makes the search for it fail.
       writeFileSync(join(dir, 'flood.txt'), `Flood ${' '.repeat(65 * 1024 * 1024)}\n`);
       const translation = { names: new Map([['example/server', new Map([['MAX_SIZE', ['Flood']]])]]) };
