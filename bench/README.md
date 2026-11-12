@@ -66,7 +66,7 @@ Each ref scores with its own bench code. After a change to the matcher, run the 
 
 ### The route of each blocker
 
-The report stores with each finding how it got its grade: the grade its finder gave it, the severity table cell the judge stated, the grade a confirmed doubt would give, the grade the judge itself stated for that case, whether it is a security finding, each step of its grade path with what made the step, the number of doubts of each kind, the outcome of the refuter's check, how many lines of related repos and of the PR's repository that check cited when it cited a related line, and the check status. With each run it stores why the review reached its outcome. These are grades, kinds and counts. No text of a finding is among them.
+The report stores with each finding how it got its grade: the grade its finder gave it, the severity table cell the judge stated, the grade a confirmed doubt would give, the grade the judge itself stated for that case, whether it is a security finding, each step of its grade path with what made the step, the number of doubts of each kind, the outcome of the refuter's check, whether an unsettled check used all its tool steps, how many lines of related repos and of the PR's repository that check cited when it cited a related line, and the check status. With each run it stores why the review reached its outcome. These are grades, kinds and counts. No text of a finding is among them.
 
 The summary counts the blockers of the complete runs by the route each took, against the grade of the key item it matches. A blocker that matches a key item only partly counts in that item's column. The table holds counts only, so it also covers hold-out cases. The routes are:
 

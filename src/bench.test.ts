@@ -435,7 +435,8 @@ describe('scoreRun', () => {
       }),
       blocker('Read', { reviewers: [VERDICT_READER_NAME] }),
       blocker('Ruled', { gradePath: [step('warning', 'blocker', 'rule')], tags: ['security'] }),
-      makeFinding({ title: 'Lowered', gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'proven' }),
+      // A check that ended unsettled keeps whether its call used all its steps.
+      makeFinding({ title: 'Lowered', gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', refutation: { ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' } }),
     ];
     const review = makeReview('ADDRESS_FIRST', findings);
     review.result.verdictReason = 'required_present';
@@ -459,7 +460,7 @@ describe('scoreRun', () => {
       },
       { finderGrade: 'blocker', byReader: true },
       { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true },
-      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], checkStatus: 'proven' },
+      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' }, checkStatus: 'unconfirmed' },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
 

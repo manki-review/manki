@@ -407,7 +407,7 @@ interface GradeRoute {
   /** How many doubts of each `decides` kind the judge named. */
   doubts?: Partial<Record<Doubt['decides'], number>>;
   /** With `relatedLines`, the lines of related repos the check cited, and `prLines`, the lines of the PR's repository beside them. Both are left out of a check that cited no related line. */
-  refutation?: Pick<Refutation, 'outcome' | 'defect'> & { relatedLines?: number; prLines?: number };
+  refutation?: Pick<Refutation, 'outcome' | 'defect' | 'stepsUsedUp'> & { relatedLines?: number; prLines?: number };
   checkStatus?: CheckStatus;
   /** Set on a finding the verdict reader named. */
   byReader?: true;
@@ -616,7 +616,7 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(gradePath && { gradePath: gradePath.map(({ from, to, by }) => ({ from, to, by })) }),
     ...(doubts.length > 0 && { doubts: { defect: doubtsOf('defect'), grade: doubtsOf('grade') } }),
     ...(refutation && { refutation: {
-      outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }),
+      outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }), ...(refutation.stepsUsedUp && { stepsUsedUp: refutation.stepsUsedUp }),
       ...(refutation.relatedProof?.length && { relatedLines: refutation.relatedProof.length, prLines: refutation.proof?.length ?? 0 }),
     } }),
     ...(checkStatus && { checkStatus }),
