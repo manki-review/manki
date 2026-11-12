@@ -244,12 +244,9 @@ async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<v
   await octokit.graphql('mutation($id: ID!) { deletePullRequestReviewComment(input: { id: $id }) { clientMutationId } }', { id: commentId });
 }
 
-/** Returns the reply that says why a thread is reopened. With `halt`, a push starts no review, so the reply asks for the review command. */
-function reopenReply(isSecurity: boolean, halt: Awaited<ReturnType<typeof autoReviewHalt>>): string {
-  const next = halt
-    ? `A reviewer with write access can resolve it. Automatic review is ${halt.cause === 'auto_review_off' ? 'off' : 'paused'}, so after pushing a fix comment \`@manki review\` and Manki will check it.`
-    : 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it.';
-  return `Reopened. A ${isSecurity ? 'security' : 'blocking'} finding needs a maintainer or a fix: the PR author cannot resolve it. ${next}`;
+/** Returns the reply that says why a thread is reopened. */
+function reopenReply(isSecurity: boolean): string {
+  return `Reopened. A ${isSecurity ? 'security' : 'blocking'} finding needs a maintainer or a fix: the PR author cannot resolve it. A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. ${AFTER_PUSH_LINE}`;
 }
 
 /**
@@ -261,21 +258,17 @@ async function authorResolvedNote(
 ): Promise<string | undefined> {
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
   const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
-  return finding && reopenReply(!!finding.isSecurity, await autoReviewHalt(octokit, bot, owner, repo, prNumber, config, recap));
+  return finding && reopenReply(!!finding.isSecurity);
 }
 
 /** Reopens each guarded thread of `recap` that the PR author resolved, and replies once to say why. */
-async function reopenAuthorResolvedThreads(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig, recap: RecapState,
-): Promise<void> {
-  if (!recap.previousFindings.some(f => f.reopen && f.threadId)) return;
-  const halt = await autoReviewHalt(octokit, bot, owner, repo, prNumber, config, recap);
+async function reopenAuthorResolvedThreads(octokit: Octokit, recap: RecapState): Promise<void> {
   for (const f of recap.previousFindings) {
     if (!f.reopen || !f.threadId) continue;
     // The thread opens first. The reply's marker stops every later reopen, so it must never sit on a thread that stayed resolved.
     if (!await reopenThread(octokit, f.threadId)) continue;
     try {
-      await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity, halt), REOPENED_MARKER);
+      await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity), REOPENED_MARKER);
     } catch (error) {
       core.warning(`Reopened thread ${f.threadId}, but failed to say why: ${error}`);
     }
@@ -524,12 +517,15 @@ function blockOf(
   return { ...(held && { held }), named };
 }
 
-/** Says that no Manki review covers `headSha` and, from `halt`, why none will start on its own. */
+/**
+ * Says that no Manki review covers `headSha` and, from `halt`, why none will start on its own. Without `halt` a push
+ * review may still be on its way, or none comes, as for a fork, so the line names the review command for that case.
+ */
 function unreviewedLine(headSha: string, halt?: { text: string }): string {
   const head = `\`${headSha.slice(0, 7)}\``;
   return halt
     ? `Manki has not reviewed ${head}. ${halt.text}`
-    : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
+    : `Manki has not reviewed ${head} yet, and approval follows from the verdict of that review. If no review of it starts, as for a PR from a fork or one that matches a skip rule, comment \`@manki review\`.`;
 }
 
 /** Names `role` in a note. With `orHigher`, `role` is the repo's `author_clear_role` and the phrase covers every role that setting allows. */

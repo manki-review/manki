@@ -7,7 +7,7 @@ import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, r
 import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
+import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, replyClassOf, titleOverlapType } from './recap';
 import { canLeaveOut, disproof, findingKey, isBlockingSeverity, isRareClaim, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
@@ -142,7 +142,7 @@ const MAX_LISTED_LINES = 10;
 function overlongSummary(lines: OverlongLine[]): string {
   const listed = lines.slice(0, MAX_LISTED_LINES).map(l => `\`${sanitizeFilePath(l.file)}:${l.line}\` (${l.length} characters)`);
   const more = lines.length > MAX_LISTED_LINES ? `, and ${lines.length - MAX_LISTED_LINES} more` : '';
-  return `No model read this PR in full: ${listed.join(', ')}${more} ${lines.length === 1 ? 'is' : 'are'} longer than ${MAX_LINE_CHARS} characters, the most a prompt shows of one line. Split the line, or exclude its file in \`exclude_paths\` on the base branch, and push again.`;
+  return `No model read this PR in full: ${listed.join(', ')}${more} ${lines.length === 1 ? 'is' : 'are'} longer than ${MAX_LINE_CHARS} characters, the most a prompt shows of one line. Split the line, or exclude its file in \`exclude_paths\` on the base branch, and push again. ${AFTER_PUSH_LINE}`;
 }
 
 

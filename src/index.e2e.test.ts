@@ -495,7 +495,7 @@ function reviewCommand(): Promise<void> {
 }
 
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
-const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it.';
+const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
 /** Resolves `thread` as `login` and runs Manki on the event GitHub sends for that. */
 async function resolveThread(thread: FakeThread, login: string): Promise<void> {
@@ -1416,8 +1416,7 @@ describe('runFullReview end to end', () => {
       mockGitHub.failures = [];
       Object.assign(thread, resolvedByAlice);
       await replyInThread(thread, 'Both callers clamp their inputs, see above.', kept);
-      const paused = 'A reviewer with write access can resolve it. Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.';
-      expect(answers().slice(1)).toEqual([`${kept}\n\n${REOPENED} ${paused}\n\n<!-- manki -->\n${REOPENED_MARKER}`]);
+      expect(answers().slice(1)).toEqual([`${kept}\n\n${REOPENED} ${PUSH_A_FIX}\n\n<!-- manki -->\n${REOPENED_MARKER}`]);
       expect(thread.isResolved).toBe(false);
 
       // The resolve itself reaches Manki after the reply, and adds no second note. A thread is reopened once.

@@ -6438,9 +6438,7 @@ describe('runFullReview orchestration', () => {
       const notice = pauseNotice();
       expect(notice).toContain('came back after a fix');
       expect(notice).toContain(PAUSE_NOTICE_MARKER);
-      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(
-        expect.anything(), TEST_BOT, 'test-owner', 'test-repo', expect.any(Number), expect.anything(), { previousFindings, priorRounds: rounds },
-      );
+      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), { previousFindings, priorRounds: rounds });
       // A security override is recorded in its thread once, even while review is paused.
       expect(jest.mocked(stateModule.announceSecurityOverrides)).toHaveBeenCalledWith(expect.anything(), [
         { thread: 'T_new', login: 'owner', role: 'maintain', via: 'resolve', announced: false },
@@ -7497,9 +7495,7 @@ describe('handleReviewStateCheck', () => {
     // The role the author needs comes from the base branch's config.
     expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', '.manki.yml');
     expect(jest.mocked(recapModule.fetchRecapState)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'author', 'admin');
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(
-      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.objectContaining({ auto_approve: false }), { previousFindings, priorRounds: [round] },
-    );
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), { previousFindings, priorRounds: [round] });
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'auto_approve is disabled — skipping state check',
     );
@@ -7525,9 +7521,7 @@ describe('handleReviewStateCheck', () => {
 
     await handleReviewStateCheck();
 
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(
-      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }), expect.objectContaining({ previousFindings: [] }),
-    );
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ previousFindings: [] }));
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }),
     );

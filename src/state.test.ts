@@ -25,6 +25,7 @@ jest.mock('./github', () => ({
 }));
 
 const AUTO_REVIEW_OFF = { ...DEFAULT_CONFIG, auto_review: false };
+const NOT_REVIEWED_YET = 'Manki has not reviewed `head-sh` yet, and approval follows from the verdict of that review. If no review of it starts, as for a PR from a fork or one that matches a skip rule, comment `@manki review`.';
 
 const SETTING_REFUSAL = 'GitHub Actions is not permitted to approve pull requests.';
 
@@ -449,8 +450,8 @@ describe('reopenAuthorResolvedThreads', () => {
 
   const mutation = (call: unknown[]) => [String(call[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], (call[1] as { threadId: string }).threadId];
 
-  const reopen = (graphql: jest.Mock, previousFindings: PreviousFinding[], config = DEFAULT_CONFIG, priorRounds: RoundContext[] = []) =>
-    reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1, config, { previousFindings, priorRounds });
+  const reopen = (graphql: jest.Mock, previousFindings: PreviousFinding[]) =>
+    reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, { previousFindings, priorRounds: [] });
 
   it('reopens, then replies with the markers, for flagged threads only', async () => {
     const graphql = jest.fn().mockResolvedValue({});
@@ -461,34 +462,16 @@ describe('reopenAuthorResolvedThreads', () => {
       ['unresolveReviewThread', 'T_author'],
       ['addPullRequestReviewThreadReply', 'T_author'],
     ]);
-    expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A security finding needs a maintainer or a fix/);
-    expect(graphql.mock.calls[1][1].body).toContain('push a fix and the next Manki review will check it');
-    expect(graphql.mock.calls[1][1].body.endsWith(`\n\n${BOT_MARKER}\n${REOPENED_MARKER}`)).toBe(true);
+    // The reply names the review command for a push that starts no review, so it reads the same in every state.
+    expect(graphql.mock.calls[1][1].body).toBe(
+      'Reopened. A security finding needs a maintainer or a fix: the PR author cannot resolve it. A reviewer with write access can resolve it, '
+      + 'or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.'
+      + `\n\n${BOT_MARKER}\n${REOPENED_MARKER}`,
+    );
 
     graphql.mockClear();
     await reopen(graphql, [{ ...previous('T_plain', true), isSecurity: false }]);
     expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A blocking finding needs a maintainer or a fix/);
-
-    // With nothing to reopen, the settings are not read.
-    jest.mocked(authModule.fetchPrState).mockClear();
-    await reopen(graphql, [previous('T_other', false)]);
-    expect(authModule.fetchPrState).not.toHaveBeenCalled();
-  });
-
-  // A push starts no review then, so the reply asks for `@manki review`.
-  it.each<[string, string, typeof DEFAULT_CONFIG, number, boolean]>([
-    ['the round cap is reached', 'paused', DEFAULT_CONFIG, 10, false],
-    ['`auto_review` is off', 'off', AUTO_REVIEW_OFF, 1, false],
-    ['the Pause box is ticked', 'paused', DEFAULT_CONFIG, 1, true],
-  ])('asks for the review command when %s', async (_label, word, config, rounds, boxTicked) => {
-    const graphql = jest.fn().mockResolvedValue({});
-    if (boxTicked) jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
-
-    await reopen(graphql, [previous('T_author', true)], config, Array.from({ length: rounds }, (_, i) => makeRoundContext(i + 1)));
-
-    const reply = graphql.mock.calls[1][1].body;
-    expect(reply).toContain(`Automatic review is ${word}, so after pushing a fix comment \`@manki review\` and Manki will check it.`);
-    expect(reply).not.toContain('push a fix and the next Manki review will check it');
   });
 
   // The reply's marker stops every later reopen, so a thread that stayed resolved must not get it.
@@ -871,9 +854,9 @@ describe('checkAndAutoApprove', () => {
       }, `2 threads block the approval:\n- Lock is never released\n- Second (resolved by \`author\`, who may not clear it)\n\nThe record of Manki's review of \`head-sh\` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Other (\`src/b.ts\`)\n\n${NEXT_ROUND}`],
       ['an open blocking thread on a head no review covers',
         { threads: [thread('t1', 'blocker', undefined, { commit: 'old-sha' })], existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
-        '1 thread blocks the approval:\n- Lock is never released\n\nManki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.'],
+        `1 thread blocks the approval:\n- Lock is never released\n\n${NOT_REVIEWED_YET}`],
       ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
-        'Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.'],
+        NOT_REVIEWED_YET],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
       ['a review that holds its approval for a person', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
         'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.'],
@@ -1487,7 +1470,7 @@ describe('checkAndAutoApprove', () => {
       expect(result.approved).toBe(approves);
       expect(createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])).toEqual(approves ? [['APPROVE', 'head-sha-aaaa']] : []);
       expect(createCommentMock).not.toHaveBeenCalled();
-      if (!result.approved) expect(await result.why()).toBe('Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
+      if (!result.approved) expect(await result.why()).toBe(NOT_REVIEWED_YET);
     });
 
     it('explains an unreviewed head by the pause, the Pause box, or by the review still to come', async () => {
@@ -1502,7 +1485,7 @@ describe('checkAndAutoApprove', () => {
       expect(await asked(staleHeadOctokit(notice(), [])))
         .toBe('Manki has not reviewed `head-sh`. Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.');
       expect(await asked(staleHeadOctokit(notice(), [])))
-        .toBe('Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
+        .toBe(NOT_REVIEWED_YET);
     });
   });
 });
