@@ -72,6 +72,21 @@ describe('highlightCode', () => {
     expect(highlightCode('Escaped \\`run createReview\\` stays, then createReview.', tokens)).toBe('Escaped \\`run createReview\\` stays, then `createReview`.');
   });
 
+  it('keeps a line written wholly in italics as written, whatever identifiers the diff holds', () => {
+    // The diff quotes the sentence, so its first and last word are identifiers of the diff with their underscore.
+    const note = '_An earlier round already reviewed createReview, and it doesn\'t block this PR._';
+    const quoting = codeTokensFromDiff({ ...diff, files: [{ ...diff.files[0], hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, content: `+const NOTE = '${note}';` }] }] });
+    expect([...quoting]).toEqual(expect.arrayContaining(['_An', 'PR._']));
+    const all = new Set([...tokens, ...quoting]);
+    expect(highlightCode(note, all)).toBe(note);
+    expect(highlightCode(`**Title**\n\n${note}\n\nThen createReview.`, all)).toBe(`**Title**\n\n${note}\n\nThen \`createReview\`.`);
+    expect(highlightCode(`- Item\n\n  ${note}\n  Then createReview.`, all)).toBe(`- Item\n\n  ${note}\n  Then \`createReview\`.`);
+    // Italics inside a line protect nothing, and neither does a line in bold.
+    expect(highlightCode('Here _An is read_ by createReview.', all)).toBe('Here `_An` is read_ by `createReview`.');
+    expect(highlightCode('__Twice, createReview runs here__', all)).toBe('__Twice, `createReview` runs here__');
+    expect(highlightCode('_An is read by createReview', all)).toBe('`_An` is read by `createReview`');
+  });
+
   it('wraps tokens in a summary in code tags, since GitHub does not parse Markdown there', () => {
     const link = '<a href="https://example.com/src/github.ts"><code>src/github.ts:3</code></a>';
     expect(highlightCode(`<summary><b>createReview skips <code>excludePaths</code></b><br><sub>${link}</sub></summary>\nThen createReview.`, tokens))
