@@ -261,6 +261,7 @@ class FakeGitHub {
     if ((match = route.match(/^\/pulls\/\d+\/reviews\/(\d+)(\/dismissals)?$/))) {
       const review = this.reviews.find(r => r.id === Number(match![1]));
       if (!review) return json({ message: 'Not Found' }, 404);
+      if (method === 'GET') return json({ ...review, pull_request_url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}` });
       if (match[2]) review.state = 'DISMISSED';
       else review.body = body.body;
       return json(review);
@@ -1377,15 +1378,21 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.calls).toEqual([]);
     });
 
-    it.each<[string, string, () => void, string]>([
-      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`],
+    // A run that only checks the approval starts no round, and the check command repeats it without one.
+    const noRound = () => expect(mockLLM.calls).toEqual([]);
+    it.each<[string, string, string, () => void, string]>([
+      ['a push', 'pull_request', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`],
       // A review command would review the merged PR, so the failure names none.
-      ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record'), ''],
-    ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled, hint) => {
+      ['a merge', 'pull_request', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record'), ''],
+      ['an approval check', 'pull_request', 'approval_check', noRound, ' Retry with @manki check.'],
+      ['a resolved thread', 'pull_request_review_thread', 'resolved', noRound, ' Retry with @manki check.'],
+      ['a submitted review', 'pull_request_review', 'submitted', noRound, ' Retry with @manki check.'],
+    ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, event, action, handled, hint) => {
       mockGitHub.configs = { main: 'metrics:\n  fix_rate: true\n' };
       mockGitHub.merged = action === 'closed';
       const failFirstRead = (times: number) => { mockGitHub.failures = [{ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 503, times }]; };
-      const inputs = { event: 'pull_request', action, pr: String(PR_NUMBER), head_sha: HEAD_SHA };
+      const inputs: Record<string, string> = { event, action, pr: String(PR_NUMBER), head_sha: HEAD_SHA };
+      if (event === 'pull_request_review') inputs.review_id = String(mockGitHub.addReview('Looks good.', 'APPROVED', HEAD_SHA, 'bob').id);
 
       failFirstRead(3);
       // The lookup of the workflow run has a deadline of its own, so it is tried once.

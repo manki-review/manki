@@ -623,6 +623,19 @@ function failureReason(error: unknown, retryHint = FAILED_RUN_HINT): string {
 
 /** How to retry a run that failed. The review command starts nothing on a commit whose newest review gave a verdict, as after a failed box run, so the hint names the box too. */
 const FAILED_RUN_HINT = `${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
+/** How to retry a failed run that only checks the approval. The check command does the same without a review round. */
+const CHECK_HINT = 'Retry with @manki check.';
+
+/** Returns how to retry a failed run of the dispatched event, by what a run of that event does. */
+function retryHintFor({ event, action }: ReturnType<typeof dispatchedInputs>): string {
+  // No hint for a merge. A review command would review the merged PR instead of recording its fix rate.
+  if (event === 'pull_request' && action === 'closed') return '';
+  const checksApproval = event === 'pull_request_review_thread'
+    // An edited review is a tick of an issue box.
+    || (event === 'pull_request_review' && action !== 'edited')
+    || (event === 'pull_request' && action === APPROVAL_CHECK_ACTION);
+  return checksApproval ? CHECK_HINT : FAILED_RUN_HINT;
+}
 
 /**
  * Describes a failure in a sentence that always names a cause. A 5xx from GitHub reads as a
@@ -2298,9 +2311,7 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
-    // No hint for a merge. A review command would review the merged PR instead of recording its fix rate.
-    const retryHint = dispatched?.event === 'pull_request' && dispatched.action === 'closed' ? '' : FAILED_RUN_HINT;
-    core.setFailed(`Manki encountered an error: ${failureReason(error, retryHint)}`);
+    core.setFailed(`Manki encountered an error: ${failureReason(error, dispatched && retryHintFor(dispatched))}`);
   } finally {
     if (stopSampler) {
       stopSampler();
