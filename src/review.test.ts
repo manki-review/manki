@@ -2243,7 +2243,7 @@ describe('runReview', () => {
   });
 
   it('gives none of the eight checks to a warning a later step keeps out of the review, and no check to a warning in the `rare` column a memory suppression hides', async () => {
-    const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
+    const lines = (word: string) => Array.from({ length: 32 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
     const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
     const agreed = (title: string, line: number): LegacyHandoverFindingFixture =>
       ({ fingerprint: { file: 'src/app.ts', lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'warning', title, authorReply: 'agree' });
@@ -2254,7 +2254,7 @@ describe('runReview', () => {
     const hidden: Array<{ step: string; title: string; finding?: object; verdict?: object; options?: Partial<Parameters<typeof runReview>[1]>; ends: (r: ReviewResult) => unknown; as: unknown }> = [
       {
         step: 'cross-round suppression', title: 'Agreed last round',
-        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Reverses the agreed fix', 12), agreed('Agreed sum stays a warning', 21)] })] },
+        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Reverses the agreed fix', 12), agreed('Agreed sum stays a warning', 21), agreed('Agreed total no finder filed as a blocker', 23)] })] },
         ends: r => judged(r, 'Agreed last round'), as: [['ignore', ['suppressed-by-ratchet']]],
       },
       {
@@ -2317,6 +2317,11 @@ describe('runReview', () => {
       {
         step: 'in-PR suppression of a blocker cell the judge keeps at a warning', title: 'Closed thread on a wrong count', finding: { severity: 'blocker' }, verdict: keptDown,
         ends: r => judged(r, 'Closed thread on a wrong count'), as: [['ignore', ['suppressed-in-pr']]],
+      },
+      {
+        // A doubt holds this blocker cell at a warning, and no finder filed a blocker. So no answer raises it, and the step hides it unchecked.
+        step: 'cross-round suppression of a blocker cell no finder filed as a blocker', title: 'Agreed total no finder filed as a blocker', verdict: { row: 'wrong' },
+        ends: r => judged(r, 'Agreed total no finder filed as a blocker'), as: [['ignore', ['suppressed-by-ratchet']]],
       },
     ];
     // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
@@ -2912,7 +2917,8 @@ describe('runReview', () => {
       const keptDown = { doubts, gradeIfConfirmed: 'warning' as const, cell: { row: 'wrong' as const, column: 'normal' as const } };
       const result = await review({
         'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
-        // The judge stated `warning` for the case that the doubt holds. The cell still gives a blocker, so an open doubt never leaves it out.
+        // The judge stated `warning` for the case that the doubt holds, or a check confirmed the doubt of a finding no finder filed as a
+        // blocker. The cell still gives a blocker, so an open doubt never leaves it out.
         'The judge keeps a blocker cell at a warning': { ...keptDown, ...checked('unsettled') },
         'The judge keeps a blocker cell at a warning, past the limit of checks': { ...keptDown, overCheckLimit: true },
         'The judge keeps a blocker cell at a warning, confirmed': { ...keptDown, ...checked('confirmed') },

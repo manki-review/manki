@@ -4372,6 +4372,7 @@ describe('runFullReview orchestration', () => {
         effort: 'moderate' as const,
         toolEvidence: { status: 'contradicted' as const, note: 'src/gone.ts is not changed in this diff.' },
         gradeIfConfirmed: 'blocker' as const,
+        judgeIfConfirmed: 'warning' as const,
         doubts: [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' as const }],
         cell: { row: 'wrong' as const, column: 'normal' as const, judgeColumn: 'rare' as const },
         rule: { file: 'src/AGENTS.md', quote: 'A change to shutdown handling needs an integration test.' },
@@ -4394,7 +4395,7 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: [{
         severity: 'ignore' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
         reviewerSeverity: 'note' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
-        gradeIfConfirmed: 'note' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
+        gradeIfConfirmed: 'note' as const, judgeIfConfirmed: 'blocker' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
         cell: { row: 'improvement' as const, column: 'normal' as const },
         rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
       }],
@@ -4413,7 +4414,7 @@ describe('runFullReview orchestration', () => {
     expect(rc!.judge.dropped).toEqual([{
       title: 'Rename helper', file: 'src/app.ts', line: 7, reviewers: ['Concurrency'],
       reviewerSeverity: 'note', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
-      gradeIfConfirmed: 'note', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
+      gradeIfConfirmed: 'note', judgeIfConfirmed: 'blocker', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
       cell: { row: 'improvement', column: 'normal' },
       rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
     }]);
@@ -4427,6 +4428,8 @@ describe('runFullReview orchestration', () => {
     expect(entry.originalSeverity).toBe('warning');
     expect([entry.category, entry.effort]).toEqual(['concurrency', 'moderate']);
     expect([entry.gradeIfConfirmed, entry.doubts]).toEqual(['blocker', [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' }]]);
+    // The judge's own answer is stored beside the grade Manki settled on, so a record tells a stated grade from none.
+    expect(rc!.findings.entries.map(e => e.judgeIfConfirmed)).toEqual(['warning', undefined]);
     // The cell the grade was worked out from, and the column the judge stated before a check moved it.
     expect(entry.cell).toEqual({ row: 'wrong', column: 'normal', judgeColumn: 'rare' });
     // Only a rule finding names its rule and the instruction file the rule comes from.
