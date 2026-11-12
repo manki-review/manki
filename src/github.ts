@@ -230,16 +230,19 @@ export function withheldSummary(summary: string): string {
   return text ? `**Summary:** ${asSentence(text)}` : '';
 }
 
+/** Ends a line that tells someone to push for a review. A push starts none while automatic review is off or paused. */
+export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
+
 /** Returns the line that says why Manki does not approve. */
 export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
   if (hold.reason === 'config') {
     return hold.file === 'base'
       ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'
-      : '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit.';
+      : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`;
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
-  return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result.`;
+  return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
 
 const MAX_UNREVIEWED_LINES = 50;

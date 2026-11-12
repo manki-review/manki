@@ -1339,7 +1339,7 @@ describe('runFullReview end to end', () => {
 
     it('never approves a PR that conflicts with its base, and says so once per head', async () => {
       mockGitHub.mergeable = false;
-      const held = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result.';
+      const held = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
       Object.assign(mockGitHub.threads[0], { isResolved: true, resolvedBy: { login: 'bob' } });
