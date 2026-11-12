@@ -1219,9 +1219,9 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       const [review] = postedReviews();
       expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
-      // The record describes the runner, and the run log ends with the wait the lookup gave in the end.
+      // The record describes the runner, and the run log ends with the time the lookup gave in the end.
       expect(mockGitHub.roundContext(review).runner).toMatchObject({ os: process.platform, peakCliProcesses: expect.any(Number) });
-      expect(jest.mocked(core.info).mock.calls.at(-1)?.[0]).toMatch(/^Runner: .* · waited \d+m \d+s · /);
+      expect(jest.mocked(core.info).mock.calls.at(-1)?.[0]).toMatch(/^Runner: .* · started after \d+m \d+s · /);
       expect(mockGitHub.roundContext(review).meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
       expect(mockLLM.calls).not.toContain('planner');
       expect(mockGitHub.stateReports).toEqual([

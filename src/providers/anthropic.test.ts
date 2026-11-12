@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, readClaudeLimits, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { runnerDiagnostics } from '../run-diagnostics';
 import { installPinned } from '../tool-install';
 import { RelatedRepoTools } from '../types';
 import { QuotaError, RefusalError, SendMessageOptions } from './types';
@@ -103,6 +104,12 @@ describe('sendMessage effort option (CLI path)', () => {
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     expect(spawnArgs).toContain('--effort');
     expect(spawnArgs[spawnArgs.indexOf('--effort') + 1]).toBe('high');
+
+    // The run's diagnostics count the CLI processes running at once: one has ended, then two run together.
+    const before = runnerDiagnostics().peakCliProcesses;
+    expect(before).toBeGreaterThanOrEqual(1);
+    await Promise.all([client.sendMessage('system', 'user'), client.sendMessage('system', 'user')]);
+    expect(runnerDiagnostics().peakCliProcesses).toBe(Math.max(before, 2));
   });
 
   it('passes xhigh only to a model that takes it, and high to an earlier one', async () => {

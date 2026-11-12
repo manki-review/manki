@@ -17,6 +17,8 @@ export interface ProcessRow {
 }
 
 const SAMPLE_INTERVAL_MS = 2000;
+/** How long the lookup of the workflow run may take, so a stalled API never holds the end of the run. */
+const RUN_LOOKUP_TIMEOUT_MS = 10_000;
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
 
@@ -109,19 +111,20 @@ export function trackCliProcess(): () => void {
 }
 
 /**
- * Records how long this workflow run waited before the action started. The wait covers the queue for a runner and the
- * job's steps before Manki. A run that cannot be read leaves the wait unrecorded, and the promise never rejects.
+ * Records the time from the start of this workflow run until Manki started. It covers the wait for a runner and the
+ * job's steps before Manki. A run that cannot be read within ten seconds leaves the time unrecorded, and the promise
+ * never rejects.
  */
 export async function recordQueueWait(octokit: Octokit): Promise<void> {
   try {
     const { owner, repo } = github.context.repo;
-    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: github.context.runId });
+    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: github.context.runId, request: { signal: AbortSignal.timeout(RUN_LOOKUP_TIMEOUT_MS), retries: 0 } });
     // A re-run keeps `created_at` of the first attempt.
     const queuedAt = Date.parse(data.run_started_at ?? data.created_at);
     const startedAt = Date.now() - process.uptime() * 1000;
     if (Number.isFinite(queuedAt)) queuedMs = Math.max(0, Math.round(startedAt - queuedAt));
   } catch (error) {
-    core.info(`Could not read when this run was queued, so its wait for a runner is not recorded: ${error instanceof Error ? error.message : error}`);
+    core.info(`Could not read when this workflow run started, so the time until Manki started is not recorded: ${error instanceof Error ? error.message : error}`);
   }
 }
 
@@ -150,14 +153,15 @@ function formatMemory(bytes: number): string {
 }
 
 /**
- * Returns one line on `runner`: its kind, the wait for it, and the peak memory against the memory the run may use.
+ * Returns one line on `runner`: its kind, the time from the run's start until Manki started, and the peak memory against
+ * the memory the run may use.
  * `detailed` adds the CPU count and the most model CLI processes at once.
  */
 export function formatRunner(runner: RoundRunner, detailed = false): string {
   const available = runner.memoryLimitBytes ?? runner.memoryBytes;
   const parts = [
     runner.environment ?? runner.os,
-    runner.queuedMs !== undefined && `waited ${formatDuration(runner.queuedMs)}`,
+    runner.queuedMs !== undefined && `started after ${formatDuration(runner.queuedMs)}`,
     runner.peakMemoryBytes !== undefined ? `peak memory ${formatMemory(runner.peakMemoryBytes)} of ${formatMemory(available)}` : `${formatMemory(available)} memory`,
     detailed && `${runner.cpus} ${runner.cpus === 1 ? 'CPU' : 'CPUs'}`,
     detailed && `up to ${runner.peakCliProcesses} model CLI ${runner.peakCliProcesses === 1 ? 'process' : 'processes'} at once`,
