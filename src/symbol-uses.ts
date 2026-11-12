@@ -367,7 +367,8 @@ const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|sp
 const VENDORED_PATH = /(?:^|\/)(?:vendor|third_party|thirdparty|external|extern|depends|deps|node_modules)\//;
 const DOC_FILE = /\.(?:md|mdx|rst|txt|adoc)$|(?:^|\/)(?:LICENSE|COPYING|NOTICE|AUTHORS)[^/]*$/i;
 // A comment from its start to the end of the line, such as `// note` or `# note`, but not a Rust attribute `#[...]`.
-const COMMENT = /(?:^\s*(?:\*|--|<!--)|(?:^|\s)(?:\/\/|\/\*|#(?![[!]))).*$/;
+// With the `s` flag it runs through a carriage return, so the first start of a comment always matches to the end.
+const COMMENT = /(?:^\s*(?:\*|--|<!--)|(?:^|\s)(?:\/\/|\/\*|#(?![[!]))).*$/s;
 // The package's own name in `Cargo.toml`, `pyproject.toml` or `package.json`, or the module in `go.mod`. Its blanks stay
 // on one line: `\s` also matches a line end, so a run of empty lines would be read again from each of its lines.
 const PACKAGE_NAME = /^[ \t]*(?:name[ \t]*=[ \t]*"|"name"[ \t]*:[ \t]*"|module[ \t]+)([^"\s]+)/m;

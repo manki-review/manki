@@ -125,6 +125,10 @@ describe('listUsesOutsideDiff', () => {
     }
     expect(notRead()).toEqual(['Uses outside the diff: did not read the manifest of promo, so its package may depend on any other: Cargo.toml is larger than 1 MB']);
 
+    // A line that ends in a carriage return has its comment read like any other: a name only in it ranks after code.
+    const crlf = await usesFor({ ...base, 'core/src/notes.rs': 'pub fn noted(o: &Order) -> u8 {\r\n    1 // o.discount is not read\r\n}\r\n' }, change);
+    expect(discountUses(crlf)).toEqual(['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'core/src/stats.rs:2', 'promo/src/lib.rs:6', 'core/src/notes.rs:2', 'README.md:1', 'promo/src/lib.rs:2']);
+
     // A manifest that is a link to a file outside the checkout is not read either, whatever that file says.
     const outside = mkdtempSync(join(tmpdir(), 'manki-outside-'));
     const { root, diff } = gitWorkspace(base, change);
@@ -865,6 +869,11 @@ ${body}	return true
     const holders = (n: number, prefix: string, type: string) => Array.from({ length: n }, (_, i) => `pub struct ${prefix}${i} {\n    pub user_id: ${type},\n}\n`).join('');
     const namesakes = await usesInLinearTime(n => [{ 'src/a.rs': holders(n, 'A', 'u32'), 'src/b.rs': holders(n, 'B', 'u32') }, { 'src/a.rs': holders(n, 'A', 'u64') }], 3_000);
     expect(namesakes.record?.symbols).toEqual([{ name: 'user_id', declared: 'src/a.rs:2', uses: Array.from({ length: 12 }, (_, i) => `src/b.rs:${3 * i + 2}`), notShown: 2_988 }]);
+
+    // A found line with many comment starts before a carriage return: the comment is cut off at its first start.
+    const hashes = (n: number) => ({ ...CRATES, 'core/src/tags.rs': `pub fn tags(o: &Order) -> u8 { o.discount.unwrap_or(0) }${' #a'.repeat(n)}\r\n`, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') });
+    const tagged = await usesInLinearTime(n => [hashes(n), { 'core/src/order.rs': ORDER('pub discount: Option<u16>, // percent from version 2') }], 160_000);
+    expect(tagged.record?.symbols?.find(s => s.name === 'discount')?.uses).toContain('core/src/tags.rs:1');
 
     // A manifest that starts with many empty lines: its package name is found in one pass over the lines.
     const blankLines = (n: number) => ({ ...CRATES, 'promo/Cargo.toml': `${'\n'.repeat(n)}[package]\nname = "promo"\n`, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') });
