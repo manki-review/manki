@@ -5,7 +5,7 @@ import {
   truncateSync, utimesSync, writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { basename, join } from 'path';
+import { basename, dirname, join } from 'path';
 
 import { pastRetryWait } from './test-utils';
 import { installPinned } from './tool-install';
@@ -355,15 +355,23 @@ describe('installPinned', () => {
       expect(notes()).toEqual(DISTRUST);
     });
 
-    it('makes a tool cache folder that does not exist yet', async () => {
+    it('makes a tool cache folder that does not exist yet, and one it trusts whatever the umask', async () => {
       process.env.RUNNER_TOOL_CACHE = join(toolCache, '_work', '_tool');
-      await nextRun();
-      await nextRun();
+      // Under this umask a folder made without a mode is one the group can write.
+      const umask = process.umask(0o002);
+      try {
+        await nextRun();
+        await nextRun();
+      } finally {
+        process.umask(umask);
+      }
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(statSync(join(toolCache, '_work', '_tool')).mode & 0o777).toBe(0o755);
       expect(readdirSync(join(toolCache, '_work', '_tool', 'manki-pinned'))).toEqual([keptName]);
+      expect(notes().filter(line => line.startsWith('Not keeping'))).toEqual([]);
     });
 
-    it('lets two runs that start together each install, and leaves one whole kept file', async () => {
+    it('lets two runs that start together each install, and never has half a file under the kept name', async () => {
       // Neither run finds a kept file, so both download. The second answer comes only once both have asked.
       let asked = 0;
       let bothAsked: () => void = () => {};
@@ -373,17 +381,37 @@ describe('installPinned', () => {
         await gate;
         return new Response(data);
       });
+      // What another run finds under the kept name while a run has written half of its file.
+      const fs = jest.requireActual<typeof import('fs')>('fs');
+      const foundMeanwhile: string[] = [];
+      jest.doMock('fs', () => ({
+        ...fs,
+        writeFileSync: (path: string, content: Buffer | string, options?: import('fs').WriteFileOptions) => {
+          if (basename(dirname(path)) !== 'manki-pinned' || typeof content === 'string') return fs.writeFileSync(path, content, options);
+          fs.writeFileSync(path, content.subarray(0, content.length / 2), options);
+          foundMeanwhile.push(!fs.existsSync(kept()) ? 'none' : fs.readFileSync(kept()).equals(data) ? 'whole' : 'half');
+          fs.appendFileSync(path, content.subarray(content.length / 2));
+        },
+      }));
       // Without a shared temp folder each install is a run of its own.
       delete process.env.RUNNER_TEMP;
-      const installs = [await newProcess(), await newProcess()];
+      let installs: Array<typeof installPinned>;
+      try {
+        installs = [await newProcess(), await newProcess()];
+      } finally {
+        jest.dontMock('fs');
+      }
 
       const [first, second] = await Promise.all(installs.map(install => install(download)));
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(first).not.toBe(second);
       for (const dir of [first, second]) expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+      // The first run writes beside no kept file, the second beside the whole file of the first.
+      expect(foundMeanwhile).toEqual(['none', 'whole']);
       expect(readdirSync(folder())).toEqual([keptName]);
       expect(readFileSync(kept())).toEqual(data);
+      expect(notes()).toEqual([]);
     });
 
     it('removes a kept download no run used for 14 days when it keeps a new one, and nothing else', async () => {

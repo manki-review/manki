@@ -164,7 +164,8 @@ function keptFolder(create: boolean): string | undefined {
   // Without a user id the owner of a folder cannot be checked, as on Windows.
   if (!toolCache || process.env.RUNNER_ENVIRONMENT !== 'self-hosted' || process.getuid === undefined) return undefined;
   try {
-    if (create) mkdirSync(toolCache, { recursive: true });
+    // With a mode of its own: under a umask that leaves the group's write bit, a new folder would fail `ownFolder`.
+    if (create) mkdirSync(toolCache, { recursive: true, mode: 0o755 });
     const root = realpathSync(toolCache);
     const folder = join(root, KEPT_FOLDER);
     if (ownFolder(root)) {
