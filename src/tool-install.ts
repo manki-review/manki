@@ -70,8 +70,7 @@ async function installWithRetries(download: PinnedDownload): Promise<string> {
         return await downloadAndInstall(download, deadline.signal);
       } catch (error) {
         if (!(error instanceof TransientDownloadError) || attempt === DOWNLOAD_TRIES || deadline.signal.aborted) throw error;
-        // Written to stderr, since stdout carries the protocol of Manki's tool server, which installs through here too.
-        process.stderr.write(`${error.message}, trying again (try ${attempt + 1} of ${DOWNLOAD_TRIES})\n`);
+        note(`${error.message}, trying again (try ${attempt + 1} of ${DOWNLOAD_TRIES})`);
         await new Promise(resolve => setTimeout(resolve, RETRY_WAIT_MS));
       }
     }
