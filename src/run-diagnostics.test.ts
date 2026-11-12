@@ -73,11 +73,13 @@ describe('run diagnostics', () => {
     more.forEach(end => end());
   });
 
-  it('describes the runner, with the memory limit only when it is below the machine memory', () => {
+  it('describes the runner without its name, with the memory limit only when it is below the machine memory', () => {
     process.env.RUNNER_ENVIRONMENT = 'self-hosted';
     process.env.RUNNER_NAME = 'light-1';
     const limit = jest.spyOn(process, 'constrainedMemory').mockReturnValue(2 * GIB);
-    expect(runnerDiagnostics()).toMatchObject({ environment: 'self-hosted', name: 'light-1', os: process.platform, arch: process.arch, memoryLimitBytes: 2 * GIB });
+    expect(runnerDiagnostics()).toMatchObject({ environment: 'self-hosted', os: process.platform, arch: process.arch, memoryLimitBytes: 2 * GIB });
+    // The record is public with the review, so the name of a self-hosted machine stays out of it.
+    expect(JSON.stringify(runnerDiagnostics())).not.toContain('light-1');
     expect(runnerDiagnostics().cpus).toBeGreaterThan(0);
     expect(runnerDiagnostics().memoryBytes).toBeGreaterThan(2 * GIB);
 
@@ -88,7 +90,6 @@ describe('run diagnostics', () => {
       const runner = runnerDiagnostics();
       expect(runner).not.toHaveProperty('memoryLimitBytes');
       expect(runner).not.toHaveProperty('environment');
-      expect(runner).not.toHaveProperty('name');
     }
   });
 

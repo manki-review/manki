@@ -129,10 +129,10 @@ export async function recordQueueWait(octokit: Octokit): Promise<void> {
 export function runnerDiagnostics(): RoundRunner {
   const memoryBytes = os.totalmem();
   const limit = process.constrainedMemory();
-  const { RUNNER_ENVIRONMENT: environment, RUNNER_NAME: name } = process.env;
+  // The record is posted with the review, so it holds nothing that names a self-hosted machine, such as `RUNNER_NAME`.
+  const environment = process.env.RUNNER_ENVIRONMENT;
   return {
     ...(environment && { environment }),
-    ...(name && { name }),
     os: process.platform,
     arch: process.arch,
     cpus: os.availableParallelism(),

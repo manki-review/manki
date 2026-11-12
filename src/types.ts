@@ -1624,7 +1624,6 @@ export interface RoundContext {
 export interface RoundRunner {
   /** `github-hosted` or `self-hosted`, as the runner reports it. */
   environment?: string;
-  name?: string;
   os: string;
   arch: string;
   cpus: number;
