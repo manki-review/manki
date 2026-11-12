@@ -27,6 +27,7 @@ const MAX_PARALLEL_CHECKS = 4;
 const CHECK_STEPS = 12;
 // A safety net. The step budget is what normally ends the call.
 const CHECK_TIMEOUT_MS = 600_000;
+const CLAIM_CHECK_NAME = 'Claim check';
 const STATUSES: ReadonlyArray<RoundPrClaim['status']> = ['proven', 'disproven', 'unchecked'];
 // What opens or closes a comment, which is no part of what the comment says.
 const COMMENT_MARKS = /^\s*(?:\/\/+|\/\*+|\*+(?!\/)|#+|--+|<!--)!?\s?|\s*(?:\*+\/|-->)\s*$/g;
@@ -196,6 +197,9 @@ function parseCheck(text: string, workspace: string, reviewer: string): Pick<Rou
   return { status, ...(reason && { reason }), ...(proof.length > 0 && { proof }), reported };
 }
 
+/** Whether `reviewer` is the name `runClaimChecks` gives a claim check. */
+export const isClaimCheck = (reviewer: string): boolean => reviewer.startsWith(`${CLAIM_CHECK_NAME} `);
+
 export interface ClaimCheckOptions {
   /** The PR's raw diff, which each check is shown. */
   rawDiff: string;
@@ -216,7 +220,7 @@ export async function runClaimChecks(
   clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, signal }: ClaimCheckOptions,
 ): Promise<{ findings: Finding[]; claims: RoundPrClaim[] }> {
   // A name never carries text from the PR, so each check is numbered and its record holds the quote.
-  const asked = claims.map((claim, i) => ({ claim, reviewer: `Claim check ${i + 1}` }));
+  const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}` }));
   const answers = await mapWithConcurrency(asked, MAX_PARALLEL_CHECKS, async ({ claim, reviewer }): Promise<{ record: RoundPrClaim; findings: Finding[] }> => {
     const unchecked = (call: NonNullable<RoundPrClaim['call']>) => ({ record: { ...claim, reviewer, status: 'unchecked' as const, call }, findings: [] });
     const client = clientFor(reviewer);
