@@ -227,6 +227,9 @@ const JUDGE_TIMEOUT_MS = 300_000;
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
 const MAX_CITED_WINDOWS = 40;
+/** How many cited files the judge's windows try to read, per finding and per round, whether or not the file is there. */
+const MAX_CITED_READS_PER_FINDING = 10;
+const MAX_CITED_READS = 80;
 /** A line of a window is cut at this many characters. */
 const MAX_CITED_LINE_CHARS = 300;
 const MAX_DOUBT_CHARS = 300;
@@ -1089,16 +1092,23 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExist
  * Returns, for each finding, the code around the lines its proof cites outside the diff, read from the checked-out head,
  * and around the lines of `related` repos that its title, description and evidence cite, read from the checkouts the
  * round fetched. Citations that cannot be read are skipped, and at most `MAX_CITED_WINDOWS` windows are shown in all.
+ * A citation of a file that is not there shows no window, so the reads have limits of their own: `MAX_CITED_READS_PER_FINDING`
+ * and `MAX_CITED_READS`. A file read before costs nothing.
  */
 function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: string, related?: RelatedRepoTools): Map<Finding, string[]> {
   // The files read, by the directory they were read from. A file of the PR and one of a related checkout never share
   // an entry, whatever the PR names its files.
   const filesRead = new Map<string, { contents: Map<string, string>; lineCounts: Map<string, number> }>();
-  // Returns the files read from `root`, with `file` among them, or `undefined` when it could not be read.
+  let reads = 0;
+  let readsOfFinding = 0;
+  // Returns the files read from `root`, with `file` among them, or `undefined` when it could not be read or no read is left.
   const read = (root: string, file: string) => {
     const files = filesRead.get(root) ?? { contents: new Map<string, string>(), lineCounts: new Map<string, number>() };
     filesRead.set(root, files);
     if (!files.contents.has(file)) {
+      if (reads >= MAX_CITED_READS || readsOfFinding >= MAX_CITED_READS_PER_FINDING) return undefined;
+      reads++;
+      readsOfFinding++;
       const content = readFileInRoot(root, file);
       if (!content || content === 'too large') return undefined;
       files.contents.set(file, content.text);
@@ -1114,6 +1124,7 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
   for (const finding of findings) {
     const lines: string[] = [];
     let windows = 0;
+    readsOfFinding = 0;
     for (const location of finding.evidence?.proof ?? []) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const [, file, start, end] = location.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];

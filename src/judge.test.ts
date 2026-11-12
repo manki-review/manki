@@ -1604,6 +1604,8 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Many citations', severity: 'note', description: `See ${Array.from({ length: 10 }, (_, i) => `acme/reports:src/import.ts:${40 + i}`).join(', ')} and acme/reports:src/import.ts:3.` }),
       // Citations of files that are not there stop at the same 10, so a finding cannot make the judge try a file per citation it writes.
       makeFinding({ title: 'Many missing files', severity: 'note', description: `See ${Array.from({ length: 30 }, (_, i) => `acme/reports:src/gone-${i}.ts:1`).join(', ')}.` }),
+      // Proof lines of the PR in files that are not there stop at 10 for a finding too, and at 80 for the round.
+      ...Array.from({ length: 12 }, (_, n) => makeFinding({ title: `Missing proof ${n}`, severity: 'note', evidence: { checks: [], proof: Array.from({ length: 30 }, (_, i) => `src/absent-${n}-${i}.ts:1`) } })),
     ];
     const readSpy = jest.spyOn(mcpServer, 'readFileInRoot');
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'improvement', reasoning: 'r' })) }) });
@@ -1616,7 +1618,13 @@ describe('runJudgeAgent', () => {
       for (const dir of [workspace, checkout, stateDir]) fs.rmSync(dir, { recursive: true, force: true });
     }
     const tried = readSpy.mock.calls.map(([, file]) => file).filter(file => file.startsWith('src/gone-'));
+    const absent = readSpy.mock.calls.filter(([root, file]) => root === workspace && file.startsWith('src/absent-')).map(([, file]) => file);
+    const reads = readSpy.mock.calls.length;
     readSpy.mockRestore();
+    // Each of the three rounds stops at 80 reads. Until then each finding tries its first 10 proof lines and no more.
+    expect(reads).toBeLessThanOrEqual(3 * 80);
+    expect(absent.filter(file => file.startsWith('src/absent-0-'))).toEqual([0, 1, 2].flatMap(() => Array.from({ length: 10 }, (_, i) => `src/absent-0-${i}.ts`)));
+    expect(absent.some(file => file.startsWith('src/absent-11-'))).toBe(false);
     expect(new Set(tried)).toEqual(new Set(Array.from({ length: 10 }, (_, i) => `src/gone-${i}.ts`)));
     // Two of the three rounds have related repos, and each tries a cited file once.
     expect(tried).toHaveLength(20);
