@@ -916,6 +916,10 @@ describe('listRelatedUses', () => {
       expect(bounded.section).toContain(`\nNo reference line holds: \`${flood[0]}\`, `);
       expect(bounded.section).toContain(`\n\nNot searched, since these names are too long to search for together: \`${referenceUnsearched[0]}\`, `);
       expect(bounded.section).toContain(`, and ${referenceUnsearched.length - 20} more.\nNo reference line holds: `);
+      // Two names can share a spelling, here `sharednamex`. It takes room in the pattern once, so its second copy is
+      // not left out when the 15 KiB are nearly full, and both names are searched.
+      const fill = [...Array.from({ length: 100 }, (_, i) => `${'F'.repeat(150)}${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26))}`), 'G'.repeat(29)];
+      expect(await listRelatedUses([server], [...fill, 'shared_name_x', 'sharednamex'])).toEqual({ section: '', record: { referenceMissing: [...fill, 'shared_name_x', 'sharednamex'] } });
       // A name longer than an identifier is not searched and not named, alone or next to others. A name of 160
       // characters is the longest one searched.
       const huge = `HUGE_${'A'.repeat(200_000)}`;

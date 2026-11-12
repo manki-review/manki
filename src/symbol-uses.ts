@@ -579,7 +579,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
     const kept = (hit: Hit): RelatedHit => ({ ...hit, text: hit.text.slice(0, MAX_REFERENCE_LINE_CHARS), repo });
     let hits: Hit[];
     try {
-      const searched = await search(names.flatMap(nameVariants), true);
+      const searched = await search([...new Set(names.flatMap(nameVariants))], true);
       hits = searched.hits;
       for (const name of names) if (nameVariants(name).some(variant => searched.left.has(variant))) unsearched.add(name);
     } catch (error) {
