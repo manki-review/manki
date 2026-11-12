@@ -614,6 +614,14 @@ export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'gradePa
   return finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
 }
 
+/**
+ * Returns the grade a check gives `f` when it confirms every premise in its `doubts`. A finding that `isRareClaim` has
+ * none: its `gradeIfConfirmed` is the grade of the `normal` column, and no answer moves it there.
+ */
+export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
+  return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
+}
+
 /** Whether the judge or a finder graded `f` a blocker at any point, or its cell would give one if its `doubts` hold. `REACH_DOUBT` is such a doubt, although no answer to it raises a finding. */
 export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'reviewerSeverity' | 'gradePath'>): boolean {
   return f.gradeIfConfirmed === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');

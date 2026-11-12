@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -215,13 +215,12 @@ function raisedTo(finding: Finding, grade: FindingSeverity | undefined): Finding
 
 /**
  * Returns the grade a confirmation gives, while nothing lowered the finding further since the judge: the blocker an
- * unproven cap lowered, or the grade the finding's cell gives once the premises the judge doubts hold. A finding that
- * `isRareClaim` gets no grade from its `gradeIfConfirmed`. The judge placed it in the `rare` column, and the refuter's
- * answer to `REACH_DOUBT` is recorded without moving it.
+ * unproven cap lowered, or the finding's `pendingGrade`. So a finding that `isRareClaim` gets none: the judge placed it
+ * in the `rare` column, and the refuter's answer to `REACH_DOUBT` is recorded without moving it.
  */
 function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   const grade = finding.tags?.includes(UNPROVEN_TAG) && finding.severity === 'warning' ? 'blocker'
-    : (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge' && !isRareClaim(finding.cell) ? finding.gradeIfConfirmed : undefined;
+    : (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge' ? pendingGrade(finding) : undefined;
   return raisedTo(finding, grade);
 }
 
@@ -434,22 +433,23 @@ export function checkStatus(finding: Finding): CheckStatus {
  * Returns `finding` with the `gradeIfConfirmed`, doubts and cell of the latest earlier finding it matches, when a doubt capped
  * that earlier grade, no check settled it, and the judge kept the grade without naming a doubt of its own. Such a grade
  * is no anchor, so the refuter checks it. A finding a later cap lowered below the grade of its stated cell is returned
- * as it is, since the judge did not keep the earlier grade. So is one whose earlier finding `isRareClaim`, since no doubt
- * capped that grade. An earlier finding without a cell the table knows leaves `finding` none, since the cell the judge
- * stated this round does not give the grade a confirmation restores.
+ * as it is, since the judge did not keep the earlier grade. So is one whose earlier finding has no `pendingGrade`, since
+ * no doubt capped that grade. An earlier finding without a cell the table knows leaves `finding` none, since the cell
+ * the judge stated this round does not give the grade a confirmation restores.
  */
 function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[]): Finding {
   if (finding.gradeIfConfirmed || finding.severity === 'ignore' || finding.severity === 'blocker') return finding;
   if (isGradeCell(finding.cell) && rank(cellGrade(finding.cell.row, finding.cell.column)) < rank(finding.severity)) return finding;
   const prior = [...priorRounds].reverse().flatMap(r => r.findings.entries)
     .find(e => e.fingerprint.file === finding.file && Math.abs(e.fingerprint.lineStart - finding.line) <= LINE_TOLERANCE && titlesMatch(e.title ?? '', finding.title));
-  if (!prior?.gradeIfConfirmed || isRareClaim(prior.cell) || prior.severity !== finding.severity || rank(prior.gradeIfConfirmed) >= rank(prior.severity)) return finding;
+  const pending = prior && pendingGrade(prior);
+  if (!pending || prior.severity !== finding.severity || rank(pending) >= rank(prior.severity)) return finding;
   const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome !== 'unsettled' || r.premises?.some(p => p.outcome === 'disproved')));
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
   const { cell: _cell, ...kept } = finding;
   const cell = isGradeCell(prior.cell) ? prior.cell : undefined;
-  return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }), ...(cell && { cell }) };
+  return { ...kept, gradeIfConfirmed: pending, ...(prior.doubts && { doubts: prior.doubts }), ...(cell && { cell }) };
 }
 
 export interface RefuteOptions {

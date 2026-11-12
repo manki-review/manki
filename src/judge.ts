@@ -26,7 +26,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -745,10 +745,11 @@ A finding cites their code as \`owner/name:path:line\`. Its tool evidence says w
 
 /**
  * Returns the `gradeIfConfirmed` of an earlier finding whose grade a doubt capped, which Grade Stability asks the judge
- * to settle. A finding that `isRareClaim` has the grade of its own cell, so no doubt capped it.
+ * to settle. A finding without a `pendingGrade` has the grade of its own cell, so no doubt capped it.
  */
-function cappedGrade({ severity, gradeIfConfirmed, cell }: Pick<FindingFingerprintEntry, 'severity' | 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
-  return gradeIfConfirmed !== severity && !isRareClaim(cell) ? gradeIfConfirmed : undefined;
+function cappedGrade(entry: Pick<FindingFingerprintEntry, 'severity' | 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
+  const pending = pendingGrade(entry);
+  return pending !== entry.severity ? pending : undefined;
 }
 
 /**
