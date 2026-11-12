@@ -529,7 +529,7 @@ function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullab
   for (const entry of finding.evidence?.checks ?? []) {
     const cited = leadingRelatedCitation(entry, names);
     // The backtick that closes a quoted citation would pair with the next quote's opening one.
-    const code = cited ? quotedCode(entry.slice(entry.indexOf(cited.citation) + cited.citation.length).replace(/^`/, '')) : [];
+    const code = cited ? quotedCode(entry.slice(entry.indexOf(cited.citation) + cited.citation.length).replace(/^`+/, '')) : [];
     if (cited && code.length > 0) quotes.set(cited.citation, { cited, code: [...(quotes.get(cited.citation)?.code ?? []), ...code] });
   }
   const stated = relatedCitations(`${finding.title}\n${finding.description}`, names);
@@ -554,9 +554,13 @@ function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullab
 
 const withoutWhitespace = (text: string): string => text.replace(/\s+/g, '');
 
-/** Returns the code `text` quotes in backticks, each part of a quote cut by an ellipsis on its own. A part under `MIN_QUOTE_CHARS` without its whitespace is left out. */
+/**
+ * Returns the code `text` quotes in backticks, each part of a quote cut by an ellipsis on its own. A part under
+ * `MIN_QUOTE_CHARS` without its whitespace is left out. As in Markdown, a run of backticks is closed only by a run of
+ * the same length, so a quote in double backticks can hold a backtick itself.
+ */
 function quotedCode(text: string): string[] {
-  return [...text.matchAll(/`([^`]+)`/g)].flatMap(([, quote]) => quote.split(/\.{3}|…/)).map(part => part.trim()).filter(part => withoutWhitespace(part).length >= MIN_QUOTE_CHARS);
+  return [...text.matchAll(/(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g)].flatMap(([, , quote]) => quote.split(/\.{3}|…/)).map(part => part.trim()).filter(part => withoutWhitespace(part).length >= MIN_QUOTE_CHARS);
 }
 
 /**
