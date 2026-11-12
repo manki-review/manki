@@ -1684,7 +1684,7 @@ export const ruleGrade = (rules: RulesMode = 'warn'): FindingSeverity => (rules 
 /**
  * Raises a finding whose rule the judge confirmed to the grade `rules` gives: a warning, or a blocker with `block`.
  * A finding graded higher keeps its grade, and a dropped one stays dropped. A blocker made here passes the caps of any
- * blocker, so in doubt it is a warning.
+ * blocker, so in doubt it is a warning, which the refuter confirms or drops like any capped blocker.
  */
 function gradeConfirmedRule(finding: Finding, rules?: RulesMode): Finding {
   const grade = ruleGrade(rules);
