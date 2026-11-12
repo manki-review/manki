@@ -1,5 +1,5 @@
-import { Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { Finding, FindingFingerprintEntry, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
+import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -2170,6 +2170,16 @@ describe('collectInPrSuppressions', () => {
       slug: titleToSlug('Missing null check'),
     });
     expect(collectInPrSuppressions([makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved', fixed: true })])).toEqual([]);
+
+    // Only a thread the PR author alone could not clear is marked as guarded. An unread grade does not make it one.
+    const resolved = (threadId: string, overrides: Partial<PreviousFinding>) => makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved', severity: 'warning', threadId, ...overrides });
+    const threads = [
+      resolved('plain', {}), resolved('blocker', { severity: 'blocker' }), resolved('security', { isSecurity: true }),
+      resolved('raised', { recordedGrade: 'blocker' }), resolved('unknown', { gradeUnknown: true }),
+    ];
+    expect(collectInPrSuppressions(threads).map(s => s.guarded ?? false)).toEqual([false, true, true, true, false]);
+    expect([...collectGuardedThreadIds(threads)]).toEqual(['blocker', 'security', 'raised']);
+    expect(collectGuardedThreadIds(undefined).size).toBe(0);
   });
 
   // Note: `fetchReviewThreads` always classifies a thread with at least one
@@ -2346,13 +2356,16 @@ describe('llmDeduplicateFindings', () => {
     const both = await llmDeduplicateFindings(findings, [fixed, previous[0]], mockClient);
     expect(both.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
 
-    // A blocker is dropped only for a resolved blocking or security thread, since the PR author can resolve any other.
-    const blocker = { ...findings[0], severity: 'blocker' as const };
-    const notWaived = await llmDeduplicateFindings([blocker], previous, mockClient);
-    expect(notWaived).toEqual({ unique: [blocker], duplicates: [] });
-    for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true }]) {
-      const waived = await llmDeduplicateFindings([blocker], [makePrevious({ ...previous[0], ...guarded })], mockClient);
-      expect(waived.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
+    // A blocker or a security finding is dropped only for a resolved blocking or security thread, since the PR author can resolve any other.
+    for (const raised of [{ ...findings[0], severity: 'blocker' as const }, { ...findings[0], severity: 'warning' as const, tags: [SECURITY_TAG] }]) {
+      const notWaived = await llmDeduplicateFindings([raised], previous, mockClient);
+      expect(notWaived).toEqual({ unique: [raised], duplicates: [] });
+      expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title })])).toEqual({ unique: [raised], duplicates: [] });
+      for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true }]) {
+        const waived = await llmDeduplicateFindings([raised], [makePrevious({ ...previous[0], ...guarded })], mockClient);
+        expect(waived.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
+        expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title, ...guarded })]).duplicates).toHaveLength(1);
+      }
     }
   });
 

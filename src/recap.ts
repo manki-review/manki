@@ -415,6 +415,7 @@ function collectInPrSuppressions(
     const entry: InPrSuppression = {
       fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
       reason,
+      ...(isGuarded(pf) && { guarded: true }),
     };
     if (reason === 'agree-reply' && pf.authorReplyLogin) {
       entry.authorLogin = pf.authorReplyLogin;
@@ -1176,11 +1177,11 @@ function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]):
 }
 
 /**
- * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker is dropped only for a guarded
- * thread, since the PR author alone can resolve any other thread.
+ * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker or a security finding is dropped
+ * only for a guarded thread, since the PR author alone can resolve any other thread.
  */
 function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
-  return !prev.fixed && (finding.severity !== 'blocker' || isGuarded(prev));
+  return !prev.fixed && ((finding.severity !== 'blocker' && !isSecurityFinding(finding.tags)) || isGuarded(prev));
 }
 
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
@@ -1337,6 +1338,11 @@ async function llmSameDefects(pairs: Array<[DedupItem, DedupItem]>, client: LLMC
     core.warning(`LLM dedup of nearby findings failed, keeping them apart: ${error}`);
     return pairs.map(() => false);
   }
+}
+
+/** Returns the ids of the threads the PR author alone cannot clear. */
+export function collectGuardedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {
+  return new Set((previousFindings ?? []).flatMap(f => (f.threadId && isGuarded(f) ? [f.threadId] : [])));
 }
 
 export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {

@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import {
   applyCrossRoundSuppression,
+  CrossRoundSuppressionOptions,
   applyInPrSuppression,
   buildJudgeSystemPrompt,
   buildJudgeUserMessage,
@@ -30,7 +31,7 @@ import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -3930,6 +3931,25 @@ describe('applyInPrSuppression', () => {
     expect(result.findings[0].tags ?? []).not.toContain(IN_PR_SUPPRESSED_TAG);
   });
 
+  it('hides a security finding below blocker only for a thread the PR author alone could not clear', () => {
+    const security = (severity: Finding['severity']) => makeFinding({ severity, tags: [SECURITY_TAG] });
+    const guarded = { ...makeSuppression(), guarded: true };
+    for (const severity of ['warning', 'note'] as const) {
+      for (const reason of ['resolved-thread', 'agree-reply'] as const) {
+        const plain = applyInPrSuppression([security(severity)], [makeSuppression({}, reason)]);
+        expect(plain.count).toBe(0);
+        expect(plain.findings[0].severity).toBe(severity);
+        expect(plain.findings[0].tags).toEqual([SECURITY_TAG]);
+        expect(applyInPrSuppression([security(severity)], [{ ...guarded, reason }]).findings[0].severity).toBe('ignore');
+      }
+      // The guarded entry is found behind a plain one for the same place.
+      expect(applyInPrSuppression([security(severity)], [makeSuppression(), guarded]).findings[0].severity).toBe('ignore');
+    }
+    // A finding that is no security finding is hidden by either, and a blocker by none.
+    expect(applyInPrSuppression([makeFinding({ severity: 'warning' })], [guarded]).findings[0].severity).toBe('ignore');
+    expect(applyInPrSuppression([security('blocker')], [guarded]).findings[0].severity).toBe('blocker');
+  });
+
   it('does not overwrite a pre-existing originalSeverity', () => {
     // Finding was already demoted elsewhere (e.g., cross-round contradiction) and carries
     // originalSeverity: 'blocker'. In-PR suppression must keep that pre-existing value
@@ -5220,7 +5240,7 @@ describe('applyCrossRoundSuppression', () => {
       file: 'src/a.ts',
       line: 10,
       severity: 'note',
-      tags: ['security'],
+      tags: ['follow-up'],
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
@@ -5230,7 +5250,7 @@ describe('applyCrossRoundSuppression', () => {
     }])];
 
     const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.findings[0].tags).toContain('security');
+    expect(result.findings[0].tags).toContain('follow-up');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
   });
 
@@ -5260,6 +5280,36 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.suppressedCount).toBe(1);
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+  });
+
+  it('hides a security finding below blocker only for a prior whose thread the PR author alone could not clear', () => {
+    const security = (severity: Finding['severity']) => [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity, tags: [SECURITY_TAG] })];
+    const priorWith = (entry: Partial<LegacyHandoverFindingFixture>) => [makePriorRound([{
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') }, severity: 'note', title: 'Old issue', authorReply: 'none', ...entry,
+    }])];
+    const resolved = { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true };
+    const addressed = { threadEvaluations: [{ threadId: 'TH1', status: 'addressed' as const, reason: 'fixed' }] };
+    const cases: Array<[string, RoundContext[], CrossRoundSuppressionOptions]> = [
+      ['resolved', priorWith({ threadId: 'TH1' }), resolved],
+      ['agreed', priorWith({ threadId: 'TH1', authorReply: 'agree' }), {}],
+      ['addressed', priorWith({ threadId: 'TH1' }), addressed],
+    ];
+    for (const [name, prior, options] of cases) {
+      for (const severity of name === 'addressed' ? ['note'] as const : ['warning', 'note'] as const) {
+        const tagged = (guardedThreadIds?: Set<string>) => applyCrossRoundSuppression(security(severity), prior, { ...options, ...(guardedThreadIds && { guardedThreadIds }) });
+        expect([name, severity, tagged().findings[0].severity]).toEqual([name, severity, severity]);
+        expect(tagged(new Set(['TH-other'])).suppressedCount).toBe(0);
+        // The judge calling a thread addressed is no person's decision, so it hides no security finding.
+        expect(tagged(new Set(['TH1'])).findings[0].severity).toBe(name === 'addressed' ? severity : 'ignore');
+        // The same finding without the tag is hidden as before.
+        const plain = applyCrossRoundSuppression([{ ...security(severity)[0], tags: undefined }], prior, options);
+        expect(plain.findings[0].severity).toBe('ignore');
+      }
+    }
+    // A prior with no thread hides no security finding, and no prior hides a blocker.
+    const bodyOnly = applyCrossRoundSuppression(security('warning'), priorWith({ authorReply: 'agree' }), { guardedThreadIds: new Set(['TH1']) });
+    expect(bodyOnly.findings[0].severity).toBe('warning');
+    expect(applyCrossRoundSuppression(security('blocker'), priorWith({ threadId: 'TH1' }), { ...resolved, guardedThreadIds: new Set(['TH1']) }).findings[0].severity).toBe('blocker');
   });
 
   describe('resolved-thread cross-round suppression', () => {
@@ -5564,6 +5614,15 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.crossRoundDemoted).toBeUndefined();
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+
+    // A finding the judge tags as security is hidden only when the agreed prior's thread is one the PR author alone cannot clear.
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [{ title: 'Unused variable', row: 'improvement', reasoning: 'r', security: true }] }) });
+    const entry = input.priorRounds![0].findings.entries![0];
+    const withThread: JudgeInput = { ...input, priorRounds: [{ ...input.priorRounds![0], findings: { ...input.priorRounds![0].findings, entries: [{ ...entry, threadId: 'TH1' }] } }] };
+    const tagged = await runJudgeAgent(mockClient, makeConfig(), withThread);
+    expect([tagged.findings[0].tags, tagged.findings[0].severity, tagged.crossRoundSuppressed]).toEqual([[SECURITY_TAG], 'note', undefined]);
+    expect((await runJudgeAgent(mockClient, makeConfig(), { ...withThread, guardedThreadIds: new Set(['TH1']) })).findings[0].severity).toBe('ignore');
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
 
     // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
     // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A check on a doubt whether

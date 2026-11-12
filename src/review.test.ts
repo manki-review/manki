@@ -4943,6 +4943,7 @@ describe('runReview', () => {
     const previousFindings = [
       { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'warning' as const, status: 'resolved' as const, threadId: 'T1' },
       { title: 'Other', file: 'src/y.ts', line: 20, severity: 'warning' as const, status: 'open' as const, threadId: 'T2' },
+      { title: 'Secret', file: 'src/z.ts', line: 30, severity: 'warning' as const, status: 'resolved' as const, threadId: 'T3', isSecurity: true },
     ];
 
     const result = await runReview(
@@ -4961,6 +4962,9 @@ describe('runReview', () => {
     expect(judgeInput.resolvedThreadIds).toBeInstanceOf(Set);
     expect(judgeInput.resolvedThreadIds?.has('T1')).toBe(true);
     expect(judgeInput.resolvedThreadIds?.has('T2')).toBe(false);
+    // Only the thread the PR author alone cannot clear is passed on as guarded, and its suppression is marked so.
+    expect([...judgeInput.guardedThreadIds!]).toEqual(['T3']);
+    expect(judgeInput.inPrSuppressions?.map(s => [s.fingerprint.file, s.guarded])).toEqual([['src/x.ts', undefined], ['src/z.ts', true]]);
     expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_notes');
   });
