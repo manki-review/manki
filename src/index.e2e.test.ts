@@ -1378,7 +1378,7 @@ describe('runFullReview end to end', () => {
     });
 
     it.each<[string, string, () => void, string]>([
-      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT}`],
+      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`],
       // A review command would review the merged PR, so the failure names none.
       ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record'), ''],
     ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled, hint) => {
