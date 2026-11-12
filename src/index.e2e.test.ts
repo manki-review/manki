@@ -469,6 +469,9 @@ const FAKE_INTERVALS: Parameters<typeof jest.useFakeTimers>[0] = {
   doNotFake: ['Date', 'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout'],
 };
 
+/** How long Manki waits before it tries a token service call or a pinned download again. */
+const RETRY_WAIT_MS = 2000;
+
 let mockGitHub: FakeGitHub;
 let mockLLM: FakeLLM;
 let mockThrottling: boolean;
@@ -559,6 +562,11 @@ describe('runFullReview end to end', () => {
     jest.mocked(core.getInput).mockImplementation((name: string) => INPUTS[name] ?? '');
     jest.mocked(core.getIDToken).mockResolvedValue('oidc-token');
     jest.spyOn(globalThis, 'fetch').mockImplementation((url, init) => mockGitHub.fetch(String(url), init));
+    // The wait before a second try passes at once here, as the GitHub client's retry waits do.
+    const realSetTimeout = globalThis.setTimeout;
+    jest.spyOn(globalThis, 'setTimeout').mockImplementation(
+      ((run: () => void, ms?: number) => realSetTimeout(run, ms === RETRY_WAIT_MS ? 1 : ms)) as unknown as typeof setTimeout,
+    );
   });
 
   it('approves a clean round, records it, and retires the notices the verdict makes stale', async () => {
