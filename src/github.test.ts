@@ -140,17 +140,43 @@ describe('formatFindingComment', () => {
     const blocksByRule = `${ruleLine} It blocks because this repository sets \`review.rules: block\`.`;
     const ruleBlocker = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule });
     expect(ruleBlocker).toContain(`<summary>How this was checked: 1 place read, breaks a repository rule</summary>\n\n**Repository rule**\n${blocksByRule}\n\n**Checked in the code**\n`);
-    // So it is for a blocker cell a doubt held at a warning, and for a rule blocker a check gave back after a cap for want of proof.
-    const held = { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const, gradePath: [{ from: 'warning' as const, to: 'blocker' as const, by: 'rule' as const }] };
-    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...held })).toContain(blocksByRule);
-    const givenBack = [...byRule.gradePath, { from: 'blocker' as const, to: 'warning' as const, by: 'unproven' as const }, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }];
-    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: givenBack })).toContain(blocksByRule);
-    // A warning, and a blocker whose own damage blocks, name the rule without the reason for blocking.
-    // The damage made this one a blocker first, the cap held it back twice, and a check gave it back, as it would without the setting.
-    const capped = { from: 'blocker' as const, to: 'warning' as const, by: 'unproven' as const };
-    const byDamage = [{ from: 'note' as const, to: 'blocker' as const, by: 'judge' as const }, capped, { from: 'warning' as const, to: 'blocker' as const, by: 'rule' as const }, capped, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }];
-    for (const gradePath of [byDamage, byDamage.slice(1)]) {
-      expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, gradePath })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
+    // The reason shows when the finding would not block without the rule: its cell cannot block, or no check confirmed a cell that can.
+    const step = (from: Finding['severity'], to: Finding['severity'], by: NonNullable<Finding['gradePath']>[number]['by']) => ({ from, to, by });
+    const check = (outcome: 'confirmed' | 'unsettled' | 'disproved') => ({ outcome, reason: 'r', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc' });
+    const cell = (row: 'wrong' | 'degraded' | 'improvement', column: 'normal' | 'rare' = 'normal') => ({ row, column });
+    const byTheRule = step('warning', 'blocker', 'rule');
+    const capped = step('blocker', 'warning', 'unproven');
+    const restored = step('warning', 'blocker', 'refutation');
+    const held = { cell: cell('wrong'), gradeIfConfirmed: 'blocker' as const };
+    const paths: Array<[string, Partial<Finding>, boolean]> = [
+      ['the judge lowered a finder\'s blocker to a warning, then the rule raised it', { cell: cell('degraded'), gradePath: [step('blocker', 'warning', 'judge'), byTheRule] }, true],
+      ['the same, and a check confirmed the defect, whose cell still cannot block', { cell: cell('degraded'), gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('confirmed') }, true],
+      ['the judge lowered a finder\'s blocker to a note', { cell: cell('improvement'), gradePath: [step('blocker', 'note', 'judge'), step('note', 'blocker', 'rule')] }, true],
+      ['the judge raised a note to a warning', { cell: cell('degraded'), gradePath: [step('note', 'warning', 'judge'), byTheRule] }, true],
+      ['a check gave the rule blocker back after a cap for want of proof', { ...byRule, gradePath: [...byRule.gradePath, capped, restored], refutation: check('confirmed') }, true],
+      ['a check confirmed the fact the judge could not see, and the rule raised the note', { ...byRule, refutation: check('confirmed') }, true],
+      ['a doubt held a blocker cell at a warning, and nothing checked it', { ...held, gradePath: [byTheRule] }, true],
+      ['a doubt held a finder\'s blocker at a warning, and the check settled nothing', { ...held, gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('unsettled') }, true],
+      ['a doubt held a blocker cell at a warning, and both checks disproved it', { ...held, gradePath: [byTheRule], refutation: check('disproved'), pairRefutation: check('disproved') }, true],
+      ['the `rare` column held the cell at a warning, and the check settled nothing', { cell: cell('wrong', 'rare'), gradeIfConfirmed: 'blocker', gradePath: [byTheRule], refutation: check('unsettled') }, true],
+      // Without the rule, the confirmation gives each of these its blocker.
+      ['a doubt held a blocker cell at a warning, and a check confirmed it', { ...held, gradePath: [byTheRule], refutation: check('confirmed') }, false],
+      ['a doubt held a finder\'s blocker at a warning, and a check confirmed it', { ...held, gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('unsettled'), pairRefutation: check('confirmed') }, false],
+      ['the `rare` column held the cell at a warning, and a check confirmed the reach', { cell: cell('wrong', 'rare'), gradeIfConfirmed: 'blocker', gradePath: [byTheRule], refutation: check('confirmed') }, false],
+      ['the judge raised it to a blocker, the cap held it back twice, and a check gave it back', { cell: cell('wrong'), gradePath: [step('note', 'blocker', 'judge'), capped, byTheRule, capped, restored], refutation: check('confirmed') }, false],
+      ['a finder and the judge both graded it a blocker, the cap held it back twice, and a check gave it back', { cell: cell('wrong'), gradePath: [capped, byTheRule, capped, restored], refutation: check('confirmed') }, false],
+      // One check confirmed and one disproved, so whether the damage alone blocks is open and no reason is given.
+      ['a doubt held a blocker cell at a warning, and the two checks disagree', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: check('disproved') }, false],
+      ['a record without a cell, and a check confirmed it', { gradePath: [byTheRule], refutation: check('confirmed') }, false],
+      // A finding that does not block gives no reason for blocking.
+      ['the cap for an unreported build failure held the rule blocker back', { severity: 'warning', cell: cell('degraded'), gradePath: [byTheRule, step('blocker', 'warning', 'build_claim')] }, false],
+      ['the rule blocker sits on a line the PR did not change', { severity: 'warning', ...byRule, gradePath: [...byRule.gradePath, step('blocker', 'warning', 'pre_existing')] }, false],
+      ['two disproofs lowered a blocker of the judge\'s under `review.rules: warn`', { severity: 'warning', gradePath: [step('warning', 'blocker', 'judge'), step('blocker', 'warning', 'refutation')], refutation: check('disproved'), pairRefutation: check('disproved') }, false],
+      ['its own damage made it a blocker and no rule step raised it', { cell: cell('wrong') }, false],
+    ];
+    for (const [name, fields, namesSetting] of paths) {
+      const fold = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...fields });
+      expect([name, fold.includes(ruleLine), fold.includes(blocksByRule)]).toEqual([name, true, namesSetting]);
     }
     expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     // A rule warning on code an earlier round reviewed says so under its title and names the rule the same way.

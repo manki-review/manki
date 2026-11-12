@@ -2832,16 +2832,19 @@ const NOT_CHECKED: FindingChecks = {
 
 /**
  * Returns the part that names the rule a confirmed rule finding breaks, and says when that rule is why the finding
- * blocks: a step of its `gradePath` shows the rule made it a blocker, and it was none before that step. One its damage
- * made a blocker first blocks without the rule. The file name and the quote are repository text, so each shows as a
- * code span or not at all.
+ * blocks: the rule raised it to a blocker, and its damage alone would not have. The damage alone blocks only when the
+ * judge's cell sits on a row that can block and a check confirmed the finding. One check that confirmed it beside one
+ * that did not leaves that open, so the part gives no reason then. The file name and the quote are repository text, so
+ * each shows as a code span or not at all.
  */
 function rulePart(finding: Finding): FoldPart | undefined {
   if (!breaksRule(finding) || !finding.rule) return undefined;
   const quote = codeLine(finding.rule.quote);
-  const path = finding.gradePath ?? [];
-  const raise = path.findIndex(step => step.by === 'rule' && step.to === 'blocker');
-  const blocks = finding.severity === 'blocker' && raise >= 0 && !path.slice(0, raise).some(step => step.from === 'blocker' || step.to === 'blocker');
+  const raised = !!finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
+  // A finding without a cell the table knows is read as one whose damage can block.
+  const damageCanBlock = !isGradeCell(finding.cell) || cellGrade(finding.cell.row, 'normal') === 'blocker';
+  const confirmed = [finding.refutation, finding.pairRefutation].some(check => !!check && outcomeOf(check) === 'confirmed');
+  const blocks = finding.severity === 'blocker' && raised && !(damageCanBlock && confirmed);
   const text = `This PR breaks a required rule of ${codeLine(finding.rule.file) || 'an instruction file'}${quote ? `: ${quote}` : '.'}`
     + (blocks ? ' It blocks because this repository sets `review.rules: block`.' : '');
   return { label: 'Repository rule', text, open: `**Repository rule:** ${text}` };
