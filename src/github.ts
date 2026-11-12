@@ -13,8 +13,9 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, SEVERITY_ORDER, threadBlocks } from './types';
-import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
+import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
+import { formatRunner } from './run-diagnostics';
 import { latestLimits } from './providers/instrumentation';
 import type { LimitUsage } from './providers/types';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
@@ -697,16 +698,6 @@ function renderAgentLines(agents: AgentProgressEntry[]): string {
     }
     return `${INDENT}○ ${name}`;
   }).join('\n');
-}
-
-/** Formats a duration such as `850ms`, `45s`, `4m 12s` or `1h 2m`. */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 function validPrTypeOrNull(prType: string): string | null {
@@ -2039,7 +2030,7 @@ function formatRoundUsage(usage: RoundUsage): string | undefined {
 
 /**
  * Returns the footer, a collapsed "About this review": the reviewed commit, and with a round context the round, the
- * lines read and the time it took, the models that found and judged the findings, and the tokens and cost.
+ * lines read and the time it took, the models that found and judged the findings, the tokens and cost, and the runner.
  */
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string, context?: RoundContext, reviewTimeMs?: number): string {
   const commit = `[\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha})`;
@@ -2052,6 +2043,7 @@ function buildReviewedCommitFooter(owner: string, repo: string, commitSha: strin
     ...(context ? [`- ${countOf(context.diff.lines, 'changed line')} read${reviewTimeMs ? ` in ${formatDuration(reviewTimeMs)}` : ''}`] : []),
     ...(context ? [`- Found by ${finders.join(' and ')}, judged by ${inlineCode(context.models.judge)}`] : []),
     ...(usage ? [`- ${usage}`] : []),
+    ...(context?.runner ? [`- ${formatRunner(context.runner)}`] : []),
     `- [How Manki reviews](${HOW_REVIEWS_WORK_URL})`,
   ];
   return `<details>\n<summary>About this review</summary>\n\n${lines.join('\n')}\n\n</details>`;

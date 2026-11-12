@@ -113,6 +113,8 @@ class FakeGitHub {
   writes: string[] = [];
   /** Runs before a write is answered, which waits for it. */
   onWrite?: (write: string) => void | Promise<void>;
+  /** The workflow run of this job, which the API answers with once it settles. Without it the run is not found. */
+  workflowRun?: Promise<{ run_started_at: string }>;
   headSha = HEAD_SHA;
   /** The PR's diff against its base at each head commit, `PR_DIFF` unless set. */
   prDiffs: Record<string, string> = {};
@@ -180,6 +182,7 @@ class FakeGitHub {
     const now = new Date().toISOString();
     let match: RegExpMatchArray | null;
 
+    if (method === 'GET' && route === `/actions/runs/${mockContext.runId}` && this.workflowRun) return json(await this.workflowRun);
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(this.prDiffs[this.headSha] ?? PR_DIFF);
       return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
@@ -1206,12 +1209,19 @@ describe('runFullReview end to end', () => {
   describe('dispatched by the webhook service', () => {
     it('reviews a push with the base branch\'s config, not the one the PR carries at its head', async () => {
       mockGitHub.configs = { main: 'planner:\n  enabled: false\n', [HEAD_SHA]: 'auto_review: false\n' };
+      // GitHub answers the lookup of the workflow run only once the review is posted, so the review does not wait for it.
+      let answerRun!: (run: { run_started_at: string }) => void;
+      mockGitHub.workflowRun = new Promise(resolve => { answerRun = resolve; });
+      mockGitHub.onWrite = write => { if (write.endsWith('/reviews')) answerRun({ run_started_at: new Date(Date.now() - 3_600_000).toISOString() }); };
 
       await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: HEAD_SHA, delivery_id: '72d3162e-cc78-11e3-81ab-4c9367dc0958' });
 
       expect(core.setFailed).not.toHaveBeenCalled();
       const [review] = postedReviews();
       expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
+      // The record describes the runner, and the run log ends with the wait the lookup gave in the end.
+      expect(mockGitHub.roundContext(review).runner).toMatchObject({ os: process.platform, peakCliProcesses: expect.any(Number) });
+      expect(jest.mocked(core.info).mock.calls.at(-1)?.[0]).toMatch(/^Runner: .* · waited \d+m \d+s · /);
       expect(mockGitHub.roundContext(review).meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
       expect(mockLLM.calls).not.toContain('planner');
       expect(mockGitHub.stateReports).toEqual([

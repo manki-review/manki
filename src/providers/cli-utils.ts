@@ -8,6 +8,7 @@ import * as core from '@actions/core';
 
 import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV } from '../utils';
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
+import { trackCliProcess } from '../run-diagnostics';
 import { STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepoTools } from '../types';
 import { LLMResponse, RepoTools, SendMessageOptions } from './types';
@@ -579,6 +580,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       env: opts.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    const processEnded = trackCliProcess();
 
     let stderr = '';
     let timedOut = false;
@@ -667,6 +669,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     });
 
     child.on('close', (code, signal) => {
+      processEnded();
       clearAllTimers();
       if (settled) return;
       settled = true;
@@ -698,6 +701,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     });
 
     child.on('error', (error) => {
+      processEnded();
       clearAllTimers();
       if (settled) return;
       settled = true;

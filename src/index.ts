@@ -26,6 +26,7 @@ import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFindin
 import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
+import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
@@ -1945,7 +1946,7 @@ async function runFullReview(
     const { result } = stage;
 
     const reviewTimeMs = Date.now() - startTime;
-    const buildContext = () => buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls() }, result, {
+    const buildContext = () => buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls(), runner: runnerDiagnostics() }, result, {
       plannerDurationMs: dashboard.plannerDurationMs,
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
       wallClockMs: reviewTimeMs,
@@ -2256,6 +2257,8 @@ async function main(): Promise<void> {
   const isPostPhase = core.getState(POST_PHASE_STATE_KEY) === 'true';
   // Read before the dispatched event replaces the inputs in the context.
   let dispatched: ReturnType<typeof dispatchedInputs> | undefined;
+  let stopSampler: (() => void) | undefined;
+  let queueWait: Promise<void> | undefined;
 
   try {
     if (isPostPhase) {
@@ -2264,12 +2267,23 @@ async function main(): Promise<void> {
       core.saveState(POST_PHASE_STATE_KEY, 'true');
       if (!isDispatchedRun()) throw new Error(NOT_DISPATCHED);
       dispatched = dispatchedInputs();
-      if (await restoreDispatchedEvent(await workflowOctokit()) === 'run') await run();
+      const octokit = await workflowOctokit();
+      if (await restoreDispatchedEvent(octokit) === 'run') {
+        stopSampler = startMemorySampler();
+        // Only the round record and the last log line read the wait, so the event is handled while the lookup runs.
+        queueWait = recordQueueWait(octokit);
+        await run();
+      }
     }
   } catch (error) {
     if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
   } finally {
+    if (stopSampler) {
+      stopSampler();
+      await queueWait;
+      core.info(formatRunner(runnerDiagnostics(), true));
+    }
     removeSeededAuthFiles();
     process.off('SIGTERM', onSignal);
     process.off('SIGINT', onSignal);
