@@ -176,11 +176,13 @@ describe('buildJudgeSystemPrompt', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }), 5, false, 0, related_repos);
     const rules = prompt.slice(prompt.indexOf('## Related Repos'), prompt.indexOf('## Project Instructions'));
     expect(rules).toContain('References, which this repository implements or ports: `dashpay/dash`, `dashpay/dips`. Consumers, which depend on this repository: `dashpay/platform`.');
-    expect(rules).toContain('A citation listed there as in the fetched checkout is evidence the reviewer read, so it counts as code you can see, and Manki shows the lines around it under the finding as **Cited code in a related repo** when it could read them. Any other citation rests on code you cannot see.\n');
+    expect(rules).toContain('A citation listed there as in the fetched checkout is evidence the reviewer read, so it counts as code you can see. Manki shows the lines the fetched checkout holds at a citation under the finding as **Cited code in a related repo**, when it could read them.');
+    // The lines show for every readable citation, so the prompt says what they are for one the tool evidence did not confirm.
+    expect(rules).toContain(' It shows them for every citation, also one the tool evidence lists as not holding the quoted code and one the tool evidence does not list. For such a citation the shown lines are what is really at that place, and the citation itself proves nothing: grade from what the shown lines hold, never from what the finding says they hold. A citation that is neither listed as in the fetched checkout nor shown rests on code you cannot see.\n');
     // A judge with tools of its own reads the related repos too, and is told to name a citation it did not read as a doubt.
     const ownTools = ' Your tools read these repos too. Read a cited line the tool evidence does not confirm before you grade its finding, and list in `doubts` a citation the finding rests on that you did not read.';
     const withTools = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }), 5, false, 0, related_repos, 0, true, 30);
-    expect(withTools).toContain(`Any other citation rests on code you cannot see.${ownTools}\n`);
+    expect(withTools).toContain(`nor shown rests on code you cannot see.${ownTools}\n`);
     expect(prompt).not.toContain(ownTools);
     expect(rules).toContain('**A divergence from a reference** is graded by the blocker tests');
     expect(rules).toContain('**A change that breaks a consumer** is the `degraded` row in the `normal` column, a `warning` that lists the consumer\'s call sites');
