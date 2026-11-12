@@ -395,6 +395,10 @@ export function breaksRule(finding: Pick<Finding, 'rule'>): boolean {
 /** How a broken required rule is graded, the `review.rules` setting: `warn` posts a warning, `block` a blocker. */
 export type RulesMode = 'warn' | 'block';
 
+/** The `review.sweep` setting. Each value past `off` names the lowest grade of a kept finding that starts a sweep. */
+export const SWEEP_MODES = ['off', 'blockers', 'warnings', 'notes'] as const;
+export type SweepMode = typeof SWEEP_MODES[number];
+
 /**
  * How a pre-existing claim the reviewer made and the judge kept was checked: `pre_existing` when it held, or the
  * condition that failed: no location, a file `exclude_paths` left out, a file the PR deletes, or a line or proof
@@ -559,12 +563,14 @@ export interface RoundComparison {
   findings?: number;
 }
 
-/** A search of the diff for other instances of one blocker's defect class. */
+/** A search of the diff for other instances of one finding's defect class. */
 export interface RoundSweep {
   /** The reviewer name its findings carry. */
   reviewer: string;
-  /** The blocker it started from, as `file:line`. */
-  blocker: string;
+  /** The finding it started from, as `file:line`. */
+  source: string;
+  /** The grade of that finding when the sweep started. */
+  severity: FindingSeverity;
   /**
    * `too_specific` when the call judged the class too narrow to recur, `failed` when the call failed or its reply did not
    * parse twice, and `cut` when the round's cap left it out.
@@ -943,7 +949,7 @@ export interface ReviewResult {
   relatedWork?: RelatedWork;
   /** Each sibling comparison the round found, asked or cut. */
   comparisons?: RoundComparison[];
-  /** Each sweep the round's blockers started, asked or cut. */
+  /** Each sweep the round's findings started, asked or cut. */
   sweeps?: RoundSweep[];
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
@@ -1110,8 +1116,8 @@ export interface ReviewRoutingConfig {
   outside_input?: string;
   /** Worked examples of this repository's findings that are and are not blockers, for the judge. */
   examples?: { blocker?: string[]; not_blocker?: string[] };
-  /** Whether each blocker the judge keeps starts a search of the diff for other instances of its defect class. */
-  sweep?: boolean;
+  /** The lowest grade of a kept finding that starts a search of the diff for other instances of its defect class. */
+  sweep?: SweepMode;
   /** How many notes a review lists at most. */
   notes?: number;
   /** Whether a broken required rule of the instruction files is posted as a warning (`warn`) or blocks (`block`). */
@@ -1643,7 +1649,7 @@ export interface RoundContext {
   relatedWork?: RoundRelatedWork;
   /** Each sibling comparison the round found, asked or cut. */
   comparisons?: RoundComparison[];
-  /** Each sweep the round's blockers started, asked or cut. */
+  /** Each sweep the round's findings started, asked or cut. */
   sweeps?: RoundSweep[];
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];

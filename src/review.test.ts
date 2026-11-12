@@ -35,7 +35,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -2460,7 +2460,7 @@ describe('runReview', () => {
     const old = Array.from({ length: 8 }, (_, i) => ({ severity: 'warning', title: `Old ${i + 1}`, ...at('src/old.ts', 11 + i), preExisting: true, preExistingReason: 'The loop predates this PR.' }));
     // The sweep that the blocker starts finds a warning on changed code, which the judge keeps with a doubt whether the defect exists.
     const swept = { severity: 'warning', title: 'Search key misses the tenant', ...at('src/app.ts', 20) };
-    const sweeping = (system: string) => system.startsWith('A code review found the blocker');
+    const sweeping = (system: string) => system.startsWith('A code review reported the finding');
     const refuterCalls: string[] = [];
     const clients = makeClients();
     // One finder reports them, so the judge merges no copies.
@@ -2488,12 +2488,14 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     let result: ReviewResult;
     try {
-      result = await runReview(clients, { config: makeConfig({ review: { sweep: true } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+      result = await runReview(clients, { config: makeConfig({ review: { sweep: 'warnings' } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
 
     expect(result.reviewComplete).toBe(true);
+    // A warning on code the PR did not change starts no sweep, although its cited lines prove it.
+    expect(result.sweeps?.map(s => [s.source, s.severity])).toEqual([['src/app.ts:3', 'blocker']]);
     // The first judge call checks only its blocker, so the sweep's warning gets its check. The warnings on unchanged code share the seven left.
     expect([refuterCalls.slice(0, 2), refuterCalls.slice(2).sort()]).toEqual([[blocker.title, swept.title], old.slice(0, 7).map(f => f.title)]);
     expect(result.findings.map(f => [f.title, f.severity, f.checkStatus])).toEqual([
@@ -2504,7 +2506,7 @@ describe('runReview', () => {
     expect(result.allJudgedFindings?.filter(f => f.refutation).map(f => f.title).sort()).toEqual([blocker, swept, ...old.slice(0, 7)].map(f => f.title).sort());
   });
 
-  it('sweeps the diff for other instances of each kept blocker\'s class with `review.sweep`, and judges what it finds', async () => {
+  it('sweeps the diff for other instances of the class of each kept finding `review.sweep` names, and judges what it finds', async () => {
     const original = { severity: 'blocker', title: 'Cache key misses the locale', file: 'src/cache.ts', line: 10, description: 'd', evidence: ['src/cache.ts:10 builds the key'], proof: ['src/cache.ts:10'] };
     const elsewhere = { ...original, title: 'Search key misses the tenant', file: 'src/search.ts', line: 40, evidence: ['src/search.ts:40 builds the key'], proof: ['src/search.ts:40'] };
     const restated = { ...original, title: 'Cache key misses the locale again', line: 14 };
@@ -2517,10 +2519,10 @@ describe('runReview', () => {
     const nearCited = { ...elsewhere, title: 'Shard key misses the region', line: 72, evidence: ['src/search.ts:72 builds the key'], proof: ['src/search.ts:72'] };
     const dropped = { severity: 'note', title: 'Rename the helper', file: 'src/retry.ts', line: 9, description: 'd', evidence: ['src/retry.ts:9 names it'], proof: ['src/search.ts:80'] };
     const citedByDropped = { ...elsewhere, title: 'Page key misses the region', line: 80, evidence: ['src/search.ts:80 builds the key'], proof: ['src/search.ts:80'] };
-    const sweeping = (system: string) => system.startsWith('A code review found the blocker');
+    const sweeping = (system: string) => system.startsWith('A code review reported the finding');
     const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
     const evaluation: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'r' };
-    const run = async (sweep: boolean, disproved = false, sweepJudgeError?: Error) => {
+    const run = async (sweep: SweepMode, disproved = false, sweepJudgeError?: Error) => {
       const clients = makeClients();
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({
         content: sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped] }) : JSON.stringify([original, other, dropped]),
@@ -2542,13 +2544,15 @@ describe('runReview', () => {
       return { result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])) };
     };
 
-    const off = await run(false);
+    const off = await run('off');
     expect([off.sweeps.length, mockedRunJudgeAgent.mock.calls.length, off.result.sweeps]).toEqual([0, 1, undefined]);
     // A blocker the refuters disproved starts no sweep.
-    const disproved = await run(true, true);
+    const disproved = await run('blockers', true);
     expect([disproved.sweeps.length, disproved.result.sweeps]).toEqual([0, undefined]);
+    // With `warnings`, the warning its cited lines prove starts one too, after the blocker's.
+    expect((await run('warnings')).result.sweeps?.map(s => [s.reviewer, s.source, s.severity])).toEqual([['Sweep 1', 'src/cache.ts:10', 'blocker'], ['Sweep 2', 'src/retry.ts:5', 'warning']]);
 
-    const { result, sweeps } = await run(true);
+    const { result, sweeps } = await run('blockers');
     const reviewer = 'Sweep 1';
     expect(sweeps).toHaveLength(1);
     // A place the round already judged is not judged twice, and the rest gets a judge call of its own, without the open threads.
@@ -2567,17 +2571,17 @@ describe('runReview', () => {
     // A rank from the sweep's judge call is on another scale, so only the first call's ranks stay.
     expect(result.findings.map(f => [f.severity, f.noteRank])).toEqual([['blocker', 1], ['warning', 1], ['blocker', undefined], ['note', undefined], ['blocker', undefined]]);
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
-    expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+    expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
 
     // A judge that fails on the sweep's findings ends the round incomplete, so no blocker the sweep found is lost
     // behind an approval. The record keeps what the first judge call graded, and nothing is posted.
     for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with @manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
-      const failed = (await run(true, false, error)).result;
+      const failed = (await run('blockers', false, error)).result;
       expect([failed.outcome, failed.verdict, failed.reviewComplete, failed.findings]).toEqual(['INCOMPLETE', 'COMMENT', false, []]);
       expect(failed.summary).toEqual(summary);
       expect(failed.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
-      expect(failed.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+      expect(failed.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
       // The record also keeps the places the sweep found, which the judge did not get to grade.
       expect(failed.rawFindings?.map(f => f.title)).toEqual(expect.arrayContaining([elsewhere.title, nearCited.title, citedByDropped.title]));
     }
