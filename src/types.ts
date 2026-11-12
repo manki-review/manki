@@ -1097,7 +1097,7 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** The planner's three triage answers. Each takes the side that adds review when unknown. */
 export interface Triage {
-  /** No defect could hide in the change, so the trivial verifier reads it alone. */
+  /** No defect could hide in the change. The trivial verifier reads it alone unless a deeper review or `review.routing` gives it finders. */
   trivial: boolean;
   /** Judging the change needs reasoning about behavior, so finders run at high effort. */
   subtle: boolean;
