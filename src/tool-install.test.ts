@@ -4,20 +4,8 @@ import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 
+import { pastRetryWait } from './test-utils';
 import { installPinned } from './tool-install';
-
-/** Starts `call` and lets `ms` of fake time pass, so its waits and timeouts run without real time. */
-async function afterTime<T>(call: () => Promise<T>, ms: number): Promise<T> {
-  jest.useFakeTimers();
-  try {
-    const result = call();
-    result.catch(() => {});
-    await jest.advanceTimersByTimeAsync(ms);
-    return await result;
-  } finally {
-    jest.useRealTimers();
-  }
-}
 
 function tarball(): Buffer {
   const dir = mkdtempSync(join(tmpdir(), 'manki-tool-test-'));
@@ -175,12 +163,12 @@ describe('installPinned', () => {
     const url = `https://example.test/${name.replace(/ /g, '-')}.tgz`;
     try {
       fetchMock.mockImplementation(failing);
-      await expect(afterTime(() => installPinned({ url, integrity }), 70_000)).rejects.toThrow(reason);
+      await expect(pastRetryWait(() => installPinned({ url, integrity }), 70_000)).rejects.toThrow(reason);
       expect(fetchMock).toHaveBeenCalledTimes(3);
       expect(stderr.mock.calls.map(([line]) => String(line))).toEqual([2, 3].map(attempt => expect.stringMatching(new RegExp(`${reason.source}, trying again \\(try ${attempt} of 3\\)\n$`))));
 
       fetchMock.mockClear().mockImplementationOnce(failing).mockImplementationOnce(failing).mockImplementation(async () => new Response(data));
-      const dir = await afterTime(() => installPinned({ url, integrity }), 50_000);
+      const dir = await pastRetryWait(() => installPinned({ url, integrity }), 50_000);
       expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
       expect(fetchMock).toHaveBeenCalledTimes(3);
     } finally {
@@ -193,12 +181,12 @@ describe('installPinned', () => {
     const chunks = [data.subarray(0, third), data.subarray(third, 2 * third), data.subarray(2 * third)];
     // A minute in all, three times what a stalled download gets, with 15 seconds between two chunks.
     fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => slowResponse(chunks, 15_000, signalOf(init)));
-    const dir = await afterTime(() => installPinned({ url: 'https://example.test/slow.tgz', integrity }), 60_000);
+    const dir = await pastRetryWait(() => installPinned({ url: 'https://example.test/slow.tgz', integrity }), 60_000);
     expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     fetchMock.mockClear().mockImplementation(async (_url: unknown, init?: RequestInit) => slowResponse([], 15_000, signalOf(init), true));
-    await expect(afterTime(() => installPinned({ url: 'https://example.test/endless.tgz', integrity }), 240_000))
+    await expect(pastRetryWait(() => installPinned({ url: 'https://example.test/endless.tgz', integrity }), 240_000))
       .rejects.toThrow('download of https://example.test/endless.tgz did not finish within 240 seconds');
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
