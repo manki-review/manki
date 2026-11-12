@@ -76,7 +76,8 @@ describe('recordFixRate', () => {
             entries: [
               { ...makeFindingFingerprintEntry({ title: 'Changed line', file: 'src/a.ts', lineStart: 10, severity: 'warning', specialist: 'Security' }), checkStatus: 'confirmed', toolEvidence: 'confirmed', category: 'security', effort: 'quick', evidence: { checks: ['read src/a.ts:10'], proof: ['src/a.ts:10'] }, refutation: { outcome: 'confirmed', reason: 'Reachable.', files: ['src/a.ts'], codeDigest: 'd' } },
               makeFindingFingerprintEntry({ title: 'Judge addressed', file: 'src/b.ts', lineStart: 5, severity: 'note', specialist: 'Style', threadId: 'T_B' }),
-              { ...makeFindingFingerprintEntry({ title: 'Human resolved', file: 'src/b.ts', lineStart: 20, severity: 'warning', specialist: 'Security', threadId: 'T_C' }), checkStatus: 'confirmed', toolEvidence: 'confirmed', category: 'security', effort: 'quick', evidence: { checks: ['read src/a.ts:10'], proof: ['src/a.ts:10'] }, refutation: { outcome: 'confirmed', reason: 'Reachable.', files: ['src/a.ts'], codeDigest: 'd' } },
+              // A finding whose only proof is a line of a related repo cited evidence too.
+              { ...makeFindingFingerprintEntry({ title: 'Human resolved', file: 'src/b.ts', lineStart: 20, severity: 'warning', specialist: 'Security', threadId: 'T_C' }), checkStatus: 'confirmed', toolEvidence: 'confirmed', category: 'security', effort: 'quick', evidence: { checks: [], proof: [], relatedProof: ['acme/reports:src/import.ts:2'] }, refutation: { outcome: 'confirmed', reason: 'Reachable.', files: ['src/a.ts'], codeDigest: 'd' } },
               { ...makeFindingFingerprintEntry({ title: 'Far from change', file: 'src/a.ts', lineStart: 80, severity: 'warning', reviewers: ['Security', 'Style'] }), checkStatus: 'unconfirmed', toolEvidence: 'none', category: 'style', effort: 'moderate' },
             ],
           },

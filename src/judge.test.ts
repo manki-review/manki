@@ -299,6 +299,10 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('A finding is a `blocker` only when it passes all five tests:');
     expect(prompt).toContain('Memory is the maintainers\' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.');
     expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.\n`);
+    // A statement of the author about code is a premise like any other: a cited line settles it, or it goes to `doubts`.
+    expect(prompt).toContain('never dropped because a model made it.\n\n**The author\'s word never clears a finding.** The PR description, a comment or a TODO can say why a finding does no harm: a value is checked elsewhere, a path cannot be reached, callers always do something, the behaviour is the same as before, or other code guarantees it. Such a statement is a fact about code, and only code proves it. It lowers a finding\'s row, or makes the finding `ignore`, only when `reasoning` cites the `file:line` that shows it. Without that line, state the cell the finding earns if the statement is false, and list in `doubts` the premise of the finding that the statement denies, with `decides` set to `defect`.');
+    expect(prompt).toContain('cite that check in each caller, or list the doubt "a caller passes `index` to `getItem` unchecked". A statement that the author chose a behaviour is different, and follows Behaviour that is intended but surprising.\n\n## Blocker Tests');
+    expect(prompt).toContain('Never use it just to reduce the finding count. A finding is no false positive because the author says so, by The author\'s word never clears a finding.');
     for (const test of ['The PR causes it.', 'The failure can be named.', 'The damage is serious.', 'The code proves it.', 'The author would fix it.']) {
       expect(prompt).toContain(`**${test}**`);
     }
@@ -349,6 +353,7 @@ describe('buildJudgeSystemPrompt', () => {
       'The author\'s word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer.',
       'A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the cell its damage earns.',
       '`reasoning` may note that the author lists it, but the note never changes the cell. A declared placeholder or a TODO with a tracking issue still follows test 5.',
+      'A statement that the behaviour is safe, or that other code handles what it leaves out, is no choice either: it is a fact about code, under The author\'s word never clears a finding.',
     ]) {
       expect(section).toContain(rule);
     }
@@ -405,7 +410,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Drop it only when you can say concretely why both are wrong.');
     expect(prompt).toContain("The other finder's silence is not evidence against it.");
     expect(prompt).toContain("Agreement never raises or protects a finding's severity.");
-    expect(prompt).toContain('A finding named `Sibling field: ...`, `Sibling code: ...` or `Sweep N` comes from a call asked about that spot or that kind of mistake, not from a finder, so it never counts as one of the two.');
+    expect(prompt).toContain('A finding named `Sibling field: ...`, `Sibling code: ...`, `Claim check N` or `Sweep N` comes from a call asked about that spot, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two.');
     expect(prompt).not.toContain('specialist');
 
     expect(buildJudgeSystemPrompt(makeConfig(), 1)).not.toContain('## Finder Agreement');
@@ -1584,6 +1589,7 @@ describe('runJudgeAgent', () => {
     fs.mkdirSync(path.join(checkout, 'src'));
     fs.writeFileSync(path.join(checkout, 'src', 'import.ts'), 'export function importRow(row: string) {\n  return Date.parse(row.split(\',\')[0]);\n}\n');
     fs.writeFileSync(path.join(checkout, 'src', 'twin.ts'), 'text of the consumer, line 1\ntext of the consumer, line 2\n');
+    fs.writeFileSync(path.join(checkout, 'src', 'export.ts'), 'export function exportRow(row: string) {\n  return row;\n}\n');
     fs.writeFileSync(path.join(stateDir, `${encodeURIComponent('acme/reports')}.done`), checkout);
     const repos = [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }];
     const related = { repos, cacheDir: '/cache', stateDir };
@@ -1604,6 +1610,12 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Many citations', severity: 'note', description: `See ${Array.from({ length: 10 }, (_, i) => `acme/reports:src/import.ts:${40 + i}`).join(', ')} and acme/reports:src/import.ts:3.` }),
       // Citations of files that are not there stop at the same 10, so a finding cannot make the judge try a file per citation it writes.
       makeFinding({ title: 'Many missing files', severity: 'note', description: `See ${Array.from({ length: 30 }, (_, i) => `acme/reports:src/gone-${i}.ts:1`).join(', ')}.` }),
+      // Missing files of the PR use up only the PR's reads of a finding, so its related citation is still shown.
+      makeFinding({ title: 'Missing proof beside a related line', severity: 'note', description: 'See acme/reports:src/export.ts:2.', evidence: { checks: [], proof: Array.from({ length: 10 }, (_, i) => `src/starved-${i}.ts:1`) } }),
+      // A file that is not there is tried once a round, however often and by however many findings it is cited.
+      ...['One missing file cited often', 'The same missing file again'].map(title => makeFinding({ title, severity: 'note', evidence: { checks: [], proof: Array.from({ length: 15 }, (_, i) => `src/missing-again.ts:${i + 1}`) } })),
+      // Proof lines of the PR in files that are not there stop at 10 for a finding too, and at 80 for the round.
+      ...Array.from({ length: 12 }, (_, n) => makeFinding({ title: `Missing proof ${n}`, severity: 'note', evidence: { checks: [], proof: Array.from({ length: 30 }, (_, i) => `src/absent-${n}-${i}.ts:1`) } })),
     ];
     const readSpy = jest.spyOn(mcpServer, 'readFileInRoot');
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'improvement', reasoning: 'r' })) }) });
@@ -1616,7 +1628,15 @@ describe('runJudgeAgent', () => {
       for (const dir of [workspace, checkout, stateDir]) fs.rmSync(dir, { recursive: true, force: true });
     }
     const tried = readSpy.mock.calls.map(([, file]) => file).filter(file => file.startsWith('src/gone-'));
+    const absent = readSpy.mock.calls.filter(([root, file]) => root === workspace && file.startsWith('src/absent-')).map(([, file]) => file);
+    const again = readSpy.mock.calls.filter(([root, file]) => root === workspace && file === 'src/missing-again.ts');
+    const reads = readSpy.mock.calls.length;
     readSpy.mockRestore();
+    expect(again).toHaveLength(3);
+    // Each of the three rounds stops at 80 reads. Until then each finding tries its first 10 proof lines and no more.
+    expect(reads).toBeLessThanOrEqual(3 * 80);
+    expect(absent.filter(file => file.startsWith('src/absent-0-'))).toEqual([0, 1, 2].flatMap(() => Array.from({ length: 10 }, (_, i) => `src/absent-0-${i}.ts`)));
+    expect(absent.some(file => file.startsWith('src/absent-11-'))).toBe(false);
     expect(new Set(tried)).toEqual(new Set(Array.from({ length: 10 }, (_, i) => `src/gone-${i}.ts`)));
     // Two of the three rounds have related repos, and each tries a cited file once.
     expect(tried).toHaveLength(20);
@@ -1627,7 +1647,8 @@ describe('runJudgeAgent', () => {
     expect(shown[1]).toContain(`- **Cited code in a related repo** (acme/reports:src/import.ts:2), from the checkout this round fetched. ${trustRule}`);
     expect(shown[1]).toContain(">>> 2:   return Date.parse(row.split(',')[0]);");
     expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/import.ts:1), from the checkout this round fetched.');
-    expect((shown[1] as string).match(/\*\*Cited code in a related repo\*\*/g)).toHaveLength(3);
+    expect((shown[1] as string).match(/\*\*Cited code in a related repo\*\*/g)).toHaveLength(4);
+    expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/export.ts:2)');
     // A file of the PR at the path a citation spells takes away no window of the related file, and never shows in its place.
     expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/twin.ts:2), from the checkout this round fetched.');
     expect(shown[1]).toContain('>>> 2: text of the consumer, line 2');
@@ -4363,6 +4384,13 @@ describe('mapJudgedToFindings', () => {
     expect(fold(proven, { checks: [], proof: [], emptySearch: '' }).evidence).not.toHaveProperty('emptySearch');
     expect(fold({ ...proven, emptySearch: '' }, { checks: [], proof: [], emptySearch: 'grep x: no match' })).toMatchObject({ severity: 'blocker', evidence: { emptySearch: 'grep x: no match' } });
     expect(fold(undefined, { checks: [], proof: ['src/math.ts:2'], emptySearch: '' })).toMatchObject({ severity: 'blocker', evidence: { proof: ['src/math.ts:2'] } });
+    // The lines of a related repo that a check added to either finding stay, once each and 10 at most, the kept finding's first.
+    const related = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `acme/reports:src/rows.ts:${from + i}`);
+    expect(fold({ ...proven, relatedProof: related(1, 2) }, { ...proven, relatedProof: related(2, 3) }).evidence).toEqual({ ...proven, relatedProof: related(1, 3) });
+    expect(fold(proven, { ...proven, relatedProof: related(1, 1) }).evidence).toEqual({ ...proven, relatedProof: related(1, 1) });
+    expect(fold(undefined, { ...proven, relatedProof: related(1, 1) }).evidence).toEqual({ ...proven, relatedProof: related(1, 1) });
+    expect(fold({ ...proven, relatedProof: related(1, 8) }, { ...proven, relatedProof: related(9, 14) }).evidence?.relatedProof).toEqual(related(1, 10));
+    expect(fold(proven, proven).evidence).not.toHaveProperty('relatedProof');
 
     // The kept finding takes the highest grade a finder gave it or a duplicate, so a blocker one finder filed is never the judge's alone.
     const filedAt = (kept: Finding['severity'], duplicate: Finding['severity']) => mapJudgedToFindings(

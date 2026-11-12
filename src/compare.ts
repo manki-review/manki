@@ -3,11 +3,11 @@ import * as core from '@actions/core';
 import { fenceText } from './github';
 import { LLMClient, SendMessageOptions } from './providers';
 import { repoTools } from './related-repos';
-import { CLAIMS_MISSING_RULE, parseFindings, PRE_EXISTING_RULE } from './review';
+import { parseFindings } from './review';
 import { CodeExcerpt, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
 import { EffortLevel, Finding, RelatedRepoTools, RoundComparison } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_FIELD_QUESTIONS = 6;
 const MAX_IMPLEMENTATION_QUESTIONS = 6;

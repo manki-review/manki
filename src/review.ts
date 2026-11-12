@@ -19,10 +19,11 @@ import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
-import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
+import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -117,11 +118,6 @@ function hideUnprovenWarnings(findings: Finding[], wouldBlock = wouldBlockIfTrue
   }
   return { posted, unposted };
 }
-
-/** Tells a finder when to mark a finding pre-existing. */
-export const CLAIMS_MISSING_RULE = 'When a finding says something is missing or handled nowhere, set `"claimsMissing": true` and put the search that came back empty in `emptySearch`, such as "grep `close(` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.';
-
-export const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. Never set it either on the defect this PR fixes in one path and leaves in a sibling path, such as an auth check added to `POST /items` while `PUT /items/:id` stays open: the fix is incomplete, so report it as part of the change and cite the line of the fix in `proof`. A pre-existing finding never blocks unless it is a security defect.';
 
 const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';
 const NO_SPLIT_RULE = `Never propose splitting the PR, and ${UNRELATED_RULE}.`;
@@ -257,6 +253,11 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
     ciOrDependencyPaths: classification.matched.includes('supply_chain'),
     trivialOverridden: classification.trivialOverridden,
   };
+}
+
+/** Whether the trivial verifier alone reads the change. A deeper review or `review.routing` can give a trivial PR finders. */
+function quickCheckOnly(team: TeamRoster): boolean {
+  return team.finders.every(f => f.prompt === TRIVIAL_VERIFIER_AGENT);
 }
 
 /** Cuts a group's `focus` to about `FOCUS_LABEL_LENGTH` characters at a word boundary for a reader's name. */
@@ -703,6 +704,8 @@ export async function runReview(
   const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
     ? classifyRelatedWork(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'related'), prContext, diff, options.relatedWork)
     : Promise.resolve(options.relatedWork);
+  // Listed while the planner runs, since only the claim checks beside the finders read the list.
+  const claimsPromise = extractPrClaims(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claims'), prContext, diff);
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
@@ -785,7 +788,7 @@ export async function runReview(
   const uses = await usesPromise;
   const agentFailureReasons = new Map<string, string>();
   const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
-  let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons'> = {};
+  let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims'> = {};
   // Related work is left out: the posted incomplete review would render it.
   const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
     verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
@@ -802,6 +805,14 @@ export async function runReview(
   const comparisonDeadline = new AbortController();
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
     effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal,
+  });
+  // Each claim of the PR text gets a check of its own beside the finders, under the comparisons' deadline. No finder waits for it or
+  // is shown it. When the quick check alone reads the change, its claims are recorded without a check.
+  const claimChecksPromise = claimsPromise.then(async ({ claims, ...listed }) => {
+    const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
+      rawDiff, effort: comparisonEffort, workspace: quickCheckOnly(team) ? undefined : workspace, related, signal: comparisonDeadline.signal,
+    });
+    return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims) };
   });
   const referenceNames = uses.referenceNames ?? [];
   const dependencyNames = uses.dependencyNames ?? [];
@@ -1172,10 +1183,11 @@ export async function runReview(
   // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
   const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), COMPARISON_GRACE_MS);
   const { findings: comparisonFindings, comparisons } = await comparisonsPromise;
+  const claimChecks = await claimChecksPromise;
   clearTimeout(comparisonGrace);
-  allFindings.push(...comparisonFindings);
+  allFindings.push(...comparisonFindings, ...claimChecks.findings);
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
-  finderContext = { ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
+  finderContext = { ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     const summary = quotaErrors.size > 0
@@ -2143,9 +2155,13 @@ function linkText(text: string): string {
   return plain === text ? text : linkText(plain);
 }
 
-/** Returns `linkText(text)` in lower case, without emphasis and code marks, and with each run of whitespace as one space. */
+/** Returns `text` in lower case, without emphasis and code marks, and with each run of whitespace as one space. */
+export function unmarkedText(text: string): string {
+  return text.toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 function plainText(text: string): string {
-  return linkText(text).toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  return unmarkedText(linkText(text));
 }
 
 /**

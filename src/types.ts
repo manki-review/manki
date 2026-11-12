@@ -599,6 +599,47 @@ export interface RoundSweep {
   findings?: number;
 }
 
+/** A statement of the PR author that the change relies on, quoted word for word from the PR text. */
+export interface PrClaim {
+  quote: string;
+  /** `description` for the PR title or description, or the `file:line` of the comment the change adds. */
+  source: string;
+}
+
+/** A claim of the round and how its check ended. */
+export interface RoundPrClaim extends PrClaim {
+  /** The reviewer name its findings carry. */
+  reviewer: string;
+  /**
+   * `proven` or `disproven` only when the check cited a line that exists in the head commit or in a related repo the
+   * round fetched. Every other end is `unchecked`. It is a record only: no stage is shown it and no grade depends on it.
+   */
+  status: 'proven' | 'disproven' | 'unchecked';
+  /**
+   * Why the check gave no answer: `failed` when the call failed or its reply did not parse twice, `timed_out` when it
+   * was still unanswered once the grace after the finders ran out, and `skipped` when no check ran: the quick check
+   * alone read the change, or no repository tools were there.
+   */
+  call?: 'failed' | 'timed_out' | 'skipped';
+  /** What decided it, or what is left to check, as the check stated it. */
+  reason?: string;
+  /** The existing `file:line` locations the check cited for `proven` or `disproven`. */
+  proof?: string[];
+  /** The lines of related repos it cited for that, as `owner/name:path:line`, each in a checkout the round fetched. */
+  relatedProof?: string[];
+  /** The defects it reported for a `disproven` claim, before dedup and the judge. */
+  findings?: number;
+}
+
+/** The claims a round took from the PR text, each with its check. */
+export interface RoundPrClaims {
+  /** Why no claim was taken from the PR text: the call failed, its reply could not be used or no model is set up for it. */
+  skipped?: string;
+  /** Statements the PR text holds that the cap on claims left out. */
+  cut?: number;
+  claims?: RoundPrClaim[];
+}
+
 export interface RoundSlicing {
   /** The changed files in each slice. A file split across slices counts in each. */
   files: number[];
@@ -820,9 +861,9 @@ export interface FindingEvidence {
   emptySearch?: string;
 }
 
-/** Whether `evidence` cites anything: a check, a proving line or an empty search. */
+/** Whether `evidence` cites anything: a check, a proving line, in the PR or in a related repo, or an empty search. */
 export function citesEvidence(evidence: FindingEvidence | undefined): boolean {
-  return !!evidence && (evidence.checks.length > 0 || evidence.proof.length > 0 || !!evidence.emptySearch);
+  return !!evidence && (evidence.checks.length > 0 || evidence.proof.length > 0 || !!evidence.relatedProof?.length || !!evidence.emptySearch);
 }
 
 /** What a reviewer had checked of a suspicion when it wrapped up, and what was left. */
@@ -996,6 +1037,8 @@ export interface ReviewResult {
   comparisons?: RoundComparison[];
   /** Each sweep the round's findings started, asked or cut. */
   sweeps?: RoundSweep[];
+  /** The statements of the PR text the change relies on, each with how its check ended. */
+  prClaims?: RoundPrClaims;
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
   /** The threads where a fix was claimed: confirmed by an earlier round, counted as resolved, agreed away by someone who may clear them, or gone. */
@@ -1054,7 +1097,7 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** The planner's three triage answers. Each takes the side that adds review when unknown. */
 export interface Triage {
-  /** No defect could hide in the change, so the trivial verifier reads it alone. */
+  /** No defect could hide in the change. The trivial verifier reads it alone unless a deeper review or `review.routing` gives it finders. */
   trivial: boolean;
   /** Judging the change needs reasoning about behavior, so finders run at high effort. */
   subtle: boolean;
@@ -1698,6 +1741,8 @@ export interface RoundContext {
   comparisons?: RoundComparison[];
   /** Each sweep the round's findings started, asked or cut. */
   sweeps?: RoundSweep[];
+  /** The statements of the PR text the change relies on, each with how its check ended. */
+  prClaims?: RoundPrClaims;
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
   /**
@@ -2500,7 +2545,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

@@ -23,7 +23,7 @@ const REFUTE_STEPS = 15;
 // A safety net. The step budget is what normally ends the call.
 const REFUTE_TIMEOUT_MS = 600_000;
 const MAX_REASON_CHARS = 500;
-const MAX_RELATED_PROOF = 10;
+export const MAX_RELATED_PROOF = 10;
 const MAX_JUDGE_NOTES_CHARS = 1000;
 const MAX_FILE_CHANGE_CHARS = 8000;
 const MAX_PARALLEL_REFUTATIONS = 3;
@@ -107,7 +107,7 @@ function existingLocations(workspace: string, proof: readonly string[]): string[
 }
 
 /**
- * Returns the lines of related repos that the entries of a refuter's `proof` list start with, as `owner/name:path:line`,
+ * Returns the lines of related repos that the entries of a check's `proof` list start with, as `owner/name:path:line`,
  * each for a repo of `related` and a line in the checkout the round fetched of it. A line of a repo that was not
  * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR. Only the first
  * `MAX_RELATED_PROOF` lines the list cites are looked up, so a long list reads no more files than that. Each location

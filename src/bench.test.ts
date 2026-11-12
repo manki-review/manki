@@ -435,6 +435,9 @@ describe('scoreRun', () => {
       }),
       blocker('Read', { reviewers: [VERDICT_READER_NAME] }),
       blocker('Ruled', { gradePath: [step('warning', 'blocker', 'rule')], tags: ['security'] }),
+      // A finder that reports it too makes it a finder's blocker.
+      blocker('Claimed', { reviewers: ['Claim check 2', 'Claim check 4'] }),
+      blocker('Claimed and found', { reviewers: ['Claim check 1', 'Reviewer'] }),
       // A check that ended unsettled keeps whether its call used all its steps.
       makeFinding({ title: 'Lowered', gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', refutation: { ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' } }),
     ];
@@ -444,7 +447,7 @@ describe('scoreRun', () => {
 
     const score = await scoreRun(benchCase, review, matcher);
 
-    expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 2 });
+    expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 4 });
     expect(score.findings.map(f => f.route)).toEqual([
       {
         finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
@@ -460,6 +463,8 @@ describe('scoreRun', () => {
       },
       { finderGrade: 'blocker', byReader: true },
       { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true },
+      { finderGrade: 'blocker', byClaimCheck: true },
+      { finderGrade: 'blocker' },
       { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' }, checkStatus: 'unconfirmed' },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
@@ -469,19 +474,20 @@ describe('scoreRun', () => {
     const table = (rows: string[]) => ['| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
     const routed = report([score, { ...score, complete: false }]);
     expect(formatBlockerRoutes(routed.variants)).toBe(table([
-      '| base: filed by a finder and kept | 1 | 0 | 0 | 0 | 1 |',
+      '| base: filed by a finder and kept | 1 | 0 | 0 | 1 | 2 |',
       '| base: raised by the judge | 0 | 1 | 0 | 0 | 1 |',
       '| base: raised by a confirmed doubt | 0 | 0 | 1 | 0 | 1 |',
+      '| base: claim check | 0 | 0 | 0 | 1 | 1 |',
       '| base: verdict reader | 0 | 0 | 0 | 1 | 1 |',
       '| base: other | 0 | 0 | 0 | 1 | 1 |',
     ]));
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatBlockerRoutes(routed.variants)}\n`);
-    expect(formatBlockerRoutes(report([{ ...score, findings: score.findings.slice(5) }]).variants)).toBe('');
+    expect(formatBlockerRoutes(report([{ ...score, findings: score.findings.slice(7) }]).variants)).toBe('');
 
     // A report of a ref that stored no route scores the same, and the route of its blockers is not known.
     const older: BenchReport = JSON.parse(JSON.stringify(routed, (key, value: unknown) => (key === 'route' || key === 'verdictReason' ? undefined : value)));
     expect(older.variants[0].summary).toEqual(routed.variants[0].summary);
-    expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 2 | 5 |']));
+    expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 4 | 7 |']));
   });
 
   it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {

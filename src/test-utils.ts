@@ -8,6 +8,7 @@ import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RoundContext } from './types';
 import { BotIdentity, CodeLinks, titleToSlug } from './github';
 import { parsePRDiff } from './diff';
+import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 
 /** Runs git in `cwd` with a fixed author and returns its trimmed output. */
 export function git(cwd: string, ...args: string[]): string {
@@ -57,6 +58,36 @@ export async function expectLinearTime(
   let large = await time(size);
   for (let i = 0; i < 2 && large >= bound; i++) large = Math.min(large, await time(size));
   expect(large).toBeLessThan(bound);
+}
+
+/** The reply of a `fakeClient` call that waits until the call's signal aborts it. */
+export const HANG = 'hang until aborted';
+
+export interface FakeCall {
+  system: string;
+  user: string;
+  options?: SendMessageOptions;
+}
+
+/**
+ * Returns a client that answers each call with what `reply` picks for its user message and the calls so far, and keeps
+ * every call. A string is the reply's text, an `Error` is thrown, a reply with `truncated` is returned as it is, `HANG`
+ * waits for the call's signal, and any other value is sent as its JSON.
+ */
+export function fakeClient(reply: (user: string, calls: FakeCall[]) => unknown, repoTools = true): LLMClient & { calls: FakeCall[] } {
+  const calls: FakeCall[] = [];
+  return {
+    repoTools,
+    calls,
+    async sendMessage(system, user, options) {
+      calls.push({ system, user, options });
+      const answer = reply(user, calls);
+      if (answer instanceof Error) throw answer;
+      if (answer === HANG) return new Promise((_, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+      if (typeof answer === 'object' && answer !== null && 'truncated' in answer) return answer as LLMResponse;
+      return { content: typeof answer === 'string' ? answer : JSON.stringify(answer) };
+    },
+  };
 }
 
 /** Runs `call` with fake timers moved on by `ms`, which by default passes the wait before a token service retry. */

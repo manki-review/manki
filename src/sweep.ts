@@ -7,10 +7,10 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus } from './refute';
 import { repoTools } from './related-repos';
-import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, parseProof, PRE_EXISTING_RULE, truncateDiff } from './review';
+import { parseFindings, parseLocation, parseProof, truncateDiff } from './review';
 import { CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_SWEEPS = 3;
 const SWEEP_STEPS = 15;
@@ -52,11 +52,16 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 ${WRITING_RULES}`;
 }
 
-function sweepMessage(source: Finding, rawDiff: string, tools: boolean): string {
+/** Returns the "Pull Request Diff" section of a call that reads the whole diff, cut as `truncateDiff` cuts it, with a note when it is cut. */
+export function diffSection(rawDiff: string, tools: boolean): string {
   const shown = truncateDiff(rawDiff);
   const cut = shown.length < rawDiff.length
     ? `The diff is cut to ${shown.length} of its ${rawDiff.length} characters, so large files show only part of their changes. ${tools ? 'Read the changed files with your tools where the diff is cut before you answer.' : 'Search only what is shown, and say nothing about what is cut.'}`
     : '';
+  return ['## Pull Request Diff', '', UNTRUSTED_DIFF_NOTE, ...(cut ? ['', cut] : []), '', fenceText(shown, 'diff')].join('\n');
+}
+
+function sweepMessage(source: Finding, rawDiff: string, tools: boolean): string {
   return [
     `## Finding: ${sanitizeForPromptEmbed(source.title)}`,
     '',
@@ -64,12 +69,7 @@ function sweepMessage(source: Finding, rawDiff: string, tools: boolean): string 
     `- **Description**: ${sanitizeForPromptEmbed(source.description)}`,
     ...(source.evidence?.proof.length ? [`- **Proving lines**: ${source.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
     '',
-    `## Pull Request Diff`,
-    '',
-    UNTRUSTED_DIFF_NOTE,
-    ...(cut ? ['', cut] : []),
-    '',
-    fenceText(shown, 'diff'),
+    diffSection(rawDiff, tools),
   ].join('\n');
 }
 

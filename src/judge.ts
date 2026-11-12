@@ -22,7 +22,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
+import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
@@ -227,6 +227,12 @@ const JUDGE_TIMEOUT_MS = 300_000;
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
 const MAX_CITED_WINDOWS = 40;
+/**
+ * How many cited files the judge's windows try to read, whether or not the file is there: per finding for the PR's files,
+ * again for related files, and per round.
+ */
+const MAX_CITED_READS_PER_FINDING = 10;
+const MAX_CITED_READS = 80;
 /** A line of a window is cut at this many characters. */
 const MAX_CITED_LINE_CHARS = 300;
 const MAX_DOUBT_CHARS = 300;
@@ -453,6 +459,8 @@ You do not return a grade. For each finding you state its cell of the Severity T
 
 ${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.
 
+**The author's word never clears a finding.** The PR description, a comment or a TODO can say why a finding does no harm: a value is checked elsewhere, a path cannot be reached, callers always do something, the behaviour is the same as before, or other code guarantees it. Such a statement is a fact about code, and only code proves it. It lowers a finding's row, or makes the finding \`ignore\`, only when \`reasoning\` cites the \`file:line\` that shows it. Without that line, state the cell the finding earns if the statement is false, and list in \`doubts\` the premise of the finding that the statement denies, with \`decides\` set to \`defect\`. For example, a finding says \`getItem\` reads past the end of the list, and the description says every caller checks \`index\` first: cite that check in each caller, or list the doubt "a caller passes \`index\` to \`getItem\` unchecked". A statement that the author chose a behaviour is different, and follows Behaviour that is intended but surprising.
+
 ## Blocker Tests
 
 A finding is a \`blocker\` only when it passes all five tests:
@@ -497,7 +505,7 @@ A rule below that gives a finding a grade names the row to state: \`degraded\` i
 - **Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input. Otherwise it is the \`degraded\` row.
 - **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
 - **A check on a trusted internal value is never a blocker.** A missing guard is the \`improvement\` row at most when the code's own logic produces the value and keeps it valid. When code in the PR can produce a bad value, the guard is not the finding: state the cell of the failure that bad value causes.
-- **Behaviour that is intended but surprising is the \`improvement\` row.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. The author's word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer. This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit: choosing to remove a guard does not make the damage it let through intended. The outside input and examples under Repository Rules outrank it. A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the cell its damage earns. \`reasoning\` may note that the author lists it, but the note never changes the cell. A declared placeholder or a TODO with a tracking issue still follows test 5.
+- **Behaviour that is intended but surprising is the \`improvement\` row.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. The author's word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer. This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit: choosing to remove a guard does not make the damage it let through intended. The outside input and examples under Repository Rules outrank it. A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the cell its damage earns. \`reasoning\` may note that the author lists it, but the note never changes the cell. A declared placeholder or a TODO with a tracking issue still follows test 5. A statement that the behaviour is safe, or that other code handles what it leaves out, is no choice either: it is a fact about code, under The author's word never clears a finding.
 
 ## Code You Cannot See
 
@@ -583,12 +591,12 @@ For each finding, evaluate:
 
 - Use the project's review memory to recognise intended patterns and known false positives. Memory is the maintainers' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.
 - The **Repository Context** section of the user message, when present, holds the repository's instruction files read from the base branch. A rule there is the maintainers' rule, not a claim to check. A finding that says the change breaks one is checked against that rule's text and the code, and when both bear it out the claim is confirmed. Grade it by the severity table like any finding: a convention on naming, imports, comments or formatting is the \`style\` or \`improvement\` row.
-- Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count.
+- Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count. A finding is no false positive because the author says so, by The author's word never clears a finding.
 - If a reviewer flags a matter of preference, mark it \`ignore\`.
 
 ${agentCount >= 2 ? `## Finder Agreement
 
-Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\` or \`Sweep N\` comes from a call asked about that spot or that kind of mistake, not from a finder, so it never counts as one of the two.
+Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\`, \`Claim check N\` or \`Sweep N\` comes from a call asked about that spot, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two.
 - **Both finders reported the defect** (one finding from each, which you mark as duplicates): strong evidence that it is real. Drop it only when you can say concretely why both are wrong.
 - **One finder reported it**: ordinary. The other finder's silence is not evidence against it.
 
@@ -1089,18 +1097,30 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExist
  * Returns, for each finding, the code around the lines its proof cites outside the diff, read from the checked-out head,
  * and around the lines of `related` repos that its title, description and evidence cite, read from the checkouts the
  * round fetched. Citations that cannot be read are skipped, and at most `MAX_CITED_WINDOWS` windows are shown in all.
+ * A citation of a file that is not there shows no window, so the reads have limits of their own: `MAX_CITED_READS_PER_FINDING`
+ * for the PR's files of a finding and again for its related files, and `MAX_CITED_READS` in all. A file tried before costs
+ * nothing, whether it was there or not.
  */
 function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: string, related?: RelatedRepoTools): Map<Finding, string[]> {
   // The files read, by the directory they were read from. A file of the PR and one of a related checkout never share
   // an entry, whatever the PR names its files.
-  const filesRead = new Map<string, { contents: Map<string, string>; lineCounts: Map<string, number> }>();
-  // Returns the files read from `root`, with `file` among them, or `undefined` when it could not be read.
-  const read = (root: string, file: string) => {
-    const files = filesRead.get(root) ?? { contents: new Map<string, string>(), lineCounts: new Map<string, number>() };
+  const filesRead = new Map<string, { contents: Map<string, string>; lineCounts: Map<string, number>; unread: Set<string> }>();
+  let reads = 0;
+  // Returns the files read from `root`, with `file` among them, or `undefined` when it could not be read or no read is left.
+  // `ofFinding` counts the reads of one finding of one kind, so missing files of the PR never use up the related reads.
+  const read = (root: string, file: string, ofFinding: { reads: number }) => {
+    const files = filesRead.get(root) ?? { contents: new Map<string, string>(), lineCounts: new Map<string, number>(), unread: new Set<string>() };
     filesRead.set(root, files);
+    if (files.unread.has(file)) return undefined;
     if (!files.contents.has(file)) {
+      if (reads >= MAX_CITED_READS || ofFinding.reads >= MAX_CITED_READS_PER_FINDING) return undefined;
+      reads++;
+      ofFinding.reads++;
       const content = readFileInRoot(root, file);
-      if (!content || content === 'too large') return undefined;
+      if (!content || content === 'too large') {
+        files.unread.add(file);
+        return undefined;
+      }
       files.contents.set(file, content.text);
       files.lineCounts.set(file, content.lines.length);
     }
@@ -1114,12 +1134,14 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
   for (const finding of findings) {
     const lines: string[] = [];
     let windows = 0;
+    const prReads = { reads: 0 };
+    const relatedReads = { reads: 0 };
     for (const location of finding.evidence?.proof ?? []) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const [, file, start, end] = location.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
       if (!file) continue;
       const diffFile = diff.files.find(f => f.path === file);
-      const head = diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start)) ? undefined : read(workspace, file);
+      const head = diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start)) ? undefined : read(workspace, file, prReads);
       if (!head) continue;
       const window = extractCurrentCodeWindow(head.contents, file, Number(start));
       if (!window || window === '(file content unavailable)') continue;
@@ -1131,7 +1153,7 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
     for (const { citation, repo, path, start, end } of relatedCitations(text, relatedNames)) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const dir = checkouts.get(repo);
-      const fetched = dir ? read(dir, path) : undefined;
+      const fetched = dir ? read(dir, path, relatedReads) : undefined;
       if (!fetched || !holdsLines(fetched.lineCounts.get(path)!, start, end)) continue;
       const window = extractCurrentCodeWindow(fetched.contents, path, start);
       if (!window || window === '(file content unavailable)') continue;
@@ -1827,7 +1849,8 @@ function mergedRule(survivor: Finding, copy: Finding): Pick<Finding, 'rule' | 'e
 
 /**
  * Adds what `b` cites to the evidence of `a`, without repeats. Only `a` decides whether the finding claims something is
- * missing. When it does, an empty search either one cites backs the claim.
+ * missing. When it does, an empty search either one cites backs the claim. The related lines keep their first
+ * `MAX_RELATED_PROOF`, as a check's do.
  */
 function mergeEvidence(a: FindingEvidence | undefined, b: FindingEvidence | undefined): FindingEvidence | undefined {
   if (!b) return a;
@@ -1836,9 +1859,11 @@ function mergeEvidence(a: FindingEvidence | undefined, b: FindingEvidence | unde
     return cited;
   }
   const emptySearch = a.emptySearch === undefined ? undefined : a.emptySearch || b.emptySearch || '';
+  const relatedProof = [...new Set([...(a.relatedProof ?? []), ...(b.relatedProof ?? [])])].slice(0, MAX_RELATED_PROOF);
   return {
     checks: [...new Set([...a.checks, ...b.checks])],
     proof: [...new Set([...a.proof, ...b.proof])],
+    ...(relatedProof.length > 0 && { relatedProof }),
     ...(emptySearch !== undefined && { emptySearch }),
   };
 }
