@@ -466,6 +466,12 @@ describe('formatFindingComment', () => {
 
     // A finding with a check status names that in the title of its fold, in place of what each refuter found.
     expect(render({ ...splitFinding, checkStatus: 'unconfirmed' })).toContain('<summary>How this was checked: not confirmed</summary>');
+    // Under that status, a check that confirmed premises only reads as unsettled. One that confirmed the defect keeps its words.
+    const premiseOnly = render({ ...splitFinding, pairRefutation: { ...splitFinding.refutation!, defect: 'unsettled' }, checkStatus: 'unconfirmed' });
+    expect(premiseOnly).not.toContain('ouble-checked');
+    expect(premiseOnly).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. No caller checks `value` first.\n\n**Second check, on another model**\nNot settled. No caller checks `value` first.');
+    expect(render({ ...splitFinding, refutation: { ...splitFinding.refutation!, defect: 'confirmed' }, checkStatus: 'unconfirmed' })).toContain('**Double-checked**\nManki tried to disprove this by reading the code and could not.');
+    expect(render({ ...splitFinding, pairRefutation: undefined, refutation: { ...splitFinding.refutation!, defect: 'unsettled' } })).toContain('**Double-checked:** Manki tried');
     const cited = { checks: ['src/util.ts:3 marks it intended'], proof: ['src/util.ts:3'] };
     expect(render({ ...baseFinding, evidence: cited, refutation: splitFinding.refutation, checkStatus: 'confirmed' })).toContain('<summary>How this was checked: 1 place read, confirmed with tools</summary>');
     expect(render({ ...baseFinding, evidence: cited, howToFix: 'Check for `null` first.', checkStatus: 'proven' })).toContain('<summary>How to fix it and 1 place read · proven from the cited lines</summary>');

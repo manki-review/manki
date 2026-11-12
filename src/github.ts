@@ -2801,14 +2801,17 @@ function refutationPart(label: string, lead: string, check: Refutation, linkTo: 
 /** Returns a part for each refuter that checked `finding`. */
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
-  const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
+  // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked `unconfirmed`.
+  const shown = (check: Refutation): RefutationOutcome =>
+    (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && check.defect !== 'confirmed' ? 'unsettled' : outcomeOf(check));
+  const pairLead = pairRefutation && REFUTATION_SUMMARY[shown(pairRefutation)];
   // A blocker two disproofs lowered says so on its first check, and its rule only set how far it went down.
   const keptByRule = !isDisprovedRaise(finding) && !!overruledDisproof(finding);
   // Each check that disproved a finding its rule keeps says why the finding stays.
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
-  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[outcomeOf(refutation)].text));
+  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[shown(refutation)].text));
   return [
-    ...(refutation && lead ? [refutationPart(REFUTATION_PART[outcomeOf(refutation)].label, lead, refutation, linkTo, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, linkTo, known)] : []),
     ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, linkTo, known)] : []),
   ];
 }
