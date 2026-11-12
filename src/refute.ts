@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, CheckStatus, columnDecidesBlock, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, CheckStatus, columnDecidesBlock, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -246,20 +246,6 @@ function confirmRuleFact(finding: Finding, checks: readonly Refutation[], rules?
 /** Whether a check that confirms its finding confirmed `REACH_DOUBT`, the claim that keeps a finding in the `rare` column. */
 function reachConfirmed(checks: readonly Refutation[]): boolean {
   return checks.some(r => outcomeOf(r) === 'confirmed' && r.premises?.some(p => p.premise === REACH_DOUBT.premise && p.outcome === 'confirmed'));
-}
-
-const disproves = (check: Refutation): boolean => outcomeOf(check) === 'disproved';
-
-/**
- * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
- * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. So no check confirms
- * beside one that disproves, be it the finding, the defect or a premise that only decides the grade.
- */
-function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
-  const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
-  if (votes.size !== 1) return 'unsettled';
-  const [outcome] = votes;
-  return outcome === 'confirmed' && checks.some(r => disproves(r) || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
 }
 
 function refutationNote(label: string, check: Refutation): string {
