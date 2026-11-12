@@ -1803,7 +1803,7 @@ export async function postReview(
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
-      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\n_GitHub only allows comments on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`._`,
+      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\nComments are only possible on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`,
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
@@ -2938,7 +2938,7 @@ function detachedNote(finding: Finding, linkTo: LineLink): string {
   const where = file
     ? `This is in ${linked(`\`${file}${finding.line > 0 ? `:${finding.line}` : ''}\``, linkTo(finding.file, finding.line))}, not in the file this thread is on.`
     : 'This is not tied to a file or line.';
-  return `_${where} GitHub only allows comments on changed files, so the thread is posted here._`;
+  return `${where} Comments are only possible on changed files, so the thread is posted here.`;
 }
 
 /** Formats a finding's thread comment. `detached` is set for a thread posted on another file than the finding's. */

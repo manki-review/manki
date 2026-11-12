@@ -2462,24 +2462,24 @@ describe('parseFindingFromComment', () => {
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
     // A thread posted on another file opens with a note on where the finding is, which is no part of the description.
     // The note is read by its place, so it is skipped whatever the highlighting of the diff's identifiers makes of it.
-    const identifiers = new Set(['GitHub', '_This', 'here._', '_store_file_', 'src/_store_file_.ts']);
+    const identifiers = new Set(['This', 'Comments', 'thread', 'posted', 'here', 'src/store.ts', '_store_file_', 'src/_store_file_.ts']);
     for (const file of ['src/store.ts', 'src/_store_file_.ts', 'src/a*b*.ts', '']) {
       const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus: 'unconfirmed' }, TEST_LINKS, true);
-      expect(detached).toContain('so the thread is posted here._\n\n_Manki could not confirm this');
+      expect(detached).toContain('so the thread is posted here.\n\n_Manki could not confirm this');
       for (const posted of [detached, highlightCode(detached, identifiers)]) {
         expect(parseFindingFromComment(posted)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
       }
     }
     // A late warning on such a thread has all three notes under its title. The first is the one on where the finding is, and the other two are skipped in either order.
     const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, true);
-    const notes = late.match(/(_This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
+    const notes = late.match(/(This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
     expect(notes).not.toBeNull();
     for (const order of [[1, 2, 3], [1, 3, 2]]) {
       const body = late.replace(notes![0], `${order.map(i => notes![i]).join('\n\n')}\n\n`);
       expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     }
     // The first line is skipped only on a thread whose finding data says it is posted elsewhere.
-    const sentence = '_This is not tied to a file or line. GitHub only allows comments on changed files, so the thread is posted here._';
+    const sentence = 'This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.';
     const quoted = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: sentence, reviewers: [] }, TEST_LINKS);
     expect(parseFindingFromComment(quoted).description).toBe(sentence);
   });
