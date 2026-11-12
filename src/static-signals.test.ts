@@ -11,6 +11,7 @@ import * as napi from '@ast-grep/napi';
 
 import { filterDiff, parsePRDiff } from './diff';
 import type { PackageChange } from './lockfile';
+import { createOctokit, withDeadline } from './auth';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
 import { checkFindingClaims, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
@@ -24,9 +25,13 @@ jest.mock('@actions/core', () => ({
   debug: jest.fn(),
 }));
 
+// The real client, for the tests of its retries and rate limits. `mockFetch` answers every request.
 jest.mock('@actions/github', () => ({
   context: { job: 'review' },
+  getOctokit: (...args: unknown[]) => jest.requireActual('./test-utils').realOctokit((url: string, init: RequestInit) => mockFetch(url, init), ...args),
 }));
+
+let mockFetch: (url: string, init: RequestInit) => Promise<Response>;
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -275,6 +280,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
         return { code: tool === 'osv-scanner' ? 1 : 0, stdout, stderr: '' };
       }),
       sleep: jest.fn(async (ms: number) => { now += ms; }),
+      withDeadline: jest.fn(async (octokit: Octokit) => octokit),
     };
   });
 
@@ -686,6 +692,79 @@ describe('collectStaticSignals with analyzers and waits', () => {
       { source: 'dependency_review', status: 'ran', results: 2 },
     ], checksStillPending: ['lint'] });
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('stopped waiting after 60s, still running or not started: lint'));
+  });
+
+  const WAIT_FOR_LINT = 'static_analysis:\n  checks: false\n  code_scanning: false\n  dependency_review: false\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n';
+  const json = (status: number, data: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const RUNNING = () => json(200, { total_count: 1, check_runs: [{ id: 4, name: 'lint', status: 'in_progress' }] });
+
+  it.each<[string, () => Response, number, string]>([
+    ['meets a rate limit', () => json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2' }), 1, 'API rate limit exceeded'],
+    ['meets a secondary rate limit', () => json(403, { message: 'You have exceeded a secondary rate limit' }, { 'retry-after': '2' }), 1, 'secondary rate limit'],
+    ['gets a 5xx on every try', () => json(503, { message: 'Service Unavailable' }), 2, 'Service Unavailable'],
+  ])('stops waiting for checks with a warning when a poll %s, on the real client', async (_case, answer, tries, reason) => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    let polls = 0;
+    mockFetch = async (url, init) => {
+      if (url.includes('/contents/')) return json(200, { content: Buffer.from(WAIT_FOR_LINT).toString('base64'), encoding: 'base64', size: WAIT_FOR_LINT.length });
+      polls += 1;
+      init.signal?.throwIfAborted();
+      return answer();
+    };
+
+    const { record } = await collectStaticSignals(createOctokit('ghs_workflow'), request(), { ...runtime, withDeadline });
+
+    expect(polls).toBe(tries);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^Static analysis: stopped waiting for checks: .*${reason}`)));
+    expect(runtime.sleep).not.toHaveBeenCalled();
+    expect(record).toBeUndefined();
+    // The last poll starts when the 60 seconds are over, and gets 10 seconds to answer.
+    expect(timeout).toHaveBeenCalledWith(70_000);
+  });
+
+  it.each<[string, () => Response, number, string]>([
+    ['at once when its read meets a rate limit', () => json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2' }), 1, 'the token cannot read it (HTTP 403)'],
+    ['at once when its read meets a secondary rate limit', () => json(403, { message: 'You have exceeded a secondary rate limit' }, { 'retry-after': '2' }), 1, 'the token cannot read it (HTTP 403)'],
+    ['after three retries when its read gets a 5xx on every try', () => json(503, { message: 'Service Unavailable' }), 4, 'Service Unavailable'],
+  ])('skips a source %s, on the real client', async (_case, answer, tries, reason) => {
+    const config = 'static_analysis:\n  checks: false\n  dependency_review: false\n';
+    let reads = 0;
+    mockFetch = async (url) => {
+      if (url.includes('/contents/')) return json(200, { content: Buffer.from(config).toString('base64'), encoding: 'base64', size: config.length });
+      reads += 1;
+      return answer();
+    };
+
+    const { record } = await collectStaticSignals(createOctokit('ghs_workflow'), request(), runtime);
+
+    expect(reads).toBe(tries);
+    expect(record).toEqual({ sources: [{ source: 'code_scanning', status: 'skipped', reason }] });
+  });
+
+  it.each<[string, number, boolean, object | undefined, RegExp, number]>([
+    // Four polls answer, and the fifth is tried twice.
+    ['times out with the checks the last answered poll saw running when the deadline cuts the last poll', 60_000, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 60s, still running or not started: lint$/, 6],
+    ['times out with every check when the deadline cuts the only poll', 0, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 60s, no poll was answered, so none of these counts as finished: lint$/, 2],
+    ['stops with no names when the last poll fails without the deadline', 60_000, false, undefined, /^Static analysis: stopped waiting for checks: .*Service Unavailable/, 6],
+  ])('%s', async (_case, failFrom, cut, expected, warning, tries) => {
+    const cutOff = new AbortController();
+    jest.spyOn(AbortSignal, 'timeout').mockReturnValue(cutOff.signal);
+    let polls = 0;
+    mockFetch = async (url, init) => {
+      if (url.includes('/contents/')) return json(200, { content: Buffer.from(WAIT_FOR_LINT).toString('base64'), encoding: 'base64', size: WAIT_FOR_LINT.length });
+      polls += 1;
+      if (now < failFrom) return RUNNING();
+      if (!cut) return json(503, { message: 'Service Unavailable' });
+      // The poll never answers, so the signal aborts it.
+      cutOff.abort(new DOMException('The operation timed out', 'TimeoutError'));
+      return init.signal!.throwIfAborted() as never;
+    };
+
+    const { record } = await collectStaticSignals(createOctokit('ghs_workflow'), request(), { ...runtime, withDeadline });
+
+    expect(polls).toBe(tries);
+    expect(record).toEqual(expected);
+    expect(jest.mocked(core.warning).mock.calls).toEqual([[expect.stringMatching(warning)]]);
   });
 });
 

@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
-import { callTokenService, NOTHING_FOR_RUN } from './auth';
+import { callTokenService, createOctokit, NOTHING_FOR_RUN } from './auth';
 import { Finding, FindingSeverity, MemorySkipReason, SECURITY_TAG, UNBUILT_TAG, UNPROVEN_TAG, wouldBlockIfTrue } from './types';
 import { redactSecrets, redactSecretsDeep } from './utils';
 
@@ -133,7 +133,7 @@ export async function openMemoryStore(
       const fix = isPrivate ? '' : ', or remove `memory.repo` to use the central memory';
       return skipped({ reason: 'no_token', message: `\`memory.repo\` is \`${memory.repo}\` but \`memory_repo_token\` is not set. Pass a token that writes \`${memory.repo}\` in \`memory_repo_token\`${fix}.` });
     }
-    const memoryOctokit = github.getOctokit(token);
+    const memoryOctokit = createOctokit(token);
     const skip = isPrivate ? await privateMemoryRepoSkip(memoryOctokit, memory.repo, owner, repo) : undefined;
     return skip ? skipped(skip) : { store: repoMemoryStore(memoryOctokit, memory.repo, repo) };
   }
@@ -161,6 +161,8 @@ function repoMemoryStore(octokit: Octokit, memoryRepo: string, folder: string): 
       try {
         await octokit.rest.repos.createOrUpdateFileContents({
           owner, repo, path: `${folder}/${file}`, message, content: Buffer.from(content).toString('base64'), sha,
+          // Not retried. A retry with the same `sha` conflicts again, and after a lost reply `updateFile` would apply the update twice.
+          request: { retries: 0 },
         });
         return true;
       } catch (error: unknown) {

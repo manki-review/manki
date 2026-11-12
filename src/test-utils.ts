@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
+import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
+
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RoundContext } from './types';
 import { BotIdentity, CodeLinks, titleToSlug } from './github';
 import { parsePRDiff } from './diff';
@@ -72,6 +74,25 @@ export async function pastRetryWait<T>(call: () => Promise<T>, ms = 2000): Promi
 
 /** `pageInfo` of the last page of a GraphQL connection. */
 export const LAST_PAGE = { hasNextPage: false, endCursor: null };
+
+let realClients = 0;
+
+/**
+ * Builds the client `github.getOctokit` builds, with every request answered by `fetch` and the retry and rate limit waits
+ * a thousandth as long. The throttling plugin shares its limiters by `id` across clients, so each client gets its own.
+ */
+export function realOctokit(
+  fetch: (url: string, init: RequestInit) => Promise<Response>, token: string, options: { retry?: object; throttle?: object } = {}, ...plugins: Parameters<typeof GitHub.plugin>
+): InstanceType<typeof GitHub> {
+  const scaled: Record<string, unknown> = {
+    ...options,
+    request: { fetch },
+    retry: { ...options.retry, retryAfterBaseValue: 1 },
+    throttle: { ...options.throttle, retryAfterBaseValue: 1, id: `client-${realClients++}` },
+  };
+  const WithPlugins = GitHub.plugin(...plugins);
+  return new WithPlugins(getOctokitOptions(token, scaled));
+}
 
 /** Stands in for `octokit.paginate` over a mocked list method that resolves one page as `{ data }`. */
 export function paginateSinglePage(method: (params: unknown) => Promise<{ data: unknown[] }>, params: unknown): Promise<unknown[]> {

@@ -23,7 +23,7 @@ import {
   Learning,
   RepoMemory,
 } from './memory';
-import { pastRetryWait } from './test-utils';
+import { pastRetryWait, realOctokit } from './test-utils';
 import { Finding, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { registerSecret } from './utils';
 
@@ -718,6 +718,8 @@ describe('memory writes after a write conflict', () => {
     await write(octokit);
 
     expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
+    // The client never sends a write again by itself: its retry would meet the same conflict.
+    expect(jest.mocked(octokit.rest.repos.createOrUpdateFileContents).mock.calls.map(([call]) => call?.request)).toEqual([{ retries: 0 }, { retries: 0 }]);
     expect((store!.get(path) as { id: string }[]).map(item => item.id)).toEqual(ids);
   });
 
@@ -974,6 +976,28 @@ describe('openMemoryStore', () => {
 
     expect(reviewedGet).toHaveBeenCalledWith({ owner: 'owner', repo: 'test-repo' });
     expect(skip?.reason).toBe('private_repo');
+  });
+
+  const answer = (status: number, message: string, headers: Record<string, string> = {}) => () => new Response(JSON.stringify({ message }), { status, headers: { 'content-type': 'application/json', ...headers } });
+
+  it.each<[string, () => Response, number]>([
+    ['at once when the read of the memory repo meets a rate limit', answer(403, 'API rate limit exceeded', { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1) }), 1],
+    ['at once when the read of the memory repo meets a secondary rate limit', answer(403, 'You have exceeded a secondary rate limit', { 'retry-after': '1' }), 1],
+    ['after three retries when the read of the memory repo gets a 5xx on every try', answer(503, 'Service Unavailable'), 4],
+  ])('skips memory %s, on the real client', async (_case, reply, tries) => {
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    jest.spyOn(core, 'info').mockImplementation(() => {});
+    jest.spyOn(core, 'getInput').mockImplementation(name => (name === 'memory_repo_token' ? 'memory-token' : ''));
+    let reads = 0;
+    const fetch = async () => { reads += 1; return reply(); };
+    jest.spyOn(github, 'getOctokit').mockImplementation((...args) => realOctokit(fetch, ...args) as MockOctokit);
+    github.context.payload = { repository: { name: 'test-repo', owner: { login: 'owner' }, private: true } };
+
+    const { store, skip } = await openMemoryStore(REVIEW_OCTOKIT, { enabled: true, repo: 'owner/memory' }, 'owner', 'test-repo', 7);
+
+    expect(reads).toBe(tries);
+    expect(store).toBeUndefined();
+    expect(skip?.reason).toBe('memory_repo_unreadable');
   });
 });
 

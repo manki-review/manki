@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
+import { AuthResult, createAuthenticatedOctokit, createOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { fallbackConfig, loadConfig, resolveModel } from './config';
 import { BENCH_COMMAND, runBenchCommand } from './bench';
@@ -173,7 +173,7 @@ async function getAuth(): Promise<AuthResult> {
 /** A client on the workflow's own `github_token`, which needs no call to the token service. */
 async function workflowOctokit(): Promise<Octokit> {
   const token = core.getInput('github_token');
-  return token ? github.getOctokit(token) : (await getAuth()).octokit;
+  return token ? createOctokit(token) : (await getAuth()).octokit;
 }
 
 /** Whether the commenter may start Manki. Refuses without a comment, so a stranger cannot make Manki post. */
@@ -606,15 +606,15 @@ interface OctokitErrorFields {
   response?: { headers?: Record<string, string | undefined> };
 }
 
-function failureReason(error: unknown): string {
-  return sanitizeLogOutput(sanitizeTokens(describeFailure(error)));
+function failureReason(error: unknown, retryHint = RETRY_HINT): string {
+  return sanitizeLogOutput(sanitizeTokens(describeFailure(error, retryHint)));
 }
 
 /**
  * Describes a failure in a sentence that always names a cause. A 5xx from GitHub reads as a
- * transient failure, and an Octokit error with an empty message falls back to its status and call.
+ * transient failure that ends with `retryHint`, and an Octokit error with an empty message falls back to its status and call.
  */
-function describeFailure(error: unknown): string {
+function describeFailure(error: unknown, retryHint: string): string {
   if (!(error instanceof Error)) return String(error).trim() || `A ${typeof error} with no message`;
   const message = error.message.trim();
   if (error.name === 'HttpError') {
@@ -624,7 +624,7 @@ function describeFailure(error: unknown): string {
     const requestId = response?.headers?.['x-github-request-id'];
     const where = `${call}${requestId ? ` (request id ${requestId})` : ''}`;
     // Without a response the request never reached GitHub, so the message names the network error.
-    if (response && status !== undefined && status >= 500) return `GitHub returned ${status}${where}. ${RETRY_HINT}`;
+    if (response && status !== undefined && status >= 500) return `GitHub returned ${status}${where}. ${retryHint}`.trimEnd();
     if (!message) return `GitHub returned ${status ?? 'an error'}${where}.`;
   }
   return message || `${error.name} with no message`;
@@ -2199,6 +2199,8 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
 const POST_PHASE_STATE_KEY = 'manki_post_phase';
 const TOKEN_FAILURE_LINE = '⚠️ **Manki did not run:**';
+// The run has already failed, so the note must not keep it open for long.
+const TOKEN_FAILURE_NOTE_TIMEOUT_MS = 10_000;
 
 const NOT_DISPATCHED = 'Manki runs only from the `workflow_dispatch` workflow that the Manki service starts. '
   + 'See https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow';
@@ -2235,7 +2237,7 @@ async function reportTokenFailure({ event, action, number }: ReturnType<typeof d
   const { owner, repo } = github.context.repo;
   const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
   try {
-    const octokit = github.getOctokit(token);
+    const octokit = createOctokit(token, { deadline: AbortSignal.timeout(TOKEN_FAILURE_NOTE_TIMEOUT_MS) });
     const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
     if (comments.some(comment => comment.body === body)) return;
     await octokit.rest.issues.createComment({ owner, repo, issue_number: number, body });
@@ -2280,7 +2282,9 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
-    core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
+    // No hint for a merge. A review command would review the merged PR instead of recording its fix rate.
+    const retryHint = dispatched?.event === 'pull_request' && dispatched.action === 'closed' ? '' : RETRY_HINT;
+    core.setFailed(`Manki encountered an error: ${failureReason(error, retryHint)}`);
   } finally {
     if (stopSampler) {
       stopSampler();

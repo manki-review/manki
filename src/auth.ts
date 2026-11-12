@@ -27,6 +27,12 @@ function onRateLimit(retryAfter: number, options: { method: string; url: string;
   return true;
 }
 
+/** The handler of a client that never waits for a rate limit, so the request fails and its caller takes its failure or skip path. */
+function refuseRateLimitWait(_retryAfter: number, options: { method: string; url: string }): boolean {
+  core.warning(`GitHub rate limit on ${options.method} ${options.url}, not waiting`);
+  return false;
+}
+
 // Request options that route a request rather than carry its text.
 const ROUTING_OPTIONS = new Set(['method', 'url', 'baseUrl', 'headers', 'request', 'mediaType']);
 
@@ -39,9 +45,24 @@ function redactRequests(octokit: Pick<Octokit, 'hook'>): void {
   });
 }
 
-/** Octokit that retries 5xx responses, waits out primary and secondary rate limits and redacts Manki's secret values. */
-function createOctokit(token: string): Octokit {
-  return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling, redactRequests);
+/**
+ * Octokit that retries 5xx responses and redacts Manki's secret values. It waits out primary and secondary rate limits
+ * only with `waitsOutRateLimits`, which is for the client Manki reviews and posts with. Any other client fails a
+ * rate-limited request at once. With `deadline`, every request of the client carries that signal and a 5xx is retried
+ * once. `paginate` drops a signal passed to it, so a deadline for its pages has to come this way.
+ */
+export function createOctokit(token: string, { deadline, waitsOutRateLimits = false }: { deadline?: AbortSignal; waitsOutRateLimits?: boolean } = {}): Octokit {
+  const limit = waitsOutRateLimits ? onRateLimit : refuseRateLimitWait;
+  const plugins = { throttle: { onRateLimit: limit, onSecondaryRateLimit: limit }, ...(deadline && { retry: { retries: 1 } }) };
+  const octokit = github.getOctokit(token, plugins, retry, throttling, redactRequests);
+  if (deadline) octokit.hook.before('request', (options) => { options.request.signal ??= deadline; });
+  return octokit;
+}
+
+/** Returns a client on the token of `octokit` that carries `deadline`, as `createOctokit` describes. */
+export async function withDeadline(octokit: Octokit, deadline: AbortSignal): Promise<Octokit> {
+  const { token } = await octokit.auth() as { token: string };
+  return createOctokit(token, { deadline });
 }
 
 export interface AuthResult {
@@ -299,13 +320,13 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
     const { token, slug } = await getInstallationToken(appId, privateKey);
-    return { octokit: createOctokit(token), bot: { logins: [`${slug}[bot]`] } };
+    return { octokit: createOctokit(token, { waitsOutRateLimits: true }), bot: { logins: [`${slug}[bot]`] } };
   }
 
   const { owner, repo: repoName } = github.context.repo;
   const { token, queuedCheck } = await resolveGitHubToken(tokenServiceUrl(), owner, repoName);
 
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(token, { waitsOutRateLimits: true });
   serviceClients.add(octokit);
   if (queuedCheck) offerQueuedCheck(octokit, queuedCheck);
   return { octokit, bot: { logins: [BOT_LOGIN] } };
@@ -327,7 +348,7 @@ async function getInstallationToken(
 
   const appAuth = await auth({ type: 'app' });
   registerSecret(appAuth.token);
-  const appOctokit = createOctokit(appAuth.token);
+  const appOctokit = createOctokit(appAuth.token, { waitsOutRateLimits: true });
 
   const owner = github.context.repo.owner;
   const repo = github.context.repo.repo;
