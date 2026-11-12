@@ -1383,6 +1383,21 @@ describe('fetchRecapState', () => {
       );
       const afterClear = await fetchRecapState(withWriter(mockOctokit([cleared], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(afterClear.previousFindings.map(f => [f.status, f.reopen ?? false])).toEqual([['auto-resolved', false]]);
+
+      // A later round that found the thread open again takes the earlier `addressed` away, so Manki's resolve has nothing
+      // to back it. A warning thread Manki resolved on an `addressed` record counts as resolved and fixed.
+      const laterCtx = makeRoundContext(2, { judge: { summary: 'ok', threadEvaluations: [
+        { threadId: 'T_JUDGE', status: 'not_addressed', reason: 'The check is gone again.' }, { threadId: 'T_WARN', status: 'addressed', reason: 'fixed' },
+      ] } });
+      const warning = makeThread({
+        id: 'T_WARN', isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: 'src/warn.ts', line: 10,
+        comments: { nodes: [{ body: `**Warning**: ${title}\n\n<!-- manki:warning:${slug} -->`, author: { login: BOT_LOGIN } }] },
+      });
+      const later = await fetchRecapState(mockOctokit(
+        [thread('T_JUDGE', files.judge, BOT_LOGIN), warning],
+        [ctx, laterCtx].map((record, i) => ({ id: 100 + i, body: htmlCommentBlock(record), user: { login: BOT_LOGIN } })),
+      ), TEST_BOT, 'owner', 'repo', 1);
+      expect(later.previousFindings.map(f => [f.status, f.fixed ?? false])).toEqual([['open', false], ['resolved', true]]);
       expect(state.previousFindings.map(f => f.fixed ?? false)).toEqual([false, false, true, false, false]);
 
       const newFindings = Object.values(files).map(file => makeFinding({ title, file, line: 10 }));

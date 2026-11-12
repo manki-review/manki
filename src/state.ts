@@ -65,7 +65,7 @@ interface ReviewThread {
   rootCommentId?: number;
   isResolved: boolean;
   resolvedByLogin?: string;
-  /** A round record says the judge found the thread addressed. */
+  /** The latest round that evaluated the thread marked it addressed. */
   addressed?: boolean;
   /** Who wrote the latest reply by a person, when that person has write access. Read only for a thread Manki resolved, and only below the comment limit. */
   writerReplyLogin?: string;

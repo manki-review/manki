@@ -625,13 +625,19 @@ async function fetchRecapState(
   };
 }
 
-/** IDs of the threads that the judge of any round evaluated as `addressed`. */
-function judgeAddressedThreadIds(rounds: RoundContext[]): Set<string> {
-  return new Set(
-    rounds.flatMap(r => r.judge.threadEvaluations ?? [])
-      .filter(e => e.status === 'addressed')
-      .map(e => e.threadId),
-  );
+/**
+ * IDs of the threads that the judge of any round evaluated as `addressed`. With `latestOnly`, a thread counts only
+ * while no later round evaluated it as anything else.
+ */
+function judgeAddressedThreadIds(rounds: RoundContext[], latestOnly = false): Set<string> {
+  const ids = new Set<string>();
+  for (const round of [...rounds].sort((a, b) => a.meta.round - b.meta.round)) {
+    for (const e of round.judge.threadEvaluations ?? []) {
+      if (e.status === 'addressed') ids.add(e.threadId);
+      else if (latestOnly) ids.delete(e.threadId);
+    }
+  }
+  return ids;
 }
 
 /** Whether the PR author resolved a thread they cannot clear, and Manki has not reopened it yet. Only asked for a thread that is not settled. */
@@ -641,7 +647,7 @@ function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boole
 
 /** What the review round and the approval check both read to decide whether a resolved thread is settled. */
 interface ThreadFacts extends OverrideCandidate {
-  /** A round record says the judge marked the thread addressed. */
+  /** The latest round that evaluated the thread marked it addressed. */
   addressed?: boolean;
   /** Who wrote the latest reply by a person, when that person has write access and every comment of the thread was read. */
   writerReplyLogin?: string;
@@ -659,7 +665,7 @@ function latestPersonReply<T extends { author?: { login: string } | null }>(bot:
 async function resolveBacking(
   octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[], threads: Array<{ id: string; latestReplyLogin?: string }>,
 ): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin'>>> {
-  const addressed = judgeAddressedThreadIds(priorRounds);
+  const addressed = judgeAddressedThreadIds(priorRounds, true);
   const repliers = [...new Set(threads.flatMap(t => t.latestReplyLogin ?? []))];
   const writers = new Set((await Promise.all(repliers.map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
   return new Map(threads.map(t => [t.id, {
@@ -675,7 +681,8 @@ type Settled = 'addressed' | 'override' | 'resolver' | 'reply';
  * Returns why the resolved thread `t` is settled, or `undefined` while it still blocks. The review round and the approval
  * check both ask this for a thread the PR author cannot clear. `override`: the PR author cleared it with `prAuthorRole`.
  * `resolver`: someone other than the PR author resolved it. Manki's own resolve settles the thread only with backing:
- * `addressed` when a round record says so, `reply` when `writerReplyLogin` is someone other than the PR author.
+ * `addressed` when the latest round that evaluated the thread says so, `reply` when `writerReplyLogin` is someone
+ * other than the PR author.
  */
 function settledBy(t: ThreadFacts, bot: BotIdentity, prAuthorLogin: string | undefined, prAuthorRole: AuthorClearRole | undefined): Settled | undefined {
   if (!t.isResolved) return undefined;
@@ -688,14 +695,14 @@ function settledBy(t: ThreadFacts, bot: BotIdentity, prAuthorLogin: string | und
 
 /**
  * Returns the thread's status for the next round. A resolved thread the PR author cannot clear stays `open` or `replied`
- * until `settled` says why it is settled. Manki's resolve after a maintainer's reply counts as `auto-resolved`, and so
- * does any other thread without a human resolver.
+ * until `settled` says why it is settled. Manki's resolve after a maintainer's reply counts as `auto-resolved`. So does
+ * any other thread without a human resolver, unless `settled` is `addressed`.
  */
 function threadStatus(t: ReviewThread, settled: Settled | undefined): PreviousFinding['status'] {
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
   if (authorCannotClear(t)) return !settled ? unresolved : settled === 'reply' ? 'auto-resolved' : 'resolved';
-  return t.resolvedByHuman ? 'resolved' : 'auto-resolved';
+  return t.resolvedByHuman || settled === 'addressed' ? 'resolved' : 'auto-resolved';
 }
 
 /**
