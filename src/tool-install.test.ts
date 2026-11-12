@@ -1,7 +1,7 @@
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import {
-  accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync,
+  accessSync, chmodSync, constants, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync,
   truncateSync, utimesSync, writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
@@ -261,25 +261,28 @@ describe('installPinned', () => {
       expect(notes()).toEqual([expect.stringMatching(/^Using the kept download .*tool\.tgz instead of downloading it\n$/)]);
     });
 
+    // A file that was read and failed its digest is named in the log. A link and a pipe are never read, so nothing is compared.
+    const MISMATCH = [expect.stringMatching(/^The kept download .*tool\.tgz does not match its pinned digest, downloading it again\n$/)];
     it.each([
-      ['its content was replaced', () => writeFileSync(kept(), 'planted')],
-      ['it was cut short', () => truncateSync(kept(), 10)],
+      ['its content was replaced', () => writeFileSync(kept(), 'planted'), MISMATCH],
+      ['it was cut short', () => truncateSync(kept(), 10), MISMATCH],
       ['it is a link to a file with the right content', () => {
         renameSync(kept(), join(toolCache, 'elsewhere.tgz'));
         symlinkSync(join(toolCache, 'elsewhere.tgz'), kept());
-      }],
+      }, []],
       ['it is a named pipe', () => {
         renameSync(kept(), join(toolCache, 'elsewhere.tgz'));
-        execFileSync('mkfifo', [kept()]);
-      }],
-    ])('downloads again instead of using a kept file when %s, and keeps the checked download in its place', async (_case, tamper) => {
+        // Without its own stderr, which `execFileSync` would pass on to the log this test reads.
+        execFileSync('mkfifo', [kept()], { stdio: 'ignore' });
+      }, []],
+    ])('downloads again instead of using a kept file when %s, and keeps the checked download in its place', async (_case, tamper, said) => {
       await nextRun();
       tamper();
 
       const dir = await nextRun();
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
-      expect(notes().some(line => line.startsWith('Using the kept download'))).toBe(false);
+      expect(notes()).toEqual(said);
 
       // The checked download replaces the bad entry, and a file a link pointed to is left as it was.
       expect(lstatSync(kept()).isFile()).toBe(true);
@@ -384,10 +387,12 @@ describe('installPinned', () => {
       // What another run finds under the kept name while a run has written half of its file.
       const fs = jest.requireActual<typeof import('fs')>('fs');
       const foundMeanwhile: string[] = [];
+      const writtenUnder: string[] = [];
       jest.doMock('fs', () => ({
         ...fs,
         writeFileSync: (path: string, content: Buffer | string, options?: import('fs').WriteFileOptions) => {
           if (basename(dirname(path)) !== 'manki-pinned' || typeof content === 'string') return fs.writeFileSync(path, content, options);
+          writtenUnder.push(basename(path));
           fs.writeFileSync(path, content.subarray(0, content.length / 2), options);
           foundMeanwhile.push(!fs.existsSync(kept()) ? 'none' : fs.readFileSync(kept()).equals(data) ? 'whole' : 'half');
           fs.appendFileSync(path, content.subarray(content.length / 2));
@@ -409,6 +414,9 @@ describe('installPinned', () => {
       for (const dir of [first, second]) expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
       // The first run writes beside no kept file, the second beside the whole file of the first.
       expect(foundMeanwhile).toEqual(['none', 'whole']);
+      // Each run writes under a name of its own, so two that write at the same moment do not write one file.
+      expect(writtenUnder).toEqual([expect.stringMatching(/^\.writing-[0-9a-f]{16}$/), expect.stringMatching(/^\.writing-[0-9a-f]{16}$/)]);
+      expect(new Set(writtenUnder).size).toBe(2);
       expect(readdirSync(folder())).toEqual([keptName]);
       expect(readFileSync(kept())).toEqual(data);
       expect(notes()).toEqual([]);
@@ -428,6 +436,7 @@ describe('installPinned', () => {
       writeFileSync(join(toolCache, 'outside'), 'x');
       utimesSync(join(toolCache, 'outside'), days(15), days(15));
       symlinkSync(join(toolCache, 'outside'), join(folder(), 'a-link'));
+      lutimesSync(join(folder(), 'a-link'), days(15), days(15));
       // A run that uses a kept download marks it as used, however old the file is.
       age(keptName, 15);
       await nextRun();
@@ -461,6 +470,17 @@ describe('installPinned', () => {
       expect(existsSync(join(toolCache, 'outside'))).toBe(true);
       // The new download was kept, and the log does not say otherwise.
       expect(notes().filter(line => line.startsWith('Could not'))).toEqual([]);
+
+      // A cleanup that cannot list the folder says so, and does not say that the download was not kept.
+      rmSync(join(folder(), otherName));
+      jest.doMock('fs', () => ({ ...fs, readdirSync: () => { throw new Error('EIO: i/o error, scandir'); } }));
+      try {
+        await nextRun({ url: 'https://example.test/kept/other-tool', integrity: otherIntegrity });
+      } finally {
+        jest.dontMock('fs');
+      }
+      expect(readFileSync(join(folder(), otherName))).toEqual(other);
+      expect(notes().filter(line => line.startsWith('Could not'))).toEqual([expect.stringMatching(/^Could not remove the unused downloads in .*manki-pinned: EIO: i\/o error, scandir\n$/)]);
     });
 
     it('installs all the same when a folder sits where the kept file goes, and says why nothing is kept', async () => {

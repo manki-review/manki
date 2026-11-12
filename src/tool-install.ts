@@ -155,16 +155,19 @@ function ownFolder(path: string): boolean {
 
 /**
  * Returns the folder that keeps pinned downloads for later runs on this runner, or `undefined` when there is none to
- * trust. Only a self-hosted runner keeps its tool cache between jobs. The folder and the tool cache around it must
- * each be this user's own and writable by no one else, so no other user can plant a file or a link there. With
- * `create` a missing folder is made, and only in a tool cache that passed that check.
+ * trust. Only a self-hosted runner keeps its tool cache between jobs. Each check reads what is on disk, in this order:
+ * - With `create`, a missing tool cache is made at mode 0755. A umask can only take bits away from that.
+ * - The tool cache must be this user's own folder that no one else can write.
+ * - With `create`, a missing `manki-pinned` is made in that tool cache at mode 0700.
+ * - `manki-pinned` must be this user's own folder, and no link, that no one else can write.
+ * A failed check keeps nothing. A tool cache made by the first step then stays behind, empty and this user's own,
+ * where the runner makes it for any other tool.
  */
 function keptFolder(create: boolean): string | undefined {
   const toolCache = process.env.RUNNER_TOOL_CACHE;
   // Without a user id the owner of a folder cannot be checked, as on Windows.
   if (!toolCache || process.env.RUNNER_ENVIRONMENT !== 'self-hosted' || process.getuid === undefined) return undefined;
   try {
-    // With a mode of its own: under a umask that leaves the group's write bit, a new folder would fail `ownFolder`.
     if (create) mkdirSync(toolCache, { recursive: true, mode: 0o755 });
     const root = realpathSync(toolCache);
     const folder = join(root, KEPT_FOLDER);
