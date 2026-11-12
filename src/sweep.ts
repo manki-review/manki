@@ -6,6 +6,7 @@ import { extractJSON } from './json';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus } from './refute';
+import { repoTools } from './related-repos';
 import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, PRE_EXISTING_RULE, truncateDiff } from './review';
 import { CheckStatus, disproof, EffortLevel, Finding, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
@@ -144,7 +145,7 @@ export async function runSweeps(
     const record = { reviewer, ...from(source) };
     const options: SendMessageOptions = {
       ...(effort && { effort }),
-      ...(tools && { repoTools: { root: workspace!, steps: SWEEP_STEPS }, timeoutMs: SWEEP_TIMEOUT_MS }),
+      ...(tools && { repoTools: repoTools(workspace!, SWEEP_STEPS, undefined), timeoutMs: SWEEP_TIMEOUT_MS }),
     };
     try {
       const { general, defectClass, findings } = await sendWithParseRetry(

@@ -24,6 +24,7 @@ import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earl
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
+import { repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
 import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
@@ -1471,7 +1472,7 @@ export async function runJudgeAgent(
   const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({
     systemPrompt: judgePrompt(steps),
     options: steps > 0
-      ? { effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: { root: refutation!.workspace, steps } }
+      ? { effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: repoTools(refutation!.workspace, steps, undefined) }
       : { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate: judgeTemplate(0) },
   });
   // Defense-in-depth: when the inter-round diff is empty, force every open

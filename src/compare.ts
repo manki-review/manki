@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 
 import { fenceText } from './github';
 import { LLMClient, SendMessageOptions } from './providers';
+import { repoTools } from './related-repos';
 import { CLAIMS_MISSING_RULE, parseFindings, PRE_EXISTING_RULE } from './review';
 import { CodeExcerpt, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
 import { EffortLevel, Finding, RoundComparison } from './types';
@@ -141,7 +142,7 @@ export async function runComparisons(
     const options: SendMessageOptions = {
       ...(effort && { effort }),
       ...(signal && { signal }),
-      ...(tools && { repoTools: { root: workspace!, steps: COMPARE_STEPS }, timeoutMs: COMPARE_TIMEOUT_MS }),
+      ...(tools && { repoTools: repoTools(workspace!, COMPARE_STEPS, undefined), timeoutMs: COMPARE_TIMEOUT_MS }),
     };
     try {
       const findings = await sendWithParseRetry(

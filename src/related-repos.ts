@@ -4,6 +4,8 @@ import { devNull, tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
+import { RepoTools } from './providers/types';
+import { makeScratchDir } from './tool-install';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -29,6 +31,16 @@ export interface RelatedRepoLoaderOptions {
 /** Returns the directory related repos are cloned into: `manki-related-repos` in the runner's temp directory. */
 export function relatedReposCacheDir(): string {
   return join(process.env.RUNNER_TEMP || tmpdir(), 'manki-related-repos');
+}
+
+/** Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined` without repos. */
+export function relatedRepoTools(repos: RelatedRepo[] | undefined, asOf?: string): RelatedRepoTools | undefined {
+  return repos?.length ? { repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }) } : undefined;
+}
+
+/** Returns the read-only tools of a call on the checkout at `root`. Every stage builds its `RepoTools` here, so each one states its related repos. */
+export function repoTools(root: string, steps: number, related: RelatedRepoTools | undefined): RepoTools {
+  return { root, steps, related };
 }
 
 /**

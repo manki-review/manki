@@ -12,6 +12,7 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { repoTools } from './related-repos';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
 import { COMMENT_MARKER as BOT_MARKER, redactSecrets, safeTruncate, sanitizeTokens, withMarkers } from './utils';
@@ -416,7 +417,7 @@ export async function handleReviewCommentReply(
     );
 
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
-    const tools = workspace ? { repoTools: { root: workspace, steps: REPLY_STEPS }, timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
+    const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, undefined), timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
     const findingBody = root.comment.body ?? '';
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.

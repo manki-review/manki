@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -367,6 +367,23 @@ describe('relatedRepoLoader', () => {
     } finally {
       if (runnerTemp === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = runnerTemp;
+    }
+  });
+
+  it('gives each round a state directory of its own, and states the related repos on the tools of every call', () => {
+    const first = relatedRepoTools([DASH, PLATFORM], '2026-01-05T00:00:00Z')!;
+    const second = relatedRepoTools([DASH])!;
+    try {
+      expect(first).toEqual({ repos: [DASH, PLATFORM], cacheDir: relatedReposCacheDir(), stateDir: expect.any(String), asOf: '2026-01-05T00:00:00Z' });
+      expect(lstatSync(first.stateDir).isDirectory()).toBe(true);
+      expect(second.stateDir).not.toBe(first.stateDir);
+      expect(second).not.toHaveProperty('asOf');
+      expect(relatedRepoTools([])).toBeUndefined();
+      expect(relatedRepoTools(undefined)).toBeUndefined();
+      expect(repoTools('/work/head', 15, first)).toStrictEqual({ root: '/work/head', steps: 15, related: first });
+      expect(repoTools('/work/head', 15, undefined)).toStrictEqual({ root: '/work/head', steps: 15, related: undefined });
+    } finally {
+      for (const { stateDir } of [first, second]) rmSync(stateDir, { recursive: true, force: true });
     }
   });
 });

@@ -10,6 +10,7 @@ import { extractJSON } from './json';
 import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
+import { repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
 import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
@@ -529,7 +530,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       const refutation = await sendWithParseRetry(
         buildRefuteMessage(finding, !!preExisting?.(finding), usesOutsideDiff, outsideInput, diff),
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
-          ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
+          ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, undefined), timeoutMs: REFUTE_TIMEOUT_MS,
         }),
         reply => ({ ...parseRefutation(reply.content, workspace, finding, diff), ...(reply.model && { model: reply.model }) }),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
