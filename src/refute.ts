@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { agreedOutcome, cellGrade, CheckStatus, columnDecidesBlock, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isRareClaim, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -325,7 +325,7 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
   }
   if (outcome === 'confirmed') {
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
-    const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
+    const rareClaim = isRareClaim(finding.cell);
     // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
     const restored = rareClaim && !reachConfirmed(checks) ? undefined : confirmedGrade(finding);
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
@@ -455,7 +455,7 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   const { cell: _cell, ...kept } = finding;
   const cell = isGradeCell(prior.cell) ? prior.cell : undefined;
   // Only `REACH_DOUBT` lifts the `rare` column, and an earlier record can lack it.
-  const doubts = cell && columnDecidesBlock(cell.row) && cell.column === 'rare' ? withReachDoubt(prior.doubts) : prior.doubts;
+  const doubts = isRareClaim(cell) ? withReachDoubt(prior.doubts) : prior.doubts;
   return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(doubts && { doubts }), ...(cell && { cell }) };
 }
 

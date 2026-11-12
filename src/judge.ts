@@ -26,7 +26,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1674,7 +1674,7 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const cell = { row, column, ...(column !== judgeColumn && { judgeColumn }) };
   const stated = cellGrade(row, column);
   if (o.toolSource) return { ...gradeStep(o, stated, 'judge'), cell };
-  const checkedRare = columnDecidesBlock(row) && column === 'rare';
+  const checkedRare = isRareClaim(cell);
   const counted = columnDecidesBlock(row) ? named : named.filter(d => d.decides === 'defect');
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
   const doubts = checkedRare ? withReachDoubt(counted) : counted;

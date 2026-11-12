@@ -36,9 +36,14 @@ export function isGradeCell(cell: GradeCell | undefined): cell is GradeCell {
   return !!cell && Object.hasOwn(CELL_GRADES, cell.row) && (cell.column === 'normal' || cell.column === 'rare');
 }
 
-/** Whether the column decides if a finding on `row` blocks. Only there is the `rare` column a claim the refuter checks. */
+/** Whether the column decides if a finding on `row` blocks. */
 export function columnDecidesBlock(row: CellRow): boolean {
   return cellGrade(row, 'normal') === 'blocker' && cellGrade(row, 'rare') !== 'blocker';
+}
+
+/** Whether `cell` is in the `rare` column of a row where `columnDecidesBlock`, so the column is a claim the refuter checks. */
+export function isRareClaim(cell: GradeCell | undefined): boolean {
+  return isGradeCell(cell) && columnDecidesBlock(cell.row) && cell.column === 'rare';
 }
 
 /** The kind of problem a finding names, as the judge classifies it, with the label a reader sees. */
