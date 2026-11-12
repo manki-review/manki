@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, pendingGrade, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
@@ -2830,8 +2830,8 @@ const NOT_CHECKED: FindingChecks = {
 /**
  * Returns the part that names the rule a confirmed rule finding breaks, and says when that rule is why the finding
  * blocks: the rule raised it to a blocker, and its damage alone would not have. The damage alone blocks only when the
- * judge's cell gives a blocker and the checks confirmed the finding, by `agreedOutcome`, which is what gives a held or
- * capped blocker back. The file name and the quote are repository text, so each shows as a code span
+ * finding's `pendingGrade`, or its cell when it has none, is a blocker and the checks confirmed the finding, by
+ * `agreedOutcome`, which is what gives a held or capped blocker back. The file name and the quote are repository text, so each shows as a code span
  * or not at all.
  */
 function rulePart(finding: Finding): FoldPart | undefined {
@@ -2839,7 +2839,7 @@ function rulePart(finding: Finding): FoldPart | undefined {
   const quote = codeLine(finding.rule.quote);
   const raised = !!finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
   // A finding without a cell the table knows is read as one whose damage can block.
-  const damageCanBlock = !isGradeCell(finding.cell) || cellGrade(finding.cell.row, finding.cell.column) === 'blocker';
+  const damageCanBlock = !isGradeCell(finding.cell) || (pendingGrade(finding) ?? cellGrade(finding.cell.row, finding.cell.column)) === 'blocker';
   const confirmed = agreedOutcome([finding.refutation, finding.pairRefutation].filter(check => !!check)) === 'confirmed';
   const blocks = finding.severity === 'blocker' && raised && !(damageCanBlock && confirmed);
   const text = `This PR breaks a required rule of ${codeLine(finding.rule.file) || 'an instruction file'}${quote ? `: ${quote}` : '.'}`

@@ -1,0 +1,19 @@
+{
+  "name": "doubted-wrong-total",
+  "case": "doubted-wrong-total",
+  "allowed": [
+    "warning"
+  ],
+  "ifConfirmed": "blocker",
+  "finding": {
+    "title": "`discountFor` returns a percentage where its caller expects a fraction",
+    "file": "internal/billing/discount.go",
+    "line": 18,
+    "description": "The PR multiplies the tier rate by 100. `invoiceTotal` in `internal/billing/invoice.go` computes `net * (1 - discountFor(c))`, so a customer on a 15 percent tier is charged `net * -14` and every discounted invoice gets a negative total.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/internal/billing/discount.go b/internal/billing/discount.go\nindex 1111111..2222222 100644\n--- a/internal/billing/discount.go\n+++ b/internal/billing/discount.go\n@@ -12,7 +12,8 @@\n // discountFor returns the discount a customer's tier earns.\n func discountFor(c Customer) float64 {\n \tif c.Tier == nil {\n \t\treturn 0\n \t}\n-\treturn c.Tier.Rate\n+\t// Tier rates are shown as percentages in the admin page.\n+\treturn c.Tier.Rate * 100\n }\n"
+}

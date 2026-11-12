@@ -2230,12 +2230,13 @@ describe('runReview', () => {
     const agreed = (title: string, line: number): LegacyHandoverFindingFixture =>
       ({ fingerprint: { file: 'src/app.ts', lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'warning', title, authorReply: 'agree' });
     const judged = (r: ReviewResult, title: string) => r.allJudgedFindings?.filter(f => f.title === title).map(f => [f.severity, f.tags]);
+    const keptDown = { row: 'wrong', gradeIfConfirmed: 'warning' };
     // One row per case where no outcome of a check changes whether the review shows the warning: the warning, what
     // makes it such a case, and how the round ends for it. A new step that hides a warning gets a row here.
     const hidden: Array<{ step: string; title: string; finding?: object; verdict?: object; options?: Partial<Parameters<typeof runReview>[1]>; ends: (r: ReviewResult) => unknown; as: unknown }> = [
       {
         step: 'cross-round suppression', title: 'Agreed last round',
-        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Reverses the agreed fix', 12)] })] },
+        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Reverses the agreed fix', 12), agreed('Agreed sum stays a warning', 21)] })] },
         ends: r => judged(r, 'Agreed last round'), as: [['ignore', ['suppressed-by-ratchet']]],
       },
       {
@@ -2245,7 +2246,10 @@ describe('runReview', () => {
       {
         // A finder's blocker passes the dedup against the resolved thread, so only the suppression after the judge drops it.
         step: 'in-PR suppression', title: 'Resolved in its thread', finding: { severity: 'blocker' },
-        options: { previousFindings: [{ title: 'Resolved in its thread', file: 'src/app.ts', line: 13, severity: 'warning', status: 'resolved', threadId: 'T1' }] },
+        options: { previousFindings: [
+          { title: 'Resolved in its thread', file: 'src/app.ts', line: 13, severity: 'warning', status: 'resolved', threadId: 'T1' },
+          { title: 'Closed thread on a wrong count', file: 'src/app.ts', line: 22, severity: 'warning', status: 'resolved', threadId: 'T3' },
+        ] },
         ends: r => judged(r, 'Resolved in its thread'), as: [['ignore', ['suppressed-in-pr']]],
       },
       {
@@ -2281,6 +2285,20 @@ describe('runReview', () => {
         step: 'restated open thread', title: 'Timer leaks on retry',
         options: { openThreads: [{ threadId: 'T2', title: 'Timer leaks on retry', file: 'src/app.ts', line: 18, severity: 'warning' }] },
         ends: r => r.findings.filter(f => f.title === 'Timer leaks on retry').map(f => [f.severity, f.threadId]), as: [['warning', 'T2']],
+      },
+      // The judge keeps these three at a warning on a cell that gives a blocker. No answer raises them, so each step hides them unchecked like any other warning.
+      {
+        step: 'memory suppression of a blocker cell the judge keeps at a warning', title: 'Remembered pattern the judge keeps down', verdict: keptDown,
+        ends: r => r.memorySuppressed?.filter(f => f.title === 'Remembered pattern the judge keeps down').map(f => [f.suppressedBy, f.cell, f.gradeIfConfirmed, f.refutation]),
+        as: [['sup-1', { row: 'wrong', column: 'normal' }, 'warning', undefined]],
+      },
+      {
+        step: 'cross-round suppression of a blocker cell the judge keeps at a warning', title: 'Agreed sum stays a warning', verdict: keptDown,
+        ends: r => judged(r, 'Agreed sum stays a warning'), as: [['ignore', ['suppressed-by-ratchet']]],
+      },
+      {
+        step: 'in-PR suppression of a blocker cell the judge keeps at a warning', title: 'Closed thread on a wrong count', finding: { severity: 'blocker' }, verdict: keptDown,
+        ends: r => judged(r, 'Closed thread on a wrong count'), as: [['ignore', ['suppressed-in-pr']]],
       },
     ];
     // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
@@ -2870,11 +2888,16 @@ describe('runReview', () => {
       expect(result.outcome).toBe('ADDRESS_FIRST');
     });
 
-    it('never leaves out a finding that would be a blocker if true, a finding in the `rare` column, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
+    it('never leaves out a finding that would be a blocker if true, a blocker cell the judge keeps at a warning, a finding in the `rare` column, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
       const rule = { file: 'AGENTS.md', quote: 'Every migration needs a rollback.' };
       const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
+      const keptDown = { doubts, gradeIfConfirmed: 'warning' as const, cell: { row: 'wrong' as const, column: 'normal' as const } };
       const result = await review({
         'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
+        // The judge stated `warning` for the case that the doubt holds. The cell still gives a blocker, so an open doubt never leaves it out.
+        'The judge keeps a blocker cell at a warning': { ...keptDown, ...checked('unsettled') },
+        'The judge keeps a blocker cell at a warning, past the limit of checks': { ...keptDown, overCheckLimit: true },
+        'The judge keeps a blocker cell at a warning, confirmed': { ...keptDown, ...checked('confirmed') },
         // No answer makes it a blocker, and it is posted whatever its check answered.
         'The judge placed it in the rare column': { doubts, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, ...checked('unsettled') },
         'A blocker without cited lines': { tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
@@ -2890,7 +2913,9 @@ describe('runReview', () => {
       }, true);
 
       expect(shown(result)).toEqual([
-        ['The judge held a blocker cell down', 'unconfirmed'], ['The judge placed it in the rare column', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
+        ['The judge held a blocker cell down', 'unconfirmed'], ['The judge keeps a blocker cell at a warning', 'unconfirmed'],
+        ['The judge keeps a blocker cell at a warning, past the limit of checks', 'unconfirmed'], ['The judge keeps a blocker cell at a warning, confirmed', 'confirmed'],
+        ['The judge placed it in the rare column', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
         ['A finder filed it as a blocker', 'unconfirmed'], ['A blocker the judge lowered', 'unconfirmed'], ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
         ['A rule blocker without a search', 'unconfirmed'],
       ]);

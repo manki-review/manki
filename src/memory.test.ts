@@ -128,6 +128,9 @@ describe('applySuppressions', () => {
       makeFinding({ severity: 'note', title: 'Unused variable lead', pairRefutation: refutation }),
       // No answer raises a finding in the `rare` column, so its `gradeIfConfirmed` protects it from no suppression.
       makeFinding({ severity: 'warning', title: 'Unused variable in a rare state', refutation: { ...refutation, outcome: 'confirmed' }, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' } }),
+      // The judge keeps a blocker cell at a warning, so no answer raises the finding and it is hidden like any warning.
+      ...[{ refutation: { ...refutation, outcome: 'confirmed' as const } }, { refutation }, {}].map((check, i) =>
+        makeFinding({ severity: 'warning', title: `Unused variable the judge keeps a warning ${i + 1}`, gradeIfConfirmed: 'warning', cell: { row: 'wrong', column: 'normal' }, ...check })),
     ];
     expect(applySuppressions(unchanged, suppressions, true).suppressed.map(f => f.title)).toEqual(unchanged.map(f => f.title));
   });
