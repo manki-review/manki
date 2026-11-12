@@ -1046,23 +1046,23 @@ describe('refuteBlockers', () => {
     const parsesDate = [{ premise: 'acme/reports parses the first column as a date', decides: 'defect' as const }];
     const consumerLine = 'acme/reports:src/import.ts:2';
     const answer = (outcome: string, ...proof: string[]) => ({ outcome, reason: 'r', proof, premises: [{ outcome, reason: 'r', proof }] });
+    // Line 0, a range that runs backwards and a line past the last one, in the PR and in a related repo.
+    const notThere = ['src/math.ts', 'acme/reports:src/import.ts'].flatMap(file => [`${file}:0`, `${file}:2-1`, `${file}:2-40`]);
     const client = fakeClient({
       'Related line confirms': answer('confirmed', `\`${consumerLine}\` parses the column with Date.parse`),
       'Related line alone disproves': answer('disproved', consumerLine),
       'Related line beside the finding line disproves': answer('disproved', 'src/math.ts:2', consumerLine),
       'Repo not fetched': answer('confirmed', 'acme/billing:src/import.ts:2'),
-      'Line past the end': answer('confirmed', 'acme/reports:src/import.ts:40'),
       'Repo not configured': answer('confirmed', 'other/repo:src/import.ts:2'),
       'Path leaves the checkout': answer('confirmed', 'acme/reports:../src/import.ts:2'),
       'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
-      'Line zero': answer('confirmed', 'acme/reports:src/import.ts:0'),
-      'Range backwards': answer('confirmed', 'acme/reports:src/import.ts:2-1'),
+      ...Object.fromEntries(notThere.map(at => [`Cites ${at}`, answer('confirmed', at)])),
       'File too large to read': answer('confirmed', 'acme/reports:src/big.ts:1'),
       'Many lines': { outcome: 'confirmed', reason: 'r', proof: rowLines, premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine, ...rowLines.slice(0, 9)] }] },
       'Made-up lines first': answer('confirmed', ...rowLines.slice(0, 10).map(line => `${line}00`), consumerLine),
     });
     const noProof = { severity: 'warning' as const, evidence: { checks: [], proof: [] }, doubts: parsesDate };
-    const titles = ['Related line confirms', 'Related line alone disproves', 'Related line beside the finding line disproves', 'Repo not fetched', 'Line past the end', 'Repo not configured', 'Path leaves the checkout'];
+    const titles = ['Related line confirms', 'Related line alone disproves', 'Related line beside the finding line disproves', 'Repo not fetched', 'Repo not configured', 'Path leaves the checkout'];
     try {
       const checked = await refuteBlockers(client, titles.map(title => finding(title, noProof)), { workspace, diff, related });
 
@@ -1073,13 +1073,15 @@ describe('refuteBlockers', () => {
         ['Related line beside the finding line disproves', 'ignore', 'disproved', ['src/math.ts:2'], [consumerLine], false],
         // A line Manki cannot find in a checkout the round fetched proves nothing, like a made-up line of the PR.
         ['Repo not fetched', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
-        ['Line past the end', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
         ['Repo not configured', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
         ['Path leaves the checkout', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
       ]);
       // The stored location is the file's own path in the checkout, which is what the posted link is built from. A line that cannot exist proves nothing.
-      const odd = await refuteBlockers(client, ['Path with a dot segment', 'Line zero', 'Range backwards', 'File too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
-      expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined], ['unsettled', undefined], ['unsettled', undefined]]);
+      const odd = await refuteBlockers(client, ['Path with a dot segment', 'File too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
+      expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined]]);
+      // A cited line that is not there gets one answer wherever it is: it is no proof, so the check settles nothing.
+      const cited = await refuteBlockers(client, notThere.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
+      expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(notThere.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
       // A list keeps its first 10 related lines, and the answer keeps 10 of its own and its premises' lines together. No line past the first 10 is looked up.
       const [many, madeUp] = await refuteBlockers(client, ['Many lines', 'Made-up lines first'].map(title => finding(title, noProof)), { workspace, diff, related });

@@ -886,15 +886,13 @@ describe('checkFindingClaims', () => {
       const related = { names: ['o/r', 'o/s'], checkouts: new Map([['o/r', checkout]]) };
       const description = [
         'Used at `o/r:src/lib.rs:2` and o/r:src/lib.rs:1-2, again at `o/r:src/lib.rs:2`.',
-        'Also o/r:src/lib.rs:2-9, o/r:src/lib.rs:9-2, o/r:src/gone.rs:1, o/r:src:1, o/r:link.rs:40, o/r:../outside.rs:40, o/r:big.rs:1, o/s:x.rs:1 and other/repo:a.rs:1.',
+        'Also o/r:src/lib.rs:2-9, o/r:src/gone.rs:1, o/r:src:1, o/r:link.rs:40, o/r:../outside.rs:40, o/r:big.rs:1, o/s:x.rs:1 and other/repo:a.rs:1.',
       ].join(' ');
       expect(checkFindingClaims(finding({ description }), { ...sources, related })).toEqual({ status: 'none', note: `Checked: ${[
         'the file is in the diff', 'the line is in the file',
         '`o/r:src/lib.rs:2` is in the fetched checkout',
         '`o/r:src/lib.rs:1-2` is in the fetched checkout',
         '`o/r:src/lib.rs:2-9` is not in the fetched checkout: src/lib.rs has 2 lines',
-        // A range that runs backwards is checked at its highest line.
-        '`o/r:src/lib.rs:9-2` is not in the fetched checkout: src/lib.rs has 2 lines',
         '`o/r:src/gone.rs:1` is not in the fetched checkout: src/gone.rs is not a file there',
         '`o/r:src:1` is not in the fetched checkout: src is not a file there',
         '`o/r:link.rs:40` is not in the fetched checkout: link.rs is not a file there',
@@ -904,6 +902,12 @@ describe('checkFindingClaims', () => {
         '`o/s:x.rs:1` is unchecked: o/s was not fetched this round',
       ].join(', ')}.` });
       expect(checkFindingClaims(finding({ description }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
+      // A cited line that is not there gets one answer: line 0, a range that runs backwards and a line past the last one.
+      expect(checkFindingClaims(finding({ description: 'See o/r:src/lib.rs:0, o/r:src/lib.rs:2-1 and o/r:src/lib.rs:2-40.' }), { ...sources, related }).note).toBe(`Checked: the file is in the diff, the line is in the file, ${[
+        '`o/r:src/lib.rs:0` is not in the fetched checkout: src/lib.rs has no line 0',
+        '`o/r:src/lib.rs:2-1` is not in the fetched checkout: the range 2-1 runs backwards',
+        '`o/r:src/lib.rs:2-40` is not in the fetched checkout: src/lib.rs has 2 lines',
+      ].join(', ')}.`);
 
       // An evidence line that starts with a citation and quotes code is compared with the fetched lines around it.
       const quoting = (...evidence: string[]) => checkFindingClaims(

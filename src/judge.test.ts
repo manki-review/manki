@@ -1587,7 +1587,13 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Cited in the evidence', severity: 'note', evidence: { checks: ['acme/reports:src/import.ts:1 takes the row as text'], proof: [] } }),
       // A repo the round did not fetch, a file its checkout does not hold and a repo that is not configured show nothing.
       makeFinding({ title: 'Not readable', severity: 'note', description: 'See acme/billing:src/import.ts:2, acme/reports:src/gone.ts:1, acme/reports:../src/import.ts:2 and other/repo:src/import.ts:2.' }),
+      // Line 0, a range that runs backwards and a line past the last one show nothing, in a related repo and in the PR.
+      makeFinding({
+        title: 'Lines that are not there', severity: 'note', description: 'See acme/reports:src/import.ts:0, acme/reports:src/import.ts:2-1 and acme/reports:src/import.ts:2-40.',
+        evidence: { checks: [], proof: ['far.ts:0', 'far.ts:2-1', 'far.ts:2-40', 'far.ts:2'] },
+      }),
     ];
+    fs.writeFileSync(path.join(workspace, 'far.ts'), 'const a = 1;\nconst b = 2;\nconst c = 3;\n');
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'improvement', reasoning: 'r' })) }) });
     const base: JudgeInput = { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, relatedRepos: repos };
     try {
@@ -1605,6 +1611,7 @@ describe('runJudgeAgent', () => {
     expect(shown[1]).toContain(">>> 2:   return Date.parse(row.split(',')[0]);");
     expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/import.ts:1), from the checkout this round fetched.');
     expect((shown[1] as string).match(/\*\*Cited code in a related repo\*\*/g)).toHaveLength(2);
+    expect((shown[1] as string).match(/\*\*Cited code outside the diff\*\* \([^)]*\)/g)).toEqual(['**Cited code outside the diff** (far.ts:2)']);
     expect(withoutRelated[1]).not.toContain('Cited code in a related repo');
     // Only a judge with tool steps reads the repos itself, as a check, with the rule on their content in its prompt.
     expect((shown[2] as SendMessageOptions).repoTools).toBeUndefined();

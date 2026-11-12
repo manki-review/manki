@@ -5,6 +5,7 @@ import { withDeadline } from './auth';
 import { AstGrepApi, isAstGrepFile, isRustFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOsvScanner, runShellcheck, runTool, runZizmor, ToolRunner } from './binary-analyzers';
 import { loadStaticAnalysisConfig } from './config';
+import { holdsLines } from './code-window';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { LockfileDiff, lockfileSignals } from './lockfile';
@@ -537,7 +538,7 @@ function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullab
   return all.slice(0, MAX_CITATIONS).map(({ citation, repo, path, start, end }) => {
     const dir = checkouts.get(repo);
     if (!dir) return `\`${citation}\` is unchecked: ${repo} was not fetched this round`;
-    const missing = citedLineMissing(dir, path, Math.max(start, end));
+    const missing = citedLineMissing(dir, path, start, end);
     if (missing) return `\`${citation}\` ${missing}`;
     const quoted = quotes.get(citation)?.code;
     if (!quoted) return `\`${citation}\` is in the fetched checkout`;
@@ -563,14 +564,16 @@ function holdsQuotedCode(dir: string, path: string, start: number, end: number, 
 }
 
 /**
- * Returns what the tool evidence says of a citation of line `line` of `path` when the checkout at `dir` does not show
- * that line, or `undefined` when the line is there. A file too large to read is unchecked, and never confirms a citation.
+ * Returns what the tool evidence says of a citation of the lines `start` to `end` of `path` when the checkout at `dir`
+ * does not show them, or `undefined` when `holdsLines`. A file too large to read is unchecked, and never confirms a citation.
  */
-export function citedLineMissing(dir: string, path: string, line: number): string | undefined {
+export function citedLineMissing(dir: string, path: string, start: number, end = start): string | undefined {
   const lines = readLinesInRoot(dir, path);
   if (lines === 'too large') return `is unchecked: ${path} is too large to read`;
   if (!lines) return `is not in the fetched checkout: ${path} is not a file there`;
-  return line > lines.length ? `is not in the fetched checkout: ${path} has ${lines.length} lines` : undefined;
+  if (holdsLines(lines.length, start, end)) return undefined;
+  const why = start < 1 ? `${path} has no line ${start}` : end < start ? `the range ${start}-${end} runs backwards` : `${path} has ${lines.length} lines`;
+  return `is not in the fetched checkout: ${why}`;
 }
 
 /** Whether a check annotation comes from a type checker or compiler. A lint error near the line says nothing about types. */

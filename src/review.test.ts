@@ -153,6 +153,8 @@ describe('parseFindings', () => {
     const many = parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`, 'src/b.ts:42']);
     expect(many).toHaveLength(10);
     expect(many.slice(0, 3)).toEqual(['src/a.ts:1', 'src/b.ts:42', 'src/a.ts:2']);
+    // A line 0 and a range that runs backwards are no location. A line past the end of its file is, since only a reader with the file can tell.
+    expect(parseProof(['src/a.ts:0', 'src/a.ts:2-1', 'src/a.ts:2-40', 'src/b.ts:0, 3, 9-8, 5-6'])).toEqual(['src/a.ts:2-40', 'src/b.ts:3', 'src/b.ts:5-6']);
     // Entries without a location never push a later location out.
     expect(parseProof([...Array.from({ length: 10 }, (_, i) => `the caller ${i}`), 'lib/parser.go:7'])).toEqual(['lib/parser.go:7']);
     expect(checked.notChecked).toBeUndefined();

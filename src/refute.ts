@@ -3,11 +3,12 @@ import { readFileSync } from 'fs';
 
 import * as core from '@actions/core';
 
+import { holdsLines } from './code-window';
 import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { ruleGrade } from './judge';
 import { extractJSON } from './json';
-import { resolveInRoot } from './mcp-server';
+import { readLinesInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
@@ -93,15 +94,11 @@ function refutationFiles(file: string, proof: readonly string[] = []): string[] 
   return [...new Set([file, ...proof.map(locationFile)])].sort();
 }
 
-/** Keeps the locations whose file is in the workspace and holds the cited line, so no made-up citation settles anything. */
+/** Keeps the locations whose file is in the workspace and `holdsLines` they cite, so no made-up citation settles anything. */
 function existingLocations(workspace: string, proof: readonly string[]): string[] {
   return proof.filter(location => {
-    const [line] = locationLines(location);
-    try {
-      return line >= 1 && line <= readFileSync(resolveInRoot(workspace, locationFile(location)).absolute, 'utf-8').split('\n').length;
-    } catch {
-      return false;
-    }
+    const lines = readLinesInRoot(workspace, locationFile(location), Infinity);
+    return Array.isArray(lines) && holdsLines(lines.length, ...locationLines(location));
   });
 }
 
@@ -120,7 +117,7 @@ function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] 
   const cited = proof.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, names) ?? [] : [])).slice(0, MAX_RELATED_PROOF);
   const shown = cited.flatMap(({ repo, path, start, end }) => {
     const dir = checkouts.get(repo);
-    if (!dir || start < 1 || end < start || citedLineMissing(dir, path, end)) return [];
+    if (!dir || citedLineMissing(dir, path, start, end)) return [];
     const location = `${repo}:${resolveInRoot(dir, path).relative}:${start}${end > start ? `-${end}` : ''}`;
     // A symlink can resolve to a file whose name a citation cannot hold, such as one with a space.
     return leadingRelatedCitation(location, names)?.citation === location ? [location] : [];
