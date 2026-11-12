@@ -279,8 +279,8 @@ class FakeGitHub {
       return json({ total_count: this.openIssues.length, incomplete_results: false, items: this.openIssues });
     }
     if (method === 'GET' && route === '') return json({ full_name: `${OWNER}/${REPO}`, description: null });
-    if (method === 'GET' && route === '/collaborators/alice/permission') return json({ permission: this.role === 'admin' ? 'admin' : 'write', role_name: this.role });
-    if (method === 'GET' && route === '/collaborators/bob/permission') return json({ permission: 'write', role_name: 'write' });
+    if (method === 'GET' && route === '/collaborators/alice/permission') return json({ permission: this.role === 'admin' ? 'admin' : 'write', role_name: this.role, user: { type: 'User' } });
+    if (method === 'GET' && route === '/collaborators/bob/permission') return json({ permission: 'write', role_name: 'write', user: { type: 'User' } });
     return json({ message: 'Not Found' }, 404);
   };
 
@@ -1249,6 +1249,10 @@ describe('runFullReview end to end', () => {
       expect(thread.isResolved).toBe(true);
       expect(thread.comments).toHaveLength(2);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+
+      // A workflow token is no person GitHub knows a permission for, so its resolve clears nothing either.
+      await resolveThread(thread, 'github-actions');
+      expect([thread.isResolved, postedReviews().map(r => r.state)]).toEqual([true, ['CHANGES_REQUESTED']]);
 
       await resolveThread(thread, 'bob');
 

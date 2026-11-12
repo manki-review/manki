@@ -56,14 +56,15 @@ const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   isResolved: false,
   isBlocking: true,
   findingTitle: 'Test finding',
-  ...(overrides.isResolved && { resolvedByLogin: 'reviewer' }),
+  ...(overrides.isResolved && !('resolvedByLogin' in overrides) && { resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer' }),
   ...overrides,
 });
 
 
-/** An octokit that serves review threads from `graphql` and lists `reviews`, whose round records grade the threads. */
+/** An octokit that serves review threads from `graphql` and lists `reviews`, whose round records grade the threads. Every login is a person with write access. */
 function threadsOctokit(graphql: jest.Mock, reviews: unknown[] = []): Octokit {
-  return { graphql, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
+  const getCollaboratorPermissionLevel = jest.fn().mockResolvedValue({ data: { permission: 'write', role_name: 'write', user: { type: 'User' } } });
+  return { graphql, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() }, repos: { getCollaboratorPermissionLevel } } } as unknown as Octokit;
 }
 
 describe('unclearedThreads', () => {
@@ -101,10 +102,15 @@ describe('unclearedThreads', () => {
 
   it.each([true, false])('counts a resolved blocking thread only once it is settled, security %s', isSecurity => {
     const resolvedBy = (resolvedByLogin: string | undefined, evidence: Partial<ReviewThread> = {}) => [makeThread({ isResolved: true, isSecurity, resolvedByLogin, ...evidence })];
+    const confirmed = (login: string) => resolvedBy(login, { writerResolverLogin: login });
     expect(unclearedThreads(resolvedBy('author'), TEST_BOT, 'author')).not.toEqual([]);
-    expect(unclearedThreads(resolvedBy('dependabot[bot]'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(resolvedBy(undefined), TEST_BOT, 'author')).not.toEqual([]);
-    expect(unclearedThreads(resolvedBy('alice'), TEST_BOT, 'author')).toEqual([]);
+    // A resolver counts only once the permission lookup confirmed a person with write access, so a bot's login clears nothing.
+    expect(unclearedThreads(resolvedBy('alice'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy('github-actions'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(confirmed('dependabot[bot]'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(confirmed('author'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(confirmed('alice'), TEST_BOT, 'author')).toEqual([]);
     // Manki's own resolve counts only with a record that says addressed, or after a latest reply from a maintainer other than the PR author.
     expect(unclearedThreads(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(resolvedBy('manki-review[bot]', { addressed: true }), TEST_BOT, 'author')).toEqual([]);
@@ -112,8 +118,9 @@ describe('unclearedThreads', () => {
     expect(unclearedThreads(resolvedBy('manki-review[bot]', { writerReplyLogin: 'author' }), TEST_BOT, 'author')).not.toEqual([]);
     // Neither makes the PR author's own resolve count, also not after a thread was reopened.
     expect(unclearedThreads(resolvedBy('author', { addressed: true, writerReplyLogin: 'alice' }), TEST_BOT, 'author')).not.toEqual([]);
-    // With the PR author unknown, any human resolver has write access.
-    expect(unclearedThreads(resolvedBy('alice'), TEST_BOT)).toEqual([]);
+    // With the PR author unknown, a confirmed resolver still clears and an unconfirmed one does not.
+    expect(unclearedThreads(confirmed('alice'), TEST_BOT)).toEqual([]);
+    expect(unclearedThreads(resolvedBy('alice'), TEST_BOT)).not.toEqual([]);
     // A PR author with a confirmed role clears their own.
     expect(unclearedThreads(resolvedBy('author'), TEST_BOT, 'author', 'maintain')).toEqual([]);
     expect(unclearedThreads(resolvedBy('dependabot[bot]'), TEST_BOT, 'author', 'maintain')).not.toEqual([]);
@@ -198,7 +205,7 @@ describe('fetchBotReviewThreads', () => {
     expect(threads).toHaveLength(3);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: 'sha-1' } });
     expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
-    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)] });
+    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)] });
   });
 
   it('reads every page of review threads', async () => {
@@ -275,9 +282,9 @@ describe('fetchBotReviewThreads', () => {
     expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
   });
 
-  it('reads what backs a thread Manki resolved: a record that says addressed, or a latest reply from someone with write access', async () => {
+  it('reads what backs a resolved thread: a record that says addressed, a latest reply from a person with write access, or such a person as the resolver', async () => {
     const manki = 'manki-review[bot]';
-    const reply = (login: string) => ({ body: 'Every caller bounds it.', author: { login } });
+    const reply = (login: string, __typename?: string) => ({ body: 'Every caller bounds it.', author: { login, ...(__typename && { __typename }) } });
     const resolved = (id: string, replies: ReturnType<typeof reply>[], resolvedBy = manki) => makeGraphqlFetchThreadNode({ id, isResolved: true, resolvedBy, replies });
     const graphql = jest.fn().mockResolvedValueOnce(makeGraphqlFetchResponse([
       resolved('addressed', []),
@@ -288,18 +295,29 @@ describe('fetchBotReviewThreads', () => {
       resolved('by-author', [reply('bob')], 'author'),
       // A thread at the comment limit may hide a later reply.
       resolved('cut-off', Array.from({ length: 99 }, () => reply('bob'))),
+      // A comment by another bot is no reply by a person, so the maintainer's reply before it still counts.
+      resolved('bot-after-writer', [reply('bob'), reply('ci-app', 'Bot')]),
+      resolved('by-writer', [], 'bob'),
+      resolved('by-reader', [], 'dave'),
+      // GraphQL types every resolver as `User`, so only the permission lookup tells a bot from a person, whatever its login and permission.
+      resolved('by-workflow-token', [], 'github-actions'),
+      resolved('by-app', [], 'deploy-app[bot]'),
     ]));
     const octokit = threadsOctokit(graphql, [{ id: 1, user: { login: manki }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(1, {
       judge: { summary: '', threadEvaluations: [{ threadId: 'addressed', status: 'addressed', reason: 'r' }, { threadId: 'alone', status: 'not_addressed', reason: 'r' }] },
     }))} -->` }]);
-    const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read' };
-    Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => ({ data: { permission: permissions[username] } })) } });
+    const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read', 'deploy-app[bot]': 'write' };
+    Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => {
+      if (username === 'github-actions') throw new Error('github-actions is not a user');
+      return { data: { permission: permissions[username], user: { type: username.endsWith('[bot]') ? 'Bot' : 'User' } } };
+    }) } });
 
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.flatMap(t => t.addressed ? [t.id] : [])).toEqual(['addressed']);
-    expect(threads.flatMap(t => t.writerReplyLogin ? [[t.id, t.writerReplyLogin]] : [])).toEqual([['writer', 'bob'], ['author-last', 'author']]);
-    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reader', 'author-last', 'by-author', 'cut-off']);
+    expect(threads.flatMap(t => t.writerReplyLogin ? [[t.id, t.writerReplyLogin]] : [])).toEqual([['writer', 'bob'], ['author-last', 'author'], ['bot-after-writer', 'bob']]);
+    expect(threads.flatMap(t => t.writerResolverLogin ? [[t.id, t.writerResolverLogin]] : [])).toEqual([['by-author', 'author'], ['by-writer', 'bob']]);
+    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reader', 'author-last', 'by-author', 'cut-off', 'by-reader', 'by-workflow-token', 'by-app']);
     expect(threads.flatMap(t => t.repliesUnread ? [t.id] : [])).toEqual(['cut-off']);
   });
 
@@ -526,7 +544,7 @@ describe('checkAndAutoApprove', () => {
           createComment: createCommentFn,
         },
         repos: {
-          getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.role === 'admin' ? 'admin' : 'write', role_name: overrides.role ?? 'write' } }),
+          getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.role === 'admin' ? 'admin' : 'write', role_name: overrides.role ?? 'write', user: { type: 'User' } } }),
           compareCommits: jest.fn(async ({ head }: { head: string }) => ({ data: overrides.diffs?.[head] ?? '' })),
         },
         checks: overrides.checks ?? { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) },
@@ -931,8 +949,8 @@ describe('checkAndAutoApprove', () => {
     const replies = jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply'));
     const reply = (threadId: string) => ({ threadId, body: `Finding dismissed by @author, the PR author, who has the \`${role}\` role on this repository.\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->` });
     expect(replies.map(([, vars]) => vars)).toEqual(byAuthor ? [...(recorded ? [] : [reply('t1')]), reply('t2')] : []);
-    // Only a thread the author resolved or overrode needs the role lookup, and only when the level is known.
-    expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(resolver === 'author' && level ? 1 : 0);
+    // The resolver's write access is asked once for both threads, and the role lookup of an author who resolved reuses that answer.
+    expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(1);
     if (approves) {
       const line = `**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author (\`${role}\` role), [Off by one](https://github.com/o/r/pull/1#r2) by @author (\`${role}\` role).`;
       expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(byAuthor);
@@ -1482,6 +1500,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
         issues: {
           createComment: createCommentFn,
         },
+        repos: { getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: 'write', role_name: 'write', user: { type: 'User' } } }) },
       },
     } as unknown as Octokit;
   }

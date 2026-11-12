@@ -5398,16 +5398,21 @@ describe('authorClearRole', () => {
     return { octokit: { rest: { repos: { getCollaboratorPermissionLevel: lookup } } } as unknown as Parameters<typeof authorClearRole>[0], lookup };
   };
   // The legacy `permission` GitHub sends beside each `role_name`. It reports `maintain` as `write`.
+  const user = { type: 'User' };
   const answers: Record<string, Record<string, unknown> | Error> = {
-    admin: { permission: 'admin', role_name: 'admin' },
-    maintain: { permission: 'write', role_name: 'maintain' },
-    write: { permission: 'write', role_name: 'write' },
-    triage: { permission: 'read', role_name: 'triage' },
-    read: { permission: 'read', role_name: 'read' },
-    'a custom role above write': { permission: 'write', role_name: 'release-manager' },
-    'a custom role named like one': { permission: 'admin', role_name: 'Admin' },
-    'no role in the answer': { permission: 'admin' },
-    'a role that is no string': { permission: 'admin', role_name: null },
+    admin: { permission: 'admin', role_name: 'admin', user },
+    maintain: { permission: 'write', role_name: 'maintain', user },
+    write: { permission: 'write', role_name: 'write', user },
+    triage: { permission: 'read', role_name: 'triage', user },
+    read: { permission: 'read', role_name: 'read', user },
+    'a custom role above write': { permission: 'write', role_name: 'release-manager', user },
+    'a custom role named like one': { permission: 'admin', role_name: 'Admin', user },
+    'no role in the answer': { permission: 'admin', user },
+    'a role that is no string': { permission: 'admin', role_name: null, user },
+    // Only an account GitHub types as `User` is a person, whatever role the answer names.
+    'a bot': { permission: 'admin', role_name: 'admin', user: { type: 'Bot' } },
+    'an organisation': { permission: 'admin', role_name: 'admin', user: { type: 'Organization' } },
+    'no account in the answer': { permission: 'admin', role_name: 'admin', user: null },
     'a failed lookup': new Error('Server Error'),
   };
 
@@ -5436,7 +5441,8 @@ describe('authorClearRole', () => {
     expect(maintainer.lookup).toHaveBeenCalledWith({ owner: 'o', repo: 'r', username: 'alice' });
 
     const access = async (who: string) => hasWriteAccess(clientFor(answers[who]).octokit, 'o', 'r', 'alice');
-    expect(await Promise.all(['admin', 'write', 'triage', 'read', 'a custom role above write', 'a failed lookup'].map(access))).toEqual([true, true, false, false, true, false]);
+    expect(await Promise.all(['admin', 'write', 'triage', 'read', 'a custom role above write', 'a bot', 'an organisation', 'no account in the answer', 'a failed lookup'].map(access)))
+      .toEqual([true, true, false, false, true, false, false, false, false]);
     expect(warningSpy).toHaveBeenCalledWith('Could not read the repo permission of alice, treating it as none: Error: Server Error');
     warningSpy.mockRestore();
   });
