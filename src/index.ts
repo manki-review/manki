@@ -490,6 +490,8 @@ async function handlePullRequest(): Promise<void> {
   if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info(`Bot already reviewed commit ${commitSha.slice(0, 7)} — skipping serialized sibling run`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, commitSha, settings, draft);
+    // The review of a draft held its approval, so a PR marked ready gets the approval check on that review.
+    if (github.context.payload.action === 'ready_for_review') await handleReviewStateCheck();
     return;
   }
 

@@ -128,6 +128,7 @@ class FakeGitHub {
   mathAt: Record<string, string> = {};
   mergeable: boolean | null = true;
   merged = false;
+  draft = false;
   /** The repository's other open PRs, as the GraphQL API lists them. */
   openPrs: Array<{ number: number; title: string; body: string; isDraft: boolean; files: { nodes: Array<{ path: string }> } }> = [];
   /** The open issues the issue search finds, and each query it was sent. */
@@ -192,7 +193,7 @@ class FakeGitHub {
     if (method === 'GET' && route === `/actions/runs/${mockContext.runId}` && this.workflowRun) return json(await this.workflowRun);
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(this.prDiffs[this.headSha] ?? PR_DIFF);
-      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, merged: this.merged, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
+      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: this.draft, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, merged: this.merged, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
     }
     if ((match = route.match(/^\/pulls\/comments\/(\d+)(\/reactions)?$/))) {
       const id = Number(match[1]);
@@ -502,6 +503,7 @@ function reviewCommand(): Promise<void> {
   return dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(comment.id) });
 }
 
+const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as while automatic review is paused, for a PR from a fork or one that matches a skip rule, comment `@manki check`.';
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
@@ -916,6 +918,34 @@ describe('runFullReview end to end', () => {
       mockGitHub.prDiffs[HEAD_SHA] = PR_DIFF;
       await reviewCommand();
       expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED', 'APPROVED']);
+    });
+
+    it('approves a reviewed draft once it is marked ready, without another round', async () => {
+      mockGitHub.draft = true;
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.body.split('\n')[0]])).toEqual([['COMMENTED', DRAFT_HOLD]]);
+      const calls = mockLLM.calls.length;
+
+      mockGitHub.draft = false;
+      await dispatch({ event: 'pull_request', action: 'ready_for_review', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
+      expect(postedReviews()[1].body).toContain('All blocking threads are resolved.');
+      expect(mockLLM.calls).toHaveLength(calls);
+    });
+
+    it('starts no round and approves nothing when a draft whose review found a blocker is marked ready', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      mockGitHub.draft = true;
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      const calls = mockLLM.calls.length;
+
+      mockGitHub.draft = false;
+      await dispatch({ event: 'pull_request', action: 'ready_for_review', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      expect(mockLLM.calls).toHaveLength(calls);
     });
 
     it('reviews the head the PR has when it runs, after a push', async () => {
