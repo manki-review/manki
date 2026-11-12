@@ -235,8 +235,8 @@ export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic
 
 /** Returns the line that says why Manki does not approve. */
 export function approvalHoldLine(hold: ApprovalHold): string {
-  // The token service starts no run for a PR marked ready in the states the last sentence names, so it names the check command.
-  if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as while automatic review is paused, for a PR from a fork or one that matches a skip rule, comment `@manki check`.';
+  // The token service starts no approval check for a PR marked ready in the states the last sentence names, so it names the check command.
+  if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`.';
   if (hold.reason === 'config') {
     return hold.file === 'base'
       ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'

@@ -223,6 +223,12 @@ function isAnswered(comments: Awaited<ReturnType<typeof fetchPRComments>>, bot: 
   return comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.trimEnd().endsWith(marker));
 }
 
+/**
+ * The `pull_request` action the token service dispatches for a PR marked ready on a head that already has a review. No
+ * GitHub webhook has it. It runs the approval check and never a review.
+ */
+const APPROVAL_CHECK_ACTION = 'approval_check';
+
 async function run(): Promise<void> {
   const eventName = github.context.eventName;
   const action = github.context.payload.action;
@@ -247,7 +253,7 @@ async function run(): Promise<void> {
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
   if (eventName === 'pull_request') {
-    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review' && action !== 'closed') {
+    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review' && action !== 'closed' && action !== APPROVAL_CHECK_ACTION) {
       core.info(`Ignoring pull_request action: ${action}`);
       return;
     }
@@ -353,6 +359,9 @@ async function run(): Promise<void> {
     case 'pull_request':
       if (action === 'closed') {
         await handleMergedPullRequest();
+      } else if (action === APPROVAL_CHECK_ACTION) {
+        core.info('Approval check asked for, checking if auto-approve is warranted');
+        await handleReviewStateCheck();
       } else {
         await handlePullRequest();
       }
@@ -2240,7 +2249,8 @@ async function reportTokenFailure({ event, action, number }: ReturnType<typeof d
   const token = core.getInput('github_token');
   if (!token || (event === 'pull_request' && action === 'closed')) return;
   const { owner, repo } = github.context.repo;
-  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
+  const reviews = event === 'pull_request' && action !== APPROVAL_CHECK_ACTION;
+  const body = `${reviews ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
   try {
     const octokit = createOctokit(token, { deadline: AbortSignal.timeout(TOKEN_FAILURE_NOTE_TIMEOUT_MS) });
     const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });

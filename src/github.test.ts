@@ -1691,7 +1691,7 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
     const { body, event, approvalHeld } = await postedBody(ready);
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
-    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as while automatic review is paused, for a PR from a fork or one that matches a skip rule, comment \`@manki check\`.\n\n${approved.body}`);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`@manki check\`.\n\n${approved.body}`);
   });
 
   it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, without reading the PR, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {

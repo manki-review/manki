@@ -503,7 +503,7 @@ function reviewCommand(): Promise<void> {
   return dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(comment.id) });
 }
 
-const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as while automatic review is paused, for a PR from a fork or one that matches a skip rule, comment `@manki check`.';
+const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`.';
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
@@ -945,6 +945,27 @@ describe('runFullReview end to end', () => {
       await dispatch({ event: 'pull_request', action: 'ready_for_review', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
 
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      expect(mockLLM.calls).toHaveLength(calls);
+    });
+
+    it('runs only the approval check for the service\'s `approval_check`, and never a round', async () => {
+      const approvalCheck = () => dispatch({ event: 'pull_request', action: 'approval_check', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      // A head without a review would get a round from any other `pull_request` action. This one starts none.
+      await approvalCheck();
+      expect(postedReviews()).toEqual([]);
+      expect(mockLLM.calls).toEqual([]);
+      expect(mockGitHub.writes.filter(write => write.includes('/check-runs'))).toEqual([]);
+
+      mockGitHub.draft = true;
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.body.split('\n')[0]])).toEqual([['COMMENTED', DRAFT_HOLD]]);
+      const calls = mockLLM.calls.length;
+
+      mockGitHub.draft = false;
+      await approvalCheck();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
+      expect(postedReviews()[1].body).toContain('All blocking threads are resolved.');
       expect(mockLLM.calls).toHaveLength(calls);
     });
 

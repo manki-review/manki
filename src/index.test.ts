@@ -1683,18 +1683,23 @@ describe('main', () => {
       await main();
       expect(createComment).toHaveBeenCalledTimes(1);
 
-      // A command gets a note that does not speak of a review, and a merge gets none.
+      // A command and an approval check get a note that does not speak of a review, and a merge gets none.
+      const didNotRun = '⚠️ **Manki did not run:** Could not get a token from the Manki token service (HTTP 503). Retry the run.';
       jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'issue_comment', action: 'created', number: 7 });
       await main();
-      expect(comments.map(c => c.body)).toEqual([reviewNote, '⚠️ **Manki did not run:** Could not get a token from the Manki token service (HTTP 503). Retry the run.']);
+      expect(comments.map(c => c.body)).toEqual([reviewNote, didNotRun]);
+      jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'pull_request', action: 'approval_check', number: 7 });
+      comments.length = 0;
+      await main();
+      expect(comments.map(c => c.body)).toEqual([didNotRun]);
       jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'pull_request', action: 'closed', number: 7 });
       comments.length = 0;
       await main();
-      expect(createComment).toHaveBeenCalledTimes(2);
+      expect(createComment).toHaveBeenCalledTimes(3);
 
       jest.mocked(core.getState).mockReturnValueOnce('true');
       await main();
-      expect(createComment).toHaveBeenCalledTimes(2);
+      expect(createComment).toHaveBeenCalledTimes(3);
 
       // The reason can be the text of a failed request, so the note shows it without a marker or a mention.
       jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValue(new authModule.TokenServiceError('TypeError: fetch failed <!-- manki-bot --> @octocat'));
