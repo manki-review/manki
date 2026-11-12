@@ -871,6 +871,23 @@ describe('central memory through the token service', () => {
     await expect(refused).rejects.toBeInstanceOf(MemoryRefusedError);
     await expect(refused).rejects.toMatchObject({ skip: { reason: 'refused' } });
   });
+
+  it('fails a load or a write whose 403 or 409 is not the token service\'s own, instead of reading it as a refusal or a conflict', async () => {
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
+    const store = await centralStore();
+    for (const status of [403, 409]) {
+      const fetch = jest.spyOn(global, 'fetch').mockImplementation(async () => new Response('<html>error code: 1020</html>', { status }));
+
+      const load = pastRetryWait(() => loadMemory(store));
+      await expect(load).rejects.toThrow(`the token service answered ${status} to \`/memory/read\``);
+      await expect(load).rejects.not.toBeInstanceOf(MemoryRefusedError);
+      expect(fetch).toHaveBeenCalledTimes(2);
+
+      await expect(store.write('learnings.yml', '[]\n', 'sha-1', 'Add learning')).rejects.toThrow(`the token service answered ${status} to \`/memory/write\``);
+      expect(fetch).toHaveBeenCalledTimes(3);
+      fetch.mockRestore();
+    }
+  });
 });
 
 describe('openMemoryStore', () => {

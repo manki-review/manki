@@ -150,6 +150,7 @@ class FakeGitHub {
     const body = init.body ? JSON.parse(String(init.body)) : {};
 
     if (`${origin}${pathname}` === TOKEN_URL) return json({ token: 'ghs_app', expires_at: '2099-01-01T00:00:00Z' });
+    if (`${origin}${pathname}` === new URL('state', TOKEN_URL).href) return json({ active: [], queue: [], settings: { paused: false }, last_reviewed: null });
     if (`${origin}${pathname}` === new URL('state/report', TOKEN_URL).href) {
       this.stateReports.push(body);
       return json({ changed: [] });
