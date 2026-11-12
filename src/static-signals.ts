@@ -504,10 +504,10 @@ export interface RelatedCitation {
   end: number;
 }
 
-/** Returns each distinct citation in `text` of a line of one of the repos `names`, in the order written. */
+/** Returns the first `MAX_CITATIONS` distinct citations in `text` of a line of one of the repos `names`, in the order written. */
 export function relatedCitations(text: string, names: readonly string[]): RelatedCitation[] {
   const cited = [...text.matchAll(RELATED_CITATION)].filter(([, repo]) => names.includes(repo));
-  return [...new Map(cited.map(c => [c[0], c])).values()]
+  return [...new Map(cited.map(c => [c[0], c])).values()].slice(0, MAX_CITATIONS)
     .map(([citation, repo, path, start, end]) => ({ citation, repo, path, start: Number(start), end: Number(end ?? start) }));
 }
 

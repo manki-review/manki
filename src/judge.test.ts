@@ -1589,6 +1589,8 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Not readable', severity: 'note', description: 'See acme/billing:src/import.ts:2, acme/reports:src/gone.ts:1, acme/reports:../src/import.ts:2 and other/repo:src/import.ts:2.' }),
       // Line 0, a range that runs backwards and a line past the last one show nothing.
       makeFinding({ title: 'Lines that are not there', severity: 'note', description: 'See acme/reports:src/import.ts:0, acme/reports:src/import.ts:2-1 and acme/reports:src/import.ts:2-40.' }),
+      // Only the first 10 citations of a finding are looked up, so a long list reads no more files than that.
+      makeFinding({ title: 'Many citations', severity: 'note', description: `See ${Array.from({ length: 10 }, (_, i) => `acme/reports:src/import.ts:${40 + i}`).join(', ')} and acme/reports:src/import.ts:3.` }),
     ];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'improvement', reasoning: 'r' })) }) });
     const base: JudgeInput = { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, relatedRepos: repos };
