@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, agreedOutcome, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -2833,9 +2833,9 @@ const NOT_CHECKED: FindingChecks = {
 /**
  * Returns the part that names the rule a confirmed rule finding breaks, and says when that rule is why the finding
  * blocks: the rule raised it to a blocker, and its damage alone would not have. The damage alone blocks only when the
- * judge's cell sits on a row that can block and a check confirmed the finding. One check that confirmed it beside one
- * that did not leaves that open, so the part gives no reason then. The file name and the quote are repository text, so
- * each shows as a code span or not at all.
+ * judge's cell sits on a row that can block and the checks confirmed the finding, by `agreedOutcome`, which is what
+ * gives a held or capped blocker back. The file name and the quote are repository text, so each shows as a code span
+ * or not at all.
  */
 function rulePart(finding: Finding): FoldPart | undefined {
   if (!breaksRule(finding) || !finding.rule) return undefined;
@@ -2843,7 +2843,7 @@ function rulePart(finding: Finding): FoldPart | undefined {
   const raised = !!finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
   // A finding without a cell the table knows is read as one whose damage can block.
   const damageCanBlock = !isGradeCell(finding.cell) || cellGrade(finding.cell.row, 'normal') === 'blocker';
-  const confirmed = [finding.refutation, finding.pairRefutation].some(check => !!check && outcomeOf(check) === 'confirmed');
+  const confirmed = agreedOutcome([finding.refutation, finding.pairRefutation].filter(check => !!check)) === 'confirmed';
   const blocks = finding.severity === 'blocker' && raised && !(damageCanBlock && confirmed);
   const text = `This PR breaks a required rule of ${codeLine(finding.rule.file) || 'an instruction file'}${quote ? `: ${quote}` : '.'}`
     + (blocks ? ' It blocks because this repository sets `review.rules: block`.' : '');
