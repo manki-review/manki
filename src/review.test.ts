@@ -2429,7 +2429,7 @@ describe('runReview', () => {
       expect(quick.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'skipped' }] });
     });
 
-    it('gives every other call the same input and ends the round the same whatever the PR text claims and whatever the claim checks answer', async () => {
+    it('gives every other call the same input and ends the round the same whatever the PR text claims and whatever the claim checks answer short of a disproof that stands', async () => {
       const { root, diff } = gitWorkspace({ 'src/export.ts': exportFile('  return merge(rows.sort());\n'), 'src/auth.ts': 'export function allow() {\n  return false;\n}\n' }, files);
       // Eight statements for a cap of five: decoys that are true, one that names a file to skip and one that gives orders.
       const decoys = [

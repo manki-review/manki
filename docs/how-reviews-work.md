@@ -321,7 +321,7 @@ Manki keeps a statement only when the PR text holds it word for word, whatever i
 
 **What a claim cannot do.** A claim can add a check and never remove, shorten or soften one:
 
-- The finders, the sibling comparisons, the judge, the refuter and the verdict reader get the same input whatever the PR text claims and whatever the checks answer. The checks have their own calls and their own step budget.
+- The finders, the sibling comparisons, the judge, the refuter and the verdict reader get the same input whatever the PR text claims and whatever the checks answer, with one exception: the defect a check reports for a statement it disproved joins the findings, and is graded like a finder's. The checks have their own calls and their own step budget.
 - `proven` is written to the round record only. No stage is shown it and no grade depends on it, so a statement the check believed hides nothing.
 - A statement no check settled is no defect. It is recorded as `unchecked`, and nothing is posted for it. That holds for a check that fails, runs out of steps, or is still running one minute after the finders are done, when the round stops it. The round still completes.
 - A statement is shown to its check inside a fenced block and labelled as the author's untrusted text. One that names a file to skip or tells the model what to answer is checked like any other, against the whole diff and the whole repository.
