@@ -17,10 +17,21 @@ export interface StepCheck {
   note?: string;
 }
 
+/** The step of a budget of `steps` whose call carries the wrap-up note. A budget of `WRAP_UP_STEPS` or fewer has none. */
+function noteStep(steps: number): number | undefined {
+  return steps > WRAP_UP_STEPS ? steps - WRAP_UP_STEPS : undefined;
+}
+
+/** Whether a call that took `used` tool steps of a budget of `steps` was told to wrap up. */
+export function wrapUpNoted(used: number, steps: number): boolean {
+  const step = noteStep(steps);
+  return step !== undefined && used >= step;
+}
+
 /** Checks the tool call that takes step number `step` of a budget of `steps`. */
 export function stepCheck(step: number, steps: number): StepCheck {
   if (step > steps) return { refusal: `Manki: all ${steps} tool steps are used, so this call did not run. Call no more tools and give your final answer now.` };
-  if (step === steps - WRAP_UP_STEPS) return { note: `Manki: only ${WRAP_UP_STEPS} tool steps are left after this one. Finish the check you are on, then give your final answer.` };
+  if (step === noteStep(steps)) return { note: `Manki: only ${WRAP_UP_STEPS} tool steps are left after this one. Finish the check you are on, then give your final answer.` };
   return {};
 }
 

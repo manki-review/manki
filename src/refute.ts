@@ -14,6 +14,7 @@ import { LLMClient, LLMResponse } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
+import { wrapUpNoted } from './tool-steps';
 import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -153,10 +154,15 @@ function citesFindingCode(file: string, proof: readonly string[], diff?: ParsedD
   });
 }
 
-/** Returns `check` with whether its call used every tool step, when it ended unsettled. Only a reply that lists its steps tells. */
+/**
+ * Returns `check` with whether its call ended on its step budget, when it ended unsettled: the call was told to wrap up
+ * or took every step. Only a reply that lists its steps tells.
+ */
 function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutation {
   if (outcomeOf(check) !== 'unsettled') return check;
-  return { ...check, stepsUsedUp: !toolSteps ? 'unknown' : toolSteps.length >= REFUTE_STEPS ? 'yes' : 'no' };
+  if (!toolSteps) return { ...check, stepsUsedUp: 'unknown' };
+  const ended = wrapUpNoted(toolSteps.length, REFUTE_STEPS) || toolSteps.length >= REFUTE_STEPS;
+  return { ...check, stepsUsedUp: ended ? 'yes' : 'no' };
 }
 
 /**
@@ -165,7 +171,7 @@ function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutat
  * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
  * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
  * covers the PR's files only and the related repo can have changed, when it is a disproof that no longer cites the
- * finding's code, or when it ended unsettled with its tool steps used up, since it may only have run out of steps.
+ * finding's code, or when it ended unsettled on its step budget, since it may only have run out of steps.
  */
 function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);

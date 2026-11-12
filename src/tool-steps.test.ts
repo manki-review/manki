@@ -3,12 +3,16 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { PassThrough, Readable } from 'stream';
 
-import { claimStep, runStepHook, stepCheck, stepHookOutput } from './tool-steps';
+import { claimStep, runStepHook, stepCheck, stepHookOutput, wrapUpNoted } from './tool-steps';
 
 describe('tool steps', () => {
   it('lets the calls of the budget run, adds the wrap-up note 3 steps before its end, and refuses every later call', () => {
     const checks = [1, 2, 4, 5, 8, 9, 12].map(step => stepCheck(step, 8));
     expect(checks.map(c => [!!c.note, !!c.refusal])).toEqual([[false, false], [false, false], [false, false], [true, false], [false, false], [false, true], [false, true]]);
+
+    // A call was told to wrap up once it took the step that carries the note. A budget of 3 or fewer has no such step.
+    expect([4, 5, 8, 9].map(used => wrapUpNoted(used, 8))).toEqual([false, true, true, true]);
+    expect([[1, 4], [1, 3], [3, 3], [5, 2]].map(([used, steps]) => [wrapUpNoted(used, steps), !!stepCheck(used, steps).note])).toEqual([[true, true], [false, false], [false, false], [false, false]]);
 
     expect(stepHookOutput({})).toBe('');
     expect(JSON.parse(stepHookOutput(stepCheck(5, 8)))).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: expect.stringContaining('only 3 tool steps are left') } });

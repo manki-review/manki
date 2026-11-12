@@ -83,7 +83,7 @@ describe('refuteBlockers', () => {
       'Lead unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
       'Blocking lead unsettled': { outcome: 'unsettled', reason: 'Ran out of tool calls.' },
       'Failing': new Error('CLI crashed'),
-    }, undefined, { 'Confirmed': 15, 'Confirmed without proof': 0, 'Unsettled': 14, 'Lead unsettled': 15, 'Blocking lead unsettled': 16 });
+    }, undefined, { 'Confirmed without proof': 0, 'Unsettled': 11, 'Lead unsettled': 12, 'Disproved by an unrelated file': 15, 'Blocking lead unsettled': 16, 'Disproved in its own file': 11, 'Disproved': 12, 'Confirmed': 15 });
     const findings = [
       finding('Disproved'),
       finding('Confirmed'),
@@ -144,11 +144,13 @@ describe('refuteBlockers', () => {
       // The judge or a suppression dropped it, so it is never checked or brought back.
       ['Dropped lead', 'ignore', undefined],
     ]);
-    // A check that ended unsettled records whether its call used all 15 tool steps. A call the budget refused counts as a
-    // step too. A client that lists no steps leaves it unknown, and a check that settled records nothing.
+    // A check that ended unsettled records whether its call ended on its 15 tool steps: step 12 carries the note to wrap
+    // up, so 11 steps are `no` and 12 or more are `yes`. A call the budget refused counts as a step too. A client that
+    // lists no steps leaves it unknown, and a check that settled records nothing at any count.
     const stepsUsedUp = (title: string) => result.find(f => f.title === title)?.refutation?.stepsUsedUp;
-    expect(['Confirmed without proof', 'Unsettled', 'Lead unsettled', 'Blocking lead unsettled', 'Disproved without proof', 'Confirmed', 'Disproved'].map(stepsUsedUp))
-      .toEqual(['no', 'no', 'yes', 'yes', 'unknown', undefined, undefined]);
+    expect(['Confirmed without proof', 'Unsettled', 'Lead unsettled', 'Disproved by an unrelated file', 'Blocking lead unsettled', 'Disproved without proof'].map(stepsUsedUp))
+      .toEqual(['no', 'no', 'yes', 'yes', 'yes', 'unknown']);
+    expect(['Disproved in its own file', 'Disproved', 'Confirmed'].map(stepsUsedUp)).toEqual([undefined, undefined, undefined]);
     expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.');
     // A cut reason or rule ends in an ellipsis, so the next text never reads as its continuation.
     expect(result[3].judgeNotes).toBe(`Refutation unsettled: ${`The callers are generated${' and long'.repeat(60)}`.slice(0, 500)}... Rule checked: ${'r'.repeat(500)}...`);
@@ -1232,7 +1234,7 @@ describe('refuteBlockers', () => {
     const asked = await refuteBlockers(fakeClient(unsettled), warnings, { workspace, diff, priorRounds: storedRounds, pair: second, doubtBudget: pairBudget });
     expect(second.calls.map(([title]) => title).sort()).toEqual(['Stored warning', ...eight.slice(0, 7)]);
     expect([asked[0].refutation, overLimit(asked), pairBudget]).toEqual([stored.refutation, ['Unproven 8'], { left: 0 }]);
-    // An unsettled outcome whose call used up its tool steps may only have run out of them, so it is checked again and
+    // An unsettled outcome whose call ended on its step budget may only have run out of steps, so it is checked again and
     // takes one of the eight. One with steps left is reused, and so is one from a client that lists no steps.
     const usedUp = (stepsUsedUp: string) => [{ findings: { entries: [{ title: 'Stored warning', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: { ...stored.refutation, stepsUsedUp } }] }, judge: {} }] as unknown as RoundContext[];
     for (const [stepsUsedUp, asked, over] of [['yes', ['Stored warning', ...eight.slice(0, 7)], ['Unproven 8']], ['no', eight, []], ['unknown', eight, []]] as const) {
@@ -1241,9 +1243,10 @@ describe('refuteBlockers', () => {
       expect([stepsUsedUp, again.calls.map(([title]) => title).sort(), overLimit(checked)]).toEqual([stepsUsedUp, [...asked], [...over]]);
       expect(checked[0].refutation?.stepsUsedUp).toBe(stepsUsedUp);
     }
-    // A blocker's stored outcome is skipped the same way, and so is the second refuter's, each for itself.
+    // A blocker's stored outcome is skipped the same way, and so is the second refuter's, each for itself. The first
+    // refuter stopped at 13 steps, after the note to wrap up at step 12, so it is asked again. The second stopped at 11.
     const outOfSteps = { outcome: 'unsettled', reason: 'Ran out of tool steps.' };
-    const [short, shortPair] = [fakeClient({ 'Out of steps': outOfSteps }, 'model-a', { 'Out of steps': 15 }), fakeClient({ 'Out of steps': outOfSteps }, 'model-b', { 'Out of steps': 3 })];
+    const [short, shortPair] = [fakeClient({ 'Out of steps': outOfSteps }, 'model-a', { 'Out of steps': 13 }), fakeClient({ 'Out of steps': outOfSteps }, 'model-b', { 'Out of steps': 11 })];
     const [ended] = await refuteBlockers(short, [finding('Out of steps')], { workspace, diff, pair: shortPair });
     const endedRounds = [{ findings: { entries: [{ title: 'Out of steps', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: ended.refutation, pairRefutation: ended.pairRefutation }] }, judge: {} }] as unknown as RoundContext[];
     await refuteBlockers(short, [finding('Out of steps')], { workspace, diff, pair: shortPair, priorRounds: endedRounds });
