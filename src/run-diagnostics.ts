@@ -118,7 +118,7 @@ export function trackCliProcess(): () => void {
 export async function recordQueueWait(octokit: Octokit): Promise<void> {
   try {
     const { owner, repo } = github.context.repo;
-    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: github.context.runId, request: { signal: AbortSignal.timeout(RUN_LOOKUP_TIMEOUT_MS) } });
+    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: github.context.runId, request: { signal: AbortSignal.timeout(RUN_LOOKUP_TIMEOUT_MS), retries: 0 } });
     // A re-run keeps `created_at` of the first attempt.
     const queuedAt = Date.parse(data.run_started_at ?? data.created_at);
     const startedAt = Date.now() - process.uptime() * 1000;
