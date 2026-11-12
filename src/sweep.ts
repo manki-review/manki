@@ -7,7 +7,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus } from './refute';
 import { repoTools } from './related-repos';
-import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, PRE_EXISTING_RULE, truncateDiff } from './review';
+import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, parseProof, PRE_EXISTING_RULE, truncateDiff } from './review';
 import { CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -107,9 +107,10 @@ function parseSweep(text: string, reviewer: string): { general: boolean; defectC
 /**
  * Whether `f` sits on `cited`'s own line or a line `cited` names in its proof or evidence, in any file, or within
  * `tolerance` lines of one. A cited span wider than a few lines proves no one line, so it hides no other instance inside it.
+ * An evidence line is read with `parseProof`, so one that cites a related repo as `owner/name:path:line` names no line of the PR.
  */
 export function citedBy(cited: Finding, f: Finding, tolerance = OWN_LINE_TOLERANCE): boolean {
-  const spans = [`${cited.file}:${cited.line}`, ...(cited.evidence?.proof ?? []), ...(cited.evidence?.checks ?? []).map(c => c.match(/^\S+?:\d+(?:-\d+)?/)?.[0] ?? '')]
+  const spans = [`${cited.file}:${cited.line}`, ...(cited.evidence?.proof ?? []), ...parseProof(cited.evidence?.checks)]
     .flatMap(location => parseLocation(location) ?? []).filter(span => span.end - span.start <= OWN_LINE_TOLERANCE * 2);
   return spans.some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
 }

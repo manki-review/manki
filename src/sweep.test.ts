@@ -64,18 +64,20 @@ describe('runSweeps', () => {
   it('states each finding\'s class in general terms and reports every other place in the diff, without the finding\'s own line', async () => {
     const client = fakeClient(() => ({
       class: 'a cache key leaves out a field the cached value depends on', general: true,
-      findings: [found('src/cache.ts', 11, 'The same key again'), found('src/keys.ts', 31), found('src/helper.ts', 5), found('src/search.ts', 40)],
+      findings: [found('src/cache.ts', 11, 'The same key again'), found('src/keys.ts', 31), found('src/helper.ts', 5), found('src/search.ts', 40), found('acme/reports:src/keys.ts', 44)],
     }));
     // A place the blocker already cites as proof or evidence is the blocker itself.
     // A wide span proves no one line, so it hides no other instance inside it.
-    const cites = { checks: ['src/helper.ts:5 builds the key the same way'], proof: ['src/cache.ts:10', 'src/keys.ts:28-30', 'src/search.ts:1-200'] };
+    // An evidence line that cites a related repo names no line of the PR, so it hides no place in a file of the PR at
+    // the path the citation spells, which Git allows.
+    const cites = { checks: ['src/helper.ts:5 builds the key the same way', 'acme/reports:src/keys.ts:44 reads the key'], proof: ['src/cache.ts:10', 'src/keys.ts:28-30', 'src/search.ts:1-200'] };
 
     const { findings, sweeps } = await runSweeps(() => client, [blocker('Cache key misses the locale', { evidence: cites })], { rawDiff, effort: 'high', workspace: '/work' });
 
-    expect(findings.map(f => [f.file, f.line, f.reviewers])).toEqual([['src/search.ts', 40, ['Sweep 1']]]);
+    expect(findings.map(f => [f.file, f.line, f.reviewers])).toEqual([['src/search.ts', 40, ['Sweep 1']], ['acme/reports:src/keys.ts', 44, ['Sweep 1']]]);
     expect(sweeps).toEqual([{
       reviewer: 'Sweep 1', source: 'src/cache.ts:10', severity: 'blocker', status: 'answered',
-      class: 'a cache key leaves out a field the cached value depends on', findings: 1,
+      class: 'a cache key leaves out a field the cached value depends on', findings: 2,
     }]);
     const [{ system, user, options }] = client.calls;
     expect(system).toContain('never the names, values or files of this instance');
