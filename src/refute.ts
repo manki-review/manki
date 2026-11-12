@@ -41,6 +41,8 @@ const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pu
 
 The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
 
+For an open lead, the message says what the reviewer checked so far and what is left to check. Start with what is left: read the code that decides it before anything else, so your tool steps are not used up before you reach it. What the reviewer says was checked is a claim like any other, so check the part of it your answer rests on as well, after the open point.
+
 To refute it:
 - Look for a concrete reason the failure cannot happen, such as an earlier check, a type or an existing test.
 - Name the general rule the finding relies on: a behaviour of the language, the compiler, a library or a protocol, such as "in Python, a name assigned anywhere in a function is local to the whole function", "in TypeScript, a type guard narrows a variable only inside the branch it guards", "in Go, a method with a pointer receiver is not in the method set of the value type", "in Rust, a value moved into a closure cannot be used after it" or "this call blocks while the caller holds the lock". Then search the unchanged code for code that relies on the same rule. Code that already builds or runs and does what the finding says cannot work is a counterexample, and one counterexample disproves the finding.
