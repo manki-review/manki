@@ -64,6 +64,19 @@ The **Benchmark** workflow (`.github/workflows/bench.yml`) runs the bench withou
 
 Each ref scores with its own bench code. After a change to the matcher, run the baseline's ref again rather than compare with an older report. To compare downloaded reports locally, run `npm run bench-report -- gate --baseline old.json --candidate new.json`.
 
+### The route of each blocker
+
+The report stores with each finding how it got its grade: the grade its finder gave it, the severity table cell the judge stated, the grade a confirmed doubt would give, each step of its grade path with what made the step, the number of doubts of each kind, the outcome of the refuter's check and the check status. With each run it stores why the review reached its outcome. These are grades, kinds and counts. No text of a finding is among them.
+
+The summary counts the blockers of the complete runs by the route each took, against the grade of the key item it matches. A blocker that matches a key item only partly counts in that item's column. The table holds counts only, so it also covers hold-out cases. The routes are:
+
+- **filed by a finder and kept**: a finder graded it a blocker, whatever lowered and restored it between.
+- **raised by the judge**: its finders graded it lower, and the cell the judge stated made it a blocker.
+- **raised by a confirmed doubt**: its finders graded it lower, a doubt of the judge held it below blocker, and the refuter's check confirmed the doubt.
+- **verdict reader**: the verdict reader named it.
+- **other**: another step made it a blocker, such as a broken rule under `review.rules: block`.
+- **unknown**: the report holds no route. Each ref writes its own case reports, so every blocker of a ref from before the route was stored is unknown.
+
 ### Unmatched blockers and unexpected warnings on tuning cases
 
 A false blocker is either a wrong blocker or a real defect the key does not list, and the same holds for an unexpected warning. So the summary of a run with tuning cases, local or on GitHub, lists every blocker and every warning that matched no key item, by case and run, each with its location and description. Check each against the code at the case's head. Add each real blocker to the case's `must_catch`. Add each real warning to `must_catch`, or to `nice_to_have` when a good review may leave it out. Then bump the case's `key_version`, so the next run counts it as a find. `npm run bench-report -- unmatched --report <report.json>` prints the same list from a stored report, and names the cases of the other set, which it does not list. Never grow a hold-out key this way while working on Manki: its cases are not read. The hold-out pass in `RELEASE.md` does it instead.

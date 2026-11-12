@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
@@ -12,7 +12,8 @@ import { cutLegacyCommands, sanitizeLogOutput } from './providers';
 import type { LLMClient } from './providers';
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime } from './test-utils';
-import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
+import { VERDICT_READER_NAME } from './types';
+import type { Doubt, Finding, FindingSeverity, GradeChange, Refutation, RoundContext, RoundOutcome } from './types';
 
 jest.mock('@actions/core');
 jest.mock('./review-clients', () => {
@@ -386,8 +387,8 @@ describe('scoreRun', () => {
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings.slice(1, 3)).toEqual([
-      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.' },
-      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.' },
+      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.', route: { finderGrade: 'blocker' } },
+      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker' } },
     ]);
 
     const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted\n```', description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'note', title: 'A note' })];
@@ -399,13 +400,80 @@ describe('scoreRun', () => {
     );
     expect(unscored.variants[0].summary.unexpectedWarnings).toBe(1);
     expect(formatBenchSummary(unscored)).toContain('0 false blockers, 1 unexpected warnings, 2 extra');
-    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' });
+    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();', route: { finderGrade: 'warning' } });
     expect(formatUnmatched(unscored.variants)).toBe([
       '### Unexpected warnings on tuning cases', '',
       "Warnings that match no key item. Add each real defect to its case's `must_catch`, or to `nice_to_have` when a good review may leave it out, and bump the case's `key_version`.", '',
       // A line break in the title, or a bare carriage return in the description, starts no line of its own that could close the block.
       '```text', 'base demo-1 key v2 run 1: src/other.rs:1: Unlisted ```', '    | Drops the lock.', '    | ```rust', '    | unlock();', '    | ```', '```', '',
     ].join('\n'));
+  });
+
+  it('stores how each finding got its grade without any of its text, and counts the posted blockers by route against the key', async () => {
+    const step = (from: FindingSeverity, to: FindingSeverity, by: GradeChange) => ({ from, to, by, reason: 'REASON-TEXT' });
+    const doubt = (decides: Doubt['decides']): Doubt => ({ premise: 'PREMISE-TEXT', decides });
+    const refutation: Refutation = {
+      outcome: 'confirmed', defect: 'confirmed', reason: 'REASON-TEXT', rule: 'RULE-TEXT', proof: ['src/read.rs:3'], files: ['src/read.rs'], codeDigest: 'digest', model: 'model-a',
+      premises: [{ premise: 'PREMISE-TEXT', outcome: 'confirmed', reason: 'REASON-TEXT' }],
+    };
+    const blocker = (title: string, overrides: Partial<Finding>) => makeFinding({ severity: 'blocker', title, ...overrides });
+    const findings = [
+      // A finder filed it as a blocker. A doubt held it down, and a check gave the blocker back.
+      blocker('Kept', {
+        file: 'src/read.rs', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker',
+        doubts: [doubt('defect'), doubt('grade'), doubt('defect')], refutation, checkStatus: 'confirmed',
+      }),
+      // The judge's cell raised it. A check gave back what the cap for want of proof took, which is no raise of its own.
+      blocker('Raised', {
+        description: 'Calls `unlock` early.', reviewerSeverity: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' },
+        gradePath: [step('warning', 'blocker', 'judge'), step('blocker', 'warning', 'unproven'), step('warning', 'blocker', 'refutation')], refutation: { ...refutation, defect: undefined },
+      }),
+      blocker('Doubted', { gradePath: [step('note', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker', doubts: [doubt('grade')] }),
+      blocker('Read', { reviewers: [VERDICT_READER_NAME] }),
+      blocker('Ruled', { gradePath: [step('warning', 'blocker', 'rule')] }),
+      makeFinding({ title: 'Lowered', gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'proven' }),
+    ];
+    const review = makeReview('ADDRESS_FIRST', findings);
+    review.result.verdictReason = 'required_present';
+    const matcher = stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K2: { verdict: 'MATCH', findings: [0], reason: 'same' }, N1: { verdict: 'PARTIAL', findings: [2], reason: 'vague' } });
+
+    const score = await scoreRun(benchCase, review, matcher);
+
+    expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 2 });
+    expect(score.findings.map(f => f.route)).toEqual([
+      {
+        finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
+        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed',
+      },
+      {
+        finderGrade: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' }, refutation: { outcome: 'confirmed' },
+        gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
+      },
+      { finderGrade: 'note', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], doubts: { defect: 0, grade: 1 } },
+      { finderGrade: 'blocker', byReader: true },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }] },
+      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], checkStatus: 'proven' },
+    ]);
+    expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
+
+    // An incomplete run counts in no row. Neither does the warning.
+    const report = (runs: Array<typeof score>) => buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs }] }]);
+    const table = (rows: string[]) => ['| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
+    const routed = report([score, { ...score, complete: false }]);
+    expect(formatBlockerRoutes(routed.variants)).toBe(table([
+      '| base: filed by a finder and kept | 1 | 0 | 0 | 0 | 1 |',
+      '| base: raised by the judge | 0 | 1 | 0 | 0 | 1 |',
+      '| base: raised by a confirmed doubt | 0 | 0 | 1 | 0 | 1 |',
+      '| base: verdict reader | 0 | 0 | 0 | 1 | 1 |',
+      '| base: other | 0 | 0 | 0 | 1 | 1 |',
+    ]));
+    expect(formatBenchSummary(routed)).toContain(`\n\n${formatBlockerRoutes(routed.variants)}\n`);
+    expect(formatBlockerRoutes(report([{ ...score, findings: score.findings.slice(5) }]).variants)).toBe('');
+
+    // A report of a ref that stored no route scores the same, and the route of its blockers is not known.
+    const older: BenchReport = JSON.parse(JSON.stringify(routed, (key, value: unknown) => (key === 'route' || key === 'verdictReason' ? undefined : value)));
+    expect(older.variants[0].summary).toEqual(routed.variants[0].summary);
+    expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 2 | 5 |']));
   });
 
   it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
@@ -652,6 +720,11 @@ describe('runBench and buildReport', () => {
       '| demo-1 K2 (must warning) | 0/3 | 0/3 |',
       '| demo-1 N1 (nice note) | 0/3 | 0/3 |',
       '',
+      '| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| base: filed by a finder and kept | 3 | 0 | 0 | 0 | 3 |',
+      '| opus: filed by a finder and kept | 3 | 0 | 0 | 0 | 3 |',
+      '',
     ].join('\n'));
     expect(report.variants[0].sets).toEqual({ tuning: report.variants[0].summary });
 
@@ -685,7 +758,7 @@ describe('runBench and buildReport', () => {
 
     const [{ results: [failed] }] = await runBench([benchCase], { ...options, matcher: broken });
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
-    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.' }]);
+    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker' } }]);
     expect(review).toHaveBeenCalledTimes(2);
   });
 
@@ -1078,7 +1151,9 @@ describe('mergeReports and gateReports', () => {
       for (const [keyed, given, olderGiven, found] of [['suggestion', 'warning', 'warning', 1], ['warning', 'note', 'suggestion', 0], ['nitpick', 'note', 'nitpick', 1]] as const) {
         const benchCase = parseCase(CASE_YAML.replace('severity: blocker', `severity: ${keyed}`), 'demo-1.yml', 'holdout');
         const current = report([[benchCase, [await run(benchCase, given)]]]);
+        // An older version stored no route with a finding.
         const older: BenchReport = JSON.parse(JSON.stringify(current, function (this: object, key, value: unknown) {
+          if (key === 'route') return undefined;
           return key === 'severity' && value === 'note' ? ('tier' in this ? 'suggestion' : olderGiven) : value;
         }).replaceAll('"note":', '"suggestion":'));
         expect(JSON.stringify(older)).not.toContain('"note"');
@@ -1103,7 +1178,7 @@ describe('mergeReports and gateReports', () => {
     expect({ rescored, left }).toEqual({ rescored: ['demo-2'], left: [] });
     const [kept, changed] = scored.variants[0].cases;
     expect(kept).toBe(stored.variants[0].cases[0]);
-    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.' }]);
+    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'warning' } }]);
     expect(stored.variants[0].cases[1].runs[0]).toMatchObject({ mustCatchRecall: 0.5, unexpectedWarnings: 1, extraFindings: 1 });
     expect(changed).toMatchObject({ id: 'demo-2', set: 'holdout', keyVersion: 3 });
     expect(changed.items.map(item => [item.id, item.caught, item.runs])).toEqual([['K1', 1, 1], ['K2', 0, 1], ['K3', 1, 1], ['N1', 0, 1]]);
