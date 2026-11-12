@@ -10,7 +10,7 @@ import { AgentProgressEntry, leftOutUnproven, BinaryFile, CHECK_STATUSES, Config
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { citedLine, findPriorThreadId } from './finding-fingerprint';
+import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
@@ -1199,6 +1199,9 @@ function trustNote(finding: Finding): string | undefined {
 /** Non-blocking findings posted as line comments per review. The rest go in the body list. A note is never one of them. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
+/** The most of a blocker's description the round record keeps when the blocker got no thread. */
+const MAX_RECORDED_DESCRIPTION = 1000;
+
 /** Whether a warning was deferred as a follow-up. */
 function isFollowUp(finding: Finding): boolean {
   return !!finding.tags?.includes(FOLLOW_UP_TAG);
@@ -1225,15 +1228,30 @@ function inlineCode(text: string): string {
   return longestRun > 0 ? `${ticks} ${text} ${ticks}` : `${ticks}${text}${ticks}`;
 }
 
-/** Returns the URL of `line` in `file` at the reviewed commit, or of the lines `line` to `end` when `end` is past `line`. */
-type LineLink = (file: string, line: number, end?: number) => string;
+/**
+ * Returns the URL of `line` in `file` at the reviewed commit, or of the lines `line` to `end` when `end` is past `line`.
+ * Returns `undefined` for a file name that `hasDotSegment`, which gets no link.
+ */
+type LineLink = (file: string, line: number, end?: number) => string | undefined;
+
+/** Whether `path` has a `.` or `..` segment. A browser resolves those, so a link built from it can leave the repository. */
+function hasDotSegment(path: string): boolean {
+  return path.split('/').some(segment => segment === '.' || segment === '..');
+}
+
+/** Returns `text` as a Markdown link to `url`, or `text` alone when there is no URL. */
+export function linked(text: string, url: string | undefined): string {
+  return url ? `[${text}](${url})` : text;
+}
 
 function repoUrl(serverUrl: string, owner: string, repo: string): string {
   return `${serverUrl.replace(/\/+$/, '')}/${owner}/${repo}`;
 }
 
-function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
-  return (file, line, end = line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
+export function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
+  // `encodeURIComponent` keeps parentheses, and a `)` in a file name would end the Markdown link the URL goes into.
+  const segment = (part: string): string => encodeURIComponent(part).replace(/[()]/g, c => `%${c.charCodeAt(0).toString(16)}`);
+  return (file, line, end = line) => hasDotSegment(file) ? undefined : `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(segment).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
 }
 
 const WHAT_GOES_WRONG_LABEL = '**What goes wrong:**';
@@ -1268,8 +1286,8 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
   return { lead: safeTruncate(lead, maxLength), rest: trimmed };
 }
 
-function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string {
-  return `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
+export function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string {
+  return `${sanitizeFilePath(encodeCommentBreakers(finding.file))}${finding.line > 0 ? `:${finding.line}` : ''}`;
 }
 
 /**
@@ -1329,7 +1347,7 @@ function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly str
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, then its fold. */
 function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
-  if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${links.linkTo(finding.file, finding.line)})`);
+  if (finding.file) lines.push(linked(inlineCode(findingLocation(finding)), links.linkTo(finding.file, finding.line)));
   const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links, 'flagged'));
   const block = [...lines, ...formatFindingDescription(finding), ...(fold ? [fold] : [])].join('\n');
   return offerIssue ? `${block}\n\n${issueBoxFor(finding)}` : block;
@@ -1363,12 +1381,14 @@ const PREVIEW_CONTEXT = 2;
  */
 function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const { linkTo, files } = links;
-  const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
+  const link = finding.file ? linkTo(finding.file, finding.line) : undefined;
+  const code = `<code>${inlineHtml(findingLocation(finding))}</code>`;
+  const location = finding.file ? ` · ${link ? `<a href="${link}">${code}</a>` : code}` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
   const last = files.get(finding.file)?.length;
   // A diff already shows the flagged line, so the fold previews it only without one.
   const preview = !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
-    ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
+    ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))].flatMap(url => url ?? [])
     : [];
   const checks = checksSection(finding, links, 'flagged');
   const fix = bodyFixPart(finding, files);
@@ -1465,7 +1485,7 @@ const AGREED_ANSWER_RE = /^\**Agreed\./;
 function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
   return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !t.fixed
     && (t.status === 'resolved' || t.status === 'auto-resolved')
-    ? [{ severity: t.severity, title: t.title, file: t.file, line: t.line, description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
+    ? [{ severity: t.severity, title: t.title, file: t.file, line: currentFindingLine(t), description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
     : []));
 }
 
@@ -1544,7 +1564,7 @@ type LeftOutEntry = Pick<Finding, 'title' | 'file' | 'line'> & { reason?: string
 
 /** Renders a left out finding as a list item: the title and a link to its line, then the start of the reason on a line of its own. */
 function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo: LineLink): string {
-  const location = file ? ` · [${inlineCode(findingLocation({ file, line }))}](${linkTo(file, line)})` : '';
+  const location = file ? ` · ${linked(inlineCode(findingLocation({ file, line })), linkTo(file, line))}` : '';
   const shown = reason && splitLead(sanitizeMarkdown(reason).replace(/\s+/g, ' '), 2, 300).lead;
   return `- **${sanitizeMarkdown(title)}**${location}${shown ? `\n  ${shown}` : ''}`;
 }
@@ -1598,7 +1618,8 @@ function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLi
  * first. The rest go in the body. A note never gets a thread: the body lists the notes in one collapsed section.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
- * gets a file-level comment. A finding that one of the open `existingThreads` already carries
+ * gets a file-level comment. One outside the diff files, or tied to no file, gets a file-level comment on the first
+ * diff file, which says where the finding is. A finding that one of the open `existingThreads` already carries
  * is not posted again. A blocker whose `threadId` names one of them is listed in the body under
  * a link to that thread. Three kinds of finding that do not block stay in the body: a pre-existing one,
  * one that restates a finding an earlier round listed in its body, and a security note on code an
@@ -1643,9 +1664,12 @@ export async function postReview(
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
   const stillOpen: string[] = [];
-  /** The findings posted as threads this round, counted in the verdict line, and those among them posted as line comments. */
+  /** The findings posted as threads this round, counted in the verdict line. */
   const threadFindings: Finding[] = [];
-  const lineThreads = new Set<Finding>();
+  /** The blockers posted as line comments, which get a file-level thread when GitHub refuses the lines. */
+  const lineBlockers: Array<{ path: string; body: string; finding: Finding }> = [];
+  /** The blockers in no changed file, whose threads are on `anchor`. */
+  const detached: Finding[] = [];
   /** The findings listed as folds in the review body, under one section per origin. */
   const bodyFindings: Finding[] = [];
   const notes: Finding[] = [];
@@ -1661,6 +1685,8 @@ export async function postReview(
   const carried = result.carried ?? [];
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
   const changed = diff?.files.map(f => f.path) ?? [];
+  // GitHub only takes comments on changed files, so the first one carries the thread of a blocker that sits elsewhere.
+  const anchor = changed.at(0);
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
   const links: CodeLinks = { linkTo, files, changed };
@@ -1701,27 +1727,26 @@ export async function postReview(
     }
 
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
-    if (!f.file || (f.line <= 0 && !diffFile)) {
-      generalFindings.push(formatFindingBlock(f, links, true));
+    const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
+    if (elsewhere && !anchor) {
+      (f.file && f.line > 0 ? invalidComments : generalFindings).push(formatFindingBlock(f, links, true));
       unthreaded.push(f);
       continue;
     }
 
-    const commentBody = formatFindingComment(f, links);
+    const commentBody = formatFindingComment(f, links, elsewhere);
 
-    if (!diff || (diffFile && f.line > 0 && isLineInDiff(diffFile, f.line))) {
+    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
+      lineBlockers.push({ path: f.file, body: commentBody, finding: f });
       threadFindings.push(f);
-      lineThreads.add(f);
-    } else if (!diffFile) {
-      invalidComments.push(formatFindingBlock(f, links, true));
-      unthreaded.push(f);
     } else if (matched) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
       leftTo.set(f, matched);
     } else {
-      fileComments.push({ path: f.file, body: commentBody, finding: f });
+      fileComments.push({ path: elsewhere ? anchor! : f.file, body: commentBody, finding: f });
       threadFindings.push(f);
+      if (elsewhere) detached.push(f);
     }
   }
 
@@ -1729,23 +1754,25 @@ export async function postReview(
     .filter(f => diff && f.line > 0 && isOnChangedLine(f, diff))
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
     .slice(0, MAX_NON_BLOCKING_INLINE));
+  const inlineComments: typeof validComments = [];
   for (const f of nonBlocking) {
     if (inline.has(f)) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      inlineComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
       threadFindings.push(f);
-      lineThreads.add(f);
     } else {
       bodyFindings.push(f);
     }
   }
+  validComments.push(...inlineComments);
 
   // An incomplete round keeps its record for diagnostics. What it shows reads as it does without one.
   const round = context?.meta.incomplete ? undefined : context;
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl, round, reviewTimeMs);
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
-  const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
-  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (round?.meta.round ?? 1) > 1 };
+  const relisted = blockingFindings.filter(f => f.relisted).length;
+  const earlier = carriedThreadIds.size + relisted + (result.verdictTrace?.unresolvedPriors.length ?? 0);
+  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
@@ -1759,11 +1786,13 @@ export async function postReview(
 
   /**
    * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
-   * `withoutLineThreads` leaves out the line comments, for a review GitHub only takes without them.
+   * `withoutLineThreads` leaves out the non-blocking line comments, for a review GitHub only takes without them.
    */
   const renderBody = (withoutLineThreads = false): string => {
-    const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
-    const lead = formatLead(result, blockerCounts, { threads, listed: [...bodyFindings, ...notes], carried, hold }, limitWarning, unreadRecords);
+    const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
+    // Without their threads, the body lists them, so the verdict line still counts them.
+    const listed = [...bodyFindings, ...notes, ...(withoutLineThreads ? inline : [])];
+    const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -1778,6 +1807,7 @@ export async function postReview(
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
+      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\nComments are only possible on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`,
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
@@ -1808,7 +1838,8 @@ export async function postReview(
       const posted = placeOf(f);
       const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
       const threadId = entry.threadId ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
-      return { ...entry, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }) };
+      const description = posted === 'body' && f.severity === 'blocker' && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
+      return { ...entry, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(description && { description }) };
     };
     return (context
       ? formatRecordTrailer({
@@ -1837,13 +1868,15 @@ export async function postReview(
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(lineThreads));
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), inlineComments.map(highlight));
   onPosted?.();
-  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
+  // A blocker whose line comment GitHub refused gets a file-level thread on its file.
+  const retried = review.lineComments ? [] : lineBlockers;
+  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, [...fileComments, ...retried].map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
     const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
-    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : lineThreads)]));
+    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]));
     // Truncate the existing body, never the blocking findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
@@ -1890,10 +1923,14 @@ async function submitReview(
   bodyWithoutLineComments: () => string = () => body,
   /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
   recordWithoutLineComments: () => string = () => record,
+  /** The line comments that get no thread when the review posts without them. The caller posts a blocker as a file-level thread instead. */
+  unthreaded: typeof validComments = validComments,
 ): Promise<{ id: number; body: string; lineComments: boolean }> {
   const event = mapVerdictToEvent(verdict);
   const fit = (text: string, trailer = record): string => truncateBody(text, REVIEW_BODY_BUDGET - trailer.length);
   const compose = (text: string, trailer = record): string => appendReviewFooter(`${text}${trailer}`, reviewedCommitFooter);
+  const listUnthreaded = (heading: string, line: (c: typeof unthreaded[number]) => string): string =>
+    unthreaded.length > 0 ? `\n\n**${heading}**\n${unthreaded.map(c => `- ${line(c)}`).join('\n')}` : '';
   assertWritesAllowed();
   try {
     const { data: review } = await octokit.rest.pulls.createReview({
@@ -1916,9 +1953,8 @@ async function submitReview(
     // If it's a line validation error, retry without inline comments
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
-      const allAsBody = validComments.map(c => `- ${commentHeadline(c.body)}`).join('\n');
       const bare = recordWithoutLineComments();
-      const lineErrFallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Inline comments could not be posted:**\n${allAsBody}`, bare);
+      const lineErrFallbackBody = fit(`${bodyWithoutLineComments()}${listUnthreaded('Inline comments could not be posted:', c => commentHeadline(c.body))}`, bare);
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -1947,9 +1983,8 @@ async function submitReview(
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
-    const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${c.path}:${c.line}\`)`).join('\n');
     const bare = recordWithoutLineComments();
-    const fallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Findings (could not post inline):**\n${findingSummary}`, bare);
+    const fallbackBody = fit(`${bodyWithoutLineComments()}${listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`)}`, bare);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -2036,6 +2071,11 @@ function truncateBody(text: string, maxLength: number = 60000): string {
 
 function sanitizeFilePath(file: string): string {
   return file.replace(/`/g, "'").replace(/[\n\r]/g, ' ');
+}
+
+/** Encodes the characters of `text` that open or close an HTML comment or end its line, so a file name can neither end one of Manki's hidden markers nor fake one. */
+function encodeCommentBreakers(text: string): string {
+  return text.replace(/[<>\r\n]/g, encodeURIComponent);
 }
 
 function mapVerdictToEvent(verdict: ReviewVerdict): 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES' {
@@ -2195,7 +2235,7 @@ function safeThreadUrl(url: string | undefined): string | null {
 }
 
 function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>): string {
-  const file = sanitizeFilePath(p.file);
+  const file = sanitizeFilePath(encodeCommentBreakers(p.file));
   const location = !file ? '' : p.line ? `\`${file}:${p.line}\`: ` : `\`${file}\`: `;
   const title = sanitizeMarkdown(p.title || '(untitled)');
   const safeUrl = safeThreadUrl(p.threadUrl);
@@ -2279,6 +2319,23 @@ function formatReadyReport(result: ReviewResult): { whatThisDoes?: string; whatT
   };
 }
 
+/** How often `sanitizeMarkdown` strips before it gives up and encodes what could still form markup. Model text needs two or three rounds. */
+const MAX_STRIP_ROUNDS = 20;
+
+/** Removes each HTML comment, comment mark, known HTML tag and link from `text` once, keeping the text of a link. */
+function stripMarkup(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+    .replace(/<!--|-->/g, '')
+    .replace(HTML_TAG_REGEX, '')
+    .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
+    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
+    .replace(/^\[[^\]]*\]:\s+.*$/gm, '');                            // Link/image definitions
+}
+
 // Sanitizes LLM-generated text (titles, descriptions, summaries) before embedding
 // it into the GitHub comment body. Our own structural markup (<details>, <summary>,
 // collapsible sections, etc.) is added AFTER sanitization and is never passed through here.
@@ -2292,25 +2349,17 @@ function sanitizeMarkdown(text: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
     .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
-  // Run comment stripping twice to handle nested comments like <!-- <!-- --> -->,
-  // then clean up any dangling close markers left behind.
-  result = result.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  result = result.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  result = result.replace(/-->/g, '');
-
-  // Run tag stripping twice to handle nesting like <div<div>>
-  result = result.replace(HTML_TAG_REGEX, '');
-  result = result.replace(HTML_TAG_REGEX, '');
+  // A removal can join two halves into a comment mark, a tag or a link, so every removal runs again until none changes the text.
+  let rounds = 0;
+  for (let next = stripMarkup(result); next !== result; next = stripMarkup(result)) {
+    result = next;
+    if (++rounds === MAX_STRIP_ROUNDS) {
+      result = result.replace(/[<>[\]]/g, c => `&#${c.charCodeAt(0)};`);
+      break;
+    }
+  }
 
   return fenceOwnCode(result
-    .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Second pass for nested brackets
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Second pass for nested brackets
-    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
-    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
-    .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
     // A zero-width space keeps GitHub from turning a bare URL into a link.
     .replace(/(https?|ftp):\/\//gi, '$1:\u200B//')
     .replace(/www\./gi, 'www\u200B.')
@@ -2505,7 +2554,8 @@ const REFUTATION_SUMMARY: Record<RefutationOutcome, string> = { confirmed: 'doub
 
 /** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
 function oneLine(text: string): string {
-  const line = balanceCodeSpans(sanitizeMarkdown(text).replace(/```/g, '').replace(/\s+/g, ' ').trim());
+  // A fence becomes a space, never nothing, so dropping it cannot join the two halves of a tag.
+  const line = balanceCodeSpans(sanitizeMarkdown(text).replace(/```/g, ' ').replace(/\s+/g, ' ').trim());
   return line.length <= MAX_CHECK_CHARS ? line : shortenLine(line);
 }
 
@@ -2644,7 +2694,7 @@ function parseCheck(entry: string, known: readonly string[], atRoot = false): Ch
   const [cited, line, last, more] = match ? [1, 5, 9].map(i => match.slice(i, i + 4)).find(group => group[0] !== undefined)! : [];
   const resolved = match ? knownPath(sanitizeFilePath(cited), known, atRoot) : undefined;
   // The cited path and the file names it resolves against are both PR content, so only a plain repository path becomes a link.
-  const path = resolved && LINKABLE_PATH_RE.test(resolved) && !resolved.split('/').some(segment => segment === '.' || segment === '..') ? resolved : undefined;
+  const path = resolved && LINKABLE_PATH_RE.test(resolved) && !hasDotSegment(resolved) ? resolved : undefined;
   const at = path ? lineRange(path, last ? `${line}-${last}` : line) : undefined;
   const rest = oneLine(at ? entry.slice(match![0].length) : entry);
   // A sentence starts with a capital, but a text that opens with a path or a name stays as written.
@@ -2735,7 +2785,7 @@ function rangeLabel({ file, start, end }: CodeRange): string {
 }
 
 function linkedRange(range: CodeRange, linkTo: LineLink): string {
-  return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
+  return linked(inlineCode(rangeLabel(range)), linkTo(range.file, range.start, range.end));
 }
 
 function refutationPart(label: string, lead: string, check: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
@@ -2822,7 +2872,7 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
     ...shown.map(({ range, checks: shared }) => {
       // The preview shows the code, so a bare location in it adds no line of its own.
       const said = shared.filter(c => c.text);
-      const link = linkTo(range.file, range.start, range.end);
+      const link = linkTo(range.file, range.start, range.end) ?? inlineCode(rangeLabel(range));
       if (said.length === 0) return link;
       return `${said.length === 1 ? said[0].text : `${said.map(c => `- ${c.text}`).join('\n')}\n`}\n${link}`;
     }),
@@ -2877,14 +2927,28 @@ function formatFold(fix: FoldPart | undefined, why: string, checks: FindingCheck
  * description, so two findings on one line whose titles differ only in punctuation get boxes of their own.
  */
 function issueBoxFor(finding: Finding): string {
-  // A file name with `-->` or a line break would end the hidden comment that carries the id, so those are encoded.
-  const file = finding.file.replace(/[%<>\r\n]/g, encodeURIComponent);
+  // The `%` is encoded too, so the id reads back as the file name.
+  const file = encodeCommentBreakers(finding.file.replace(/%/g, '%25'));
   const hash = createHash('sha256').update(`${finding.title}\n${finding.description}`).digest('hex').slice(0, 12);
   return issueBox(`${file}:${finding.line}:${hash}`);
 }
 
-function formatFindingComment(finding: Finding, links: CodeLinks): string {
+/**
+ * Returns the line that opens a thread posted on another file than its finding's, saying where the problem is. It is always
+ * written with `detached` in the finding data, which is how `parseFindingFromComment` knows the line is there.
+ */
+function detachedNote(finding: Finding, linkTo: LineLink): string {
+  const file = sanitizeFilePath(encodeCommentBreakers(finding.file));
+  const where = file
+    ? `This is in ${linked(`\`${file}${finding.line > 0 ? `:${finding.line}` : ''}\``, linkTo(finding.file, finding.line))}, not in the file this thread is on.`
+    : 'This is not tied to a file or line.';
+  return `${where} Comments are only possible on changed files, so the thread is posted here.`;
+}
+
+/** Formats a finding's thread comment. `detached` is set for a thread posted on another file than the finding's. */
+function formatFindingComment(finding: Finding, links: CodeLinks, detached = false): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
+  if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
   if (finding.origin === 'reviewed' && !isBlockingFinding(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
@@ -2916,6 +2980,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     ...(finding.howToFix && { howToFix: safeTruncate(finding.howToFix, 300) }),
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
+    ...(detached && { detached: true }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
   comment += `\n<!-- manki-finding: ${sanitizeHtmlCommentJson(JSON.stringify(data))} -->`;
@@ -3402,5 +3467,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

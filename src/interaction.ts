@@ -4,16 +4,16 @@ import * as github from '@actions/github';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, hasWriteAccess, inline, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
-import { safeTruncate, withMarkers } from './utils';
+import { COMMENT_MARKER as BOT_MARKER, safeTruncate, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -37,8 +37,6 @@ async function commenterCanWrite(octokit: Octokit, owner: string, repo: string):
   const login: string | undefined = github.context.payload.sender?.login;
   return !!login && await hasWriteAccess(octokit, owner, repo, login);
 }
-
-const BOT_MARKER = '<!-- manki -->';
 
 const REPLY_SYSTEM_PROMPT = `You posted a review finding on a pull request, and a developer replied to it. Write one reply to them.
 
@@ -269,7 +267,7 @@ function codeLocations(text: string, file: string | undefined, anySpan = false):
 
 /**
  * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
- * new lines can show the finding still stands. `file` is the file the finding's thread sits on.
+ * new lines can show the finding still stands. `file` is the finding's file.
  */
 function requireNewProof(reply: string, finding: string, file?: string): string {
   if (!KEPT_REPLY_RE.test(reply)) return reply;
@@ -286,12 +284,12 @@ async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: s
   const id = `learn-${Date.now()}`;
   // The developer's own words, never the model's, since PR content the model read could steer what it writes.
   const reason = sanitizeMemoryField(developerReply.replace(/\s+/g, ' ').trim().slice(0, 300));
-  const content = `Findings like "${sanitizeMemoryField(title.slice(0, 120))}" do not apply on \`${path}\`: ${reason}`;
+  const content = `Findings like "${sanitizeMemoryField(title.slice(0, 120))}" do not apply on \`${findingLocation({ file: path, line: 0 })}\`: ${reason}`;
   await writeLearning(memory, {
     id, content, scope: 'repo', path, source: `${owner}/${repo}#${prNumber}`, created_at: new Date().toISOString().split('T')[0],
   });
   core.info(`Saved learning ${id} for ${path}`);
-  return `Saved a learning for \`${path}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.`;
+  return `Saved a learning for \`${findingLocation({ file: path, line: 0 })}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.`;
 }
 
 /**
@@ -339,7 +337,7 @@ export async function handleReviewCommentReply(
     });
 
     const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parentComment);
-    if (!root || !isBotComment(root.comment.body ?? '')) {
+    if (!root || !isOwnComment(bot, root.comment)) {
       core.info('Thread was not started by Manki');
       return;
     }
@@ -348,12 +346,13 @@ export async function handleReviewCommentReply(
     await reactToReviewComment(octokit, owner, repo, comment.id, 'eyes');
 
 
+    const place = findingPlace(root.comment.body ?? '', root.comment.path, root.comment.line, root.comment.original_line);
+    const filePath = place.file;
     // Fetch the PR diff scoped to the file under discussion
     let diffContext = '';
     let codeTokens = new Set<string>();
     try {
       const fullDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
-      const filePath = root.comment.path;
       const scopedDiff = filePath ? scopeDiffToFile(fullDiff, filePath) : fullDiff;
       codeTokens = codeTokensFromDiff(parsePRDiff(scopedDiff));
       const truncated = truncateDiff(scopedDiff, 15000);
@@ -368,9 +367,9 @@ export async function handleReviewCommentReply(
     const context = buildReplyContext(
       root.comment.body,
       comment.body,
-      root.comment.path,
-      root.comment.line,
-      root.id !== inReplyTo && isBotComment(parentComment.body ?? '') ? parentComment.body : undefined,
+      filePath,
+      currentFindingLine(place),
+      root.id !== inReplyTo && isOwnComment(bot, parentComment) ? parentComment.body : undefined,
     );
 
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
@@ -378,7 +377,7 @@ export async function handleReviewCommentReply(
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
     const findingBody = root.comment.body ?? '';
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, root.comment.path);
+    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, filePath);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);
@@ -415,7 +414,7 @@ export async function handleReviewCommentReply(
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
-    const path = root.comment.path;
+    const path = filePath;
     if (WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && path && memory && await commenterCanWrite(octokit, owner, repo)) {
       const title = parseFindingData(findingBody)?.title ?? path;
       saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, path, title, comment.body ?? '')
@@ -674,7 +673,7 @@ async function resolveDismissedThread(
   try {
     const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
     const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
-    if (!root || !isBotComment(root.comment.body ?? '')) return undefined;
+    if (!root || !isOwnComment(bot, root.comment)) return undefined;
     const prAuthorLogin: string | undefined = payload.pull_request?.user?.login;
     const { mayResolve, isPrAuthor, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     if (!mayResolve) return { resolved: false, note: 'Only the PR author or someone with write access can dismiss this finding, so the thread stays open.' };
@@ -958,7 +957,7 @@ function buildReplyContext(
   context += originalComment.replace(BOT_MARKER, '').trim();
 
   if (filePath) {
-    context += `\n\nFile: \`${filePath}\``;
+    context += `\n\nFile: \`${findingLocation({ file: filePath, line: 0 })}\``;
     if (line) context += ` (line ${line})`;
   }
 
@@ -989,8 +988,14 @@ export function scopeDiffToFile(fullDiff: string, filePath: string): string {
   return result.length > 0 ? result.join('\n') : '';
 }
 
+/** Whether `body` holds one of Manki's markers. Anyone can write one, so this only tells which comments to leave unanswered. */
 function isBotComment(body: string): boolean {
   return body.includes('<!-- manki');
+}
+
+/** Whether Manki wrote `comment`, by its author. Only then is its hidden data Manki's. */
+function isOwnComment(bot: BotIdentity, comment: ReviewComment): boolean {
+  return isBotUser(bot, comment.user) && isBotComment(comment.body ?? '');
 }
 
 function hasBotMention(body: string): boolean {

@@ -74,6 +74,16 @@ interface PostedThread {
 }
 
 /**
+ * Returns the line a thread's finding sits on now. GitHub moves `line` with the code, so it is the answer unless the
+ * thread was posted on a fallback line, in which case the gap to the finding's own line is added. GitHub reports a
+ * file-level thread on line 1, so it counts as posted on a fallback line. An outdated thread keeps `line` 0.
+ */
+export function currentFindingLine(t: { line: number; originalLine?: number; findingLine?: number }): number {
+  if (!t.line || !t.findingLine || !t.originalLine || t.findingLine === t.originalLine) return t.line;
+  return t.line + (t.findingLine - t.originalLine);
+}
+
+/**
  * Returns the ID of the thread posted for a finding: same file and marker slug, nearest
  * line within `PRIOR_THREAD_LINE_TOLERANCE`. A file-level thread matches any line. The line is the one the finding
  * names, which a thread posted on a fallback line still records, so such a thread matches too.

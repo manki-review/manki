@@ -300,6 +300,8 @@ export interface Finding {
   threadId?: string;
   /** Round that listed this finding in its review body first, when the finding restates it. */
   raisedIn?: number;
+  /** Whether the round lists an earlier blocker again that no thread carries, so it gets a thread. No model raised it this round. */
+  relisted?: boolean;
   /**
    * Whether the finding is posted on its own even beside an open thread with its title: a security finding next to a
    * thread without a security guard, or one whose reply in its thread failed.
@@ -694,7 +696,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -2232,6 +2234,8 @@ export interface FindingFingerprintEntry {
   raisedIn?: number;
   /** Mirrors `Finding.sameAs`. */
   sameAs?: string;
+  /** Mirrors `Finding.relisted`. */
+  relisted?: boolean;
   /** Mirrors `Finding.category`. */
   category?: FindingCategory;
   /** Mirrors `Finding.effort`. */
@@ -2265,6 +2269,8 @@ export interface FindingFingerprintEntry {
    * thread falls back to the body and is recorded as `body`.
    */
   posted?: PostedPlace;
+  /** The description of a blocker recorded as `body`, which a later round posts as a thread. */
+  description?: string;
   /**
    * Set on a warning the round listed only in its review body, so a later round can tell whether the place still reads
    * the same. A warning without a line, or on a line the round could not read, has none.

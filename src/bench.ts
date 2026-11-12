@@ -541,9 +541,15 @@ function twice<T>(score: () => Promise<T>): Promise<T> {
   return score().catch(() => score());
 }
 
+/** Returns the findings a model raised in `review`. A relisted blocker comes from an earlier round's record without a model call. */
+function raisedFindings(review: LocalReview): Finding[] {
+  return review.result.findings.filter(f => !f.relisted);
+}
+
 /** Matches the findings of one review to the case's key and scores it. */
 export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
-  const { findings, outcome, reviewComplete: complete } = review.result;
+  const { outcome, reviewComplete: complete } = review.result;
+  const findings = raisedFindings(review);
   const resolved = benchCase.priorRound && complete ? resolvedThreads(benchCase, review) : undefined;
   return {
     ...reviewFacts(review),
@@ -580,7 +586,7 @@ function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'findings'
   const usage = review.context.usage ?? {};
   return {
     outcome: review.result.outcome,
-    findings: review.result.findings.map(({ severity, title, file, line, description, howToFix, suggestedFix }) => ({
+    findings: raisedFindings(review).map(({ severity, title, file, line, description, howToFix, suggestedFix }) => ({
       severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }),
     })),
     finders: finderSteps(review),

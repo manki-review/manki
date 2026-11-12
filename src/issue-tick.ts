@@ -1,11 +1,11 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, sanitizeMarkdown } from './github';
-import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
-import { isGuarded, parseFindingData } from './recap';
+import { BotIdentity, buildLineLink, findingLocation, linked, sanitizeMarkdown } from './github';
+import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
+import { findingFile, findingLineOf, isGuarded, parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
-import { withMarkers } from './utils';
+import { ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -42,10 +42,9 @@ interface IssueSource {
 
 /** Returns the open issue Manki already filed for the finding `id`, if any. A closed one tracks nothing, so a tick files a new one. */
 async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, id: string): Promise<number | undefined> {
-  const marker = filedIssueMarker(id);
   for (const creator of bot.logins) {
     const issues = await octokit.paginate(octokit.rest.issues.listForRepo, { owner, repo, creator, state: 'open', per_page: 100 });
-    const filed = issues.find(issue => !issue.pull_request && issue.body?.includes(marker));
+    const filed = issues.find(issue => !issue.pull_request && ownMarker(issue.body ?? '', FILED_ISSUE_OPENER) === id);
     if (filed) return filed.number;
   }
   return undefined;
@@ -64,9 +63,8 @@ async function fileOrLink(
 ): Promise<{ number: number; existing: boolean }> {
   const existing = await findFiledIssue(octokit, bot, owner, repo, id);
   if (existing !== undefined) return { number: existing, existing: true };
-  const location = `${source.file}${source.line > 0 ? `:${source.line}` : ''}`;
-  const permalink = `${github.context.serverUrl}/${owner}/${repo}/blob/${source.commit}/${source.file}${source.line > 0 ? `#L${source.line}` : ''}`;
-  const where = source.file ? ` at [\`${location}\`](${permalink})` : '';
+  const permalink = buildLineLink(owner, repo, source.commit, github.context.serverUrl)(source.file, source.line);
+  const where = source.file ? ` at ${linked(`\`${findingLocation(source)}\``, permalink)}` : '';
   const body = [
     postedText(source.text, id),
     `Found by Manki in #${prNumber}${where}. See the [${source.postedIn}](${source.postedAt}).`,
@@ -96,9 +94,9 @@ export async function handleIssueBoxTick(
   const source: IssueSource = {
     title: finding?.title ?? 'Manki finding',
     text: comment.body,
-    file: comment.path,
+    file: findingFile(comment.body, comment.path),
     // A finding outside the diff is posted on another line, so the finding data names its own line.
-    line: finding?.line ?? comment.original_line ?? 0,
+    line: finding?.line ?? findingLineOf(comment.body, comment.original_line),
     commit: comment.original_commit_id,
     postedAt: comment.html_url,
     postedIn: 'review thread',

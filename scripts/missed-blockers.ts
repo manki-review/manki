@@ -20,8 +20,10 @@ import { fetchReviewThreadNodes } from '../src/github';
 import { replyOutcome } from '../src/interaction';
 import type { EarlierFinding } from '../src/local-review';
 import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
+import { hasOwnMarker } from '../src/review-record';
 import { fixedMarker } from '../src/state';
 import { FindingFingerprintEntry, FindingSeverity, isGradeCell, PRE_EXISTING_TAG, RoundContext } from '../src/types';
+import { COMMENT_MARKER } from '../src/utils';
 import { githubToken } from './review-history';
 import { fetchPrRecords, listMergedPrs, PrRecords } from './review-stats';
 
@@ -132,13 +134,13 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
       const last = thread?.replies.filter(c => before(c, timestamp)).at(-1)?.body ?? '';
       // The thread's latest verdict before the round decides, unless a later round found the problem again.
       const verdict = sorted.slice(0, i).flatMap(r => evaluations(r).map(e => ({ status: e.status, at: r.meta.timestamp }))).at(-1);
-      const reopened = !!verdict && !!thread?.replies.some(c => !before(c, verdict.at) && before(c, timestamp) && c.body!.includes(FOUND_AGAIN_MARKER));
+      const reopened = !!verdict && !!thread?.replies.some(c => !before(c, verdict.at) && before(c, timestamp) && hasOwnMarker(c.body!, FOUND_AGAIN_MARKER, COMMENT_MARKER));
       const fixedEarlier = verdict?.status === 'addressed' && !reopened;
       // A partial fix can have changed the thread's grade since the round that posted it.
       const recorded = state && grades.get(state.id)?.grade;
       const severity = recorded && DRAFT_SEVERITIES.has(recorded) ? recorded : entry.severity as FindingSeverity;
       const open = !!thread && !replyOutcome(last.trim()) && !fixedEarlier;
-      const fixed = !open && (fixedEarlier || !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => c.body!.includes(marker))));
+      const fixed = !open && (fixedEarlier || !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => hasOwnMarker(c.body!, marker, COMMENT_MARKER))));
       const meta = thread ? parseFindingFromComment(thread.root.body!) : {};
       followUp.findings.push({
         // A file-level finding has line 0, and a case line starts at 1.
@@ -152,8 +154,8 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
         const evaluation = evaluations(round).at(-1);
         const resolved = evaluation
           ? evaluation.status === 'addressed'
-          : thread.replies.some(c => !before(c, timestamp) && before(c, next) && c.body!.includes(fixedMarker(commitSha)));
-        const foundAgain = resolved && thread.replies.some(c => !before(c, next) && c.body!.includes(FOUND_AGAIN_MARKER));
+          : thread.replies.some(c => !before(c, timestamp) && before(c, next) && hasOwnMarker(c.body!, fixedMarker(commitSha), COMMENT_MARKER));
+        const foundAgain = resolved && thread.replies.some(c => !before(c, next) && hasOwnMarker(c.body!, FOUND_AGAIN_MARKER, COMMENT_MARKER));
         if (evaluation?.status === 'partly_addressed') {
           const grade = evaluation.grade && DRAFT_SEVERITIES.has(evaluation.grade) ? evaluation.grade : severity;
           followUp.mustKeepOpen.push({ id, severity: grade, mechanism: evaluation.remaining || title });
@@ -162,7 +164,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
         } else if (resolved) {
           followUp.mustResolve.push(id);
         } else if (evaluation || !state?.isResolved || sorted.slice(i + 1).some(r => evaluations(r).length > 0
-          || thread.replies.some(c => c.body!.includes(fixedMarker(r.meta.commitSha))))) {
+          || thread.replies.some(c => hasOwnMarker(c.body!, fixedMarker(r.meta.commitSha), COMMENT_MARKER)))) {
           // The round left the thread open, and the thread is still open or a later round judged it, so it was open after this round.
           followUp.mustNotRepeat.push(id);
         }

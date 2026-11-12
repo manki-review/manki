@@ -1,8 +1,9 @@
 import { Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
+import { highlightCode } from './highlight';
 import { applyCrossRoundSuppression } from './judge';
 
 jest.mock('@actions/core', () => ({
@@ -265,6 +266,21 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
+
+    // A thread posted on another file for a blocker without a line stands for the whole file, so the same title on any
+    // line repeats it once someone allowed to cleared it. A title that only overlaps does not, and neither does a line-less
+    // thread on the finding's own file.
+    const blocker = makeFinding({ ...findings[0], severity: 'blocker' });
+    const wholeFile = makePrevious({ ...previous[0], line: 0, severity: 'blocker', detached: true });
+    expect(deduplicateFindings([blocker], [wholeFile]).duplicates.map(d => d.matchType)).toEqual(['exact']);
+    expect(deduplicateFindings([{ ...blocker, title: 'Missing null-check before dereference' }], [wholeFile]).duplicates).toHaveLength(1);
+    expect(deduplicateFindings([{ ...blocker, title: 'Missing null check before the dereference in the loader' }], [wholeFile]).unique).toHaveLength(1);
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, detached: undefined }]).unique).toHaveLength(1);
+    // The thread still has to be cleared: one the PR author resolved alone stays open and hides nothing.
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, status: 'open' }]).unique).toHaveLength(1);
+    // With a line, such a thread matches by that line like any other.
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, line: 45 }]).unique).toHaveLength(1);
+    expect(deduplicateFindings([blocker], [{ ...wholeFile, line: 66 }]).duplicates).toHaveLength(1);
   });
 
   it('does not match different file even with matching title', () => {
@@ -1275,16 +1291,14 @@ describe('fetchRecapState', () => {
       const attached = state.priorRounds[0].findings.entries;
       expect(attached.map(e => e.threadId)).toEqual(['T_RESOLVED', undefined, undefined, 'T_FILE']);
 
-      // The resolved threads, line or file-level, retire their blockers. The warning too far from its
-      // thread and the body-only blocker on a file the PR no longer changes
-      // block nothing either, though thread `T_OTHER` is still open.
+      // The resolved threads, line or file-level, retire their blockers, and the warning too far from its thread blocks
+      // nothing, though thread `T_OTHER` is still open. Only the body-only blocker keeps blocking, whatever the PR changes.
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
-      const { outcome } = determineOutcome([], attached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts']));
-      expect(outcome).toBe('READY');
-      const unattached = attached.map(({ threadId: _threadId, ...rest }) => rest);
-      expect(determineOutcome([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts'])).outcome).toBe('ADDRESS_FIRST');
+      const unresolved = (priors: typeof attached) => determineOutcome([], priors, openThreads, collectResolvedThreadIds(state.previousFindings)).verdictTrace.unresolvedPriors.map(p => p.file);
+      expect(unresolved(attached)).toEqual(['src/body.ts']);
+      expect(unresolved(attached.map(({ threadId: _threadId, ...rest }) => rest))).toEqual(['src/foo.ts', 'src/body.ts', 'src/bar.ts']);
     });
 
     it('matches a blocker posted on a fallback line to its thread by the line its finding data names', async () => {
@@ -1310,7 +1324,7 @@ describe('fetchRecapState', () => {
       expect(priors.map(e => e.threadId)).toEqual(['T_FALLBACK']);
       expect(state.previousFindings[0]).toMatchObject({ line: 1, findingLine: 512 });
       // The resolved thread backs its blocker, so the next round ends without `prior_unaddressed`.
-      const { outcome, verdictReason } = determineOutcome([], priors, [], collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/state.ts']));
+      const { outcome, verdictReason } = determineOutcome([], priors, [], collectResolvedThreadIds(state.previousFindings));
       expect({ outcome, verdictReason }).toEqual({ outcome: 'READY', verdictReason: 'only_notes' });
       // A finding raised again on line 512 matches the thread as well, in dedup and in the in-PR suppressions.
       const again = makeFinding({ title, file: 'src/state.ts', line: 512, severity: 'warning' });
@@ -1333,6 +1347,45 @@ describe('fetchRecapState', () => {
       ], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
       const bareState = await fetchRecapState(bare, TEST_BOT, 'owner', 'repo', 1);
       expect(bareState.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual([undefined]);
+    });
+
+    it('reads where a thread\'s finding sits from its finding data and the place GitHub reports', async () => {
+      const entry = (title: string, file: string, line: number) => ({ fingerprint: { file, lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'blocker' as const, title, posted: 'thread' as const });
+      const entries = [entry('Persisters miss the lock', 'src/store.ts', 30), entry('The design drops retries', '', 0), entry('Named without the flag', 'src/old.ts', 7)];
+      const ctx = makeRoundContext(12, { findings: { count: 3, severityCounts: { blocker: 3, warning: 0, note: 0 }, entries } });
+      // Each thread sits on the first changed file. Only a flagged one takes its place from its finding data.
+      const posted = (id: string, title: string, data?: Record<string, unknown>, line = 1, originalLine = 1) => makeThread({
+        id, path: 'src/first.ts', line, originalLine,
+        comments: { nodes: [{ body: `\u{1F6AB} **Blocker**: ${title}\n\nDesc.\n\n<!-- manki:blocker:${titleToSlug(title)} -->${data ? `\n<!-- manki-finding: ${JSON.stringify({ ...data, severity: 'blocker', title })} -->` : ''}`, author: { login: BOT_LOGIN } }] },
+      });
+      const octokit = mockOctokit([
+        posted('T_FILE', 'Persisters miss the lock', { file: 'src/store.ts', line: 30, detached: true }),
+        posted('T_NONE', 'The design drops retries', { file: '', line: 0, detached: true }),
+        posted('T_OLD', 'Named without the flag', { file: 'src/old.ts', line: 7 }),
+        // On the finding's own file: a file-level thread for a finding without a line, a line thread whose code moved
+        // down by four lines, and a thread from before the finding data.
+        posted('T_WHOLE', 'The file has no owner', { file: 'src/first.ts', line: 0 }),
+        posted('T_MOVED', 'The retry never stops', { file: 'src/first.ts', line: 40 }, 44, 40),
+        posted('T_BARE', 'Written without finding data'),
+      ], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
+
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
+      expect(state.previousFindings.map(f => [f.threadId, f.file, f.findingLine])).toEqual([
+        ['T_FILE', 'src/store.ts', 30],
+        ['T_NONE', '', undefined],
+        ['T_OLD', 'src/first.ts', undefined],
+        ['T_WHOLE', 'src/first.ts', undefined],
+        ['T_MOVED', 'src/first.ts', 40],
+        ['T_BARE', 'src/first.ts', undefined],
+      ]);
+      // GitHub reports a file-level thread on line 1. A flagged thread takes the line its data names, and none when it names none.
+      // So does a file-level thread whose finding names no line. Any other thread keeps the line GitHub reports.
+      expect(state.previousFindings.map(currentFindingLine)).toEqual([30, 0, 1, 0, 44, 1]);
+      expect(state.previousFindings.map(f => [f.line, f.originalLine, f.detached])).toEqual([
+        [30, undefined, true], [0, undefined, true], [1, 1, undefined], [0, undefined, undefined], [44, 40, undefined], [1, 1, undefined],
+      ]);
+      // So the round record's blocker finds its thread, and the thread from before the flag stays on GitHub's path.
+      expect(state.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual(['T_FILE', 'T_NONE', undefined]);
     });
 
     it('counts a thread Manki resolved as dismissed only when the judge marked it addressed', async () => {
@@ -1421,10 +1474,11 @@ describe('fetchRecapState', () => {
     it('keeps a blocking or security finding blocking until someone other than the PR author dismisses it', async () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
-      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
+      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
       const bounded = 'Every caller bounds both inputs.';
       const cases: Record<string, Case> = {
-        'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
+        // A Manki reply that quotes the fix does not count as a reopen.
+        'src/author-resolved.ts': { resolver: 'author', foundAgain: true, security: true, blocks: true },
         // A recorded override counts only once GitHub confirms the PR author's role, since a Manki reply can echo any text.
         'src/author-dismissed.ts': { resolver: BOT_LOGIN, dismissed: true, security: true, blocks: true },
         'src/bot-resolved.ts': { resolver: BOT_LOGIN, security: true, blocks: true },
@@ -1482,10 +1536,13 @@ describe('fetchRecapState', () => {
         judge: { summary: 'ok', threadEvaluations: ['src/judge-addressed.ts', 'src/judge-addressed-author-resolved.ts'].map(file => ({ threadId: `T_${file}`, status: 'addressed' as const, reason: 'The token is redacted now.' })) },
       });
       const octokit = mockOctokit(files.map(file => {
-        const { resolver, reply, reopened, dismissed, security } = cases[file];
+        const { resolver, reply, reopened, foundAgain, dismissed, security } = cases[file];
+        // The fix quotes Manki's reply markers and a lower grade. In a thread's first comment they are a finder's text.
+        const quoted = ['```ts', REOPENED_MARKER, securityOverrideMarker('resolve', 'author'), '<!-- manki:note:Quoted -->', '<!-- manki-finding: {"title":"Quoted"} -->', '```'].join('\n');
         const body = formatFindingComment(makeFinding({
-          severity: severity(file), title, file, line: 10, ...(security && { tags: ['security'] }),
+          severity: severity(file), title, file, line: 10, suggestedFix: quoted, ...(security && { tags: ['security'] }),
         }), TEST_LINKS);
+        expect(body).toContain(`\n${REOPENED_MARKER}\n${securityOverrideMarker('resolve', 'author')}\n<!-- manki:note:Quoted -->\n`);
         return makeThread({
           id: `T_${file}`,
           isResolved: !!resolver,
@@ -1495,6 +1552,7 @@ describe('fetchRecapState', () => {
           comments: { nodes: [
             { body, author: { login: BOT_LOGIN } },
             ...(reopened ? [{ body: `<!-- manki -->\n${REOPENED_MARKER}\nReopened.`, author: { login: BOT_LOGIN } }] : []),
+            ...(foundAgain ? [{ body: `This came up again.\n\n${quoted}\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: BOT_LOGIN } }] : []),
             ...(dismissed ? [{ body: `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'author')}`, author: { login: BOT_LOGIN } }] : []),
             ...(reply ? [{ body: reply.text ?? 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
           ] },
@@ -2446,6 +2504,38 @@ describe('parseFindingFromComment', () => {
     expect(parseFindingFromComment(filed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
+    // A thread posted on another file opens with a note on where the finding is, which is no part of the description.
+    // The note is read by its place, so it is skipped whatever the highlighting of the diff's identifiers makes of it.
+    const identifiers = new Set(['This', 'Comments', 'thread', 'posted', 'here', 'src/store.ts', '_store_file_', 'src/_store_file_.ts']);
+    // A file name is finder text in that note, so one that reads like a label of Manki's layout is still only part of the note.
+    for (const file of ['src/store.ts', 'src/_store_file_.ts', 'src/a*b*.ts', 'src/**Warning**: x.ts', 'src/**Blocker** y.ts', 'src/**What goes wrong:** z.ts', '']) {
+      // With no other note under it, the line below the note is the description itself.
+      for (const checkStatus of [undefined, 'unconfirmed' as const]) {
+        const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus }, TEST_LINKS, true);
+        expect(detached).toContain(`so the thread is posted here.\n\n${checkStatus ? '_Manki could not confirm this' : '**What goes wrong:** The logic is duplicated.'}`);
+        for (const posted of [detached, highlightCode(detached, identifiers)]) {
+          expect(parseFindingFromComment(posted)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+        }
+      }
+    }
+    // A late warning on such a thread has all three notes under its title. The first is the one on where the finding is, and the other two are skipped in either order.
+    const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, true);
+    const notes = late.match(/(This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
+    expect(notes).not.toBeNull();
+    for (const order of [[1, 2, 3], [1, 3, 2]]) {
+      const body = late.replace(notes![0], `${order.map(i => notes![i]).join('\n\n')}\n\n`);
+      expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+    }
+    // When the title line is not at the top, the layout is not Manki's own, and no line is dropped on the word of the finding data.
+    const edited = `Edited by hand.\n\n${formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/**Warning**: x.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] }, TEST_LINKS, true)}`;
+    expect(parseFindingFromComment(edited).description).toBe('The logic is duplicated.');
+    // The title is the line under the header, so a label in the description is part of the description.
+    const labelled = 'It reads **Warning**: not a title, and then goes on.';
+    expect(parseFindingFromComment(formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/a.ts', line: 2, description: labelled, reviewers: [] }, TEST_LINKS)).description).toBe(labelled);
+    // The first line is skipped only on a thread whose finding data says it is posted elsewhere.
+    const sentence = 'This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.';
+    const quoted = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: sentence, reviewers: [] }, TEST_LINKS);
+    expect(parseFindingFromComment(quoted).description).toBe(sentence);
   });
 
   it('extracts description up to the <details> stop marker', () => {

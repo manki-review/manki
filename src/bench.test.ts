@@ -453,6 +453,10 @@ describe('scoreRun on a follow-up case', () => {
       verdictCorrect: true, falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, followUp: { resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2 },
     });
     expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
+    // No model raised a blocker the review lists again from an earlier round, so it is neither a finding nor a repeat.
+    const relisting = review();
+    relisting.result.findings = [makeFinding({ severity: 'blocker', file: 'src/old.rs', title: 'Earlier blocker', relisted: true }), ...findings];
+    expect(await scoreRun(followUp, relisting, matcher)).toEqual(score);
     const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
     expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
     const incomplete = await scoreRun(followUp, review(false), matcher);

@@ -5203,6 +5203,7 @@ describe('runFullReview orchestration', () => {
       ['src/partial.ts', ref === 'c0ffee' ? [helper, 'export const closed = [];'].join('\n') : 'export {};'],
     ]));
     const outdated = { severity: 'blocker' as const, status: 'open' as const, line: 0, originalLine: 2, originalCommit: 'c0ffee' };
+    const detached = { severity: 'blocker' as const, status: 'open' as const, line: 2, findingLine: 2, originalCommit: 'c0ffee', detached: true };
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
         { ...outdated, title: 'Moved', file: 'src/app.ts', threadId: 'PRRT_moved', answer: '**Fixed.** It reopens after posting.' },
@@ -5215,13 +5216,33 @@ describe('runFullReview orchestration', () => {
         { ...outdated, title: 'Moved to another file', file: 'src/threads.ts', threadId: 'PRRT_elsewhere' },
         { ...outdated, title: 'In two other files', file: 'src/twice.ts', threadId: 'PRRT_twice' },
         { ...outdated, title: 'Partly in another file', file: 'src/partial.ts', threadId: 'PRRT_partial' },
+        // GitHub moves no line of a thread posted on another file, so its line is the one its finding named when posted.
+        { ...detached, title: 'On another file, code moved', file: 'src/app.ts', threadId: 'PRRT_d_moved' },
+        { ...detached, title: 'On another file, untouched', file: 'src/small.ts', threadId: 'PRRT_d_small', line: 1, findingLine: 1 },
+        { ...detached, title: 'On another file, head unread', file: 'src/unread.ts', threadId: 'PRRT_d_unread' },
+        { ...detached, title: 'On another file, no commit', file: 'src/app.ts', threadId: 'PRRT_d_commit', originalCommit: undefined },
+        { ...detached, title: 'On another file, no line', file: 'src/app.ts', threadId: 'PRRT_d_file', line: 0, findingLine: undefined },
+        // GitHub reports a file-level thread on line 1, which a finding without a line does not take.
+        { severity: 'blocker', status: 'open', title: 'On its own file, no line', file: 'src/app.ts', threadId: 'PRRT_file', line: 0, originalCommit: 'c0ffee' },
       ],
       priorRounds: [],
     });
 
     await callRunFullReview();
 
-    const [found, gone, unread, past, small, elsewhere, twice, partial] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    const [found, gone, unread, past, small, elsewhere, twice, partial, ...placedByData] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    // Its file changed since it was posted, so the line it was posted with is checked like an outdated thread's.
+    expect(placedByData[0]).toMatchObject({ line: 5, postedCommit: 'c0ffee' });
+    expect(placedByData[0].currentCode).toContain('>>> 5:   reopenThread(thread);');
+    // An unchanged file still holds the code on that line, so the thread reads as any other.
+    expect(placedByData[1]).toMatchObject({ line: 1, currentCode: '>>> 1: exit(1);' });
+    expect(placedByData[1].postedCode).toBeUndefined();
+    // Where nothing says whether the file changed, the thread names no line and shows no code. One whose finding names no line never did,
+    // on another file or on its own.
+    for (const unknown of placedByData.slice(2)) {
+      expect(unknown).toMatchObject({ line: 0, currentCode: '' });
+      expect(unknown.postedCode).toBeUndefined();
+    }
     expect(small).toMatchObject({ line: 1, postedCode: '>>> 1: exit(1);', currentCode: '>>> 1: exit(1);' });
     expect(small.postedCodeGone).toBeUndefined();
     expect(past.postedCode).toBeUndefined();
@@ -5268,6 +5289,9 @@ describe('runFullReview orchestration', () => {
     const previousFindings = [
       { title: 'Issue in changed', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_dup' },
       { title: 'Issue in unchanged', file: 'src/other.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
+      // A thread tied to no file has no code to fetch, at the head or on the commit it was posted on.
+      { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
+      { title: 'Outdated design issue', file: '', line: 0, originalLine: 1, originalCommit: 'c0ffee', severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile_old' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
@@ -5279,6 +5303,8 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledTimes(1);
     const fetchCall = jest.mocked(ghUtils.fetchFileContents).mock.calls[0];
     const requestedPaths = fetchCall[4];
+    expect(requestedPaths).not.toContain('');
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads?.filter(t => !t.file).map(t => [t.threadId, t.line, t.currentCode])).toEqual([['PRRT_nofile', 1, ''], ['PRRT_nofile_old', 0, '']]);
     // Both files present, no duplicate of `src/app.ts`
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');

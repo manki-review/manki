@@ -91,13 +91,37 @@ describe('handleIssueBoxTick', () => {
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolved.map(([id, reason]) => [octokit, id, reason]));
   });
 
-  it('links the finding\'s own line when the comment sits on another line', async () => {
+  it('links the finding\'s own line and file when the comment sits on another line or another file', async () => {
     const octokit = makeOctokit();
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([]);
 
     await tick(octokit, { ...comment(ticked(finding())), original_line: 1 });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/net.ts:7`](https://github.com/o/r/blob/abc123/src/net.ts#L7)');
+
+    // A blocker in a file outside the diff has its thread on a changed file, and its finding data names its own file.
+    const elsewhere = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    await tick(octokit, { ...comment(elsewhere), original_line: 1 });
+
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[1][0].body).toContain('[`src/store.ts:30`](https://github.com/o/r/blob/abc123/src/store.ts#L30)');
+
+    // That file name is finder output, so it can end neither the code span nor the link, and it mentions nobody.
+    const hostile = formatFindingComment(finding({ severity: 'blocker', file: 'src/a`b) @octocat (x.ts', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    await tick(octokit, { ...comment(hostile), original_line: 1 });
+
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[2][0].body).toContain(
+      'Found by Manki in #5 at [`src/a\'b) @octocat (x.ts:30`](https://github.com/o/r/blob/abc123/src/a%60b%29%20%40octocat%20%28x.ts#L30). See',
+    );
+
+    // A browser resolves `..`, so such a name gets no link.
+    const outside = formatFindingComment(finding({ severity: 'blocker', file: '../../../../evil/x', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    await tick(octokit, { ...comment(outside), original_line: 1 });
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[3][0].body).toContain('Found by Manki in #5 at `../../../../evil/x:30`. See');
+
+    // A finding on a whole file names no line, so the issue takes none from the line its thread sits on.
+    const whole = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 0 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    await tick(octokit, { ...comment(whole), original_line: 1 });
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[4][0].body).toContain('Found by Manki in #5 at [`src/store.ts`](https://github.com/o/r/blob/abc123/src/store.ts). See');
   });
 
   it('clears the box, says why in the thread and leaves the thread open when filing fails', async () => {
@@ -139,6 +163,8 @@ describe('handleIssueBoxTick', () => {
     const id = ticked(finding()).match(/manki-box:issue:(\S+) -->/)?.[1];
     const octokit = makeOctokit([
       { number: 4, body: `A pull request <!-- manki-issue:${id} -->`, pull_request: {} },
+      // An issue filed for another finding, whose fix quotes this finding's marker.
+      { number: 7, body: `Other.\n\n\`\`\`\n<!-- manki-issue:${id} -->\n\`\`\`\n\n<!-- manki-issue:src/other.ts:1:abc -->` },
       { number: 9, body: `Old.\n\n<!-- manki-issue:${id} -->` },
     ]);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
@@ -301,6 +327,6 @@ describe('handleReviewBoxTick', () => {
 
     await tickReview(octokit, { ...review, body });
 
-    expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/a-->b.ts:3`](https://github.com/o/r/blob/abc123/src/a-->b.ts#L3)');
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/a--%3Eb.ts:3`](https://github.com/o/r/blob/abc123/src/a--%3Eb.ts#L3)');
   });
 });

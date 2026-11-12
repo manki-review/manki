@@ -3,11 +3,12 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
-import { findPriorThreadId } from './finding-fingerprint';
+import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
-import { extractReviewRecords, hasReviewRecord } from './review-record';
+import { extractReviewRecords, hasOwnMarker, hasReviewRecord } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
+import { COMMENT_MARKER, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -16,16 +17,24 @@ const BOT_MARKER = '<!-- manki';
 /** Shared prefix that identifies a severity title line in a manki comment body. */
 const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*/;
 
-/** The hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
-const FINDING_DATA_RE = /<!-- manki-finding: (.+?) -->/;
+/** Opens the hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
+const FINDING_DATA_OPENER = '<!-- manki-finding: ';
 
-export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number } | undefined {
-  const match = body.match(FINDING_DATA_RE);
-  if (!match) return undefined;
+/** The severity token and the title slug inside the severity marker of a thread's first comment. */
+const SEVERITY_MARKER_RE = new RegExp(`^(${SEVERITY_TOKEN_PATTERN}):(.*)$`);
+
+function severityMarker(body: string): RegExpMatchArray | null {
+  return ownMarker(body, '<!-- manki:')?.match(SEVERITY_MARKER_RE) ?? null;
+}
+
+/** `detached` marks a thread posted on another file than its finding's, where `file` and `line` name the finding's own place. */
+export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean } | undefined {
+  const json = ownMarker(body, FINDING_DATA_OPENER);
+  if (json === undefined) return undefined;
   try {
-    const parsed: unknown = JSON.parse(match[1]);
+    const parsed: unknown = JSON.parse(json);
     if (!parsed || typeof parsed !== 'object') return undefined;
-    const { title, fix, howToFix, tags, flaggedBy, file, line } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown };
+    const { title, fix, howToFix, tags, flaggedBy, file, line, detached } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown };
     return {
       ...(typeof title === 'string' && { title }),
       ...(typeof file === 'string' && file && { file }),
@@ -34,10 +43,40 @@ export function parseFindingData(body: string): { title?: string; fix?: string; 
       ...(typeof howToFix === 'string' && howToFix.length > 0 && { howToFix }),
       ...(isStringArray(tags) && { tags }),
       ...(isStringArray(flaggedBy) && { flaggedBy }),
+      ...(detached === true && { detached }),
     };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Returns the place of the finding in a Manki thread's first comment `body`, for a thread GitHub reports on `path`,
+ * `line` and `originalLine`. A `detached` thread takes its file and line from its finding data, which may name none.
+ * GitHub reports every file-level thread on line 1, so a thread whose finding names no line has none either.
+ */
+export function findingPlace(
+  body: string, path: string | null | undefined, line?: number | null, originalLine?: number | null,
+): Pick<PreviousFinding, 'file' | 'line' | 'originalLine' | 'findingLine'> {
+  const data = parseFindingData(body);
+  const file = data?.detached ? data.file ?? '' : path ?? '';
+  const fromData = !!data && (data.detached || !data.line);
+  return {
+    file,
+    line: fromData ? data.line ?? 0 : line ?? 0,
+    ...(!fromData && originalLine && { originalLine }),
+    ...(data?.file === file && data.line && { findingLine: data.line }),
+  };
+}
+
+/** Returns the file of the finding in a Manki thread's first comment `body`, posted on `path`. */
+export function findingFile(body: string, path: string | null | undefined): string {
+  return findingPlace(body, path).file;
+}
+
+/** Returns the line of the finding in a Manki thread's first comment `body`, posted on `line`. */
+export function findingLineOf(body: string, line: number | null | undefined): number {
+  return findingPlace(body, undefined, line).line;
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -52,13 +91,13 @@ function isSecurityThread(body: string): boolean {
 
 /** The severity in the marker of a Manki thread's first comment, or `unknown` for a thread from before the markers. */
 function threadSeverity(body: string): FindingSeverity | 'unknown' {
-  const token = body.match(new RegExp(`<!-- manki:(${SEVERITY_TOKEN_PATTERN}):`))?.[1];
+  const token = severityMarker(body)?.[1];
   return token ? migrateLegacySeverity(token) as FindingSeverity : 'unknown';
 }
 
 /** The title slug in the marker of a Manki thread's first comment, or `undefined` for a comment without the marker. */
 function threadMarkerSlug(body: string): string | undefined {
-  return body.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
+  return severityMarker(body)?.[2] || undefined;
 }
 
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
@@ -98,18 +137,18 @@ const REPLY_OUTCOME_RE = /^\**(Fixed|Withdrawn|Agreed|Kept|Unverified)\./;
 /** Returns Manki's latest answer to a developer in `comments`, without its markers: an outcome reply, or a found-again reply. */
 function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string | undefined {
   const answer = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
-    && (REPLY_OUTCOME_RE.test(c.body) || c.body.includes(FOUND_AGAIN_MARKER))).pop();
+    && (REPLY_OUTCOME_RE.test(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
   return answer?.body.split('\n\n<!--')[0].trim();
 }
 
 /** A reply that opens with a `dismiss` command. */
 const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
 
-const SECURITY_OVERRIDE_MARKER_RE = /<!-- manki-security-override:(resolve|dismiss):([\w-]+) -->/;
+const SECURITY_OVERRIDE_OPENER = '<!-- manki-security-override:';
 
 /** Marks Manki's reply on a guarded thread the PR author cleared with a role that allows it, with how and by whom. */
 function securityOverrideMarker(via: SecurityOverride['via'], login: string): string {
-  return `<!-- manki-security-override:${via}:${login} -->`;
+  return `${SECURITY_OVERRIDE_OPENER}${via}:${login} -->`;
 }
 
 /** How the PR author cleared a guarded thread, and the repository role that allowed it. */
@@ -119,12 +158,12 @@ interface ThreadSecurityOverride extends Omit<SecurityOverride, 'thread'> {
   announced: boolean;
 }
 
-/** Returns the override recorded in one of Manki's own comments on a thread, if any. */
+/** Returns the override recorded in one of Manki's own replies on a thread, if any. The first comment holds a finder's text, so it records none. */
 function recordedSecurityOverride(
   bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author: { login: string } | null }>,
 ): Omit<SecurityOverride, 'thread'> | undefined {
-  for (const c of comments) {
-    const match = isBotLogin(bot, c.author?.login) ? c.body?.match(SECURITY_OVERRIDE_MARKER_RE) : null;
+  for (const c of comments.slice(1)) {
+    const match = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', SECURITY_OVERRIDE_OPENER, COMMENT_MARKER)?.match(/^(resolve|dismiss):([\w-]+)$/) : null;
     if (match) return { via: match[1] as SecurityOverride['via'], login: match[2] };
   }
   return undefined;
@@ -196,13 +235,16 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
   return !prAuthorLogin || login.toLowerCase() !== prAuthorLogin.toLowerCase();
 }
 
-/** Matches the title line of a thread comment in any layout: after the label, or on its own line below the header. */
+/**
+ * Matches the title line of a thread comment in any layout: after the label, or on its own line below the header.
+ * A comment with finding data is matched from its top first, so text of the finding further down cannot pass as the title line.
+ */
 function matchTitleLine(body: string): RegExpMatchArray | null {
-  return body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'))
-    ?? (FINDING_DATA_RE.test(body)
-      ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
-        ?? body.match(/^\S+ \*\*\w+(?:, not blocking)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
-      : null);
+  const atTop = ownMarker(body, FINDING_DATA_OPENER) !== undefined
+    ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
+      ?? body.match(/^\S+ \*\*\w+(?:, not blocking)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
+    : null;
+  return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
@@ -319,6 +361,8 @@ interface PreviousFinding extends FindingMetadata {
   originalLine?: number;
   /** The commit the thread was posted on, which still holds the code it names after the thread goes outdated. */
   originalCommit?: string;
+  /** The thread sits on another file than its finding's, so GitHub moves no line of it: `line` stays the one the finding named when posted, or 0. */
+  detached?: boolean;
   /**
    * Line the finding named when it was posted, from the thread's hidden finding data. A finding on a line outside the
    * diff is posted on a fallback line, so only this line matches it to its round record. `currentFindingLine` gives
@@ -355,16 +399,6 @@ interface PreviousFinding extends FindingMetadata {
  * other than the PR author with write access. `resolved-thread` suppressions are
  * unaffected because resolving a thread already requires repository write access.
  */
-/**
- * Returns the line a thread's finding sits on now. GitHub moves `line` with the code, so it is the answer unless the
- * thread was posted on a fallback line, in which case the gap to the finding's own line is added. An outdated thread
- * keeps `line` 0.
- */
-function currentFindingLine(t: { line: number; originalLine?: number; findingLine?: number }): number {
-  if (!t.line || !t.findingLine || !t.originalLine || t.findingLine === t.originalLine) return t.line;
-  return t.line + (t.findingLine - t.originalLine);
-}
-
 function collectInPrSuppressions(
   previousFindings: PreviousFinding[],
   prAuthorLogin?: string,
@@ -588,6 +622,7 @@ async function fetchRecapState(
       ...(t.originalLine && { originalLine: t.originalLine }),
       ...(t.originalCommit && { originalCommit: t.originalCommit }),
       ...(t.findingLine && { findingLine: t.findingLine }),
+      ...(t.detached && { detached: true }),
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
@@ -810,7 +845,7 @@ async function fetchPriorRoundContexts(
     const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id }));
     // A round review quotes model text, which could echo the marker, so only a review without a round context counts.
     const lastApprovalAt = botReviews
-      .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && r.body.includes(AUTO_APPROVE_MARKER))
+      .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && hasOwnMarker(r.body, AUTO_APPROVE_MARKER))
       .at(-1)?.submitted_at;
     const { rounds, unread } = parseContextBlocks(candidates, owner, repo, prNumber);
     return { priorRounds: rounds, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }) };
@@ -827,6 +862,7 @@ interface ReviewThread extends FindingMetadata {
   originalLine?: number;
   originalCommit?: string;
   findingLine?: number;
+  detached?: boolean;
   isBotThread: boolean;
   isResolved: boolean;
   resolvedByHuman: boolean;
@@ -884,9 +920,13 @@ function parseFindingFromComment(body: string): FindingMetadata {
     }
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
-  for (const note of [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE]) {
-    if (descSlice.startsWith(note)) descSlice = descSlice.slice(note.length).replace(/^\s+/, '');
-  }
+  const data = parseFindingData(body);
+  // A detached thread opens with the line that says where its finding is. The line is taken by its place, since posting can
+  // change its text, and only below a title line at the top of the body, where no text of the finding can stand.
+  if (data?.detached && titleMatch.index === 0) descSlice = descSlice.slice(descSlice.split('\n', 1)[0].length).trimStart();
+  // The other notes under the title are skipped in whatever order they come.
+  const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
+  for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
   if (label) descSlice = descSlice.slice(label.length).trimStart();
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
@@ -895,7 +935,6 @@ function parseFindingFromComment(body: string): FindingMetadata {
   else if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
   const description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
 
-  const data = parseFindingData(body);
   let suggestedFix = data?.fix;
   const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
   if (aiContextMatch) {
@@ -1012,15 +1051,16 @@ async function fetchReviewThreads(
       const markerSlug = threadMarkerSlug(firstComment?.body ?? '');
 
       const body = firstComment?.body ?? '';
-      const data = isBotThread ? parseFindingData(body) : undefined;
+      // Finding data counts only in Manki's own comment.
+      const ownBody = isBotThread ? body : '';
+      const data = parseFindingData(ownBody);
       const findingTitle = data?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
-      const findingLine = data?.file === thread.path ? data.line : undefined;
+      const { file, line, originalLine, findingLine } = findingPlace(ownBody, thread.path, thread.line, thread.originalLine);
 
       const { description, suggestedFix, howToFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)
         : {};
 
-      const line = thread.line ?? 0;
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
@@ -1033,19 +1073,20 @@ async function fetchReviewThreads(
         resolvedByHuman: !!thread.resolvedBy?.login && !isBotLogin(bot, thread.resolvedBy.login),
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
-        reopenedByManki: thread.comments.nodes.some(c => isBotLogin(bot, c.author?.login) && c.body?.includes(REOPENED_MARKER)),
+        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
         ...(recordedOverride && { recordedOverride }),
         hasHumanReply,
         findingTitle,
         description,
         suggestedFix,
         howToFix,
-        file: thread.path ?? '',
+        file,
         line,
         lineStart,
-        ...(thread.originalLine && { originalLine: thread.originalLine }),
+        ...(originalLine && { originalLine }),
         ...(firstComment?.originalCommit?.oid && { originalCommit: firstComment.originalCommit.oid }),
         ...(findingLine && { findingLine }),
+        ...(data?.detached && { detached: true }),
         ...(markerSlug && { markerSlug }),
         severity,
         authorReplyText,
@@ -1196,6 +1237,9 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
   if (!matchType) return null;
 
   if (finding.file !== previous.file) return null;
+
+  // A thread posted on another file for a finding without a line stands for the whole file. No line narrows the match there, so the title has to be the same.
+  if (previous.detached && !previous.line) return titleToSlug(finding.title) === titleToSlug(previous.title) ? matchType : null;
 
   // Relax line proximity when word overlap is strong (>= 70%)
   const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;

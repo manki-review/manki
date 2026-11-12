@@ -37,6 +37,9 @@ export function hiddenCharacters(text: string): string[] {
   return [...new Set([...text.matchAll(HIDDEN_CHARACTER)].map(([c]) => `U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`))];
 }
 
+/** The first of the hidden markers that Manki appends to a thread comment, a reply or a PR comment. */
+export const COMMENT_MARKER = '<!-- manki -->';
+
 /**
  * Appends hidden HTML comment markers after `body`. Notifications preview the start of
  * a comment as plain text, so markers at the top would show up there as blank lines.
@@ -195,6 +198,26 @@ export async function sendWithParseRetry<R, T>(
  */
 export function sanitizeHtmlCommentJson(json: string): string {
   return json.replace(/--(!?)>/g, '--$1\\u003E');
+}
+
+/**
+ * Returns the lines of `body` below its last line that starts with `anchor`, or all its lines when none does or none is
+ * given. Manki writes the anchor below all text that quotes code and model text, so a marker above it is quoted text.
+ */
+export function linesBelow(body: string, anchor?: string): string[] {
+  const lines = body.split('\n');
+  return anchor === undefined ? lines : lines.slice(lines.map(l => l.startsWith(anchor) && l.includes('-->')).lastIndexOf(true) + 1);
+}
+
+/**
+ * Returns what Manki's own hidden marker with `opener` holds in `body`, without the opener and the close: the last line
+ * that starts with `opener`, up to the first close. Manki writes each marker on a line of its own below all text of a
+ * finder, a record or the PR, and JSON in a marker holds no line break or close. An earlier match is quoted text.
+ * A reply does not always hold the marker, so pass `COMMENT_MARKER` as `anchor` to read only the lines below it.
+ */
+export function ownMarker(body: string, opener: string, anchor?: string): string | undefined {
+  const line = linesBelow(body, anchor).filter(l => l.startsWith(opener) && l.includes('-->', opener.length)).at(-1);
+  return line?.slice(opener.length, line.indexOf('-->', opener.length)).trimEnd();
 }
 
 /**

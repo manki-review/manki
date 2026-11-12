@@ -1,12 +1,10 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
 import type { ApprovalRecord, ReplyRecord, RoundContext } from './types';
-import { redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
+import { linesBelow, ownMarker, redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
-const PLAIN_RE = /<!-- manki-context: ([\s\S]+?) -->/g;
-const GZIP_RE = /<!-- manki-context-gzip: ([A-Za-z0-9+/=]+) -->/g;
-const REPLY_RE = /<!-- manki-reply-record: ([\s\S]+?) -->/g;
-const APPROVAL_RE = /<!-- manki-approval-record: ([\s\S]+?) -->/g;
+/** Opens a round record, plain or compressed. */
+const RECORD_OPENER = '<!-- manki-context';
 /** Larger than any real record, so a crafted compressed one can't exhaust memory. */
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 
@@ -36,14 +34,14 @@ export function formatApprovalRecord(record: ApprovalRecord): string {
 
 /** Returns the JSON text of the approval record in a review or comment body. Manki writes it last, so an earlier one is quoted text. */
 export function extractApprovalRecords(body: string): string[] {
-  const last = [...body.matchAll(APPROVAL_RE)].at(-1);
-  return last ? [last[1]] : [];
+  const last = ownMarker(body, '<!-- manki-approval-record: ');
+  return last ? [last] : [];
 }
 
 /** Returns the JSON text of the reply record in a comment body. Manki writes it last, so an earlier one is quoted text. */
 export function extractReplyRecords(body: string): string[] {
-  const last = [...body.matchAll(REPLY_RE)].at(-1);
-  return last ? [last[1]] : [];
+  const last = ownMarker(body, '<!-- manki-reply-record: ');
+  return last ? [last] : [];
 }
 
 /** Serializes a record with secrets and tokens redacted, since nothing that scans posted text can see inside a compressed one. */
@@ -89,7 +87,16 @@ export function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean)
 
 /** Whether `body` carries a round record. */
 export function hasReviewRecord(body: string): boolean {
-  return body.includes('<!-- manki-context');
+  return ownMarker(body, RECORD_OPENER) !== undefined;
+}
+
+/**
+ * Whether Manki itself wrote the flag `marker` in `body`: on a line of its own below the last line that starts with
+ * `anchor`, or anywhere when no line does. The text above the anchor quotes code and model text, which can hold a
+ * marker. The anchor is the round record in a review body and `COMMENT_MARKER` in a thread reply.
+ */
+export function hasOwnMarker(body: string, marker: string, anchor = RECORD_OPENER): boolean {
+  return linesBelow(body, anchor).some(l => l.trimEnd() === marker);
 }
 
 /**
@@ -98,11 +105,12 @@ export function hasReviewRecord(body: string): boolean {
  * counts: an earlier one is quoted text.
  */
 export function extractReviewRecords(body: string): { records: string[]; errors: string[] } {
-  const last = [...body.matchAll(PLAIN_RE), ...body.matchAll(GZIP_RE)].sort((a, b) => b.index - a.index)[0];
-  if (!last) return { records: [], errors: [] };
-  if (last[0].startsWith('<!-- manki-context: ')) return { records: [last[1]], errors: [] };
+  const last = ownMarker(body, RECORD_OPENER);
+  if (last === undefined) return { records: [], errors: [] };
+  if (last.startsWith(': ')) return { records: [last.slice(2)], errors: [] };
   try {
-    return { records: [gunzipSync(Buffer.from(last[1], 'base64'), { maxOutputLength: MAX_RECORD_BYTES }).toString('utf-8')], errors: [] };
+    if (!/^-gzip: [A-Za-z0-9+/=]+$/.test(last)) throw new Error('not a round record');
+    return { records: [gunzipSync(Buffer.from(last.slice('-gzip: '.length), 'base64'), { maxOutputLength: MAX_RECORD_BYTES }).toString('utf-8')], errors: [] };
   } catch (error) {
     return { records: [], errors: [error instanceof Error ? error.message : String(error)] };
   }

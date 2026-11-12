@@ -16,7 +16,7 @@ import { findPriorThreadId } from '../src/finding-fingerprint';
 import { replyOutcome } from '../src/interaction';
 import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
-import { parseFindingData, threadMarkerSlug, threadSeverity } from '../src/recap';
+import { findingPlace, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
 import { outcomeOf, SEVERITY_ORDER } from '../src/types';
 import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
@@ -228,11 +228,7 @@ function mankiThreads(comments: ThreadComment[]): (PostedThread & { reviewId: nu
   return comments.flatMap(c => {
     const markerSlug = c.user?.type === 'Bot' && !c.in_reply_to_id && c.body ? threadMarkerSlug(c.body) : undefined;
     if (!markerSlug || !c.path || !c.pull_request_review_id) return [];
-    const data = parseFindingData(c.body ?? '');
-    return [{
-      threadId: String(c.id), file: c.path, line: c.line ?? 0, markerSlug, reviewId: c.pull_request_review_id,
-      ...(c.original_line && { originalLine: c.original_line }), ...(data?.file === c.path && data.line && { findingLine: data.line }),
-    }];
+    return [{ threadId: String(c.id), ...findingPlace(c.body ?? '', c.path, c.line, c.original_line), markerSlug, reviewId: c.pull_request_review_id }];
   });
 }
 
@@ -283,7 +279,8 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         // A record without `posted` is read by the rules the review posts by. An entry's `threadId` names the earlier thread
         // the finding restates or adds to, and a finding that matches a thread an earlier review opened gets no thread either.
         const carried = entry.posted ? entry.posted === 'earlier_thread' : !!entry.threadId || findPriorThreadId(entry.fingerprint, earlierThreads) !== undefined;
-        if (carried) continue;
+        // An earlier blocker listed again to get a thread is no finding of this round.
+        if (carried || entry.relisted) continue;
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
         if (approved) severity.inApprovedRounds++;

@@ -72,7 +72,9 @@ export function replaceIssueBox(body: string, id: string, text: string): string 
   return lines.join('\n');
 }
 
+export const FILED_ISSUE_OPENER = '<!-- manki-issue:';
+
 /** Marks an issue Manki filed for the finding `id`, so a later tick links it instead of filing another. */
 export function filedIssueMarker(id: string): string {
-  return `<!-- manki-issue:${id} -->`;
+  return `${FILED_ISSUE_OPENER}${id} -->`;
 }

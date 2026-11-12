@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { truncate, formatDuration, isSecretName, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, sendWithParseRetry, withMarkers } from './utils';
+import { truncate, formatDuration, isSecretName, mapWithConcurrency, ownMarker, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, sendWithParseRetry, withMarkers } from './utils';
 
 jest.mock('@actions/core');
 
@@ -185,6 +185,36 @@ describe('utils', () => {
     it('keeps the body first and puts each marker on its own line after a blank line', () => {
       expect(withMarkers('**Done.**', '<!-- a -->', '<!-- b -->')).toBe('**Done.**\n\n<!-- a -->\n<!-- b -->');
     });
+  });
+});
+
+describe('ownMarker', () => {
+  it('reads the last line that starts with the opener, up to its first close', () => {
+    const body = ['Text quoting <!-- manki:note:mid-line -->', '```suggestion', '<!-- manki:note:quoted -->', '<!-- manki-finding: {"title":"quoted"} -->', '```', '',
+      '<!-- manki:blocker:own -->', '<!-- manki-finding: {"title":"<!-- manki:note:in-json --\\u003E","line":3} -->'].join('\n');
+    expect(ownMarker(body, '<!-- manki:')).toBe('blocker:own');
+    expect(ownMarker(body, '<!-- manki-finding: ')).toBe('{"title":"<!-- manki:note:in-json --\\u003E","line":3}');
+    expect(ownMarker(body.replace(/\n/g, '\r\n'), '<!-- manki:')).toBe('blocker:own');
+    expect(ownMarker('<!-- manki:blocker:own --> **Blocker**: with text after it', '<!-- manki:')).toBe('blocker:own');
+    // A thread comment has always ended with its marker, also in the layout from before the finding data, so a marker
+    // quoted in its fix is not the last one.
+    const old = ['\u{1F6AB} **Blocker**: Old title', '', 'Text.', '', '```suggestion', '<!-- manki:note:quoted -->', '```', '',
+      '<details>', '<summary>AI context</summary>', '', '```json', '{', '  "fix": "<!-- manki:note:quoted -->"', '}', '```', '</details>', '', '<!-- manki:blocker:Old-title -->'].join('\n');
+    expect(ownMarker(old, '<!-- manki:')).toBe('blocker:Old-title');
+    // A JSON value keeps its line and paragraph separators, which break no line.
+    expect(ownMarker('<!-- manki-finding: {"title":"a\u2028b\u2029c"} -->', '<!-- manki-finding: ')).toBe('{"title":"a\u2028b\u2029c"}');
+    // A reply can lack the marker, so with an anchor only the lines below the last anchor line are read.
+    const reply = ['This came up again.', '```', '<!-- manki -->', '<!-- manki-fixed:quoted -->', '```', '', '<!-- manki -->'];
+    expect(ownMarker(reply.join('\n'), '<!-- manki-fixed:')).toBe('quoted');
+    expect(ownMarker(reply.join('\n'), '<!-- manki-fixed:', '<!-- manki -->')).toBeUndefined();
+    expect(ownMarker([...reply, '<!-- manki-fixed:own -->'].join('\r\n'), '<!-- manki-fixed:', '<!-- manki -->')).toBe('own');
+    expect(ownMarker('<!-- manki-fixed:no-anchor -->', '<!-- manki-fixed:', '<!-- manki -->')).toBe('no-anchor');
+  });
+
+  it('finds no marker that is not on a line of its own or never closes', () => {
+    expect(ownMarker('Text <!-- manki:blocker:mid-line -->', '<!-- manki:')).toBeUndefined();
+    expect(ownMarker('<!-- manki:blocker:open', '<!-- manki:')).toBeUndefined();
+    expect(ownMarker('', '<!-- manki:')).toBeUndefined();
   });
 });
 
