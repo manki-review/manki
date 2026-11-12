@@ -26,7 +26,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RuleMark, RulesMode, RuleVerdict } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1729,9 +1729,15 @@ function withoutRuleDoubt(finding: Finding): Finding {
   return { ...kept, ...(others.length > 0 && { doubts: others }) };
 }
 
-/** Returns the rule a merged finding keeps: a confirmed one before any other, and the survivor's before the copy's. */
-function mergedRule(survivor: Finding, copy: Finding): RuleMark | undefined {
-  return breaksRule(survivor) || !breaksRule(copy) ? survivor.rule ?? copy.rule : copy.rule;
+/**
+ * Returns the rule a merged finding keeps: a confirmed one before any other, and the survivor's before the copy's.
+ * A rule is confirmed by the lines its own finding cites, so a confirmed rule of the copy comes with the copy's evidence.
+ */
+function mergedRule(survivor: Finding, copy: Finding): Pick<Finding, 'rule' | 'evidence'> {
+  const fromCopy = breaksRule(copy) && !breaksRule(survivor);
+  const rule = fromCopy ? copy.rule : survivor.rule ?? copy.rule;
+  const evidence = fromCopy ? mergeEvidence(survivor.evidence, copy.evidence) : undefined;
+  return { ...(rule && { rule }), ...(evidence && { evidence }) };
 }
 
 /**
@@ -1872,8 +1878,7 @@ export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (c
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
   survivor.howToFix ??= copy.howToFix;
-  const rule = mergedRule(survivor, copy);
-  if (rule) survivor.rule = rule;
+  Object.assign(survivor, mergedRule(survivor, copy));
   // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
   if (!copy.preExisting || (staysPreExisting && !staysPreExisting(copy))) delete survivor.preExisting;
   const evidence = mergeEvidence(survivor.evidence, copy.evidence);
@@ -2088,10 +2093,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     const filed = higherFinderGrade(first, f);
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
-    const rule = mergedRule(first, f);
-    // A rule is confirmed by the line its own finding cites, so that line comes with a confirmed rule the copy brings.
-    const evidence = breaksRule(f) && !breaksRule(first) ? mergeEvidence(first.evidence, f.evidence) : undefined;
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...(rule && { rule }), ...(evidence && { evidence }) });
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...mergedRule(first, f) });
   }
   return [...kept.values()];
 }
