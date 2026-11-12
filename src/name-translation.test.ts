@@ -115,11 +115,12 @@ describe('guessClaimTerms', () => {
 
     const terms = await guessClaimTerms(client, claims, checkouts);
 
-    // A term is a single identifier of at most 64 characters, and a claim is known by its position alone.
+    // A term is a single identifier of at most 64 characters, and a claim is known by its position alone. The fourth
+    // usable term of a claim and repo is counted as cut.
     expect(terms).toEqual({ terms: new Map([
       ['acme/server', new Map([[0, ['isDuplicateProfile', 'StoredProfileIDs', 'dedupe_profile']], [2, ['Injected']]])],
       ['acme/app', new Map([[0, ['profileCache']]])],
-    ]) });
+    ]), cut: 1 });
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const [system, message, options] = sendMessage.mock.calls[0];
     expect(system).toContain('Answer only for a statement about what that repository does: what it checks, guarantees, rejects or produces.');

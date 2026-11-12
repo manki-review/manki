@@ -722,7 +722,7 @@ export async function listClaimLines(checkouts: RelatedCheckout[], terms?: Claim
       total++;
     }
   }
-  return { lines, record: { terms: searched.map(({ entry }) => entry).sort((a, b) => a.claim - b.claim) } };
+  return { lines, record: { terms: searched.map(({ entry }) => entry).sort((a, b) => a.claim - b.claim), ...(terms.cut && { cut: terms.cut }) } };
 }
 
 /**

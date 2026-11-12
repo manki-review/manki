@@ -1235,7 +1235,7 @@ describe('listClaimLines', () => {
       ['acme/app', new Map([[1, ['verify_signature']]])],
       // A repo that was not fetched is not searched and not recorded.
       ['acme/unfetched', new Map([[0, ['signing_bytes']]])],
-    ]) };
+    ]), cut: 2 };
     try {
       const { lines, record } = await listClaimLines(checkouts, terms);
 
@@ -1256,7 +1256,7 @@ describe('listClaimLines', () => {
         { claim: 1, repo: 'acme/app', term: 'verify_signature', lines: 1, shown: 1 },
         { claim: 2, repo: 'acme/engine', term: 'NotThere', lines: 0, shown: 0 },
         { claim: 2, repo: 'acme/engine', term: 'engineVersion', lines: 1, shown: 1 },
-      ] });
+      ], cut: 2 });
       expect(core.warning).not.toHaveBeenCalled();
 
       // Without terms nothing is searched. A guess that was skipped is recorded with its reason, and one that named no term as an empty list.

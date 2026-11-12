@@ -424,6 +424,8 @@ export interface NameTranslation {
 export interface ClaimTerms {
   /** Per repo as `owner/name`, then per position of the claim in the round's list, the identifiers to search that repo for. */
   terms: Map<string, Map<number, string[]>>;
+  /** Usable terms the reply gave past the cap for one claim and repo. */
+  cut?: number;
   /** Why no term was guessed, when the call failed or its reply could not be used. */
   skipped?: string;
 }
@@ -575,6 +577,8 @@ export interface RoundClaimTerms {
    * it out (`failed`, where `lines` says nothing). A term with fewer `shown` than `lines` and no `notShown` was cut by a cap.
    */
   terms?: Array<{ claim: number; repo: string; term: string; lines: number; shown: number; notShown?: 'unsearchable' | 'common' | 'failed' }>;
+  /** Terms the model gave past the cap for one claim and repo, which were not searched. */
+  cut?: number;
 }
 
 export interface RoundUsesSymbol {

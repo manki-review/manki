@@ -123,7 +123,8 @@ export async function translateNames(client: LLMClient | undefined, names: strin
 /**
  * Asks the model which identifiers each repo of `checkouts` most likely uses where it does what one of `claims` says,
  * the statements of the PR text, so the search of that repo can find the code that decides a claim. The terms are keyed
- * by the claim's position in `claims`. Returns nothing when there is no repo or no claim. A call that fails, or a reply
+ * by the claim's position in `claims`, at most `MAX_TERMS_PER_CLAIM` for a claim and repo, and `cut` counts the usable
+ * terms past that. Returns nothing when there is no repo or no claim. A call that fails, or a reply
  * that cannot be used, gives no term and says why in `skipped`.
  */
 export async function guessClaimTerms(client: LLMClient | undefined, claims: string[], checkouts: RelatedCheckout[]): Promise<ClaimTerms | undefined> {
@@ -134,8 +135,13 @@ export async function guessClaimTerms(client: LLMClient | undefined, claims: str
     const message = [`## Statements\n\n${statements.join('\n\n')}`, `## Related repositories\n\n${await repoLines(checkouts)}`].join('\n\n');
     const response = await client.sendMessage(TERMS_SYSTEM_PROMPT, message, { effort: 'low', timeoutMs: TRANSLATE_TIMEOUT_MS });
     const numbers = claims.map((_, i) => String(i + 1));
-    const byNumber = parseTranslations(response.content, numbers, checkouts.map(c => c.repo), MAX_TERMS_PER_CLAIM);
-    return { terms: new Map([...byNumber].map(([repo, terms]) => [repo, new Map([...terms].map(([number, list]) => [Number(number) - 1, list]))])) };
+    const byNumber = parseTranslations(response.content, numbers, checkouts.map(c => c.repo), Infinity);
+    let cut = 0;
+    const terms = new Map([...byNumber].map(([repo, given]) => [repo, new Map([...given].map(([number, list]) => {
+      cut += Math.max(0, list.length - MAX_TERMS_PER_CLAIM);
+      return [Number(number) - 1, list.slice(0, MAX_TERMS_PER_CLAIM)];
+    }))]));
+    return { terms, ...(cut > 0 && { cut }) };
   } catch (error) {
     const reason = (error instanceof Error ? error.message : String(error)).slice(0, MAX_SKIP_REASON);
     core.warning(`Could not guess search terms for the claims of the PR text, so their checks start without lines of the related repos: ${reason}`);
