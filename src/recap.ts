@@ -247,6 +247,18 @@ function matchTitleLine(body: string): RegExpMatchArray | null {
   return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }
 
+/**
+ * Returns `body` without the line that opens a detached thread and says where its finding is. The line is taken by its
+ * place, since posting can change its text, and only below a title line at the top of the body, where no text of the
+ * finding can stand.
+ */
+function withoutDetachedNote(body: string): string {
+  const title = matchTitleLine(body);
+  if (!title || title.index !== 0 || !parseFindingData(body)?.detached) return body;
+  const rest = body.slice(title[0].length).trimStart();
+  return `${title[0]}\n${rest.slice(rest.split('\n', 1)[0].length).trimStart()}`;
+}
+
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
 export function sanitize(s: string, maxLength = 200): string {
   const cleaned = s.replace(/[\r\n]/g, ' ').replace(/`/g, '').replace(/"/g, '\\"');
@@ -896,7 +908,8 @@ interface ReviewThread extends FindingMetadata {
  * fields. Pure string scan, no markdown parser, intentionally conservative so
  * unexpected layouts skip extraction rather than emit garbage.
  */
-function parseFindingFromComment(body: string): FindingMetadata {
+function parseFindingFromComment(posted: string): FindingMetadata {
+  const body = withoutDetachedNote(posted);
   const titleMatch = matchTitleLine(body);
   if (!titleMatch || titleMatch.index === undefined) return {};
   const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);
@@ -922,9 +935,6 @@ function parseFindingFromComment(body: string): FindingMetadata {
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const data = parseFindingData(body);
-  // A detached thread opens with the line that says where its finding is. The line is taken by its place, since posting can
-  // change its text, and only below a title line at the top of the body, where no text of the finding can stand.
-  if (data?.detached && titleMatch.index === 0) descSlice = descSlice.slice(descSlice.split('\n', 1)[0].length).trimStart();
   // The other notes under the title are skipped in whatever order they come.
   const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
