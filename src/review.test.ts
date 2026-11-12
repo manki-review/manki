@@ -5386,6 +5386,7 @@ describe('runReview', () => {
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.reviewComplete).toBe(false);
     expect(result.summary).toContain('`src/blob.ts:2` (60016 characters)');
+    expect(result.summary).toMatch(/and push again\. If the push starts no review, .+ comment `@manki review`\.$/);
     expect(clients.reviewer.sendMessage).not.toHaveBeenCalled();
     expect(clients.judge.sendMessage).not.toHaveBeenCalled();
 

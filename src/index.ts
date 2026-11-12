@@ -865,7 +865,7 @@ async function loadRecap(
     return undefined;
   }
 
-  await reopenAuthorResolvedThreads(octokit, bot, owner, repo, prNumber, config, recap);
+  await reopenAuthorResolvedThreads(octokit, recap);
   await announceSecurityOverrides(octokit, securityOverridesIn(recap.previousFindings).filter(o => !o.announced));
   return recap;
 }
@@ -2062,7 +2062,7 @@ async function handleReviewStateCheck(): Promise<void> {
 
   // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
-  await reopenAuthorResolvedThreads(octokit, bot, owner, repo, prNumber, config, recap);
+  await reopenAuthorResolvedThreads(octokit, recap);
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
