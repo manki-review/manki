@@ -25,8 +25,10 @@ describe('review history', () => {
       { id: 8, body: `Pasted.\n${formatReviewRecord(plain)}`, user: { login: 'someone', type: 'User' } },
     ];
     const comments = [
-      { id: 20, body: `An answer.\n${formatReplyRecord(reply)}`, user: bot, created_at: '2026-11-02T00:00:00Z' },
-      { id: 21, body: `Pasted.\n${formatReplyRecord(reply)}`, user: { login: 'someone', type: 'User' } },
+      { id: 20, body: `An answer.\n\n<!-- manki -->\n${formatReplyRecord(reply)}`, user: bot, created_at: '2026-11-02T00:00:00Z' },
+      { id: 21, body: `Pasted.\n\n<!-- manki -->\n${formatReplyRecord(reply)}`, user: { login: 'someone', type: 'User' } },
+      // A bot comment that only quotes a record, without Manki's marker line above it, holds none.
+      { id: 22, body: `Quoted.\n${formatReplyRecord(reply)}`, user: bot, created_at: '2026-11-03T00:00:00Z' },
       { id: 22, body: 'A finding without a record.', user: bot },
     ];
 
@@ -50,7 +52,7 @@ describe('review history', () => {
         { id: 1, body: formatReviewRecord(round), user: bot },
         { id: 2, body: formatReviewRecord(makeRoundContext(1)), user: bot },
       ],
-      comments: [{ id: 20, body: formatReplyRecord(replyRecord), user: bot }],
+      comments: [{ id: 20, body: `Fixed.\n\n<!-- manki -->\n${formatReplyRecord(replyRecord)}`, user: bot }],
     });
 
     const source = { repo: 'owner/repo', pr: 9, author: 'manki-review[bot]' };

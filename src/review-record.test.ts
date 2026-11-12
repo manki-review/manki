@@ -1,8 +1,8 @@
 import { gzipSync } from 'zlib';
 
-import { extractReplyRecords, extractReviewRecords, formatReplyRecord, formatReviewRecord, hasOwnMarker, hasReviewRecord } from './review-record';
+import { extractApprovalRecords, extractReplyRecords, extractReviewRecords, formatApprovalRecord, formatReplyRecord, formatReviewRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { makeRoundContext } from './test-utils';
-import { RoundContext } from './types';
+import { ApprovalRecord, RoundContext } from './types';
 import { COMMENT_MARKER, registerSecret } from './utils';
 
 const PLAIN_PREFIX = '<!-- manki-context: ';
@@ -120,5 +120,21 @@ describe('extractReplyRecords', () => {
     expect(extractReplyRecords(body).map(r => JSON.parse(r))).toEqual([record('question')]);
     expect(extractReplyRecords('An answer without a record.')).toEqual([]);
     expect(extractReplyRecords(`Answer.\n<!-- manki-reply-record: {"kind":\n\n<!-- manki -->\n${formatReplyRecord(record('question'))}`).map(r => JSON.parse(r))).toEqual([record('question')]);
+    // A comment that holds no record of its own gives none, whatever it quotes: above Manki's marker line, or with no such line.
+    expect(extractReplyRecords(`Quoted:\n${formatReplyRecord(record('explain'))}\n\n<!-- manki -->`)).toEqual([]);
+    expect(extractReplyRecords(`Quoted:\n${formatReplyRecord(record('explain'))}`)).toEqual([]);
+    expect(extractReplyRecords(`Fixed.\n\n<!-- manki -->\n${formatReplyRecord(record('question'))}\n<!-- manki-reopened -->`).map(r => JSON.parse(r))).toEqual([record('question')]);
+  });
+});
+
+describe('extractApprovalRecords', () => {
+  it('reads the record of an approval review below the marker line, and the record of a notice, which has no such line', () => {
+    const record = (reason: string): ApprovalRecord => ({ decision: 'approved', reason, head: 'abc', threads: { total: 1, resolved: 1 }, timestamp: 't', mankiVersion: '7.0.0' });
+    const read = (body: string) => extractApprovalRecords(body).map(r => JSON.parse(r) as ApprovalRecord);
+    expect(read(`Approved.\n\n<!-- manki -->\n<!-- manki-auto-approve -->\n${formatApprovalRecord(record('own'))}`)).toEqual([record('own')]);
+    expect(read(`Quoted:\n${formatApprovalRecord(record('quoted'))}\n\n<!-- manki -->\n<!-- manki-auto-approve -->\n${formatApprovalRecord(record('own'))}`)).toEqual([record('own')]);
+    expect(read(`Quoted:\n${formatApprovalRecord(record('quoted'))}\n\n<!-- manki -->\n<!-- manki-auto-approve -->`)).toEqual([]);
+    expect(read(`**Approval held:** text\n\n${formatApprovalRecord(record('held'))}\n\n<!-- manki-approval-held:abc -->`)).toEqual([record('held')]);
+    expect(read('A comment without a record.')).toEqual([]);
   });
 });

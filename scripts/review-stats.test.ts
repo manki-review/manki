@@ -248,7 +248,7 @@ describe('review stats', () => {
     });
     const pr = prRecords('o/r', 4, {
       reviews: [review(1, round), { id: 3, body: `Approved.\n${approval('approved', 'all blocking threads are resolved')}`, user: bot }],
-      threadComments: [{ id: 60, in_reply_to_id: 59, body: `Fixed.\n${formatReplyRecord(reply as ReplyRecord)}`, user: bot }],
+      threadComments: [{ id: 60, in_reply_to_id: 59, body: `Fixed.\n\n<!-- manki -->\n${formatReplyRecord(reply as ReplyRecord)}`, user: bot }],
       issueComments: [
         { id: 70, body: `Approval held.\n\n${approval('held', 'conflict')}`, user: bot },
         { id: 71, body: `Pasted.\n${approval('approved', 'faked')}`, user: person },
