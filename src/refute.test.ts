@@ -1039,6 +1039,7 @@ describe('refuteBlockers', () => {
     mkdirSync(join(checkout, 'src'));
     writeFileSync(join(checkout, 'src', 'import.ts'), 'export function importRow(row: string) {\n  return Date.parse(row.split(\',\')[0]);\n}\n');
     writeFileSync(join(checkout, 'src', 'rows.ts'), 'row\n'.repeat(12));
+    writeFileSync(join(checkout, 'src', 'big.ts'), 'row\n'.repeat(300_000));
     writeFileSync(join(stateDir, `${encodeURIComponent('acme/reports')}.done`), checkout);
     const related = { repos: [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }], cacheDir: '/cache', stateDir };
     const rowLines = Array.from({ length: 12 }, (_, i) => `acme/reports:src/rows.ts:${i + 1}`);
@@ -1056,6 +1057,7 @@ describe('refuteBlockers', () => {
       'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
       'Line zero': answer('confirmed', 'acme/reports:src/import.ts:0'),
       'Range backwards': answer('confirmed', 'acme/reports:src/import.ts:2-1'),
+      'File too large to read': answer('confirmed', 'acme/reports:src/big.ts:1'),
       'Many lines': { outcome: 'confirmed', reason: 'r', proof: rowLines, premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine, ...rowLines.slice(0, 9)] }] },
       'Made-up lines first': answer('confirmed', ...rowLines.slice(0, 10).map(line => `${line}00`), consumerLine),
     });
@@ -1076,8 +1078,8 @@ describe('refuteBlockers', () => {
         ['Path leaves the checkout', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
       ]);
       // The stored location is the file's own path in the checkout, which is what the posted link is built from. A line that cannot exist proves nothing.
-      const odd = await refuteBlockers(client, ['Path with a dot segment', 'Line zero', 'Range backwards'].map(title => finding(title, noProof)), { workspace, diff, related });
-      expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined], ['unsettled', undefined]]);
+      const odd = await refuteBlockers(client, ['Path with a dot segment', 'Line zero', 'Range backwards', 'File too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
+      expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined], ['unsettled', undefined], ['unsettled', undefined]]);
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
       // A list keeps its first 10 related lines, and the answer keeps 10 of its own and its premises' lines together. No line past the first 10 is looked up.
       const [many, madeUp] = await refuteBlockers(client, ['Many lines', 'Made-up lines first'].map(title => finding(title, noProof)), { workspace, diff, related });

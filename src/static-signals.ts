@@ -1,6 +1,5 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { readFileSync, statSync } from 'fs';
 
 import { withDeadline } from './auth';
 import { AstGrepApi, isAstGrepFile, isRustFile, loadAstGrep, runAstGrep } from './ast-grep';
@@ -9,7 +8,7 @@ import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { LockfileDiff, lockfileSignals } from './lockfile';
-import { resolveInRoot } from './mcp-server';
+import { readLinesInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
 
@@ -538,8 +537,8 @@ function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullab
   return all.slice(0, MAX_CITATIONS).map(({ citation, repo, path, start, end }) => {
     const dir = checkouts.get(repo);
     if (!dir) return `\`${citation}\` is unchecked: ${repo} was not fetched this round`;
-    const missing = citedLineMissing(dir, path, end);
-    if (missing) return `\`${citation}\` is not in the fetched checkout: ${missing}`;
+    const missing = citedLineMissing(dir, path, Math.max(start, end));
+    if (missing) return `\`${citation}\` ${missing}`;
     const quoted = quotes.get(citation)?.code;
     if (!quoted) return `\`${citation}\` is in the fetched checkout`;
     return holdsQuotedCode(dir, path, start, end, quoted)
@@ -557,22 +556,21 @@ function quotedCode(text: string): string[] {
 
 /** Whether the lines `start` to `end` of `path` in the checkout at `dir`, or the `QUOTE_LINE_WINDOW` lines around them, hold one of `quoted`. */
 function holdsQuotedCode(dir: string, path: string, start: number, end: number, quoted: readonly string[]): boolean {
-  const lines = readFileSync(resolveInRoot(dir, path).absolute, 'utf-8').split('\n');
+  const lines = readLinesInRoot(dir, path);
+  if (!Array.isArray(lines)) return false;
   const window = withoutWhitespace(lines.slice(Math.max(0, start - 1 - QUOTE_LINE_WINDOW), end + QUOTE_LINE_WINDOW).join('\n'));
   return quoted.some(code => window.includes(code));
 }
 
-/** Returns why line `line` of `path` is not in the checkout at `dir`, or `undefined` when it is. */
+/**
+ * Returns what the tool evidence says of a citation of line `line` of `path` when the checkout at `dir` does not show
+ * that line, or `undefined` when the line is there. A file too large to read is unchecked, and never confirms a citation.
+ */
 export function citedLineMissing(dir: string, path: string, line: number): string | undefined {
-  let absolute: string;
-  try {
-    ({ absolute } = resolveInRoot(dir, path));
-  } catch {
-    return `${path} is not a file there`;
-  }
-  if (!statSync(absolute).isFile()) return `${path} is not a file there`;
-  const lineCount = readFileSync(absolute, 'utf-8').replace(/\n$/, '').split('\n').length;
-  return line > lineCount ? `${path} has ${lineCount} lines` : undefined;
+  const lines = readLinesInRoot(dir, path);
+  if (lines === 'too large') return `is unchecked: ${path} is too large to read`;
+  if (!lines) return `is not in the fetched checkout: ${path} is not a file there`;
+  return line > lines.length ? `is not in the fetched checkout: ${path} has ${lines.length} lines` : undefined;
 }
 
 /** Whether a check annotation comes from a type checker or compiler. A lint error near the line says nothing about types. */

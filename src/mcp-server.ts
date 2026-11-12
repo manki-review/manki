@@ -69,6 +69,22 @@ export function resolveInRoot(root: string, path: string): RepoPath {
 }
 
 /**
+ * Returns the lines of the file `path` under `root`. Returns `'too large'` for a file over `maxBytes`, which is not
+ * read, and `undefined` for a path that `resolveInRoot` refuses, that is no file or that cannot be read.
+ */
+export function readLinesInRoot(root: string, path: string, maxBytes = MAX_FILE_BYTES): string[] | 'too large' | undefined {
+  try {
+    const { absolute } = resolveInRoot(root, path);
+    const stat = statSync(absolute);
+    if (!stat.isFile()) return undefined;
+    if (stat.size > maxBytes) return 'too large';
+    return readFileSync(absolute, 'utf-8').replace(/\n$/, '').split('\n');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Returns the files under `dir`, as paths relative to `root`, and whether the walk stopped at `MAX_FILES`.
  * Skips `.git` and symlinks.
  */

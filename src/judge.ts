@@ -1,8 +1,7 @@
 import * as core from '@actions/core';
-import { readFileSync, statSync } from 'fs';
 
 import { extractCurrentCodeWindow } from './code-window';
-import { resolveInRoot } from './mcp-server';
+import { readLinesInRoot } from './mcp-server';
 import { LLMClient, LLMResponse, QuotaError, RefusalError, SendMessageOptions } from './providers';
 import { extractJSON } from './json';
 import {
@@ -228,8 +227,7 @@ const JUDGE_TIMEOUT_MS = 300_000;
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
 const MAX_CITED_WINDOWS = 40;
-/** A cited file larger than this is not read, and a line of a window is cut at `MAX_CITED_LINE_CHARS`. */
-const MAX_CITED_FILE_BYTES = 1024 * 1024;
+/** A line of a window is cut at this many characters. */
 const MAX_CITED_LINE_CHARS = 300;
 const MAX_DOUBT_CHARS = 300;
 const MAX_ANSWER_CHARS = 1000;
@@ -1090,14 +1088,10 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
   // `key` names the file in `contents`: its path at the PR's head, or `owner/name:path` for a file of a related repo.
   const read = (root: string, file: string, key = file): boolean => {
     if (contents.has(key)) return true;
-    try {
-      const { absolute } = resolveInRoot(root, file);
-      if (statSync(absolute).size > MAX_CITED_FILE_BYTES) return false;
-      contents.set(key, readFileSync(absolute, 'utf-8'));
-      return true;
-    } catch {
-      return false;
-    }
+    const lines = readLinesInRoot(root, file);
+    if (!Array.isArray(lines)) return false;
+    contents.set(key, lines.join('\n'));
+    return true;
   };
   const relatedNames = related?.repos.map(r => r.repo) ?? [];
   const checkouts = related ? fetchedRelatedRepos(related.stateDir) : new Map<string, string>();
