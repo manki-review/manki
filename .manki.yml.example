@@ -2,7 +2,7 @@
 # Place this file as .manki.yml in your repository root
 
 # Automatically review PRs on open/update (default: true)
-# When false, reviews only run via @manki review
+# When false, Manki reviews only on request, such as @manki review
 # auto_review: true
 
 # Auto-approve when all blocking findings are resolved (default: true)
@@ -168,8 +168,8 @@
 #       - "A slow export of the monthly report: `note`."
 #   sweep: false                     # search the diff for other instances of each kept blocker's defect class
 #   notes: 3                         # how many notes a review lists at most. 0 lists none
-#   rules: warn                      # a broken required rule of AGENTS.md, CLAUDE.md or CONTRIBUTING.md, such as
-#                                    # "every migration needs a rollback", is posted as a warning. `block` makes it
+#   rules: warn                      # a broken required rule of your instruction files, such as
+#                                    # "every migration needs a rollback", is at least a warning. `block` makes it
 #                                    # a blocker, so the PR is not approved until the rule is followed
 
 # CI results the reviewers read as evidence (default: all on), and the

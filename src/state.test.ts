@@ -617,7 +617,7 @@ describe('checkAndAutoApprove', () => {
     const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker', at: Place = {}) => thread(id, severity, 'reviewer', at);
     const NO_THREAD = 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const GONE = 'names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
-    const NEXT_ROUND = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
+    const NEXT_ROUND = 'The next review round decides. To start one, tick **Review again** in the settings block, or push a commit. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
     const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread without the `maintain` role or a higher one.';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
@@ -877,7 +877,7 @@ describe('checkAndAutoApprove', () => {
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
       ['a review that holds its approval for a person', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
         'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.'],
-      ['a conflict with the base', { mergeable: false }, '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result.'],
+      ['a conflict with the base', { mergeable: false }, '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.'],
     ])('tells a person who asks why there is no approval: %s', async (_label, setup, reply) => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
       jest.spyOn(core, 'warning').mockImplementation(() => {});
@@ -918,12 +918,12 @@ describe('checkAndAutoApprove', () => {
     const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true })];
     const createReviewMock = jest.fn().mockResolvedValue({});
     const createCommentMock = jest.fn().mockResolvedValue({});
-    const notice = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result.\n\n<!-- manki-approval-held:sha-456 -->';
+    const notice = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.\n\n<!-- manki-approval-held:sha-456 -->';
 
     const first = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
     expect(await checkAndAutoApprove(first, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
     const [posted] = createCommentMock.mock.calls.map(([c]) => c.body as string);
-    expect(posted).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `main`\. Rebase it, and Manki reviews the result\.\n\n<!-- manki-approval-record: .+ -->\n\n<!-- manki-approval-held:sha-456 -->$/);
+    expect(posted).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `main`\. Rebase it, and Manki reviews the result\. If the push starts no review, as while automatic review is off or paused, comment `@manki review`\.\n\n<!-- manki-approval-record: .+ -->\n\n<!-- manki-approval-held:sha-456 -->$/);
     expect(extractApprovalRecords(posted).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'conflict', head: 'sha-456', threads: { total: 1, resolved: 1 } })]);
 
     const again = makeMockOctokit({
@@ -1500,7 +1500,7 @@ describe('checkAndAutoApprove', () => {
         .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
       jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
       expect(await asked(staleHeadOctokit(notice(), [])))
-        .toBe('Manki has not reviewed `head-sh`. Automatic review is paused in the settings block. Untick **Pause automatic reviews** there, or comment `@manki review`, to review it.');
+        .toBe('Manki has not reviewed `head-sh`. Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.');
       expect(await asked(staleHeadOctokit(notice(), [])))
         .toBe('Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
     });

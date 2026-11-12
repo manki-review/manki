@@ -1213,7 +1213,7 @@ export interface ReviewConfig {
   convergence?: {
     /**
      * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
-     * automatic review is paused until `@manki review`. `0` disables the cap.
+     * automatic review is paused until a review is started by hand. `0` disables the cap.
      */
     max_auto_rounds?: number;
     /**
