@@ -521,8 +521,8 @@ export function leadingRelatedCitation(entry: string, names: readonly string[]):
 /**
  * Returns, for each line of a configured related repo that the finding's title or description cites, whether it is in
  * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence. An evidence line
- * that starts with a citation and quotes code in backticks is compared with the fetched lines: the note says whether
- * they hold every quoted part and names each part they do not hold. A citation with such a part is no such evidence.
+ * that starts with a citation and quotes code in backticks is compared with the fetched lines. The note says "holds
+ * the quoted code" only when they hold every quoted part. Otherwise it names each part they hold and each they do not.
  */
 function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullable<ClaimSources['related']>): string[] {
   const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
@@ -543,9 +543,12 @@ function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullab
     const quoted = quotes.get(citation)?.code;
     if (!quoted) return `\`${citation}\` is in the fetched checkout`;
     const absent = missingQuotes(dir, path, start, end, quoted);
-    return absent.length === 0
-      ? `\`${citation}\` is in the fetched checkout and holds the quoted code`
-      : `\`${citation}\` does not hold the quoted code: ${absent.map(part => `\`${part}\``).join(', ')} ${absent.length === 1 ? 'is' : 'are'} not within ${QUOTE_LINE_WINDOW} lines of the cited line`;
+    if (absent.length === 0) return `\`${citation}\` is in the fetched checkout and holds the quoted code`;
+    const held = quoted.filter(part => !absent.includes(part));
+    const parts = (list: readonly string[]): string => `${list.map(part => `\`${part}\``).join(', ')} ${list.length === 1 ? 'is' : 'are'}`;
+    return held.length === 0
+      ? `\`${citation}\` does not hold the quoted code: ${parts(absent)} not within ${QUOTE_LINE_WINDOW} lines of the cited line`
+      : `\`${citation}\` holds only part of the quoted code: ${parts(held)} within ${QUOTE_LINE_WINDOW} lines of the cited line, ${parts(absent)} not`;
   });
 }
 

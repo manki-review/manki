@@ -917,9 +917,14 @@ describe('checkFindingClaims', () => {
         quoting('`o/r:src/lib.rs:2`, the consumer calls `pub fn b()` there'),
         // Whitespace does not count, and a quote cut by an ellipsis is compared part by part.
         quoting('o/r:src/lib.rs:2 defines `pub  fn b( ) ... fn a() {}`'),
-        // Every quoted part must be there, also one from another evidence line for the same citation. The note names each missing part.
+        // Only a citation with every quoted part there holds the quoted code. One with some of them names the parts found and the parts missing.
         quoting('o/r:src/lib.rs:2 defines `pub  fn b( ) ... gone()`'),
+        // The parts of several evidence lines for one citation count together.
         quoting('o/r:src/lib.rs:2 defines `pub fn b()`', '`o/r:src/lib.rs:2` then calls `removed_function()` and `other_gone( x )`'),
+        // A line that quotes the related repo's code beside the PR's own names the PR's code as missing, since that file does not hold it.
+        quoting('o/r:src/lib.rs:2 takes no argument in `pub fn b() {}`, and the change calls `client.b(retries)`'),
+        // A citation with none of the quoted parts does not hold the quoted code.
+        quoting('o/r:src/lib.rs:2 defines `removed_function() ... other_gone( x )`'),
         // The code may sit a few lines from the cited one.
         quoting('o/r:src/lib.rs:1 has `pub fn b() {}`'),
         quoting('`o/r:src/lib.rs:2`, where it reads `review.body.includes(MARKER)`'),
@@ -932,7 +937,9 @@ describe('checkFindingClaims', () => {
       ]).toEqual([
         '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
-        '`o/r:src/lib.rs:2` does not hold the quoted code: `gone()` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub  fn b( )` is within 3 lines of the cited line, `gone()` is not.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b()` is within 3 lines of the cited line, `removed_function()`, `other_gone( x )` are not.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b() {}` is within 3 lines of the cited line, `client.b(retries)` is not.',
         '`o/r:src/lib.rs:2` does not hold the quoted code: `removed_function()`, `other_gone( x )` are not within 3 lines of the cited line.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` does not hold the quoted code: `review.body.includes(MARKER)` is not within 3 lines of the cited line.',
