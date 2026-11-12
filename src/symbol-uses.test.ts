@@ -269,6 +269,32 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('core/src/cart.rs:1: struct Cart { products, wishlist }');
     expect(section).not.toContain('Pricing');
     expect(section).not.toContain('Inventory');
+
+    // A change past a cap of the search is not searched whole. The section says how much of it was at the place the cap
+    // cut, so no reader takes a list for all there is. A change within every cap keeps the wording for a whole search.
+    const whole = 'Manki searched the PR\'s head commit for each symbol the diff changes and lists where it is used';
+    const typesHeading = (section: string) => section.match(/### Types Behind the Fields the Diff Uses\n\n(.*)\n/)?.[1];
+    const everyType = 'Each type declaring a field the changed lines read or change, with all its fields.';
+    const info = () => jest.mocked(core.info).mock.calls.map(([message]) => message).filter(message => message.includes('past a limit'));
+    expect([section.includes(whole), typesHeading(section), info()]).toEqual([true, everyType, []]);
+    const handlers = (value: number) => Array.from({ length: 90 }, (_, i) => `export function handler${i}() { return ${value}; }\n`).join('');
+    const symbols = await usesFor({ 'src/handlers.ts': handlers(1), 'src/call.ts': 'handler0();\n' }, { 'src/handlers.ts': handlers(2) });
+    expect(symbols.section).toContain('Manki searched the PR\'s head commit for 80 of the 90 symbols the diff changes and lists where each is used');
+    expect(info()).toEqual(['Uses outside the diff: the change is past a limit of the search, which took 80 of 90 changed symbols']);
+    const kinds = Array.from({ length: 8 }, (_, i) => `export interface Kind${i} {\n${[0, 1, 2].map(j => `  weight${i}x${j}: number;\n`).join('')}}\n`).join('');
+    const total = (body: string) => `export function total(k: Kinds): number {\n  return ${body};\n}\n`;
+    const sum = (fields: number) => total(Array.from({ length: fields }, (_, n) => `k.weight${Math.floor(n / 3)}x${n % 3}`).join(' + '));
+    const reads = await usesFor({ 'src/kinds.ts': kinds, 'src/total.ts': total('0') }, { 'src/total.ts': sum(24) });
+    expect(reads.section).toContain(whole);
+    expect(typesHeading(reads.section)).toBe('6 of the 7 types found declaring a field the changed lines read or change, each with all its fields. The types were looked up for 20 of the 24 fields the changed lines read.');
+    expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 20 of 24 read fields, 6 of 7 types');
+    const fewer = await usesFor({ 'src/kinds.ts': kinds, 'src/total.ts': total('0') }, { 'src/total.ts': sum(20) });
+    expect(typesHeading(fewer.section)).toBe('6 of the 7 types found declaring a field the changed lines read or change, each with all its fields.');
+    const store = `pub struct Store {\n${Array.from({ length: 9 }, (_, i) => `    pub jobs${i}: HashMap<u8, u8>,\n`).join('')}}\n`;
+    const run = (body: string) => `fn run(s: &Store, k: u8) {\n${body}}\n`;
+    const lookedUp = await usesFor({ 'src/store.rs': store, 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) });
+    expect([lookedUp.section.includes(whole), typesHeading(lookedUp.section)]).toEqual([true, everyType]);
+    expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields');
   });
 
   it('lists the uses of changed TypeScript fields, functions and interfaces, test files after code', async () => {
