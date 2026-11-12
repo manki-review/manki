@@ -148,14 +148,17 @@ async function postWithRetry(url: string, body: unknown, endpoint: string): Prom
   } catch (error) {
     failure = String(error);
   }
-  core.info(`The token service failed (${failure}), trying again`);
+  core.info(`The token service failed on \`${endpoint}\` (${failure}), trying again`);
   await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
   return postToTokenService(url, body, endpoint);
 }
 
-/** Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. */
-export function callTokenService(path: string, body: unknown): Promise<TokenServiceResponse | null> {
-  return postToTokenService(new URL(path, tokenServiceUrl()).href, body, path);
+/**
+ * Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. With `retry` a
+ * failed call is tried once more, as `postWithRetry` does.
+ */
+export function callTokenService(path: string, body: unknown, retry = false): Promise<TokenServiceResponse | null> {
+  return (retry ? postWithRetry : postToTokenService)(new URL(path, tokenServiceUrl()).href, body, path);
 }
 
 /**
@@ -192,12 +195,12 @@ function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolea
 }
 
 /**
- * Reads the coordinator's state of PR `prNumber` from the token service, with the modes of run `runId`.
- * Returns `null` with a warning when the run has no OIDC token or the service gives no state.
+ * Reads the coordinator's state of PR `prNumber` from the token service, with the modes of run `runId`. A failed read
+ * is tried once more. Returns `null` with a warning when the run has no OIDC token or the service gives no state.
  */
 export async function fetchPrState(owner: string, repo: string, prNumber: number, runId: number): Promise<PrState | null> {
   try {
-    const response = await callTokenService('state', { owner, repo, pr: prNumber });
+    const response = await callTokenService('state', { owner, repo, pr: prNumber }, true);
     if (!response?.ok) {
       core.warning(`The token service gave no PR state for #${prNumber} (${response ? response.status : 'no OIDC token'}), reviewing as not paused`);
       return null;
@@ -229,17 +232,21 @@ export async function changeThreadThroughService(octokit: Octokit, threadId: str
   if (!serviceClients.has(octokit)) return false;
   const { owner, repo } = github.context.repo;
   const body = { owner, repo, thread_id: threadId, resolved, ...(reason !== undefined && { reason }) };
-  const response = await callTokenService('resolve', body);
+  // Resolving or reopening twice leaves the thread as one call does, so a failed call is tried once more.
+  const response = await callTokenService('resolve', body, true);
   if (!response?.ok) {
     throw new Error(`The token service did not ${resolved ? 'resolve' : 'reopen'} the thread (${response ? response.status : 'no OIDC token'})`);
   }
   return true;
 }
 
-/** Sends what this run posted on PR `prNumber` to the PR coordinator. A failure only warns, since the review on GitHub stands. */
+/**
+ * Sends what this run posted on PR `prNumber` to the PR coordinator. The coordinator stores a report it already holds
+ * as no change, so a failed call is tried once more. A failure only warns, since the review on GitHub stands.
+ */
 export async function reportPrState(owner: string, repo: string, prNumber: number, report: StateReport): Promise<void> {
   try {
-    const response = await callTokenService('state/report', { owner, repo, pr: prNumber, ...report });
+    const response = await callTokenService('state/report', { owner, repo, pr: prNumber, ...report }, true);
     if (!response?.ok) {
       core.warning(`The token service did not take the PR state of #${prNumber} (${response ? response.status : 'no OIDC token'})`);
     }

@@ -182,8 +182,9 @@ function serviceFile(file: ServiceFile): StoredFile {
 
 /** The memory the token service keeps for `owner/repo` in the central memory repository, for the run on `pr`. */
 function serviceMemoryStore(owner: string, repo: string, pr: number): MemoryStore {
+  // Only the read is tried again after a failure. A write or an append that reached the repository would be applied twice.
   const call = async (endpoint: string, body: object) => {
-    const response = await callTokenService(`memory/${endpoint}`, { owner, repo, pr, ...body });
+    const response = await callTokenService(`memory/${endpoint}`, { owner, repo, pr, ...body }, endpoint === 'read');
     if (!response) throw new Error('the run has no OIDC token for the token service');
     if (response.status === 403) throw new MemoryRefusedError(endpoint);
     return response;

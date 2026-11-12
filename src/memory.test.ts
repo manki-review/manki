@@ -23,6 +23,7 @@ import {
   Learning,
   RepoMemory,
 } from './memory';
+import { pastRetryWait } from './test-utils';
 import { Finding, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { registerSecret } from './utils';
 
@@ -738,7 +739,7 @@ async function centralStore(memoryRepoToken = ''): Promise<MemoryStore> {
  * A fake token service that holds the repo's memory `files`, by path in the repo's folder, and answers `/memory/*`.
  * `beforeWrite` runs before each write checks its sha, so it can change a file as another run would.
  */
-function mockMemoryService(files: Record<string, string>, { beforeWrite, status }: { beforeWrite?: (stored: Map<string, { text: string; sha: string }>) => void; status?: number } = {}) {
+function mockMemoryService(files: Record<string, string>, { beforeWrite, status }: { beforeWrite?: (stored: Map<string, { text: string; sha: string }>) => void; status?: number | (() => number | undefined) } = {}) {
   let version = 0;
   const stored = new Map(Object.entries(files).map(([file, text]) => [file, { text, sha: `sha-${version}` }]));
   const requests: { endpoint: string; body: Record<string, unknown>; auth: string | null }[] = [];
@@ -748,7 +749,8 @@ function mockMemoryService(files: Record<string, string>, { beforeWrite, status 
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     requests.push({ endpoint, body, auth: new Headers(init?.headers).get('Authorization') });
     const reply = (code: number, data: unknown) => new Response(JSON.stringify(data), { status: code });
-    if (status) return reply(status, { error: 'refused' });
+    const refusal = typeof status === 'function' ? status() : status;
+    if (refusal) return reply(refusal, { error: 'refused' });
     const file = String(body.file);
     if (endpoint === '/memory/read') {
       const pick = (prefix: string, names: string[]) => Object.fromEntries(names.map(name => [name, stored.get(prefix + name) ?? null]));
@@ -831,6 +833,25 @@ describe('central memory through the token service', () => {
       body: { owner: 'owner', repo: 'test-repo', pr: 7, file: 'metrics/fix-rate.jsonl', lines: ['{"pr":7,"note":"[REDACTED]"}'], message: 'Record fix rate' },
       auth: 'Bearer oidc-token',
     }]);
+  });
+
+  it('reads once more after a 5xx, and sends a failed write or append only once', async () => {
+    let failures = 1;
+    const service = mockMemoryService({ 'suppressions.yml': stringifyYaml([makeSuppression()]) }, { status: () => (failures-- > 0 ? 502 : undefined) });
+    const store = await centralStore();
+
+    expect((await pastRetryWait(() => loadMemory(store))).suppressions).toHaveLength(1);
+    expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read', '/memory/read']);
+
+    failures = 0;
+    service.requests.length = 0;
+    const failingWrites = jest.mocked(global.fetch).getMockImplementation()!;
+    jest.mocked(global.fetch).mockImplementation(async (url, init) => (
+      String(url).endsWith('/memory/read') ? failingWrites(url, init) : new Response('Bad Gateway', { status: 502 })
+    ));
+    await expect(writeSuppression(store, makeSuppression({ pattern: 'new pattern' }))).rejects.toThrow('answered 502 to `/memory/write`');
+    await expect(appendMemoryLine(store, 'metrics/fix-rate.jsonl', { pr: 7 }, 'Record fix rate')).rejects.toThrow('answered 502 to `/memory/append`');
+    expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read']);
   });
 
   it('refuses to overwrite a file the token service returned without its text', async () => {
