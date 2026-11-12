@@ -10,7 +10,7 @@ import { ruleGrade } from './judge';
 import { extractJSON } from './json';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
-import { LLMClient } from './providers';
+import { LLMClient, LLMResponse } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
@@ -151,6 +151,12 @@ function citesFindingCode(file: string, proof: readonly string[], diff?: ParsedD
     const diffFile = diff?.files.find(f => f.path === cited);
     return !!diffFile && isLineInDiff(diffFile, ...locationLines(location));
   });
+}
+
+/** Returns `check` with whether its call used every tool step, when it ended unsettled. Only a reply that lists its steps tells. */
+function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutation {
+  if (outcomeOf(check) !== 'unsettled') return check;
+  return { ...check, stepsUsedUp: !toolSteps ? 'unknown' : toolSteps.length >= REFUTE_STEPS ? 'yes' : 'no' };
 }
 
 /**
@@ -598,7 +604,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
         }),
-        reply => ({ ...parseRefutation(reply.content, workspace, finding, diff, related), ...(reply.model && { model: reply.model }) }),
+        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related), ...(reply.model && { model: reply.model }) }, reply),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);

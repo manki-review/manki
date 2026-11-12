@@ -17,8 +17,11 @@ const finding = (title: string, overrides: Partial<Finding> = {}): Finding => ({
   evidence: { checks: [], proof: ['src/math.ts:2'] }, ...overrides,
 });
 
-/** A client with tools that answers each finding, picked by its title in the user message, with a canned reply. */
-function fakeClient(replies: Record<string, unknown>, model?: string): LLMClient & { calls: [string, SendMessageOptions | undefined, string][]; messages: [string, string][] } {
+/**
+ * A client with tools that answers each finding, picked by its title in the user message, with a canned reply. It lists
+ * the tool steps of a reply only for a title in `steps`, as many as given there.
+ */
+function fakeClient(replies: Record<string, unknown>, model?: string, steps: Record<string, number> = {}): LLMClient & { calls: [string, SendMessageOptions | undefined, string][]; messages: [string, string][] } {
   const calls: [string, SendMessageOptions | undefined, string][] = [];
   const messages: [string, string][] = [];
   return {
@@ -31,7 +34,8 @@ function fakeClient(replies: Record<string, unknown>, model?: string): LLMClient
       messages.push([system, user]);
       const reply = replies[title];
       if (reply instanceof Error) throw reply;
-      return { content: typeof reply === 'string' ? reply : JSON.stringify(reply), ...(model && { model }) };
+      const toolSteps = title in steps ? Array.from({ length: steps[title] }, () => ({ tool: 'Read' })) : undefined;
+      return { content: typeof reply === 'string' ? reply : JSON.stringify(reply), ...(model && { model }), ...(toolSteps && { toolSteps }) };
     },
   };
 }
@@ -79,7 +83,7 @@ describe('refuteBlockers', () => {
       'Lead unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
       'Blocking lead unsettled': { outcome: 'unsettled', reason: 'Ran out of tool calls.' },
       'Failing': new Error('CLI crashed'),
-    });
+    }, undefined, { 'Confirmed': 15, 'Confirmed without proof': 0, 'Unsettled': 14, 'Lead unsettled': 15, 'Blocking lead unsettled': 16 });
     const findings = [
       finding('Disproved'),
       finding('Confirmed'),
@@ -140,6 +144,11 @@ describe('refuteBlockers', () => {
       // The judge or a suppression dropped it, so it is never checked or brought back.
       ['Dropped lead', 'ignore', undefined],
     ]);
+    // A check that ended unsettled records whether its call used all 15 tool steps. A call the budget refused counts as a
+    // step too. A client that lists no steps leaves it unknown, and a check that settled records nothing.
+    const stepsUsedUp = (title: string) => result.find(f => f.title === title)?.refutation?.stepsUsedUp;
+    expect(['Confirmed without proof', 'Unsettled', 'Lead unsettled', 'Blocking lead unsettled', 'Disproved without proof', 'Confirmed', 'Disproved'].map(stepsUsedUp))
+      .toEqual(['no', 'no', 'yes', 'yes', 'unknown', undefined, undefined]);
     expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.');
     // A cut reason or rule ends in an ellipsis, so the next text never reads as its continuation.
     expect(result[3].judgeNotes).toBe(`Refutation unsettled: ${`The callers are generated${' and long'.repeat(60)}`.slice(0, 500)}... Rule checked: ${'r'.repeat(500)}...`);

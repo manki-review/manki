@@ -19,7 +19,10 @@ export interface LLMResponse {
   model?: string;
   /** Whether the provider reports that the output stopped at its token limit. Unset when the provider does not expose a stop reason. */
   truncated?: boolean;
-  /** The tools the model called while it answered, in order. Unset when it called none. */
+  /**
+   * The tools the model called while it answered, in order. Empty when the call had repository tools and the model
+   * called none. Unset when the call had no tools, or when the client does not report the steps of a call.
+   */
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
   relatedReads?: Record<string, number>;

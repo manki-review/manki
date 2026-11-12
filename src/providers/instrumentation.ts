@@ -100,15 +100,16 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
       try {
         const response = await client.sendMessage(...args);
         const usage = response.usage ?? ZERO_USAGE;
+        const toolSteps = response.toolSteps?.length ? response.toolSteps : undefined;
         calls.push({
           ...base,
           ...(response.model && { model: response.model }),
-          ...(response.toolSteps && { toolSteps: response.toolSteps }),
+          ...(toolSteps && { toolSteps }),
           ...(response.relatedReads && { relatedReads: response.relatedReads }),
           ...(response.filesRead && { filesRead: response.filesRead }),
           ...(response.limits && { limits: response.limits }),
           // Only a client that reports its tool steps shows whether the model was told to wrap up.
-          ...(stepBudget !== undefined && response.toolSteps && response.toolSteps.length >= stepBudget - WRAP_UP_STEPS && { wrapUpNoted: true as const }),
+          ...(stepBudget !== undefined && toolSteps && toolSteps.length >= stepBudget - WRAP_UP_STEPS && { wrapUpNoted: true as const }),
           durationMs: response.latencyMs ?? Date.now() - start,
           ...usage,
           // Some paths report zeros when the provider sent no counts, and no real call uses no tokens.
