@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -363,7 +363,7 @@ describe('formatFindingComment', () => {
 
     // A check that confirmed from a related repo lists each of its lines as a link at the fetched commit, and never the line's text.
     const commit = 'c0ffee'.repeat(7).slice(0, 40);
-    const fetched = { ...links, related: new Map([['acme/reports', commit], ['acme/billing', commit]]) };
+    const fetched = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched', commit }, { repo: 'acme/billing', status: 'fetched', commit }, { repo: 'acme/unused', status: 'unused' }]) };
     const relatedLink = (location: string, path: string, anchor: string) => `[\`${location}\`](https://github.com/acme/reports/blob/${commit}/${path}#${anchor})`;
     const confirmedBy = (relatedProof: string[], proof: string[] = []): Finding => ({
       ...baseFinding, evidence: { checks: [], proof, relatedProof }, checkStatus: 'confirmed',
@@ -395,8 +395,16 @@ describe('formatFindingComment', () => {
     const raised = formatFindingComment({ ...premisesOnly, evidence: proving.evidence }, fetched);
     expect(raised).toContain(`<summary>How this was checked: 1 place read, not confirmed</summary>\n\n**Checked in the code**\nIn a related repository: ${seen}\n\n**Not settled**\nManki tried to disprove this by reading the code and could not decide. The consumer parses the column as a date.\n\n</details>`);
     // A fetched repo with no commit recorded shows the location alone.
-    const noCommit = { ...links, related: new Map([['acme/reports', undefined]]) };
+    const noCommit = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched' }]) };
     expect(formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2', ...hidden]), noCommit)).toContain('**Checked in the code**\nIn a related repository: `acme/reports:src/import.ts:2`\n\n**Double-checked**');
+    // A blocker listed again from an earlier record shows its related lines as locations, also alone and for a repo this round did
+    // not fetch. No link is built, since the lines were read at the commit of that earlier round.
+    const earlier = ['acme/reports:src/import.ts:2', 'acme/unused:lib/rows.py:9', ...hidden];
+    const relisted = formatFindingComment({ ...baseFinding, relisted: true, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched);
+    expect(relisted).toContain('In a related repository, as an earlier round read it: `acme/reports:src/import.ts:2`, `acme/unused:lib/rows.py:9`\n');
+    expect(relisted).not.toContain('https://github.com/acme');
+    expect(relisted).not.toContain('Not checked against the code');
+    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched)).not.toContain('acme/unused');
     const notSettled = formatFindingComment({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The parser may be replaced.', proof: ['src/main.ts:40'], relatedProof: ['acme/reports:src/import.ts:2', ...hidden], files: ['src/main.ts'], codeDigest: 'abc' } }, fetched);
     expect(notSettled).toContain(`The parser may be replaced. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}.`);
     expect(notSettled).not.toContain('In a related repository');

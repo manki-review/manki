@@ -2677,28 +2677,34 @@ interface CodeRange { file: string; start: number; end: number }
  */
 interface Check { text: string; at?: CodeRange; also?: CodeRange[] }
 
-/** Each related repo the round fetched, by its configured `owner/name`, with the commit it fetched when the round recorded a valid one. */
-type RelatedCommits = ReadonlyMap<string, string | undefined>;
+/** Each configured related repo of the round, by its `owner/name`: whether the round fetched it, and the commit it fetched when the round recorded a valid one. */
+type RelatedCommits = ReadonlyMap<string, { fetched: boolean; commit?: string }>;
 
-/** Returns each related repo of `repos` that the round fetched, with its commit. */
+/** Returns each related repo of `repos` with whether the round fetched it, and its commit. */
 export function relatedCommits(repos: readonly RoundRelatedRepo[] = []): RelatedCommits {
-  return new Map(repos.flatMap(({ repo, status, commit }) => (status === 'fetched' ? [[repo, commit && /^[0-9a-f]{40,64}$/.test(commit) ? commit : undefined] as const] : [])));
+  return new Map(repos.map(({ repo, status, commit }) => {
+    const fetched = status === 'fetched';
+    return [repo, { fetched, ...(fetched && commit && /^[0-9a-f]{40,64}$/.test(commit) && { commit }) }];
+  }));
 }
 
 /**
  * Returns each line of a related repo in `proof`, the `relatedProof` of a check or of a finding's evidence, as a link to that line at
  * the commit the round fetched, or as its location alone when `related` has no commit for the repo. A line of a repo
- * that `related` does not hold is left out, and so is one whose path has a `.` or `..` segment, a line 0 or a range that
- * runs backwards. Only the location is shown, never the line's text.
+ * the round did not fetch is left out, and so is one whose path has a `.` or `..` segment, a line 0 or a range that
+ * runs backwards. Lines an `earlier` round checked were read at a commit this round does not know. So each shows as its
+ * location alone, never as a link, for any repo `related` holds. Only the location is shown, never the line's text.
  */
-function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits): string[] {
+function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits, earlier = false): string[] {
   return proof.flatMap((location) => {
     const repo = [...related.keys()].find(name => location.startsWith(`${name}:`));
     const [, path, start, end] = (repo && /^([^:]+):(\d+)(?:-(\d+))?$/.exec(location.slice(repo.length + 1))) || [];
     const [first, last] = [Number(start), Number(end ?? start)];
     if (!repo || !path || hasDotSegment(path) || !holdsLines(Infinity, first, last)) return [];
+    const { fetched, commit } = related.get(repo)!;
+    if (earlier) return [inlineCode(location)];
+    if (!fetched) return [];
     const [owner, name] = repo.split('/');
-    const commit = related.get(repo);
     return [linked(inlineCode(location), commit && buildLineLink(owner, name, commit, RELATED_REPO_HOST)(path, first, last))];
   });
 }
@@ -2906,11 +2912,12 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const known = [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
   const checks = findingChecks(finding, known);
   const refutations = refutationParts(finding, links, known);
-  // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too.
-  const relatedLines = relatedLineLinks(finding.evidence?.relatedProof, related);
+  // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too. The
+  // evidence of a blocker listed again is an earlier round's, and so is the commit its related lines were read at.
+  const relatedLines = relatedLineLinks(finding.evidence?.relatedProof, related, finding.relisted);
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
-  if (checks.length === 0 && refutations.length === 0 && !rule) {
+  if (checks.length === 0 && refutations.length === 0 && !rule && relatedLines.length === 0) {
     return { ...(finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
@@ -2937,7 +2944,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
       return `${said.length === 1 ? said[0].text : `${said.map(c => `- ${c.text}`).join('\n')}\n`}\n${link}`;
     }),
     ...(listed.length ? [listed.map(listItem).join('\n')] : []),
-    ...(relatedLines.length ? [`In a related repository: ${relatedLines.join(', ')}`] : []),
+    ...(relatedLines.length ? [`In a related repository${finding.relisted ? ', as an earlier round read it' : ''}: ${relatedLines.join(', ')}`] : []),
   ];
   const lone = lines.length === 1 && shown.length === 0 && !lines[0].includes('\n');
   const checked: FoldPart[] = lines.length === 0 ? [] : [{
