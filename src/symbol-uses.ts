@@ -804,9 +804,11 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const siblings = { fields, implementations };
   const perField = referenced.map(([name, { files: readers }]) => structsDeclaringField(parser, name, hits, readers, packages));
   // Each field's likeliest type first, then the second likeliest, so the most read field cannot fill the list alone.
-  const interleaved = Array.from({ length: MAX_STRUCTS_PER_FIELD }, (_, i) => perField.flatMap(list => list[i] ?? [])).flat();
-  const declaring = dedupeListings([...interleaved, ...changedFieldStructs]);
-  const structs = declaring.slice(0, MAX_STRUCTS);
+  const interleaved = Array.from({ length: MAX_STRUCTS_PER_FIELD }, (_, i) => perField.flatMap(list => list?.[i] ?? [])).flat();
+  const structs = dedupeListings([...interleaved, ...changedFieldStructs]).slice(0, MAX_STRUCTS);
+  // Every type found, so the section can say how many of them the two limits left out.
+  const declaring = dedupeListings([...perField.flatMap(list => list ?? []), ...changedFieldStructs]);
+  const ambiguous = perField.filter(list => !list).length;
   const types = structs.map(s => `${s.file}:${s.line}: ${s.text}`);
   // Placing a use on its type parses the files that hold it. That runs last, so a file it leaves unparsed hides no type,
   // field or lookup and is not counted.
@@ -845,8 +847,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   if (types.length > 0) {
     // The heading says what the list holds, so a list a cap cut never reads as every type.
     const fieldsCut = readFields.length > referenced.length;
-    const shown = declaring.length > structs.length ? `${structs.length} of the ${declaring.length} types found declaring` : fieldsCut ? 'Types declaring' : 'Each type declaring';
-    const fieldsNote = fieldsCut ? ` The types were looked up for ${referenced.length} of the ${readFields.length} fields the changed lines read.` : '';
+    const shown = declaring.length > structs.length ? `${structs.length} of the ${declaring.length} types found declaring` : fieldsCut || ambiguous > 0 ? 'Types declaring' : 'Each type declaring';
+    const fieldsNote = (fieldsCut ? ` The types were looked up for ${referenced.length} of the ${readFields.length} fields the changed lines read.` : '')
+      + (ambiguous > 0 ? ` No type is listed for ${ambiguous} read ${ambiguous === 1 ? 'field' : 'fields'} that more than ${AMBIGUOUS_FIELD_TYPES} types declare.` : '');
     sections.push(`### Types Behind the Fields the Diff Uses\n\n${shown} a field the changed lines read or change, ${shown.startsWith('Each') ? '' : 'each '}with all its fields.${fieldsNote}\n\n${fenceText(types.join('\n'))}`);
   }
   if (unparsed > 0) {
@@ -1871,9 +1874,9 @@ function compareRanks(a: number[], b: number[]): number {
 /**
  * Returns the struct-like types that declare field `name`, from the lines `hits` holds, those in the package of a file in
  * `readers` first, then those in a package a reader depends on. A file no reader can reach is never parsed. Files are
- * parsed nearest first and only until more than `AMBIGUOUS_FIELD_TYPES` types declare the field, which returns none.
+ * parsed nearest first and only until more than `AMBIGUOUS_FIELD_TYPES` types declare the field, which returns `undefined`.
  */
-function structsDeclaringField(parser: Parser, name: string, hits: Hit[], readers: Set<string>, packages: Packages): StructListing[] {
+function structsDeclaringField(parser: Parser, name: string, hits: Hit[], readers: Set<string>, packages: Packages): StructListing[] | undefined {
   const patterns = new Map<Family, RegExp | undefined>();
   const patternFor = (family: Family) => patterns.has(family) ? patterns.get(family) : patterns.set(family, RULES[family].fieldLine?.(name)).get(family);
   const readerPackages = [...new Set([...readers].map(file => packages.of(file)))];
@@ -1896,9 +1899,9 @@ function structsDeclaringField(parser: Parser, name: string, hits: Hit[], reader
     if (!listing || seen.has(`${listing.file}:${listing.line}`)) continue;
     seen.add(`${listing.file}:${listing.line}`);
     found.push(listing);
-    if (found.length > AMBIGUOUS_FIELD_TYPES) return [];
+    if (found.length > AMBIGUOUS_FIELD_TYPES) return undefined;
   }
-  return found.slice(0, MAX_STRUCTS_PER_FIELD);
+  return found;
 }
 
 const shortLine = (text: string): string => text.length > MAX_EXCERPT_LINE_CHARS ? `${text.slice(0, MAX_EXCERPT_LINE_CHARS)} ...` : text;
@@ -1978,7 +1981,7 @@ function siblingFields(
   const ranked = fields.flatMap((field, order) => {
     const all = lookups.filter(l => l.field === field);
     const uses = all.slice(0, MAX_QUESTION_LOOKUPS);
-    const struct = structsDeclaringField(parser, field, hits, new Set(all.map(u => u.file)), packages)[0];
+    const struct = (structsDeclaringField(parser, field, hits, new Set(all.map(u => u.file)), packages) ?? [])[0];
     const parsed = struct && parser.parse(struct.file);
     const decl = parsed?.declarations.find(d => d.key === struct.key);
     if (!parsed || !decl) return [];

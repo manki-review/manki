@@ -325,14 +325,25 @@ describe('listUsesOutsideDiff', () => {
     expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 20 of 24 read fields, 6 of 7 types');
     const fewer = await usesFor({ 'src/kinds.ts': kinds, 'src/total.ts': total('0') }, { 'src/total.ts': sum(20) });
     expect(typesHeading(fewer.section)).toBe('6 of the 7 types found declaring a field the changed lines read or change, each with all its fields.');
+    // Only the 3 likeliest types of one field are listed, and none for a field that more than 6 types declare, so the
+    // heading counts every type found and says for how many fields it lists none.
+    const shapes = (n: number) => Array.from({ length: n }, (_, i) => `export interface Shape${i} {\n  corner_count: number;\n}\n`).join('');
+    const area = (body: string) => `export function area(s: Shape0, k: Kind0): number {\n  return ${body};\n}\n`;
+    const likeliest = await usesFor({ 'src/shapes.ts': shapes(4), 'src/area.ts': area('0') }, { 'src/area.ts': area('s.corner_count') });
+    expect(typesHeading(likeliest.section)).toBe('3 of the 4 types found declaring a field the changed lines read or change, each with all its fields.');
+    expect(likeliest.record?.types).toEqual([0, 1, 2].map(i => `src/shapes.ts:${3 * i + 1}: interface Shape${i} { corner_count }`));
+    const tooMany = await usesFor({ 'src/shapes.ts': shapes(7), 'src/kinds.ts': kinds, 'src/area.ts': area('0') }, { 'src/area.ts': area('s.corner_count + k.weight0x0') });
+    expect(typesHeading(tooMany.section)).toBe('Types declaring a field the changed lines read or change, each with all its fields. No type is listed for 1 read field that more than 6 types declare.');
+    expect(tooMany.record?.types).toEqual(['src/kinds.ts:1: interface Kind0 { weight0x0, weight0x1, weight0x2 }']);
     const store = `pub struct Store {\n${Array.from({ length: 9 }, (_, i) => `    pub jobs${i}: HashMap<u8, u8>,\n`).join('')}}\n`;
     const run = (body: string) => `fn run(s: &Store, k: u8) {\n${body}}\n`;
     const lookedUp = await usesFor({ 'src/store.rs': store, 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) });
     expect([lookedUp.section.includes(whole), typesHeading(lookedUp.section)]).toEqual([true, everyType]);
     expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields');
     // The log names the limit also when the search lists nothing, since the sibling questions still come from the 8 fields.
+    const logged = info().length;
     const quiet = await usesFor({ 'src/store.rs': store.replace('pub struct Store', 'struct Store').replace(/pub jobs/g, 'jobs'), 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) }, ['src/store.rs']);
-    expect([quiet.section, info().length, info().at(-1)]).toEqual(['', 5, 'Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields']);
+    expect([quiet.section, info().slice(logged)]).toEqual(['', ['Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields']]);
   });
 
   it('lists the uses of changed TypeScript fields, functions and interfaces, test files after code', async () => {
