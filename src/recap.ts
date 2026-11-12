@@ -225,13 +225,16 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
   return !prAuthorLogin || login.toLowerCase() !== prAuthorLogin.toLowerCase();
 }
 
-/** Matches the title line of a thread comment in any layout: after the label, or on its own line below the header. */
+/**
+ * Matches the title line of a thread comment in any layout: after the label, or on its own line below the header.
+ * A comment with finding data is matched from its top first, so text of the finding further down cannot pass as the title line.
+ */
 function matchTitleLine(body: string): RegExpMatchArray | null {
-  return body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'))
-    ?? (ownMarker(body, FINDING_DATA_OPENER) !== undefined
-      ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
-        ?? body.match(/^\S+ \*\*\w+(?:, not blocking)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
-      : null);
+  const atTop = ownMarker(body, FINDING_DATA_OPENER) !== undefined
+    ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
+      ?? body.match(/^\S+ \*\*\w+(?:, not blocking)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
+    : null;
+  return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
@@ -900,8 +903,9 @@ function parseFindingFromComment(body: string): FindingMetadata {
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const data = parseFindingData(body);
-  // A detached thread opens with the line that says where its finding is. The line is taken by its place, since posting can change its text.
-  if (data?.detached) descSlice = descSlice.slice(descSlice.split('\n', 1)[0].length).trimStart();
+  // A detached thread opens with the line that says where its finding is. The line is taken by its place, since posting can
+  // change its text, and only below a title line at the top of the body, where no text of the finding can stand.
+  if (data?.detached && titleMatch.index === 0) descSlice = descSlice.slice(descSlice.split('\n', 1)[0].length).trimStart();
   // The other notes under the title are skipped in whatever order they come.
   const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
