@@ -687,7 +687,7 @@ export async function runReview(
   // One answer for the whole round, so the judge, the refuter and `markPreExisting` cannot disagree on a finding.
   const unchangedCheck = (finding: Finding): PreExistingCheck | undefined => preExistingCheck(finding, diffWithLockfiles, excludedPaths);
   // Searched while the planner runs, since no model call depends on it before the finders.
-  const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths });
+  const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths, dependencyNames: config.related_repos?.some(r => r.kind === 'dependency') });
   const modelFallbacks: RoundModelFallback[] = [];
   const llmCalls: LLMCall[] = [];
   const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient => {
@@ -792,9 +792,8 @@ export async function runReview(
   });
   const referenceNames = uses.referenceNames ?? [];
   const dependencyNames = uses.dependencyNames ?? [];
-  // A dependency is searched for its own names, so with one configured those alone are a reason to fetch.
-  const searched = referenceNames.length > 0 || (dependencyNames.length > 0 && !!related?.repos.some(r => r.kind === 'dependency'));
-  const checkouts = related && searched ? await fetchRelatedRepos(related) : [];
+  // `dependencyNames` are collected only with a `dependency` repo configured, and such a repo is searched for those alone.
+  const checkouts = related && referenceNames.length + dependencyNames.length > 0 ? await fetchRelatedRepos(related) : [];
   const translation = await translateNames(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'translate'), referenceNames, diff.files.map(f => f.path), checkouts.filter(c => c.kind !== 'dependency'));
   const relatedUses = await listRelatedUses(checkouts, referenceNames, translation, dependencyNames);
   const guides = relatedRepoGuides(checkouts);

@@ -457,7 +457,7 @@ export interface UsesOutsideDiff {
   record?: RoundUses;
   /** The names the added comments mention, then those the diff changes or reads, to search the reference repos for. */
   referenceNames?: string[];
-  /** The names the added comments mention, then those the diff calls or reads, to search the dependency repos for. */
+  /** The names the added comments mention, then those the diff calls or reads and does not declare, to search the dependency repos for. */
   dependencyNames?: string[];
   siblings: SiblingQuestions;
 }
@@ -465,6 +465,8 @@ export interface UsesOutsideDiff {
 export interface UsesOptions {
   /** Paths a use is never listed from, such as generated files. */
   excludePaths?: string[];
+  /** Whether to collect `dependencyNames`. Without it the calls of the changed files are not read. */
+  dependencyNames?: boolean;
   loadApi?: () => Promise<AstGrepApi>;
 }
 
@@ -478,14 +480,14 @@ const NO_SIBLINGS: SiblingQuestions = { fields: [], implementations: [] };
  * section is empty, with no record, when there is nothing to list, and on any failure, which it logs and which also
  * returns no comparisons.
  */
-export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], loadApi = loadAstGrep }: UsesOptions = {}): Promise<UsesOutsideDiff> {
+export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], dependencyNames: forDependency = false, loadApi = loadAstGrep }: UsesOptions = {}): Promise<UsesOutsideDiff> {
   if (!workspace || !existsSync(join(workspace, '.git'))) {
     core.info('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     return { section: '', siblings: NO_SIBLINGS };
   }
   try {
     const started = Date.now();
-    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi);
+    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency);
     const { fields, implementations } = uses.siblings;
     core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons`);
     return uses;
@@ -652,12 +654,12 @@ function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<st
   return { section, record };
 }
 
-async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>): Promise<UsesOutsideDiff> {
+async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
   const added = new Map(files.map(f => [f.path, new Set(addedLines(f).keys())]));
   const needsApi = files.some(f => languageOf(f.path));
-  const parser = new Parser(workspace, needsApi ? await loadApi() : undefined);
+  const parser = new Parser(workspace, needsApi ? await loadApi() : undefined, forDependency);
 
   const symbols = new Map<string, ChangedSymbol>();
   // A field or variant whose own lines change, its type or its doc, is redefined. A new one has no readers yet, only namesakes.
@@ -702,7 +704,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       }
       // Appended one by one, since spreading a very long list into `push` overflows the call stack.
       if (!TEST_PATH.test(file.path)) for (const lookup of parsed.lookups) lookups.push({ ...lookup, file: file.path });
-      if (!TEST_PATH.test(file.path)) for (const name of parsed.calls) called.set(name, (called.get(name) ?? 0) + 1);
+      if (parsed.calls.length > 0 && !TEST_PATH.test(file.path)) for (const name of parsed.calls) called.set(name, (called.get(name) ?? 0) + 1);
     } else {
       for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
     }
@@ -725,10 +727,11 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     // A name a comment quotes, often from the reference itself, points most directly at its counterpart there.
     ...files.flatMap(mentionedNames), ...searched.filter(s => s.tier < 2 && !s.test && !TEST_PATH.test(s.file)).map(s => s.name), ...referenced.map(([name]) => name),
   ])].filter(name => isCodeLike(name) && !isGeneric(name)).slice(0, MAX_SYMBOLS);
-  // A dependency is read for what the change relies on, so the names the change declares are left out.
-  const dependencyNames = [...new Set([
-    ...files.flatMap(mentionedNames), ...[...called].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).map(([name]) => name), ...referenced.map(([name]) => name),
-  ])].filter(name => isCodeLike(name) && !isGeneric(name)).slice(0, MAX_SYMBOLS);
+  // A dependency does not hold what the change declares, so a called or read name the change also declares is left out.
+  const dependencyNames = forDependency ? [...new Set([
+    ...files.flatMap(mentionedNames),
+    ...[...[...called].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)), ...referenced].map(([name]) => name).filter(name => !symbols.has(name)),
+  ])].filter(name => isCodeLike(name) && !isGeneric(name)).slice(0, MAX_SYMBOLS) : [];
   const nothing = { section: '', ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }) };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
@@ -826,9 +829,6 @@ function isGeneric(name: string): boolean {
 function isCodeLike(name: string): boolean {
   return /_|[a-z][A-Z]|[A-Z]{2}[a-z]|^[A-Z][A-Z\d]{3,}$/.test(name);
 }
-
-// The name a call's callee ends with: `send` in `client.send`, `parse` in `Url::parse`.
-const CALLEE_NAME = /([A-Za-z_]\w*)$/;
 
 // A name in backticks, or an `ALL_CAPS` name, in a comment.
 const MENTIONED_NAME = /`([A-Za-z_][\w:]*)`|\b([A-Z][A-Z\d]*(?:_[A-Z\d]+)+)\b/g;
@@ -938,7 +938,8 @@ class Parser {
   private bytes = 0;
   skipped = 0;
 
-  constructor(private readonly workspace: string, private readonly api?: AstGrepApi) {}
+  /** `calls` asks for the names each changed file calls. */
+  constructor(private readonly workspace: string, private readonly api?: AstGrepApi, private readonly calls = false) {}
 
   /** `touched` holds the head lines the diff changes, for a changed file, which must be parsed before any other use of it. */
   parse(path: string, touched?: Set<number>): ParsedFile | undefined {
@@ -966,7 +967,7 @@ class Parser {
         core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
         return undefined;
       }
-      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched);
+      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched, this.calls);
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
@@ -1047,7 +1048,7 @@ class ParsedFile {
   readonly methods: Method[];
   /** The name of each field a touched line reads, such as `b` in `a.b`, leaving out method calls. */
   readonly reads: string[];
-  /** The last name of what each call on a touched line calls, such as `send` in `client.send(x)`, outside tests. */
+  /** The last name of what each call on a touched line calls, such as `send` in `client.send(x)`, outside tests. Empty unless asked for. */
   readonly calls: string[];
   /** Each lookup of an item in a collection field on a touched line, outside tests. */
   readonly lookups: Lookup[];
@@ -1071,8 +1072,8 @@ class ParsedFile {
   private readonly groups = new Map<string, number>();
   private readonly marked = new Map<number, boolean>();
 
-  /** `touched` holds the head lines the diff changes in a changed file, whose reads and lookups are collected. */
-  constructor(root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree, touched = new Set<number>()) {
+  /** `touched` holds the head lines the diff changes in a changed file, whose reads and lookups are collected, and with `calls` the names it calls. */
+  constructor(root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree, touched = new Set<number>(), calls = false) {
     const kinds = Object.keys(rules.declarations);
     const nodes = root.root().findAll({ rule: { any: kinds.map(kind => ({ kind })) } });
     // A plain TypeScript enum member is a bare property name in the enum's body.
@@ -1118,7 +1119,7 @@ class ParsedFile {
     const accesses = touched.size > 0 && rules.access ? root.root().findAll({ rule: { kind: rules.access.kind } }) : [];
     this.reads = this.fieldReads(accesses, touched);
     this.lookups = this.collectionLookups(accesses, touched);
-    this.calls = touched.size > 0 ? this.calledNames(root.root().findAll({ rule: { kind: rules.call } }), touched) : [];
+    this.calls = calls && touched.size > 0 ? this.calledNames(root.root().findAll({ rule: { kind: rules.call } }), touched) : [];
     this.tree.release();
     this.groups.clear();
     this.marked.clear();
@@ -1172,11 +1173,16 @@ class ParsedFile {
   }
 
   private calledNames(calls: SgNode[], touched: Set<number>): string[] {
+    const access = this.rules.access;
+    const modules = new Map<number, boolean>();
     return calls.flatMap(node => {
       const callee = node.field('function');
-      const name = callee && CALLEE_NAME.exec(callee.text())?.[1];
-      // The name is the last part of the callee, so it sits on the line the callee ends on.
-      return name && touched.has(callee.range().end.line + 1) && !this.inTests(node) ? [name] : [];
+      // `send` in `client.send(x)` is the field of an access, `parse` in `Url::parse(x)` the name of a path.
+      const name = callee && ((access && callee.kind() === access.kind ? callee.field(access.field) : callee.field('name')) ?? callee);
+      // Only a single token is read as text, so each character of the file is read for one call at most.
+      if (!name || !name.isLeaf() || !touched.has(lineOf(name)) || this.inTests(node, modules)) return [];
+      const text = name.text();
+      return IDENTIFIER.test(text) ? [text] : [];
     });
   }
 
@@ -1293,9 +1299,14 @@ class ParsedFile {
     return { file, line: decl.start, code: lines.join('\n') };
   }
 
-  private inTests(node: SgNode): boolean {
+  /** With `known`, each node around `node` is checked once, however many of the nodes asked about share it. */
+  private inTests(node: SgNode, known?: Map<number, boolean>): boolean {
     const test = this.rules.testModule;
-    return !!test && this.tree.ancestors(node).some(test);
+    if (!test || !known) return !!test && this.tree.ancestors(node).some(test);
+    return this.tree.ancestors(node).some(around => {
+      if (!known.has(around.id())) known.set(around.id(), test(around));
+      return known.get(around.id())!;
+    });
   }
 
   /**
