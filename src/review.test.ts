@@ -1544,6 +1544,7 @@ describe('selectTeam', () => {
     expect(withConsumer).toMatch(/\n13\. Readers: [^\n]*\n14\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n15\. Sibling state: /);
     expect(withConsumer).not.toContain('Specifications:');
     expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n14\. Readers: [^\n]*\n15\. Consumers: [^\n]*\n16\. Sibling state: /);
+    expect({ focus: focusWith('reference', 'consumer') }).toMatchSnapshot();
   });
 
   describe('configured routing', () => {

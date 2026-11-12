@@ -175,6 +175,11 @@ describe('buildJudgeSystemPrompt', () => {
     expect(rules).toContain('**A change that breaks a consumer** is the `degraded` row in the `normal` column, a `warning` that lists the consumer\'s call sites');
     expect(rules).toContain('It is the `severe` row, a `blocker`, only when the PR description says the change does not break anything.');
     expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, [related_repos[2]])).toContain('References, which this repository implements or ports: none.');
+    const rulesFor = (repos: NonNullable<ReviewConfig['related_repos']>): string => {
+      const built = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }), 5, false, 0, repos);
+      return built.slice(built.indexOf('## Related Repos'), built.indexOf('## Project Instructions'));
+    };
+    expect(rulesFor([{ repo: 'acme/spec', kind: 'reference' }, { repo: 'acme/app', kind: 'consumer' }])).toMatchSnapshot();
     // Configured repos that no finder could read this round give no rules.
     expect(buildJudgeSystemPrompt(makeConfig({ related_repos }), 5, false, 0, [])).not.toContain('## Related Repos');
     expect(buildJudgeSystemPrompt(makeConfig({ related_repos }), 5)).not.toContain('## Related Repos');

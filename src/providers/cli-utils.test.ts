@@ -235,6 +235,8 @@ describe('repoToolsPrompt', () => {
     // Without a guide the prompt is the one a round without this step gets.
     expect(guided.replace(' Its guide is `AGENTS.md`, fetched too.', '').replace(`${rule}\n\n`, '')).toBe(prompt());
     expect(prompt()).not.toContain('guide');
+    expect(prompt()).toMatchSnapshot();
+    expect(guided).toMatchSnapshot();
   });
 });
 
