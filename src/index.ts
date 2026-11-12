@@ -23,7 +23,6 @@ import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
-import { disproof } from './refute';
 import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
@@ -33,7 +32,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, DisprovedFinding, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
   brokenConfig,

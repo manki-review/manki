@@ -131,6 +131,32 @@ describe('formatFindingComment', () => {
     ].join('\n'));
     expect(suggestionBlocks(comment)).toEqual([]);
 
+    // A confirmed rule finding names the rule first, as code spans, and says when the rule is why it blocks.
+    const rule = { file: 'CONTRIBUTING.md', quote: 'Every new endpoint must be\nlisted in `docs/api.md`. @everyone <!-- x --> <b>' };
+    const ruleLine = 'This PR breaks a required rule of `CONTRIBUTING.md`: `` Every new endpoint must be listed in `docs/api.md`. @everyone <\u200B!\u200B-\u200B- x -\u200B-\u200B> <b> ``';
+    // The rule raised it to a blocker, so the rule is why it blocks.
+    const byRule = { cell: { row: 'improvement' as const, column: 'normal' as const }, gradePath: [{ from: 'note' as const, to: 'blocker' as const, by: 'rule' as const }] };
+    const blocksByRule = `${ruleLine} It blocks because this repository sets \`review.rules: block\`.`;
+    const ruleBlocker = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule });
+    expect(ruleBlocker).toContain(`<summary>How this was checked: 1 place read, breaks a repository rule</summary>\n\n**Repository rule**\n${blocksByRule}\n\n**Checked in the code**\n`);
+    // So it is for a blocker cell a doubt held at a warning, and for a rule blocker a check gave back after a cap for want of proof.
+    const held = { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const, gradePath: [{ from: 'warning' as const, to: 'blocker' as const, by: 'rule' as const }] };
+    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...held })).toContain(blocksByRule);
+    const givenBack = [...byRule.gradePath, { from: 'blocker' as const, to: 'warning' as const, by: 'unproven' as const }, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }];
+    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: givenBack })).toContain(blocksByRule);
+    // A warning, and a blocker whose own damage blocks, name the rule without the reason for blocking.
+    expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
+    // A rule warning on code an earlier round reviewed says so under its title and names the rule the same way.
+    const late = render({ ...baseFinding, severity: 'warning', origin: 'reviewed', tags: ['follow-up'], rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] });
+    expect(late).toContain("_An earlier round already reviewed these lines and missed this, and it doesn't block this PR._\n\n");
+    expect(late).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
+    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, cell: { row: 'severe', column: 'normal' } })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
+    // A quote with a hidden character is not printed, and a rule the judge did not confirm gives no line.
+    expect(render({ ...baseFinding, severity: 'warning', rule: { file: 'AGENTS.md', quote: 'Every\u202E change needs a test.', verdict: 'confirmed' } })).toContain('**Repository rule:** This PR breaks a required rule of `AGENTS.md`.\n');
+    for (const verdict of ['no_requirement', 'not_broken', 'unproven', undefined] as const) {
+      expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict }, ...byRule })).not.toContain('rule');
+    }
+
     // A committable suggestion stays open, so GitHub offers to commit it, and the fix in words goes in the fold.
     const suggested = render({ ...baseFinding, howToFix: 'Check for `null` first.', suggestedFix: 'if (value != null) { use(value); }', evidence });
     expect(suggested).toContain(`${baseFinding.description}\n\n\`\`\`suggestion\nif (value != null) { use(value); }\n\`\`\`\n\n<!-- manki-checks -->\n<details>\n<summary>How to fix it and 1 place read</summary>\n\n**How to fix it**\nCheck for \`null\` first.\n\n**Checked in the code**\n`);
@@ -397,6 +423,26 @@ describe('formatFindingComment', () => {
       expect(render(noDefect)).toContain(`so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
       expect(render(noDefect)).toContain('**Doubt found:** Manki found a reason this may not happen');
     }
+    // A warning that breaks a confirmed rule outlives a disproof of its damage, and says why it stays.
+    expect(render({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } }))
+      .toContain('**Doubt found**\nManki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way. A comment says it is intended.');
+    // A second check can keep one whose first check answered that the defect does not exist, and that answer can be about the rule.
+    const ruleWarning: Finding = { ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } };
+    expect(render({ ...ruleWarning, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
+      .toContain('Manki found a reason this may not happen, but a disproof alone');
+    // A blocker held at a warning for want of a search stays beside that answer too, and says why.
+    const capped: Finding['gradePath'] = [{ from: 'blocker', to: 'warning', by: 'unproven' }];
+    expect(render({ ...ruleWarning, gradePath: capped, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
+      .toContain('**Doubt found**\nManki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way. A comment says it is intended.');
+    // The check that disproved the damage says why the finding stays, also when it is the second one.
+    const unsettled = { outcome: 'unsettled' as const, reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' };
+    const keptBySecond = render({ ...ruleWarning, refutation: unsettled, pairRefutation: disprovedFinding.refutation });
+    expect(keptBySecond).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. The caller is generated.');
+    expect(keptBySecond).toContain('**Second check, on another model**\nManki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way. A comment says it is intended.');
+    // A check that confirmed a premise settles the disproof of the other, so nothing was dropped and no check says the rule kept it.
+    const backed = { outcome: 'unsettled' as const, reason: 'One premise holds.', premises: [{ premise: 'A caller passes it', outcome: 'confirmed' as const, reason: 'r' }], files: ['src/main.ts'], codeDigest: 'abc' };
+    expect(render({ ...ruleWarning, pairRefutation: backed })).not.toContain('The finding stays');
+    expect(render({ ...ruleWarning, pairRefutation: backed })).toContain('**Doubt found**\nManki found a reason this may not happen, but a disproof alone');
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 
@@ -1861,6 +1907,12 @@ describe('postReview body lead', () => {
     // A finding the judge graded below blocker changes nothing, and neither does a blocker cell held down by a doubt nobody confirmed.
     const below = (more: Partial<Finding>): Finding => ({ ...blocker, title: 'Offset is off by one', line: 30, description: 'The offset skips a row.', severity: 'warning', tags: ['follow-up'], ...more });
     expect(roundSentence(blocked([lowered, kept, below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) })]))).toBe('Nothing blocks merge.');
+    // A rule warning kept after a disproof of its damage holds no cell, so it is no blocker of the judge's that a later step lowered.
+    const keptByRule = below({
+      cell: undefined, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' },
+      refutation: { outcome: 'disproved', reason: 'The runner copes.', files: ['src/a.ts'], codeDigest: 'abc' }, ...path(['blocker', 'warning', 'judge']),
+    });
+    expect(roundSentence(blocked([lowered, kept, keptByRule]))).toBe('Nothing blocks merge.');
     // The judge graded a blocker and a later step lowered it for good, so the summary may still call it a blocker:
     // a cap that stayed, a blocker in code the PR left alone, or one two refuters lowered, which keeps the judge's cell as `judgeCell`.
     const loweredLater = [

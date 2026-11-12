@@ -162,13 +162,20 @@ describe('parseFindings', () => {
 
     const instructionFiles = [
       { path: 'services/api/AGENTS.md', text: 'A change to a handler **must** come with an\n  integration test.\n\n---\n\n## notes.md\n\nNames must be short.' },
-      { path: 'CONTRIBUTING.md', text: 'Every model change needs a `migration`.' },
+      { path: 'CONTRIBUTING.md', text: 'Every model change needs a `migration`.\n\nPR titles must use [Conventional Commits](https://www.conventionalcommits.org/) and the ![badge](badge.svg) [style][guide].' },
     ];
     const rules = [
       ['Every model change needs a migration.', 'CONTRIBUTING.md'],
       // Line wraps, emphasis and case do not count, and a heading inside a file starts no new file.
       ['a change to a handler must come with an integration test.', 'services/api/AGENTS.md'],
       ['Names must be short.', 'services/api/AGENTS.md'],
+      // A link or an image counts as its text, whether or not the quote keeps the markup.
+      ['PR titles must use Conventional Commits and the badge style.', 'CONTRIBUTING.md'],
+      ['PR titles must use [Conventional Commits](https://www.conventionalcommits.org/)', 'CONTRIBUTING.md'],
+      // The file never held what a quote puts in a link target or a reference label, also inside another link.
+      ['Every model change needs [a migration](and sign-off by the release team).', 'CONTRIBUTING.md'],
+      ['Every model change needs ![a migration][and two approvals].', 'CONTRIBUTING.md'],
+      ['Every model change needs [[a migration](x)](and a load test).', 'CONTRIBUTING.md'],
       ['Names must be short.', 'notes.md'],
       // The quote is in another loaded file, in no loaded file, in a file that is not loaded, or too short to be a rule.
       ['Every model change needs a migration.', 'services/api/AGENTS.md'],
@@ -180,9 +187,11 @@ describe('parseFindings', () => {
     const replies = JSON.stringify(rules.map(([rule, ruleFile]) => ({ severity: 'warning', title: 'Rule', file: 'shop/models.py', line: 4, description: 'd', rule, ruleFile })));
     const marked = parseFindings(replies, 'R', instructionFiles);
     expect(marked[0].rule).toEqual({ file: 'CONTRIBUTING.md', quote: 'Every model change needs a migration.' });
-    expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', ...Array(6).fill(undefined)]);
+    expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', ...Array(5).fill('CONTRIBUTING.md'), ...Array(6).fill(undefined)]);
+    // The kept quote holds the text of each link only, so nothing the file lacks reaches the judge or the comment.
+    expect(marked.slice(4, 8).map(f => f.rule?.quote)).toEqual(['PR titles must use Conventional Commits', ...Array(3).fill('Every model change needs a migration.')]);
     // Without the instruction files no rule can be checked.
-    expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(9).fill(undefined));
+    expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(14).fill(undefined));
   });
 
   it('parses markdown-wrapped JSON', () => {
@@ -2810,7 +2819,8 @@ describe('runReview', () => {
       expect(result.outcome).toBe('ADDRESS_FIRST');
     });
 
-    it('never leaves out a finding that would be a blocker if true, a security finding or a tool alert', async () => {
+    it('never leaves out a finding that would be a blocker if true, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
+      const rule = { file: 'AGENTS.md', quote: 'Every migration needs a rollback.' };
       const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
       const result = await review({
         'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
@@ -2820,14 +2830,18 @@ describe('runReview', () => {
         'A blocker the judge lowered': { doubts, ...lowered('judge') },
         'A security finding': { tags: [SECURITY_TAG], doubts },
         'A tool alert': { toolSource: 'CodeQL' },
+        // The judge confirmed the rule and the line that breaks it, so the review shows it without the note of an unconfirmed finding.
+        'A rule blocker without a search': { rule: { ...rule, verdict: 'confirmed' }, tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
+        'A rule the judge did not confirm': { rule: { ...rule, verdict: 'unproven' }, doubts },
         'A warning nothing proves': { doubts },
       }, true);
 
       expect(shown(result)).toEqual([
         ['The judge held a blocker cell down', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
         ['A finder filed it as a blocker', 'unconfirmed'], ['A blocker the judge lowered', 'unconfirmed'], ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
+        ['A rule blocker without a search', 'unconfirmed'],
       ]);
-      expect(recordedOnly(result)).toEqual([['A warning nothing proves', 'warning', 'no_proof']]);
+      expect(recordedOnly(result)).toEqual([['A rule the judge did not confirm', 'warning', 'no_proof'], ['A warning nothing proves', 'warning', 'no_proof']]);
       expect(result.outcome).toBe('READY');
     });
 

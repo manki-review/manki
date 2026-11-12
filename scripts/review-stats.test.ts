@@ -191,6 +191,7 @@ describe('review stats', () => {
   });
 
   it('tallies every decision the round and reply records keep, and lists each in the report', () => {
+    const rule = { file: 'AGENTS.md', quote: 'Every migration needs a rollback.' };
     const round = makeRoundContext(2, {
       meta: {
         prNumber: 4, commitSha: 'd', round: 2, timestamp: 't', mankiVersion: '7', outcome: 'NOT_CONVERGING',
@@ -203,12 +204,12 @@ describe('review stats', () => {
       },
       findings: {
         count: 1, severityCounts: {},
-        entries: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] }],
+        entries: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }], rule: { ...rule, verdict: 'confirmed' } }],
         // An unposted finding of a record that says nothing about why still counts.
         unposted: [{
           ...makeFindingFingerprintEntry({ severity: 'note' }), preExisting: { reason: 'Old.', check: 'pre_existing' },
           gradePath: [{ from: 'warning', to: 'note', by: 'judge' }],
-        }, makeFindingFingerprintEntry({ severity: 'note' }), {
+        }, { ...makeFindingFingerprintEntry({ severity: 'note' }), rule: { ...rule, verdict: 'no_requirement' } }, {
           // The reason a note was left out counts ahead of a pre-existing claim the diff contradicted.
           ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'reviewed', unpostedReason: 'reviewed_code', preExisting: { reason: 'Old.', check: 'touches_diff' },
         }, { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }, { ...makeFindingFingerprintEntry({ severity: 'note' }), unpostedReason: 'note_cap', posted: 'record' },
@@ -222,8 +223,8 @@ describe('review stats', () => {
         inPrSuppressedCount: 1, ratchetSuppressedCount: 2, resolvedThreadSuppressedCount: 3, ownProposalDemotedCount: 4,
         // A drop takes its severity from its last grade step. The counts cover the drops the record does not list.
         dropped: [
-          { title: 't', file: 'a', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'r' }] },
-          { title: 't', file: 'a', line: 2, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'in_pr_suppression' }] },
+          { title: 't', file: 'a', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'r' }], rule: { ...rule, verdict: 'not_broken' } },
+          { title: 't', file: 'a', line: 2, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'in_pr_suppression' }], rule },
           { title: 't', file: 'a', line: 3, reviewers: [], gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'ignore', by: 'ratchet' }] },
           { title: 't', file: 'a', line: 4, reviewers: [] },
         ],
@@ -270,6 +271,8 @@ describe('review stats', () => {
         'judge: note to warning': 1, 'ratchet: warning to ignore': 1,
       },
       'Pre-existing claims (how each was checked)': { pre_existing: 1, touches_diff: 1 },
+      // Posted, recorded without posting and dropped by the judge, and a record from before the judge answered.
+      'Rule findings (the judge\'s answer and the grade)': { 'confirmed, warning': 1, 'no_requirement, note': 1, 'not_broken, dropped': 1, 'not judged, dropped': 1 },
       'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
       'Findings recorded without posting (per reason and severity)': {
         'memory_suppression, note': 1, 'pre_existing, note': 1, 'no reason recorded, note': 1,

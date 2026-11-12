@@ -81,6 +81,7 @@ planner:
 #         - { model: gpt-5.5, effort: high }
 #   routing:
 #     security: deep
+#   rules: warn    # a broken required rule of the instruction files is a warning. `block` makes it a blocker
 
 # CI results the reviewers read as evidence (default: all on), and Manki's
 # own analyzers. Read from the base branch, never from the PR.
@@ -183,6 +184,7 @@ memory:
 | `review.examples` | map with `blocker` and `not_blocker` lists | none | Worked examples from your repository, which the judge reads next to its built-in examples. |
 | `review.sweep` | boolean | `false` | After the judge keeps a blocker, search the whole diff for other instances of its defect class, at most three blockers a round. Their findings go through dedup and the judge like any finding. See [Sweeping for a defect class](how-reviews-work.md#sweeping-for-a-defect-class). |
 | `review.notes` | non-negative integer | `3` | How many notes a review lists at most. A note is a finding below a warning: an optional improvement, never a defect. A note gets no thread. The review body lists the notes in one collapsed section, and the round record keeps the ones left out. `0` lists none. A security finding is never a note. See [Severity tiers](how-reviews-work.md#severity-tiers). |
+| `review.rules` | `warn` or `block` | `warn` | How a broken required rule of your instruction files is graded, such as "every migration needs a rollback" in `CONTRIBUTING.md`. It counts when the rule is quoted from an instruction file of the base branch and the judge confirms that it states a requirement and that the PR breaks it. `warn` posts it as a warning, whatever its damage. `block` makes it a blocker, so the PR is not approved until the rule is followed. In doubt it is a warning. See [Rules from instruction files](how-reviews-work.md#rules-from-instruction-files). |
 | `static_analysis` | map | see below | Which CI results the reviewers read as evidence, and Manki's own analyzers. Read from the base branch. See [Reading CI results](how-reviews-work.md#reading-ci-results). |
 | `static_analysis.checks` | boolean | `true` | Read check-run annotations. Needs `checks: read` in the workflow. |
 | `static_analysis.code_scanning` | boolean | `true` | Read open code scanning alerts. Needs `security-events: read` in the workflow. |

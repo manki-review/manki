@@ -1,0 +1,32 @@
+id: prometheus-19043
+repo: prometheus/prometheus
+# The head is the branch before a force push dropped its last two commits, so no branch holds it. Fetch it by its SHA.
+source: prometheus upstream PR 19043, at the head a maintainer called unfocused, before the author dropped the two unrelated commits
+base: 12be92b1171fb6cabf01ea292939aa17d06b6c09
+head: f822da5f61918fc305958d637bdea4dca40d5120
+title: "discovery/hetzner: run tests in parallel"
+body: |
+  #### Which issue(s) does the PR fix:
+  Part of upstream issue 15185
+
+  #### Release notes for end users (**ALL** commits must be considered).
+  *Reviewers should verify clarity and quality.*
+
+  ```release-notes
+  NONE
+  ```
+
+  Adds `t.Parallel()` to the three top-level tests in `discovery/hetzner`
+  (`TestHCloudSDRefresh`, `TestRobotSDRefresh`, `TestRobotSDRefreshHandleError`)
+  and to their two table-driven `t.Run` subtests. Each top-level test builds its
+  own `SDMock`/`httptest.Server` via `NewSDMock(t)` with `t.Cleanup`, so there is
+  no shared mutable state and the tests are safe to run concurrently. Test-only,
+  no production code or dependency changes. Part of the upstream issue 15185 effort.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The PR is about running the `discovery/hetzner` tests in parallel. Its last two commits change `TestQuerierShouldNotFailIfOOOCompactionOccursAfterRetrievingIterators_AppendV2` in `tsdb/db_append_v2_test.go`: they clear the iterator variables before the compaction check and lengthen its timeout. Nothing in `discovery/hetzner` uses that test and the test uses nothing of `discovery/hetzner`, so the two parts are independent. The repository's `AGENTS.md` says not to include unrelated changes in a PR and to make a separate PR instead."
+    locations: ["tsdb/db_append_v2_test.go", "TestQuerierShouldNotFailIfOOOCompactionOccursAfterRetrievingIterators_AppendV2", "discovery/hetzner/hcloud_test.go", "discovery/hetzner/robot_test.go"]
+    fix: "02d0e198ffda31c9f7bef046b0aa176a671e8c42"
+nice_to_have: []

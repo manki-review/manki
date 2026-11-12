@@ -358,9 +358,34 @@ export interface Finding {
   preExisting?: string;
   /** How a claim in `preExisting` was checked against the diff: held, or the condition that failed. */
   preExistingCheck?: PreExistingCheck;
-  /** The required rule the reviewer says the change breaks: the loaded instruction file and the rule quoted from it. */
-  rule?: { file: string; quote: string };
+  /** The rule of an instruction file the reviewer says the change breaks. Only a `confirmed` one counts in the grade. */
+  rule?: RuleMark;
 }
+
+/**
+ * What the judge said about a quoted rule: `confirmed` when the quote states a requirement, this PR breaks it and a
+ * proving line is cited. It is `unproven` when code the judge could not see decides it, or when the judge says the
+ * rule is broken without a proving line. A refuter that confirms the unseen fact of an `unproven` rule makes it
+ * `confirmed`. Any other answer names the first check that failed.
+ */
+export type RuleVerdict = 'confirmed' | 'no_requirement' | 'not_broken' | 'unproven';
+
+/** A rule quoted from an instruction file of the base branch, with the judge's answer once the judge saw the finding. */
+export interface RuleMark {
+  file: string;
+  quote: string;
+  verdict?: RuleVerdict;
+  /** The fact the judge could not see that would make the rule broken. The rule is `confirmed` only once a refuter confirmed it. */
+  unseen?: string;
+}
+
+/** Whether the judge confirmed that `finding` breaks a required rule of the instruction files. */
+export function breaksRule(finding: Pick<Finding, 'rule'>): boolean {
+  return finding.rule?.verdict === 'confirmed';
+}
+
+/** How a broken required rule is graded, the `review.rules` setting: `warn` posts a warning, `block` a blocker. */
+export type RulesMode = 'warn' | 'block';
 
 /**
  * How a pre-existing claim the reviewer made and the judge kept was checked: `pre_existing` when it held, or the
@@ -546,7 +571,7 @@ export interface RoundSlicing {
 
 /** What changed a finding's severity. */
 export type GradeChange =
-  | 'judge' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
+  | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
   | 'resolved_thread' | 'pre_existing';
 
 /** One change of a finding's severity. */
@@ -644,6 +669,38 @@ export interface Refutation {
  */
 export function outcomeOf(check: Refutation): RefutationOutcome {
   return check.defect === 'disproved' ? 'disproved' : check.outcome;
+}
+
+/**
+ * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
+ * whether the defect exists. Returns none when another check backs the finding, since a confirmation against a
+ * disproof settles nothing. A check backs it when it does not disprove it and confirmed the defect or one of the premises.
+ */
+export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): Refutation | undefined {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  const backs = (check: Refutation): boolean => outcomeOf(check) !== 'disproved' && (check.defect === 'confirmed' || !!check.premises?.some(p => p.outcome === 'confirmed'));
+  return checks.some(backs) ? undefined : checks.find(check => outcomeOf(check) === 'disproved');
+}
+
+/**
+ * Whether `finding` breaks a confirmed rule and the `unproven` or `build_claim` cap was the last step to grade it. Such a
+ * finding is a blocker held at a warning, whether its damage or `review.rules: block` made it one.
+ */
+export function isCappedRuleBreak(finding: Pick<Finding, 'rule' | 'gradePath'>): boolean {
+  const cap = finding.gradePath?.at(-1);
+  return breaksRule(finding) && (cap?.by === 'unproven' || cap?.by === 'build_claim');
+}
+
+/**
+ * Returns the refutation that disproved only the damage of a finding that `breaksRule`. Such a finding below blocker
+ * stays in the review, since the rule is broken either way. A check's own answer that the defect does not exist can be
+ * about the rule, so beside one this returns none. A finding that `isCappedRuleBreak` stays beside that answer too:
+ * with milder damage, or none, the same rule break is a warning no check runs on, and a cap must not post less.
+ */
+export function damageDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'gradePath' | 'refutation' | 'pairRefutation'>): Refutation | undefined {
+  if (finding.severity === 'blocker' || finding.severity === 'ignore' || !breaksRule(finding)) return undefined;
+  const deniesDefect = [finding.refutation, finding.pairRefutation].some(check => check?.defect === 'disproved');
+  return deniesDefect && !isCappedRuleBreak(finding) ? undefined : disproof(finding);
 }
 
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
@@ -1032,6 +1089,8 @@ export interface ReviewRoutingConfig {
   sweep?: boolean;
   /** How many notes a review lists at most. */
   notes?: number;
+  /** Whether a broken required rule of the instruction files is posted as a warning (`warn`) or blocks (`block`). */
+  rules?: RulesMode;
 }
 
 /** How a round's review group was picked. */

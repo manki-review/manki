@@ -5,14 +5,14 @@ import * as core from '@actions/core';
 
 import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
-import { capUnprovenBlocker } from './judge';
+import { capUnprovenBlocker, ruleGrade } from './judge';
 import { extractJSON } from './json';
 import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, CheckStatus, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
+import { cellGrade, CheckStatus, columnDecidesBlock, damageDisproof, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule, isCappedRuleBreak } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -207,16 +207,40 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
   return { outcome, defect, reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(premises && { premises }), files, codeDigest: codeDigest(workspace, files) ?? '' };
 }
 
+/** Returns `grade` when it is above the grade of `finding`. Reading code never confirms a build failure, so such a claim rises to a warning at most. */
+function raisedTo(finding: Finding, grade: FindingSeverity | undefined): FindingSeverity | undefined {
+  const capped = grade === 'blocker' && isUnconfirmedBuildClaim(finding) ? 'warning' : grade;
+  return capped && SEVERITY_ORDER.indexOf(capped) < SEVERITY_ORDER.indexOf(finding.severity) ? capped : undefined;
+}
+
 /**
  * Returns the grade a confirmation gives, while nothing lowered the finding further since the judge: the blocker an
- * unproven cap lowered, or the grade the finding's cell gives once the premises the judge doubts hold. Reading code
- * never confirms a build failure, so such a claim stays a warning at most.
+ * unproven cap lowered, or the grade the finding's cell gives once the premises the judge doubts hold.
  */
 function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   const grade = finding.tags?.includes(UNPROVEN_TAG) && finding.severity === 'warning' ? 'blocker'
     : (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge' ? finding.gradeIfConfirmed : undefined;
-  const capped = grade === 'blocker' && isUnconfirmedBuildClaim(finding) ? 'warning' : grade;
-  return capped && SEVERITY_ORDER.indexOf(capped) < SEVERITY_ORDER.indexOf(finding.severity) ? capped : undefined;
+  return raisedTo(finding, grade);
+}
+
+/**
+ * Returns `finding` with its `unproven` rule confirmed and the grade `rules` gives, when `checks` confirm the fact the
+ * judge could not see. Only the premise that states that fact decides it, whatever the checks say about the damage.
+ * Checks that disagree about that premise leave the rule `unproven`. So does a check's own answer that the defect does
+ * not exist, since that answer can be about the rule.
+ */
+function confirmRuleFact(finding: Finding, checks: readonly Refutation[], rules?: RulesMode): Finding {
+  const { rule } = finding;
+  if (rule?.verdict !== 'unproven' || !rule.unseen || checks.some(r => r.defect === 'disproved')) return finding;
+  const answers = checks.flatMap(r => r.premises?.filter(p => p.premise === rule.unseen) ?? []);
+  if (!answers.some(p => p.outcome === 'confirmed') || answers.some(p => p.outcome === 'disproved')) return finding;
+  const grade = raisedTo(finding, ruleGrade(rules));
+  const proof = [...new Set([...(finding.evidence?.proof ?? []), ...answers.flatMap(p => p.proof ?? [])])];
+  return {
+    ...finding, rule: { ...rule, verdict: 'confirmed' },
+    // Lines that confirm the fact show no damage, so they are added only where they raise the grade.
+    ...(grade && { ...gradeStep(finding, grade, 'rule', 'a check confirmed the fact that breaks a required rule of the instruction files'), evidence: { ...(finding.evidence ?? { checks: [] }), proof } }),
+  };
 }
 
 /** Whether a check that confirms its finding confirmed `REACH_DOUBT`, the claim that keeps a finding in the `rare` column. */
@@ -225,9 +249,6 @@ function reachConfirmed(checks: readonly Refutation[]): boolean {
 }
 
 const disproves = (check: Refutation): boolean => outcomeOf(check) === 'disproved';
-
-/** Whether `check` backs its finding: it does not disprove it, and it confirmed the defect or one of the premises. */
-const supports = (check: Refutation): boolean => !disproves(check) && (confirmsDefect(check) || !!check.premises?.some(p => p.outcome === 'confirmed'));
 
 /**
  * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
@@ -239,16 +260,6 @@ function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   if (votes.size !== 1) return 'unsettled';
   const [outcome] = votes;
   return outcome === 'confirmed' && checks.some(r => disproves(r) || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
-}
-
-/**
- * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
- * whether the defect exists. Returns none when another check `supports` the finding, since a confirmation against a
- * disproof settles nothing.
- */
-export function disproof(finding: Pick<Finding, RefutationField>): Refutation | undefined {
-  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  return checks.some(supports) ? undefined : checks.find(disproves);
 }
 
 function refutationNote(label: string, check: Refutation): string {
@@ -287,15 +298,19 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
 }
 
 /**
- * Grades `finding` by the outcome its refutations agree on. A `disproof` drops a finding graded below blocker, such as an
- * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A disproof lowers a
+ * Grades `given` by the outcome its refutations agree on, after `confirmRuleFact` settled an `unproven` rule from the
+ * premise about its fact alone. A `disproof` drops a finding graded below blocker, such as an
+ * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding with a
+ * `damageDisproof` stays, without its `cell`, `doubts` and `gradeIfConfirmed`. So a finding that `isCappedRuleBreak`
+ * stays the capped warning after any disproof, and only a confirmation gives its blocker back. A disproof lowers a
  * blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that `restates` an earlier blocker, and such a
  * finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation that raises a finding out of the `rare`
  * column moves it to the `normal` one, where `capUnprovenBlocker` applies to it.
  */
-function applyRefutation(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, restates: boolean): Finding {
+function applyRefutation(given: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, restates: boolean, rules?: RulesMode): Finding {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
+  const finding = confirmRuleFact(given, checks, rules);
   const outcome = agreedOutcome(checks);
   const notes = [refutation && refutationNote('Refutation', refutation), pairRefutation && refutationNote('Pair refutation', pairRefutation)].filter(Boolean).join('\n');
   const graded: Finding = {
@@ -303,6 +318,14 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
     judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${notes}` : notes,
   };
   if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
+  // Only the premises of this round's doubts are about the damage. An outcome reused from an earlier round can rest on others.
+  // No disproof drops a capped blocker that breaks a confirmed rule, whatever the disproof rests on.
+  if ((finding.doubts?.length || isCappedRuleBreak(finding)) && damageDisproof(graded)) {
+    // The cell and the grade it promised state the damage, so they go, and the cell is no `judgeCell`, since a doubt
+    // kept the judge from grading a blocker.
+    const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, ...kept } = graded;
+    return kept;
+  }
   const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
@@ -342,9 +365,12 @@ const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => 
 
 const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
 
-/** Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted either way. */
+/**
+ * Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted
+ * either way. So is a finding that `breaksRule`: the judge confirmed the quoted rule and the cited line that breaks it.
+ */
 export function needsProof(finding: Finding): boolean {
-  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers);
+  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !breaksRule(finding);
 }
 
 /** Whether an earlier finding is linked to `finding`. A later step then probably keeps the warning out of the review, but only a certain result takes a warning out of the checks, so this one is checked last. */
@@ -356,8 +382,8 @@ const linkedToEarlier = (finding: Finding): boolean => !!(finding.sameAs || find
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
  * whether the defect exists, and one no cited line proves. Then come the warnings `preExisting` accepts, which are
  * posted only when a check confirms them, those with a doubt first. Then come the warnings of both kinds that are
- * `linkedToEarlier` or that `restatesEarlier` accepts. Last come the security findings the judge doubts, which are
- * posted either way. A round can judge findings in several calls, so only the first group is returned for a judge
+ * `linkedToEarlier` or that `restatesEarlier` accepts. Last come the findings the judge doubts that are posted without
+ * proof: a security finding and one that `breaksRule`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding the judge would
  * grade higher if its doubts hold is always checked, since that check is how a warning becomes a blocker. A tool alert
@@ -475,6 +501,8 @@ export interface RefuteOptions {
   roundEnd?: boolean;
   /** Whether `finding` sits on code the PR did not change. A warning there is posted only when a check confirms it. */
   preExisting?: (finding: Finding) => boolean;
+  /** The repository's `review.rules`, the grade of a finding whose `unproven` rule a check confirms. */
+  rules?: RulesMode;
 }
 
 /**
@@ -485,7 +513,7 @@ export interface RefuteOptions {
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge. With `roundEnd` it makes
  * only the checks `doubtsToCheck` picks.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
@@ -530,6 +558,6 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (!confirmedGrade(finding) && hiddenLater?.(finding)) return finding;
     if (!checkable(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
-    return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads)) : finding;
+    return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
   });
 }

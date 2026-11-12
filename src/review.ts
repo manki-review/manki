@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, findingKey, isBlockingSeverity, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, disproof, findingKey, isBlockingSeverity, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
@@ -18,7 +18,7 @@ import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
-import { checkStatus, disproof, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -1286,6 +1286,7 @@ export async function runReview(
     diff: diffWithLockfiles,
     preExistingCheck: unchangedCheck,
     lockfiles,
+    excludedPaths: options.excludedPaths,
     rawDiff,
     memory: memory ?? undefined,
     repoContext,
@@ -1426,7 +1427,7 @@ export async function runReview(
     const checked = await refuteBlockers(refutation.client, kept, {
       workspace: refutation.workspace, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
       outsideInput: config.review?.outside_input, restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
-      preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true,
+      preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
     });
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
@@ -2080,19 +2081,26 @@ function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'>
 // Longer than a single requirement word, so a word the file happens to hold does not pass for a quoted rule.
 const MIN_RULE_QUOTE_CHARS = 10;
 
-/** Returns `text` in lower case, without Markdown emphasis and code marks and with each run of whitespace as one space. */
+/** Returns `text` with each Markdown link or image as its text alone, until none is left, so no link target stays in it. */
+function linkText(text: string): string {
+  const plain = text.replace(/!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g, '$1');
+  return plain === text ? text : linkText(plain);
+}
+
+/** Returns `linkText(text)` in lower case, without emphasis and code marks, and with each run of whitespace as one space. */
 function plainText(text: string): string {
-  return text.toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  return linkText(text).toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 /**
  * Reads `rule` with its `ruleFile`. The mark is kept only when `instructionFiles` holds that file and the file holds the
- * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding. Whether the quote states a
- * requirement is not checked.
+ * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding. The judge says whether the
+ * quote states a requirement. The quote is kept as `linkText`, since a link target the reviewer wrote is never compared
+ * with the file.
  */
 function ruleOf(f: Record<string, unknown>, instructionFiles: readonly InstructionFile[]): Pick<Finding, 'rule'> {
   const file = textOf(f.ruleFile);
-  const quote = textOf(f.rule);
+  const quote = linkText(textOf(f.rule));
   const source = instructionFiles.find(loaded => loaded.path === file)?.text;
   const plain = plainText(quote);
   return source !== undefined && plain.length >= MIN_RULE_QUOTE_CHARS && plainText(source).includes(plain) ? { rule: { file, quote } } : {};

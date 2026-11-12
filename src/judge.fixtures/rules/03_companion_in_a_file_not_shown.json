@@ -1,0 +1,77 @@
+{
+  "name": "companion-in-a-file-not-shown",
+  "rules": "block",
+  "excludedPaths": [
+    "docs/openapi/parcel-api.yaml"
+  ],
+  "repoContext": "## CONTRIBUTING.md\n\n# Contributing to parcel-tracker\n\n## API changes\n\n- Every new REST endpoint must have an entry in `docs/openapi/parcel-api.yaml`.\n- Every new REST endpoint needs a test under `src/test/java/` that calls it through `MockMvc`.\n",
+  "findings": [
+    {
+      "title": "The new `GET /parcels/{id}/events` endpoint has no entry in the OpenAPI file",
+      "file": "src/main/java/io/parceltrack/api/ParcelController.java",
+      "line": 35,
+      "description": "The PR adds `GET /parcels/{id}/events`, and the diff shows no change to `docs/openapi/parcel-api.yaml`. `CONTRIBUTING.md` requires an entry there for every new REST endpoint. Add the path to the OpenAPI file.",
+      "severity": "warning",
+      "reviewers": [
+        "Correctness"
+      ],
+      "rule": {
+        "file": "CONTRIBUTING.md",
+        "quote": "Every new REST endpoint must have an entry in `docs/openapi/parcel-api.yaml`."
+      },
+      "evidence": {
+        "checks": [
+          "The diff shown changes `ParcelController.java` only"
+        ],
+        "proof": [
+          "src/main/java/io/parceltrack/api/ParcelController.java:35-36"
+        ],
+        "emptySearch": "The diff shown holds no change to `docs/openapi/parcel-api.yaml`"
+      }
+    },
+    {
+      "title": "The new endpoint has no `MockMvc` test",
+      "file": "src/main/java/io/parceltrack/api/ParcelController.java",
+      "line": 36,
+      "description": "The PR adds the `events` handler and changes no file under `src/test/java/`. `CONTRIBUTING.md` requires a `MockMvc` test for every new REST endpoint. Add a test that calls `GET /parcels/{id}/events`.",
+      "severity": "warning",
+      "reviewers": [
+        "Correctness"
+      ],
+      "rule": {
+        "file": "CONTRIBUTING.md",
+        "quote": "Every new REST endpoint needs a test under `src/test/java/` that calls it through `MockMvc`."
+      },
+      "evidence": {
+        "checks": [
+          "The PR changes no file under `src/test/java/`"
+        ],
+        "proof": [
+          "src/main/java/io/parceltrack/api/ParcelController.java:35-36"
+        ],
+        "emptySearch": "The PR's changed files hold no file under `src/test/java/`"
+      }
+    }
+  ],
+  "prDiff": "diff --git a/src/main/java/io/parceltrack/api/ParcelController.java b/src/main/java/io/parceltrack/api/ParcelController.java\nindex 1a2b3c4..5d6e7f8 100644\n--- a/src/main/java/io/parceltrack/api/ParcelController.java\n+++ b/src/main/java/io/parceltrack/api/ParcelController.java\n@@ -31,4 +31,11 @@ public class ParcelController {\n     public ParcelDto get(@PathVariable UUID id) {\n         return ParcelDto.from(parcels.require(id));\n     }\n+\n+    @GetMapping(\"/{id}/events\")\n+    public List<TrackingEventDto> events(@PathVariable UUID id) {\n+        return parcels.require(id).events().stream()\n+            .map(TrackingEventDto::from)\n+            .toList();\n+    }\n }\n",
+  "expected": {
+    "The new `GET /parcels/{id}/events` endpoint has no entry in the OpenAPI file": {
+      "verdicts": [
+        "unproven",
+        "not_broken"
+      ],
+      "grades": [
+        "note",
+        "ignore"
+      ]
+    },
+    "The new endpoint has no `MockMvc` test": {
+      "verdicts": [
+        "confirmed"
+      ],
+      "grades": [
+        "blocker"
+      ]
+    }
+  }
+}
