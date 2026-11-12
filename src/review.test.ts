@@ -2568,11 +2568,11 @@ describe('runReview', () => {
       const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: ref }, { repo: 'o/app', kind: 'consumer', dir: app }, { repo: 'o/lib', kind: 'dependency', dir: lib }]);
       const quote = 'the ledger library already rounds every amount to cents';
       const finding = { severity: 'blocker', title: 'An amount is posted unrounded', file: 'src/a.py', line: 1, description: '`x` is never rounded.', proof: ['src/a.py:1'] };
-      const run = async (quotes: string[], terms: () => string) => {
+      const run = async (quotes: string[], terms: () => string | Promise<string>) => {
         fetchSpy.mockClear();
         const clients = {
           ...makeClients(),
-          dedup: { sendMessage: jest.fn(async (system: string) => ({ content: system.startsWith('You list the statements') ? JSON.stringify(quotes) : system.startsWith('You name the code') ? terms() : '{}' })) } as unknown as LLMClient,
+          dedup: { sendMessage: jest.fn(async (system: string) => ({ content: system.startsWith('You list the statements') ? JSON.stringify(quotes) : system.startsWith('You name the code') ? await terms() : '{}' })) } as unknown as LLMClient,
         };
         Object.assign(clients.reviewer, { repoTools: true });
         jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: isCheck(system) ? checkAnswer('unchecked', []) : JSON.stringify([finding]) }));
@@ -2599,14 +2599,24 @@ describe('runReview', () => {
         };
       };
       const terms = () => JSON.stringify({ 'o/ref': { '1': ['roundAmount'] }, 'o/app': { '1': ['roundTotal'] }, 'o/lib': { '1': ['round_cents'] } });
+      // The 30 s the checks wait for their lines, which the slow run below ends as soon as its term call is asked.
+      const linesLimit = new AbortController();
+      const timeout = AbortSignal.timeout.bind(AbortSignal);
+      const timeoutSpy = jest.spyOn(AbortSignal, 'timeout').mockImplementation(ms => (ms === 30_000 ? linesLimit.signal : timeout(ms)));
       let claimed;
       let unclaimed;
       let failed;
+      let slow;
       try {
         claimed = await run([quote], terms);
         unclaimed = await run([], terms);
         failed = await run([quote], () => { throw new Error('model down'); });
+        slow = await run([quote], () => {
+          linesLimit.abort();
+          return new Promise<never>(() => undefined);
+        });
       } finally {
+        timeoutSpy.mockRestore();
         fetchSpy.mockRestore();
         for (const dir of [root, ref, app, lib]) rmSync(dir, { recursive: true, force: true });
       }
@@ -2625,11 +2635,16 @@ describe('runReview', () => {
       expect(failed.checks).toHaveLength(1);
       expect(failed.checks[0]).not.toContain('## Lines in the Related Repos');
       expect(failed.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'model down' } });
+      // A term call past its limit leaves the check to start without lines, and the check still gets its whole time.
+      expect(slow.checks).toHaveLength(1);
+      expect(slow.checks[0]).not.toContain('## Lines in the Related Repos');
+      expect(slow.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'the fetch, the term call or the search took longer than 30 s or ran past the deadline of the checks' } });
+      expect(slow.result.prClaims?.claims?.map(c => [c.status, c.call])).toEqual([['unchecked', undefined]]);
       expect(unclaimed.result.usesOutsideDiff).toBeUndefined();
       expect(unclaimed.result.findings.map(f => f.severity)).toContain('blocker');
       // The finders, the judge and the refuter get the same prompts whatever the claims found.
       expect(claimed.prompts.judge.map(([system]) => system.slice(0, 30))).toEqual([expect.stringMatching(/^You are a code review judge/), expect.stringMatching(/^You check one finding/)]);
-      for (const { prompts, result } of [claimed, failed]) {
+      for (const { prompts, result } of [claimed, failed, slow]) {
         expect(prompts).toEqual(unclaimed.prompts);
         expect(result.findings.map(f => [f.title, f.severity])).toEqual(unclaimed.result.findings.map(f => [f.title, f.severity]));
         expect(result.verdict).toBe(unclaimed.result.verdict);
@@ -3072,7 +3087,7 @@ describe('runReview', () => {
     }
 
     expect(dedup.mock.calls.filter(([system]) => system.startsWith('You name the code'))).toHaveLength(1);
-    expect(result.usesOutsideDiff?.claimTerms).toEqual({ skipped: 'the search was still running at the deadline of the checks' });
+    expect(result.usesOutsideDiff?.claimTerms).toEqual({ skipped: 'the fetch, the term call or the search took longer than 30 s or ran past the deadline of the checks' });
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: pending vs done', at: ['src/queue.ts:6'], status: 'timed_out' }]);
     expect(result.prClaims).toEqual({ claims: [{ quote, source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'timed_out' }] });
     expect(result.findings).toEqual([]);
