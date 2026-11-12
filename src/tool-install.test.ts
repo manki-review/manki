@@ -1,6 +1,9 @@
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import {
+  accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync,
+  truncateSync, utimesSync, writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 
@@ -19,17 +22,23 @@ describe('installPinned', () => {
   const data = tarball();
   const integrity = `sha512-${createHash('sha512').update(data).digest('base64')}`;
   let fetchMock: jest.SpyInstance;
-  const savedRunnerTemp = process.env.RUNNER_TEMP;
+  const RUNNER_VARIABLES = ['RUNNER_TEMP', 'RUNNER_TOOL_CACHE', 'RUNNER_ENVIRONMENT'] as const;
+  const saved = RUNNER_VARIABLES.map(name => process.env[name]);
 
   beforeEach(() => {
     process.env.RUNNER_TEMP = mkdtempSync(join(tmpdir(), 'manki-runner-temp-'));
+    // No test reads or writes the tool cache of the machine it runs on.
+    delete process.env.RUNNER_TOOL_CACHE;
+    delete process.env.RUNNER_ENVIRONMENT;
     fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async () => new Response(data));
   });
 
   afterEach(() => {
     fetchMock.mockRestore();
-    if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
-    else process.env.RUNNER_TEMP = savedRunnerTemp;
+    RUNNER_VARIABLES.forEach((name, index) => {
+      if (saved[index] === undefined) delete process.env[name];
+      else process.env[name] = saved[index];
+    });
   });
 
   it('unpacks a download that matches its digest, and downloads it once per run, across processes too', async () => {
@@ -193,5 +202,218 @@ describe('installPinned', () => {
     // The link would be as slow for the next call, which fails at once instead of waiting four minutes again.
     await expect(installPinned({ url: 'https://example.test/endless.tgz', integrity })).rejects.toThrow('did not finish within 240 seconds');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  describe('a download kept for later runs', () => {
+    const download = { url: 'https://example.test/kept/tool.tgz', integrity };
+    const keptName = `${createHash('sha256').update(integrity).digest('hex').slice(0, 16)}-tool.tgz`;
+    let toolCache: string;
+    let stderr: jest.SpyInstance;
+    const folder = () => join(toolCache, 'manki-pinned');
+    const kept = () => join(folder(), keptName);
+    const notes = () => stderr.mock.calls.map(([line]) => String(line));
+
+    beforeEach(() => {
+      toolCache = mkdtempSync(join(tmpdir(), 'manki-tool-cache-'));
+      process.env.RUNNER_TOOL_CACHE = toolCache;
+      process.env.RUNNER_ENVIRONMENT = 'self-hosted';
+      stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+      stderr.mockRestore();
+      jest.restoreAllMocks();
+    });
+
+    /** Returns `installPinned` as a process of its own has it, with nothing installed yet. */
+    async function newProcess(): Promise<typeof installPinned> {
+      let install: typeof installPinned | undefined;
+      await jest.isolateModulesAsync(async () => {
+        install = (await import('./tool-install')).installPinned;
+      });
+      return install!;
+    }
+
+    /** Installs `pinned` as another run on the same runner does: in a process of its own with a temp folder of its own. */
+    async function nextRun(pinned = download): Promise<string> {
+      process.env.RUNNER_TEMP = mkdtempSync(join(tmpdir(), 'manki-runner-temp-'));
+      return (await newProcess())(pinned);
+    }
+
+    it('keeps a download in the tool cache, and a later run unpacks it again without downloading it, and says so', async () => {
+      // The tool cache can be a link to a folder of this user's own, as a runner's `_work/_tool` often is.
+      const link = join(mkdtempSync(join(tmpdir(), 'manki-tool-cache-link-')), 'tools');
+      symlinkSync(toolCache, link);
+      process.env.RUNNER_TOOL_CACHE = link;
+
+      const first = await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readFileSync(kept())).toEqual(data);
+      expect(statSync(folder()).mode & 0o777).toBe(0o700);
+      expect(statSync(kept()).mode & 0o777).toBe(0o600);
+      expect(readdirSync(folder())).toEqual([keptName]);
+
+      const second = await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // What runs is unpacked from the checked bytes into this run's own temp folder, never taken from the tool cache.
+      expect(second).not.toBe(first);
+      expect(second.startsWith(realpathSync(process.env.RUNNER_TEMP!))).toBe(true);
+      expect(readFileSync(join(second, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+      expect(notes()).toEqual([expect.stringMatching(/^Using the kept download .*tool\.tgz instead of downloading it\n$/)]);
+    });
+
+    it.each([
+      ['its content was replaced', () => writeFileSync(kept(), 'planted')],
+      ['it was cut short', () => truncateSync(kept(), 10)],
+      ['it is a link to a file with the right content', () => {
+        renameSync(kept(), join(toolCache, 'elsewhere.tgz'));
+        symlinkSync(join(toolCache, 'elsewhere.tgz'), kept());
+      }],
+      ['it is a named pipe', () => {
+        renameSync(kept(), join(toolCache, 'elsewhere.tgz'));
+        execFileSync('mkfifo', [kept()]);
+      }],
+    ])('downloads again instead of using a kept file when %s, and keeps the checked download in its place', async (_case, tamper) => {
+      await nextRun();
+      tamper();
+
+      const dir = await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+      expect(notes().some(line => line.startsWith('Using the kept download'))).toBe(false);
+
+      // The checked download replaces the bad entry, and a file a link pointed to is left as it was.
+      expect(lstatSync(kept()).isFile()).toBe(true);
+      expect(readFileSync(kept())).toEqual(data);
+      if (existsSync(join(toolCache, 'elsewhere.tgz'))) expect(readFileSync(join(toolCache, 'elsewhere.tgz'))).toEqual(data);
+      await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    // The log says once per process why a tool cache that exists is not used, and nothing for a runner that keeps none.
+    const DISTRUST = [expect.stringMatching(/^Not keeping downloads in .*manki-pinned: it and .* must be folders that only this user can write\n$/)];
+    it.each([
+      ['another user can write the folder', () => chmodSync(folder(), 0o777), DISTRUST],
+      ['the group can write the folder', () => chmodSync(folder(), 0o770), DISTRUST],
+      ['another user can write the tool cache', () => chmodSync(toolCache, 0o777), DISTRUST],
+      ['another user owns the folder', () => jest.spyOn(process, 'getuid').mockReturnValue(statSync(folder()).uid + 1), DISTRUST],
+      ['the folder is a link', () => {
+        renameSync(folder(), join(toolCache, 'real'));
+        symlinkSync(join(toolCache, 'real'), folder());
+      }, DISTRUST],
+      ['the runner is GitHub-hosted', () => { process.env.RUNNER_ENVIRONMENT = 'github-hosted'; }, []],
+      ['the runner does not say where it runs', () => { delete process.env.RUNNER_ENVIRONMENT; }, []],
+      ['the platform has no user ids', () => { Object.defineProperty(process, 'getuid', { value: undefined, configurable: true }); }, []],
+    ])('neither uses nor writes the kept download when %s', async (_case, arrange, said) => {
+      const getuid = Object.getOwnPropertyDescriptor(process, 'getuid');
+      await nextRun();
+      const before = statSync(kept());
+      arrange();
+      try {
+        const dir = await nextRun();
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+        expect(notes()).toEqual(said);
+      } finally {
+        if (getuid) Object.defineProperty(process, 'getuid', getuid);
+        else delete (process as { getuid?: unknown }).getuid;
+        jest.restoreAllMocks();
+      }
+      // The same file is still there, and nothing was written next to it.
+      const after = statSync(kept());
+      expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
+      expect(readdirSync(realFolder())).toEqual([keptName]);
+    });
+    const realFolder = () => (existsSync(join(toolCache, 'real')) ? join(toolCache, 'real') : folder());
+
+    it('keeps nothing and installs as before on a runner without a tool cache, or whose tool cache is no folder, which the log says', async () => {
+      delete process.env.RUNNER_TOOL_CACHE;
+      await nextRun();
+      await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      process.env.RUNNER_TOOL_CACHE = join(toolCache, 'a-file');
+      writeFileSync(join(toolCache, 'a-file'), '');
+      await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(readdirSync(toolCache)).toEqual(['a-file']);
+      expect(notes()).toEqual(DISTRUST);
+    });
+
+    it('makes a tool cache folder that does not exist yet', async () => {
+      process.env.RUNNER_TOOL_CACHE = join(toolCache, '_work', '_tool');
+      await nextRun();
+      await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readdirSync(join(toolCache, '_work', '_tool', 'manki-pinned'))).toEqual([keptName]);
+    });
+
+    it('lets two runs that start together each install, and leaves one whole kept file', async () => {
+      // Neither run finds a kept file, so both download. The second answer comes only once both have asked.
+      let asked = 0;
+      let bothAsked: () => void = () => {};
+      const gate = new Promise<void>(resolve => { bothAsked = resolve; });
+      fetchMock.mockImplementation(async () => {
+        if (++asked === 2) bothAsked();
+        await gate;
+        return new Response(data);
+      });
+      // Without a shared temp folder each install is a run of its own.
+      delete process.env.RUNNER_TEMP;
+      const installs = [await newProcess(), await newProcess()];
+
+      const [first, second] = await Promise.all(installs.map(install => install(download)));
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(first).not.toBe(second);
+      for (const dir of [first, second]) expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+      expect(readdirSync(folder())).toEqual([keptName]);
+      expect(readFileSync(kept())).toEqual(data);
+    });
+
+    it('removes a kept download no run used for 14 days when it keeps a new one, and nothing else', async () => {
+      await nextRun();
+      const days = (count: number) => new Date(Date.now() - count * 24 * 60 * 60 * 1000);
+      const age = (name: string, count: number) => utimesSync(join(folder(), name), days(count), days(count));
+      for (const [name, count] of [['old-version.tgz', 15], ['other-version.tgz', 13], ['.writing-0123456789abcdef', 15]] as const) {
+        writeFileSync(join(folder(), name), 'x');
+        age(name, count);
+      }
+      // Only files go. A folder and a link stay, and so does what the link points to.
+      mkdirSync(join(folder(), 'a-folder'));
+      age('a-folder', 15);
+      writeFileSync(join(toolCache, 'outside'), 'x');
+      utimesSync(join(toolCache, 'outside'), days(15), days(15));
+      symlinkSync(join(toolCache, 'outside'), join(folder(), 'a-link'));
+      // A run that uses a kept download marks it as used, however old the file is.
+      age(keptName, 15);
+      await nextRun();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const other = Buffer.from('#!/bin/sh\n');
+      fetchMock.mockImplementation(async () => new Response(other));
+      const otherIntegrity = `sha256-${createHash('sha256').update(other).digest('base64')}`;
+      await nextRun({ url: 'https://example.test/kept/other-tool', integrity: otherIntegrity });
+
+      const otherName = `${createHash('sha256').update(otherIntegrity).digest('hex').slice(0, 16)}-other-tool`;
+      expect(readdirSync(folder()).sort()).toEqual(['a-folder', 'a-link', keptName, 'other-version.tgz', otherName].sort());
+      expect(existsSync(join(toolCache, 'outside'))).toBe(true);
+    });
+
+    it('installs all the same when a folder sits where the kept file goes, and says why nothing is kept', async () => {
+      mkdirSync(join(kept(), 'in-the-way'), { recursive: true });
+      chmodSync(folder(), 0o700);
+
+      for (const downloads of [1, 2]) {
+        const dir = await nextRun();
+        expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+        expect(fetchMock).toHaveBeenCalledTimes(downloads);
+      }
+
+      expect(notes()).toEqual([1, 2].map(() => expect.stringMatching(/^Could not keep the download of https:\/\/example\.test\/kept\/tool\.tgz for later runs: /)));
+      // The folder is left as it was, and no half-written file stays behind.
+      expect(readdirSync(folder())).toEqual([keptName]);
+      expect(readdirSync(kept())).toEqual(['in-the-way']);
+    });
   });
 });
