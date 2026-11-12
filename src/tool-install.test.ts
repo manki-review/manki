@@ -340,6 +340,21 @@ describe('installPinned', () => {
       expect(notes()).toEqual(DISTRUST);
     });
 
+    it.each([
+      ['others can write', () => chmodSync(toolCache, 0o777)],
+      ['the group can write', () => chmodSync(toolCache, 0o770)],
+      // As for a job in a container, which runs as root on the tool cache of the runner's user.
+      ['another user owns', () => jest.spyOn(process, 'getuid').mockReturnValue(statSync(toolCache).uid + 1)],
+    ])('makes no folder in a tool cache that %s', async (_case, arrange) => {
+      arrange();
+
+      const dir = await nextRun();
+
+      expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+      expect(readdirSync(toolCache)).toEqual([]);
+      expect(notes()).toEqual(DISTRUST);
+    });
+
     it('makes a tool cache folder that does not exist yet', async () => {
       process.env.RUNNER_TOOL_CACHE = join(toolCache, '_work', '_tool');
       await nextRun();
@@ -393,11 +408,31 @@ describe('installPinned', () => {
       const other = Buffer.from('#!/bin/sh\n');
       fetchMock.mockImplementation(async () => new Response(other));
       const otherIntegrity = `sha256-${createHash('sha256').update(other).digest('base64')}`;
-      await nextRun({ url: 'https://example.test/kept/other-tool', integrity: otherIntegrity });
+      // Another run on the runner removes the first old file this run looks at, between the listing and the look.
+      const fs = jest.requireActual<typeof import('fs')>('fs');
+      const vanished: string[] = [];
+      jest.doMock('fs', () => ({
+        ...fs,
+        lstatSync: (path: string) => {
+          if (vanished.length === 0 && ['old-version.tgz', '.writing-0123456789abcdef'].includes(basename(path))) {
+            vanished.push(basename(path));
+            fs.rmSync(path);
+          }
+          return fs.lstatSync(path);
+        },
+      }));
+      try {
+        await nextRun({ url: 'https://example.test/kept/other-tool', integrity: otherIntegrity });
+      } finally {
+        jest.dontMock('fs');
+      }
 
       const otherName = `${createHash('sha256').update(otherIntegrity).digest('hex').slice(0, 16)}-other-tool`;
+      expect(vanished).toHaveLength(1);
       expect(readdirSync(folder()).sort()).toEqual(['a-folder', 'a-link', keptName, 'other-version.tgz', otherName].sort());
       expect(existsSync(join(toolCache, 'outside'))).toBe(true);
+      // The new download was kept, and the log does not say otherwise.
+      expect(notes().filter(line => line.startsWith('Could not'))).toEqual([]);
     });
 
     it('installs all the same when a folder sits where the kept file goes, and says why nothing is kept', async () => {

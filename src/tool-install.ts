@@ -157,7 +157,7 @@ function ownFolder(path: string): boolean {
  * Returns the folder that keeps pinned downloads for later runs on this runner, or `undefined` when there is none to
  * trust. Only a self-hosted runner keeps its tool cache between jobs. The folder and the tool cache around it must
  * each be this user's own and writable by no one else, so no other user can plant a file or a link there. With
- * `create` a missing folder is made first.
+ * `create` a missing folder is made, and only in a tool cache that passed that check.
  */
 function keptFolder(create: boolean): string | undefined {
   const toolCache = process.env.RUNNER_TOOL_CACHE;
@@ -167,8 +167,11 @@ function keptFolder(create: boolean): string | undefined {
     if (create) mkdirSync(toolCache, { recursive: true });
     const root = realpathSync(toolCache);
     const folder = join(root, KEPT_FOLDER);
-    if (create && !existsSync(folder)) mkdirSync(folder, { mode: 0o700 });
-    if (ownFolder(root) && ownFolder(folder)) return folder;
+    if (ownFolder(root)) {
+      // Not an error when the folder exists, as when another run made it at the same moment.
+      if (create) mkdirSync(folder, { recursive: true, mode: 0o700 });
+      if (ownFolder(folder)) return folder;
+    }
     if (!distrustNoted) note(`Not keeping downloads in ${folder}: it and ${root} must be folders that only this user can write`);
     distrustNoted = true;
     return undefined;
@@ -220,14 +223,19 @@ function removeUnusedKept(folder: string): void {
   const cutoff = Date.now() - KEPT_UNUSED_MS;
   for (const entry of readdirSync(folder, { withFileTypes: true })) {
     const path = join(folder, entry.name);
-    if (entry.isFile() && lstatSync(path).mtimeMs < cutoff) rmSync(path, { force: true });
+    try {
+      if (entry.isFile() && lstatSync(path).mtimeMs < cutoff) rmSync(path, { force: true });
+    } catch {
+      // Another run on this runner may have removed the file meanwhile. A file that stays is tried again by a later run.
+    }
   }
 }
 
 /** Keeps the checked `data` of `download` for later runs on this runner. A failure to keep it never fails the install. */
 function keepDownload(download: PinnedDownload, data: Buffer): void {
+  let folder: string | undefined;
   try {
-    const folder = keptFolder(true);
+    folder = keptFolder(true);
     if (!folder) return;
     // Written under another name first, so a run that reads meanwhile finds the whole file or none.
     const writing = join(folder, `.writing-${randomBytes(8).toString('hex')}`);
@@ -238,9 +246,14 @@ function keepDownload(download: PinnedDownload, data: Buffer): void {
       rmSync(writing, { force: true });
       throw error;
     }
-    removeUnusedKept(folder);
   } catch (error) {
     note(`Could not keep the download of ${download.url} for later runs: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  try {
+    removeUnusedKept(folder);
+  } catch (error) {
+    note(`Could not remove the unused downloads in ${folder}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
