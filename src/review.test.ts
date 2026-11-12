@@ -2060,6 +2060,9 @@ describe('runReview', () => {
       ];
       const withoutTools = makeClients();
       results.push(await runReview(withoutTools, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' }));
+      // The second refuter runs only next to a judge with tools, so its tools alone give no model the repos.
+      const pairOnly = { ...makeClients(), refuterPair: { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient };
+      results.push(await runReview(pairOnly, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' }));
 
       // Each round records every configured related repo, and each finder call how often it read one.
       expect(results.map(r => r.relatedRepos)).toEqual([
@@ -2070,6 +2073,7 @@ describe('runReview', () => {
         ],
         related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'the PR head was not checked out for the tools' })),
         undefined,
+        related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'no model of the round has repository tools' })),
         related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'no model of the round has repository tools' })),
       ]);
       expect(results[0].llmCalls?.filter(c => c.stage === 'reviewer').map(c => c.relatedReads)).toEqual([{ 'o/s': 2, 'o/r': 1 }, { 'o/s': 2, 'o/r': 1 }]);
@@ -2104,7 +2108,7 @@ describe('runReview', () => {
       requireSpy.mockRestore();
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
       // The judge gets the related repo rules only for a round whose models could read them.
-      expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined, related_repos]);
+      expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined, undefined, related_repos]);
       expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo o/r, which must be public on github.com: fatal: repository not found');
       const notes = mockedRunJudgeAgent.mock.calls.map(call => call[2].findings[0]?.toolEvidence?.note);
       expect(notes[0]).toContain('`o/s:lib.rs:1` is in the fetched checkout, `o/r:x.rs:3` is unchecked: o/r was not fetched this round');

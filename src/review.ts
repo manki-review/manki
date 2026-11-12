@@ -762,8 +762,9 @@ export async function runReview(
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
   const comparisonModel = resolveReviewerModel(config, undefined);
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
-  // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them.
-  const anyTools = finderTools || [pickReviewerClient(clients, comparisonModel).client, clients.judge, clients.refuterPair].some(c => c?.repoTools);
+  // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them. The
+  // second refuter runs only next to a judge with tools, so its own tools offer nothing.
+  const anyTools = finderTools || [pickReviewerClient(clients, comparisonModel).client, clients.judge].some(c => c.repoTools);
   const related = workspace && anyTools ? relatedRepoTools(config.related_repos, options.relatedReposAsOf) : undefined;
   // The guide of each repo fetched before the finders run, known once that fetch is done.
   const pointedTo: { guides?: Record<string, string> } = {};
