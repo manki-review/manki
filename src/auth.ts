@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
+import { assertWritesAllowed } from './abort';
 import { offerQueuedCheck, QueuedCheck } from './check-run';
 import { BOT_LOGIN, BotIdentity } from './github';
 import type { PrState, RunMode, StateReport, TokenServiceCall } from './types';
@@ -158,8 +159,11 @@ async function postToTokenService(url: string, body: unknown, endpoint: string, 
 /**
  * Posts as `postToTokenService` does, and tries a call that got no reply or an unknown answer once more after a short
  * wait. Returns the reply of the last try, or throws its error. Only for a call the service may safely get twice.
+ * `beforeRetry` runs after the wait and stops the second try by throwing.
  */
-async function postWithRetry(url: string, body: unknown, endpoint: string, refusals: readonly number[]): Promise<TokenServiceResponse | null> {
+async function postWithRetry(
+  url: string, body: unknown, endpoint: string, refusals: readonly number[], beforeRetry?: () => void,
+): Promise<TokenServiceResponse | null> {
   let failure: string;
   try {
     const reply = await postToTokenService(url, body, endpoint, refusals);
@@ -171,16 +175,21 @@ async function postWithRetry(url: string, body: unknown, endpoint: string, refus
   }
   core.info(`The token service failed on \`${endpoint}\` (${failure}), trying again`);
   await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  beforeRetry?.();
   return postToTokenService(url, body, endpoint, refusals);
 }
 
 /**
  * Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. `refusals` names
  * the statuses with which the service refuses this endpoint for good. With `retry` a failed call is tried once more,
- * as `postWithRetry` does.
+ * as `postWithRetry` does. A function as `retry` runs right before that second try and stops it by throwing.
  */
-export function callTokenService(path: string, body: unknown, refusals: readonly number[], retry = false): Promise<TokenServiceResponse | null> {
-  return (retry ? postWithRetry : postToTokenService)(new URL(path, tokenServiceUrl()).href, body, path, refusals);
+export function callTokenService(
+  path: string, body: unknown, refusals: readonly number[], retry: boolean | (() => void) = false,
+): Promise<TokenServiceResponse | null> {
+  const url = new URL(path, tokenServiceUrl()).href;
+  if (!retry) return postToTokenService(url, body, path, refusals);
+  return postWithRetry(url, body, path, refusals, retry === true ? undefined : retry);
 }
 
 /**
@@ -255,8 +264,9 @@ export async function changeThreadThroughService(octokit: Octokit, threadId: str
   if (!serviceClients.has(octokit)) return false;
   const { owner, repo } = github.context.repo;
   const body = { owner, repo, thread_id: threadId, resolved, ...(reason !== undefined && { reason }) };
-  // Resolving or reopening twice leaves the thread as one call does, so a failed call is tried once more.
-  const response = await callTokenService('resolve', body, NOTHING_FOR_RUN, true);
+  // Resolving or reopening twice leaves the thread as one call does, so a failed call is tried once more. The second
+  // try comes after a wait, in which the run can be cancelled, so the write stop is checked again before it.
+  const response = await callTokenService('resolve', body, NOTHING_FOR_RUN, assertWritesAllowed);
   if (!response?.ok) {
     throw new Error(`The token service did not ${resolved ? 'resolve' : 'reopen'} the thread (${response ? response.status : 'no OIDC token'})`);
   }

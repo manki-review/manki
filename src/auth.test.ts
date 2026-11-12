@@ -4,6 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
+import { RunCancelledError, stopWritesOn } from './abort';
 import { changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, reportPrState, resolveGitHubToken, tokenServiceCalls, TokenResult, TokenServiceError } from './auth';
 import { startReviewCheck } from './check-run';
 import { pastRetryWait } from './test-utils';
@@ -515,6 +516,22 @@ describe('changeThreadThroughService', () => {
       .mockImplementationOnce(async () => Response.json({ resolved: true })) as jest.Mock;
     expect(await pastRetryWait(() => changeThreadThroughService(octokit, 'PRRT_1', true, 'ADDRESSED'))).toBe(true);
     expect(global.fetch).toHaveBeenCalledTimes(2);
+
+    // A run that is cancelled while the first try fails sends no second one.
+    const cancel = new AbortController();
+    const { release } = stopWritesOn(cancel.signal);
+    try {
+      mockFetch(async () => {
+        cancel.abort(new RunCancelledError('SIGTERM'));
+        return new Response('Bad Gateway', { status: 502 });
+      });
+      for (const resolved of [true, false]) {
+        await expect(pastRetryWait(() => changeThreadThroughService(octokit, 'PRRT_1', resolved))).rejects.toBeInstanceOf(RunCancelledError);
+      }
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+    }
 
     // Any other client, such as a custom App's, changes its threads itself.
     mockFetch(async () => Response.json({ resolved: true }));
