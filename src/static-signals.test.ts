@@ -837,6 +837,10 @@ describe('checkFindingClaims', () => {
       .toEqual({ status: 'none', note: 'Checked: the file is in the diff, `parseConfig` not found in the diff.' });
     expect(checkFindingClaims(finding({ title: 'Shadowed `config.lodash`', description: 'Returns `null` early.' }), sources))
       .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, `lodash` occurs.' });
+    // A run of backticks is closed only by a run of the same length. So a symbol in double backticks is one, and a
+    // word between two spans that each hold a backtick is not.
+    expect(checkFindingClaims(finding({ description: 'Calls ``parseConfig()``.' }), sources).note).toBe('Checked: the file is in the diff, the line is in the file, `parseConfig` not found in src/app.ts or the diff.');
+    expect(checkFindingClaims(finding({ description: 'Compare ``a ` b``parseConfig``c ` d``.' }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
   });
 
   it('confirms a claimed type error only from a type checker or compiler near the line, never from a lint error', () => {

@@ -45,7 +45,8 @@ const STYLE_RULE = /\b(?:prettier|[a-z]*(?:fmt|style)|stylistic|format(?:ting|te
 const TYPE_ERROR_CLAIM = /\b(?:type error|type mismatch|(?:compile|compiler|compilation|build) error|(?:does not|doesn't|won't|will not|would not|wouldn't|cannot|can't|fails? to) compile|not assignable|TS\d{4,5}|E0\d{3})\b/i;
 const TYPE_CHECKER_RULE = /^(?:TS\d{4,5}|E0\d{3})$/;
 const TYPE_CHECKER_TOOL = /\b(?:tsc|type-?check(?:er|ing)?|mypy|pyright|pyre|flow|rustc|cargo (?:check|build)|go (?:vet|build)|javac|kotlinc|scalac|swiftc|compile|compiler)\b/i;
-const BACKTICKED = /`([^`\n]+)`/g;
+// A code span as in Markdown: a run of backticks is closed only by a run of the same length, so a span in double backticks can hold a backtick itself.
+const CODE_SPAN = /(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g;
 const SYMBOL = /^[A-Za-z_$][\w$]*(?:(?:\.|::|->)[A-Za-z_$][\w$]*)*(?:\(\))?$/;
 
 const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/;
@@ -596,13 +597,12 @@ function pathInCheckout(dir: string | undefined, path: string): string {
 const withoutWhitespace = (text: string): string => text.replace(/\s+/g, '');
 
 /**
- * Returns the code `text` quotes in backticks, each part of a quote cut by an ellipsis on its own. Every part of a
+ * Returns the code `text` quotes in a `CODE_SPAN`, each part of a quote cut by an ellipsis on its own. Every part of a
  * quote is returned, so none is left out of the comparison. A quote under `MIN_QUOTE_CHARS`, without its whitespace and
- * ellipses, is taken as a name the sentence mentions and gives no part. As in Markdown, a run of backticks is closed
- * only by a run of the same length, so a quote in double backticks can hold a backtick itself.
+ * ellipses, is taken as a name the sentence mentions and gives no part.
  */
 function quotedCode(text: string): string[] {
-  return [...text.matchAll(/(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g)]
+  return [...text.matchAll(CODE_SPAN)]
     .map(([, , quote]) => quote.split(/\.{3}|…/).map(part => part.trim()).filter(part => part.length > 0))
     .filter(parts => withoutWhitespace(parts.join('')).length >= MIN_QUOTE_CHARS)
     .flat();
@@ -641,7 +641,7 @@ function isTypeChecker(signal: StaticSignal): boolean {
 /** Returns the identifiers named in backticks. Plain lowercase words such as `null` are skipped, since prose uses them too. */
 function claimedSymbols(text: string): string[] {
   const symbols = new Set<string>();
-  for (const [, token] of text.matchAll(BACKTICKED)) {
+  for (const [, , token] of text.matchAll(CODE_SPAN)) {
     const trimmed = token.trim();
     if (!SYMBOL.test(trimmed) || /^[a-z]+$/.test(trimmed)) continue;
     const name = trimmed.replace(/\(\)$/, '').split(/\.|::|->/).pop()!;
