@@ -120,6 +120,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         const durationMs = result.agentDurationMs?.get(name);
         const retryCount = result.agentRetryCount?.get(name);
         const failureReason = result.agentFailureReasons?.[name];
+        const warnings = result.agentWarnings?.get(name);
         const model = agentModels.get(name);
         const effort = result.agentEffortMap?.get(name);
         const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
@@ -132,6 +133,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
           ...(durationMs != null && { durationMs }),
           status: failureReason ? 'failed' as const : 'success' as const,
           responseLength: result.agentResponseLengths?.get(name),
+          ...(warnings && { warnings }),
           inputTokens: usage?.inputTokens ?? 0,
           outputTokens: usage?.outputTokens ?? 0,
           retryCount: retryCount ?? 0,

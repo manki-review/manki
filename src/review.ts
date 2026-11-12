@@ -156,7 +156,7 @@ export const FINDER_TOOLS_TIMEOUT_MS = 900_000;
 /** How long the round still waits for the sibling comparisons once the finders are done. */
 const COMPARISON_GRACE_MS = 60_000;
 
-/** A finder reply that is not the JSON array of findings, which a retry with `parseRetryNote` can correct. */
+/** A finder reply that is not the JSON array of findings or holds no usable element, which a retry with `parseRetryNote` can correct. */
 class FinderReplyError extends Error {}
 
 class PlannerTimeoutError extends Error {
@@ -816,7 +816,8 @@ export async function runReview(
   const agentUsage = new Map<string, LLMUsage>();
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
-  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount });
+  const agentWarnings = new Map<string, string[]>();
+  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings });
   // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
   const quotaErrors = new Map<string, QuotaError>();
   // The note each finder's next retry gets: one that names the parse error when its last reply did not parse.
@@ -828,7 +829,9 @@ export async function runReview(
     return note;
   };
   const recordFailure = (name: string, error: unknown): void => {
-    agentFailureReasons.set(name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
+    const reason = sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500);
+    agentFailureReasons.set(name, reason);
+    agentWarnings.set(name, [...(agentWarnings.get(name) ?? []), reason]);
     if (error instanceof QuotaError) quotaErrors.set(name, error);
     if (error instanceof FinderReplyError) retryNotes.set(name, parseRetryNote(error, 'array'));
     else retryNotes.delete(name);
@@ -1638,6 +1641,7 @@ export async function runReview(
     agentResponseLengths,
     agentDurationMs,
     agentRetryCount,
+    agentWarnings,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
     ...(plannerDurationMs != null && { plannerDurationMs }),
     ...(judgeDurationMs != null && { judgeDurationMs }),
@@ -2052,7 +2056,15 @@ export function parseFindings(responseText: string, reviewerName: string, instru
     throw new Error(`response is not a JSON array, got ${parsed === null ? 'null' : typeof parsed} (length ${responseText.length})`);
   }
 
-  return parsed.map((f: Record<string, unknown>) => {
+  const unusable = parsed.filter(element => !isUsableElement(element));
+  if (unusable.length > 0) {
+    const shapes = elementShapes(unusable);
+    // One stray element next to real findings is dropped. A reply with nothing else is no reply, so the caller's retry asks again.
+    if (unusable.length === parsed.length) throw new Error(`no element has a title or a description (${parsed.length} element(s), ${shapes})`);
+    core.warning(`${reviewerName}: dropped ${unusable.length} of ${parsed.length} element(s) without a title or a description (${shapes})`);
+  }
+
+  return parsed.filter(isUsableElement).map(f => {
     const evidence = parseEvidence(f);
     const lead = f.lead === true ? { checked: textOf(f.checked), left: textOf(f.left) } : undefined;
     // A lead the judge keeps is posted like a finding, so it needs a description even when the reviewer gave none.
@@ -2073,6 +2085,32 @@ export function parseFindings(responseText: string, reviewerName: string, instru
       ...ruleOf(f, instructionFiles),
     };
   });
+}
+
+/** Whether a reply element says anything a finding can carry: a title, a description, or what a lead checked or left open. */
+function isUsableElement(element: unknown): element is Record<string, unknown> {
+  if (element === null || typeof element !== 'object' || Array.isArray(element)) return false;
+  const f = element as Record<string, unknown>;
+  return [f.title, f.description, ...(f.lead === true ? [f.checked, f.left] : [])].some(value => textOf(value) !== '');
+}
+
+const MAX_ELEMENT_SHAPES = 3;
+const MAX_SHAPE_KEYS = 8;
+const SHAPE_KEY_CHARS = 30;
+
+/**
+ * Names what `elements` hold, so the log and the retry note show the shape the reviewer used: the keys of an object, or
+ * the type of anything else. The keys are model output, so they are cut and kept to plain characters.
+ */
+function elementShapes(elements: readonly unknown[]): string {
+  const shapes = new Set(elements.map(element => {
+    if (element === null || typeof element !== 'object') return element === null ? 'null' : typeof element;
+    if (Array.isArray(element)) return 'array';
+    const keys = Object.keys(element);
+    const shown = keys.slice(0, MAX_SHAPE_KEYS).map(key => key.slice(0, SHAPE_KEY_CHARS).replace(/[^\w .-]/g, '?'));
+    return `keys: ${shown.join(', ') || 'none'}${keys.length > MAX_SHAPE_KEYS ? ', ...' : ''}`;
+  }));
+  return [...shapes].slice(0, MAX_ELEMENT_SHAPES).join(' | ') + (shapes.size > MAX_ELEMENT_SHAPES ? ' | ...' : '');
 }
 
 /** Reads the fix a finding describes in words, which a reply without one leaves inside its `description`. */
