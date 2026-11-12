@@ -2,7 +2,7 @@
 # Place this file as .manki.yml in your repository root
 
 # Automatically review PRs on open/update (default: true)
-# When false, reviews only run via @manki review
+# When false, Manki reviews only on request, such as @manki review
 # auto_review: true
 
 # Auto-approve when all blocking findings are resolved (default: true)
