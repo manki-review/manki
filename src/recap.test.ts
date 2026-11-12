@@ -1347,19 +1347,24 @@ describe('fetchRecapState', () => {
       expect(bareState.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual([undefined]);
     });
 
-    it('reads a thread posted on another file than its finding\'s by the place its finding data names', async () => {
+    it('reads where a thread\'s finding sits from its finding data and the place GitHub reports', async () => {
       const entry = (title: string, file: string, line: number) => ({ fingerprint: { file, lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'blocker' as const, title, posted: 'thread' as const });
       const entries = [entry('Persisters miss the lock', 'src/store.ts', 30), entry('The design drops retries', '', 0), entry('Named without the flag', 'src/old.ts', 7)];
       const ctx = makeRoundContext(12, { findings: { count: 3, severityCounts: { blocker: 3, warning: 0, note: 0 }, entries } });
       // Each thread sits on the first changed file. Only a flagged one takes its place from its finding data.
-      const posted = (id: string, title: string, data: Record<string, unknown>) => makeThread({
-        id, path: 'src/first.ts', line: 1, originalLine: 1,
-        comments: { nodes: [{ body: `\u{1F6AB} **Blocker**: ${title}\n\nDesc.\n\n<!-- manki:blocker:${titleToSlug(title)} -->\n<!-- manki-finding: ${JSON.stringify({ ...data, severity: 'blocker', title })} -->`, author: { login: BOT_LOGIN } }] },
+      const posted = (id: string, title: string, data?: Record<string, unknown>, line = 1, originalLine = 1) => makeThread({
+        id, path: 'src/first.ts', line, originalLine,
+        comments: { nodes: [{ body: `\u{1F6AB} **Blocker**: ${title}\n\nDesc.\n\n<!-- manki:blocker:${titleToSlug(title)} -->${data ? `\n<!-- manki-finding: ${JSON.stringify({ ...data, severity: 'blocker', title })} -->` : ''}`, author: { login: BOT_LOGIN } }] },
       });
       const octokit = mockOctokit([
         posted('T_FILE', 'Persisters miss the lock', { file: 'src/store.ts', line: 30, detached: true }),
         posted('T_NONE', 'The design drops retries', { file: '', line: 0, detached: true }),
         posted('T_OLD', 'Named without the flag', { file: 'src/old.ts', line: 7 }),
+        // On the finding's own file: a file-level thread for a finding without a line, a line thread whose code moved
+        // down by four lines, and a thread from before the finding data.
+        posted('T_WHOLE', 'The file has no owner', { file: 'src/first.ts', line: 0 }),
+        posted('T_MOVED', 'The retry never stops', { file: 'src/first.ts', line: 40 }, 44, 40),
+        posted('T_BARE', 'Written without finding data'),
       ], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -1367,10 +1372,16 @@ describe('fetchRecapState', () => {
         ['T_FILE', 'src/store.ts', 30],
         ['T_NONE', '', undefined],
         ['T_OLD', 'src/first.ts', undefined],
+        ['T_WHOLE', 'src/first.ts', undefined],
+        ['T_MOVED', 'src/first.ts', 40],
+        ['T_BARE', 'src/first.ts', undefined],
       ]);
       // GitHub reports a file-level thread on line 1. A flagged thread takes the line its data names, and none when it names none.
-      expect(state.previousFindings.map(currentFindingLine)).toEqual([30, 0, 1]);
-      expect(state.previousFindings.map(f => [f.line, f.originalLine, f.detached])).toEqual([[30, undefined, true], [0, undefined, true], [1, 1, undefined]]);
+      // So does a file-level thread whose finding names no line. Any other thread keeps the line GitHub reports.
+      expect(state.previousFindings.map(currentFindingLine)).toEqual([30, 0, 1, 0, 44, 1]);
+      expect(state.previousFindings.map(f => [f.line, f.originalLine, f.detached])).toEqual([
+        [30, undefined, true], [0, undefined, true], [1, 1, undefined], [0, undefined, undefined], [44, 40, undefined], [1, 1, undefined],
+      ]);
       // So the round record's blocker finds its thread, and the thread from before the flag stays on GitHub's path.
       expect(state.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual(['T_FILE', 'T_NONE', undefined]);
     });

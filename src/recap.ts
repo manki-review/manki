@@ -53,13 +53,14 @@ export function parseFindingData(body: string): { title?: string; fix?: string; 
 /**
  * Returns the place of the finding in a Manki thread's first comment `body`, for a thread GitHub reports on `path`,
  * `line` and `originalLine`. A `detached` thread takes its file and line from its finding data, which may name none.
+ * GitHub reports every file-level thread on line 1, so a thread whose finding names no line has none either.
  */
 export function findingPlace(
   body: string, path: string | null | undefined, line?: number | null, originalLine?: number | null,
 ): Pick<PreviousFinding, 'file' | 'line' | 'originalLine' | 'findingLine'> {
   const data = parseFindingData(body);
   const file = data?.detached ? data.file ?? '' : path ?? '';
-  const fromData = !!data?.detached;
+  const fromData = !!data && (data.detached || !data.line);
   return {
     file,
     line: fromData ? data.line ?? 0 : line ?? 0,

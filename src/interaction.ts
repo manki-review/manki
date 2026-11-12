@@ -8,7 +8,7 @@ import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, MAN
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, findingFile, findingLineOf } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
@@ -346,7 +346,8 @@ export async function handleReviewCommentReply(
     await reactToReviewComment(octokit, owner, repo, comment.id, 'eyes');
 
 
-    const filePath = findingFile(root.comment.body ?? '', root.comment.path);
+    const place = findingPlace(root.comment.body ?? '', root.comment.path, root.comment.line, root.comment.original_line);
+    const filePath = place.file;
     // Fetch the PR diff scoped to the file under discussion
     let diffContext = '';
     let codeTokens = new Set<string>();
@@ -367,7 +368,7 @@ export async function handleReviewCommentReply(
       root.comment.body,
       comment.body,
       filePath,
-      findingLineOf(root.comment.body ?? '', root.comment.line),
+      currentFindingLine(place),
       root.id !== inReplyTo && isBotComment(parentComment.body ?? '') ? parentComment.body : undefined,
     );
 

@@ -5222,21 +5222,24 @@ describe('runFullReview orchestration', () => {
         { ...detached, title: 'On another file, head unread', file: 'src/unread.ts', threadId: 'PRRT_d_unread' },
         { ...detached, title: 'On another file, no commit', file: 'src/app.ts', threadId: 'PRRT_d_commit', originalCommit: undefined },
         { ...detached, title: 'On another file, no line', file: 'src/app.ts', threadId: 'PRRT_d_file', line: 0, findingLine: undefined },
+        // GitHub reports a file-level thread on line 1, which a finding without a line does not take.
+        { severity: 'blocker', status: 'open', title: 'On its own file, no line', file: 'src/app.ts', threadId: 'PRRT_file', line: 0, originalCommit: 'c0ffee' },
       ],
       priorRounds: [],
     });
 
     await callRunFullReview();
 
-    const [found, gone, unread, past, small, elsewhere, twice, partial, ...onAnotherFile] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    const [found, gone, unread, past, small, elsewhere, twice, partial, ...placedByData] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
     // Its file changed since it was posted, so the line it was posted with is checked like an outdated thread's.
-    expect(onAnotherFile[0]).toMatchObject({ line: 5, postedCommit: 'c0ffee' });
-    expect(onAnotherFile[0].currentCode).toContain('>>> 5:   reopenThread(thread);');
+    expect(placedByData[0]).toMatchObject({ line: 5, postedCommit: 'c0ffee' });
+    expect(placedByData[0].currentCode).toContain('>>> 5:   reopenThread(thread);');
     // An unchanged file still holds the code on that line, so the thread reads as any other.
-    expect(onAnotherFile[1]).toMatchObject({ line: 1, currentCode: '>>> 1: exit(1);' });
-    expect(onAnotherFile[1].postedCode).toBeUndefined();
-    // Where nothing says whether the file changed, the thread names no line and shows no code. One whose finding names no line never did.
-    for (const unknown of onAnotherFile.slice(2)) {
+    expect(placedByData[1]).toMatchObject({ line: 1, currentCode: '>>> 1: exit(1);' });
+    expect(placedByData[1].postedCode).toBeUndefined();
+    // Where nothing says whether the file changed, the thread names no line and shows no code. One whose finding names no line never did,
+    // on another file or on its own.
+    for (const unknown of placedByData.slice(2)) {
       expect(unknown).toMatchObject({ line: 0, currentCode: '' });
       expect(unknown.postedCode).toBeUndefined();
     }

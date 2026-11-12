@@ -753,6 +753,14 @@ describe('handleReviewCommentReply', () => {
     // The line is the finding's too, never the line the thread sits on.
     expect(detachedMessage).toContain('File: `src/store.ts` (line 30)');
     expect(detachedMessage).not.toContain('File: `src/first.ts`');
+
+    // GitHub reports a file-level thread on line 1. Its line is the one its finding names, and none when it names none.
+    const fileLevel = (line: number) => ({ data: { body: jest.requireActual('./github').formatFindingComment({ severity: 'blocker', title: 'Persisters miss the lock', file: 'src/store.ts', line, description: 'd', reviewers: [] }, TEST_LINKS), path: 'src/store.ts', line: 1, original_line: 1 } });
+    for (const [line, shown] of [[30, 'File: `src/store.ts` (line 30)\n'], [0, 'File: `src/store.ts`\n']] as const) {
+      octokit.rest.pulls.getReviewComment.mockResolvedValue(fileLevel(line));
+      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+      expect((client.sendMessage as jest.Mock).mock.calls.at(-1)[1]).toContain(shown);
+    }
   });
 
   it('resolves the thread from its first comment when the developer answers a Manki reply', async () => {
