@@ -174,10 +174,17 @@ describe('relatedRepoLoader', () => {
 
     // A holder that stopped mid-fetch left a lock and no outcome. Of the two tool servers that ask next, one fetches and the other waits for it.
     lock('dashpay%2Fplatform', gone);
-    const platformDir = join(cacheDir, 'dashpay', 'platform');
+    // The git process of the stopped holder may still write its clone, so the one that takes over clones elsewhere and leaves that clone alone.
+    const stoppedClone = join(cacheDir, 'dashpay', 'platform');
+    const halfWritten = join(stoppedClone, '.git', 'objects', 'pack', 'tmp_pack_1');
+    mkdirSync(join(stoppedClone, '.git', 'objects', 'pack'), { recursive: true });
+    writeFileSync(halfWritten, 'half a pack');
+    const platformDir = join(stateDir, 'takeover-1', 'dashpay', 'platform');
     const [first, second] = [fakeGit(), fakeGit()];
     expect(await Promise.all([loader([PLATFORM], { run: first })('dashpay/platform'), loader([PLATFORM], { run: second })('dashpay/platform')])).toEqual([platformDir, platformDir]);
     expect([first.mock.calls.length, second.mock.calls.length].sort()).toEqual([0, 7]);
+    expect(calls.map(c => c.cwd).filter(cwd => cwd.endsWith(join('dashpay', 'platform')))).toEqual(Array(7).fill(platformDir));
+    expect(readFileSync(halfWritten, 'utf-8')).toBe('half a pack');
     expect(readdirSync(stateDir).filter(f => f.startsWith('dashpay%2Fplatform')).sort()).toEqual(['dashpay%2Fplatform.commit', 'dashpay%2Fplatform.done', 'dashpay%2Fplatform.lock', 'dashpay%2Fplatform.lock.1']);
     expect(readFileSync(join(stateDir, 'dashpay%2Fplatform.lock'), 'utf-8')).toBe(String(gone));
     // A reader after that takes the outcome and fetches nothing.
@@ -188,7 +195,7 @@ describe('relatedRepoLoader', () => {
     const twice: RelatedRepo = { repo: 'dashpay/twice', kind: 'reference' };
     lock('dashpay%2Ftwice', gone);
     writeFileSync(join(stateDir, 'dashpay%2Ftwice.lock.1'), String(gone));
-    expect(await loader([twice])('dashpay/twice')).toBe(join(cacheDir, 'dashpay', 'twice'));
+    expect(await loader([twice])('dashpay/twice')).toBe(join(stateDir, 'takeover-2', 'dashpay', 'twice'));
     expect(existsSync(join(stateDir, 'dashpay%2Ftwice.lock.2'))).toBe(true);
     const broken: RelatedRepo = { repo: 'dashpay/broken', kind: 'reference' };
     lock('dashpay%2Fbroken', gone);
@@ -210,7 +217,7 @@ describe('relatedRepoLoader', () => {
       return { load, waiting };
     };
     const early: RelatedRepo = { repo: 'dashpay/early', kind: 'reference' };
-    await expect((await stopsWhileWaited(early, { timeoutMs: 5000 })).waiting).resolves.toBe(join(cacheDir, 'dashpay', 'early'));
+    await expect((await stopsWhileWaited(early, { timeoutMs: 5000 })).waiting).resolves.toBe(join(stateDir, 'takeover-1', 'dashpay', 'early'));
     const late: RelatedRepo = { repo: 'dashpay/late', kind: 'reference' };
     // With these limits a fetch fits only in the first 100 ms of a call.
     const lateRun = fakeGit();
@@ -222,7 +229,7 @@ describe('relatedRepoLoader', () => {
     // A round where no call asks again records that the fetch was cut off, not that the repo could not be fetched.
     expect(relatedRepoOutcomes([late], stateDir)).toEqual([{ repo: 'dashpay/late', status: 'failed', reason: 'the stage fetching it was stopped before the fetch finished, and no later call fetched it' }]);
     jest.mocked(core.warning).mockClear();
-    expect(await loadLate('dashpay/late')).toBe(join(cacheDir, 'dashpay', 'late'));
+    expect(await loadLate('dashpay/late')).toBe(join(stateDir, 'takeover-1', 'dashpay', 'late'));
     expect(relatedRepoOutcomes([late], stateDir)).toEqual([{ repo: 'dashpay/late', status: 'fetched', durationMs: expect.any(Number) }]);
 
     // A lock with no outcome and no later asker says the stage did not finish, never that the repo cannot be fetched. A repo no call named is unused.

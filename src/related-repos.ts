@@ -72,12 +72,15 @@ export function relatedRepoLoader(
   { timeoutMs = FETCH_TIMEOUT_MS, callLimitMs = STALE_TIMEOUT_MS, run = runTool, log = message => process.stderr.write(`${message}\n`) }: RelatedRepoLoaderOptions = {},
 ): (name: string) => Promise<string> {
   const checkouts = new Map<string, Promise<string>>();
+  // The git process of a stopped holder can outlive it and go on writing its clone. So a fetch after a takeover clones
+  // into a directory of its own in the round's state directory, which no cache restores and no other fetch uses.
+  const cloneRoot = (takeovers: number): string => (takeovers === 0 ? cacheDir : join(stateDir, `takeover-${takeovers}`));
   return name => {
     const repo = repos.find(r => r.repo === name);
     if (!repo) return Promise.reject(new Error(`${name} is not a related repo`));
     let checkout = checkouts.get(name);
     if (!checkout) {
-      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), { timeoutMs, callLimitMs }, () => checkoutRelatedRepo(repo, cacheDir, timeoutMs, run, log, asOf))
+      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), { timeoutMs, callLimitMs }, takeovers => checkoutRelatedRepo(repo, cloneRoot(takeovers), timeoutMs, run, log, asOf))
         .catch((error: unknown) => {
           // The repo has no outcome yet, so the next call asks again.
           if (error instanceof RelatedRepoPending) checkouts.delete(name);
@@ -99,14 +102,17 @@ function lockPath(marker: string, takeovers: number): string {
  * `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits for that outcome.
  * A lock holds its creator's PID. When a holder stopped and left no outcome, the next lock of `lockPath` takes its
  * place. No lock is ever removed or renamed, and a lock is created only if it does not exist, so one process holds each.
- * The call ends within `callLimitMs`. It throws `RelatedRepoPending`, and records nothing, when a holder stopped too
- * late in the call for a fetch to fit, or when the call's limit comes before the outcome of another's fetch.
+ * `checkout` is told how many holders stopped before it. The call ends within `callLimitMs`. It throws
+ * `RelatedRepoPending`, and records nothing, when a holder stopped too late in the call for a fetch to fit, or when
+ * the call's limit comes before the outcome of another's fetch.
  */
 async function sharedCheckout(
-  repo: RelatedRepo, marker: string, { timeoutMs, callLimitMs }: { timeoutMs: number; callLimitMs: number }, checkout: () => Promise<{ dir: string; commit: string }>,
+  repo: RelatedRepo, marker: string, { timeoutMs, callLimitMs }: { timeoutMs: number; callLimitMs: number },
+  checkout: (takeovers: number) => Promise<{ dir: string; commit: string }>,
 ): Promise<string> {
   const started = Date.now();
-  for (let takeovers = 0; ; takeovers++) {
+  let takeovers = 0;
+  for (; ; takeovers++) {
     // A fetch takes up to `timeoutMs`, so one begun later than this could run past the call's limit.
     if (takeovers > 0 && Date.now() - started >= callLimitMs - timeoutMs - WAIT_SLACK_MS) throw new RelatedRepoPending();
     const lock = lockPath(marker, takeovers);
@@ -120,7 +126,7 @@ async function sharedCheckout(
     if (outcome !== undefined) return outcome;
   }
   try {
-    const { dir, commit } = await checkout();
+    const { dir, commit } = await checkout(takeovers);
     writeMarker(`${marker}.commit`, commit);
     writeMarker(`${marker}.done`, dir);
     return dir;
@@ -278,8 +284,8 @@ async function commitAsOf(git: Git, asOf: string): Promise<string> {
 }
 
 /**
- * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, reusing the objects of a
- * clone already there, and returns that directory and the commit. The commit is the newest of its `ref`, or with `asOf` the one
+ * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, the directory the
+ * clones of one fetch go to, reusing the objects of a clone already there, and returns that directory and the commit. The commit is the newest of its `ref`, or with `asOf` the one
  * `commitAsOf` returns. Throws when it cannot be fetched in time, as a private or missing repo cannot.
  */
 async function checkoutRelatedRepo(
