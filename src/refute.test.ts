@@ -1046,8 +1046,8 @@ describe('refuteBlockers', () => {
     const parsesDate = [{ premise: 'acme/reports parses the first column as a date', decides: 'defect' as const }];
     const consumerLine = 'acme/reports:src/import.ts:2';
     const answer = (outcome: string, ...proof: string[]) => ({ outcome, reason: 'r', proof, premises: [{ outcome, reason: 'r', proof }] });
-    // Line 0, a range that runs backwards and a line past the last one.
-    const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40'];
+    // Line 0, a range that runs backwards and a line past the last one, in a related repo and in the PR. `src/math.ts` has 3 lines.
+    const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40', 'src/math.ts:0', 'src/math.ts:2-1', 'src/math.ts:2-40', 'src/math.ts:4'];
     const client = fakeClient({
       'Related line confirms': answer('confirmed', `\`${consumerLine}\` parses the column with Date.parse`),
       'Related line alone disproves': answer('disproved', consumerLine),
