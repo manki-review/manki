@@ -144,22 +144,25 @@ function citesFindingCode(file: string, proof: readonly string[], diff?: ParsedD
 }
 
 /**
- * Returns the refutation an earlier round stored in `field` for the same finding, the latest first, when it covers every
- * file the finding now cites and none of those files changed since. One stored without a `defect` answer never asked
- * whether the defect exists, so it is not reused. Neither is one that `citesRelatedRepo`: the stored digest covers the
- * PR's files only, and the related repo can have changed.
+ * Returns the refutation an earlier round stored in `field` for the same finding, when it covers every file the finding
+ * now cites and none of those files changed since. Only the latest such answer counts, so no older one is ever reused
+ * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
+ * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
+ * covers the PR's files only and the related repo can have changed, or when it is a disproof that no longer cites the
+ * finding's code.
  */
 function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);
   for (const round of [...priorRounds].reverse()) {
-    const stored = [
+    const refutation = [
       ...round.findings.entries.map(e => ({ title: e.title ?? '', file: e.fingerprint.file, line: e.fingerprint.lineStart, refutation: e[field] })),
       ...(round.judge.dropped ?? []).map(d => ({ ...d, refutation: d[field] })),
-    ].find(({ title, file, line, refutation }) => refutation?.defect && !citesRelatedRepo(refutation) && file === finding.file && Math.abs(line - finding.line) <= LINE_TOLERANCE
+    ].find(({ title, file, line, refutation }) => refutation?.defect && file === finding.file && Math.abs(line - finding.line) <= LINE_TOLERANCE
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
-      && codeDigest(workspace, refutation.files) === refutation.codeDigest
-      && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff)));
-    if (stored?.refutation) return stored.refutation;
+      && codeDigest(workspace, refutation.files) === refutation.codeDigest)?.refutation;
+    if (!refutation) continue;
+    const reusable = !citesRelatedRepo(refutation) && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff));
+    return reusable ? refutation : undefined;
   }
   return undefined;
 }

@@ -1129,6 +1129,24 @@ describe('refuteBlockers', () => {
       await refuteBlockers(fresh, [finding('Related line confirms', unproven)], { workspace, diff, related, priorRounds: stored(first[0]) });
       await refuteBlockers(fresh, [finding('Own line confirms', unproven)], { workspace, diff, related, priorRounds: stored(first[1]) });
       expect(fresh.calls.map(([title]) => title)).toEqual(['Related line confirms', 'Own line confirms', 'Related line confirms']);
+
+      // Only the latest stored answer counts. An earlier disproof never takes the place of a later confirmation that rests on a related line.
+      const disproving = fakeClient({ 'Related line confirms': { outcome: 'disproved', reason: 'r', proof: ['src/math.ts:2'] } });
+      const [disprovedFirst] = await refuteBlockers(disproving, [finding('Related line confirms', unproven)], { workspace, diff, related });
+      expect(outcomeOf(disprovedFirst.refutation!)).toBe('disproved');
+      const rounds = (...earlier: Finding[]) => earlier.flatMap(stored);
+      const asked = async (priorRounds: RoundContext[]): Promise<[number, string]> => {
+        const again = fakeClient({ 'Related line confirms': { outcome: 'unsettled', reason: 'asked again', proof: [] } });
+        const [result] = await refuteBlockers(again, [finding('Related line confirms', unproven)], { workspace, diff, related, priorRounds });
+        return [again.calls.length, result.refutation!.reason];
+      };
+      expect(await asked(rounds(disprovedFirst, first[0]))).toEqual([1, 'asked again']);
+      // In the other order the disproof is the latest answer, and it is reused.
+      expect(await asked(rounds(first[0], disprovedFirst))).toEqual([0, 'r']);
+      // A latest disproof that no longer cites the finding's code is checked again too, whatever an earlier round stored.
+      const elsewhere: Finding = { ...disprovedFirst, refutation: { ...disprovedFirst.refutation!, proof: ['src/other.ts:1'] } };
+      expect(await asked(rounds({ ...first[1], title: 'Related line confirms' }, elsewhere))).toEqual([1, 'asked again']);
+      expect(await asked(rounds({ ...first[1], title: 'Related line confirms' }))).toEqual([0, 'r']);
     } finally {
       for (const dir of [checkout, stateDir]) rmSync(dir, { recursive: true, force: true });
     }
