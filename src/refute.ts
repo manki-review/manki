@@ -108,18 +108,23 @@ function existingLocations(workspace: string, proof: readonly string[]): string[
 /**
  * Returns the lines of related repos that the entries of a refuter's `proof` list start with, as `owner/name:path:line`,
  * each for a repo of `related` and a line in the checkout the round fetched of it. A line of a repo that was not
- * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR.
+ * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR. Each location is written
+ * again from the repo's configured name and the file's own path in the checkout, so none holds text the model chose
+ * beyond a path and line numbers that exist.
  */
 function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] {
   if (!related || !Array.isArray(proof)) return [];
   const names = related.repos.map(r => r.repo);
   const checkouts = fetchedRelatedRepos(related.stateDir);
   const cited = proof.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, names) ?? [] : []));
-  const shown = cited.filter(({ repo, path, end }) => {
+  const shown = cited.flatMap(({ repo, path, start, end }) => {
     const dir = checkouts.get(repo);
-    return !!dir && !citedLineMissing(dir, path, end);
+    if (!dir || start < 1 || end < start || citedLineMissing(dir, path, end)) return [];
+    const location = `${repo}:${resolveInRoot(dir, path).relative}:${start}${end > start ? `-${end}` : ''}`;
+    // A symlink can resolve to a file whose name a citation cannot hold, such as one with a space.
+    return leadingRelatedCitation(location, names)?.citation === location ? [location] : [];
   });
-  return [...new Set(shown.map(c => c.citation))].slice(0, MAX_RELATED_PROOF);
+  return [...new Set(shown)].slice(0, MAX_RELATED_PROOF);
 }
 
 /** Whether `refutation` rests on a line of a related repo, in its own answer or in a premise. */

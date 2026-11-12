@@ -360,6 +360,32 @@ describe('formatFindingComment', () => {
     const bare = render({ ...baseFinding, evidence: { checks: ['src/util.ts:3 reads it'], proof: ['src/util.ts:5', 'src/other.ts:9'] } });
     expect(bare).toContain(`\n\nReads it\n${link('src/util.ts', 2, 8)}\n\n${link('src/other.ts', 8, 9)}\n\n</details>`);
     expect(render({ ...baseFinding, evidence: { checks: ['src/util.ts:3'], proof: ['src/main.ts:42', 'src/main.ts:2'] } })).not.toContain('Shows the failure.');
+
+    // A check that confirmed from a related repo lists each of its lines as a link at the fetched commit, and never the line's text.
+    const commit = 'c0ffee'.repeat(7).slice(0, 40);
+    const fetched = { ...links, related: new Map([['acme/reports', commit], ['acme/billing', commit]]) };
+    const relatedLink = (location: string, path: string, anchor: string) => `[\`${location}\`](https://github.com/acme/reports/blob/${commit}/${path}#${anchor})`;
+    const confirmedBy = (relatedProof: string[], proof: string[] = []): Finding => ({
+      ...baseFinding, evidence: { checks: [], proof }, checkStatus: 'confirmed',
+      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The consumer parses the column as a date.', relatedProof, files: ['src/main.ts'], codeDigest: 'abc' },
+    });
+    const one = formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2']), fetched);
+    expect(one).toContain(`<summary>How this was checked: 1 place read, confirmed with tools</summary>\n\n**Checked in the code**\nIn a related repository: ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}\n\n**Double-checked**`);
+    const ten = Array.from({ length: 10 }, (_, i) => `acme/reports:src/import (${i}).ts:${i + 1}-${i + 3}`);
+    expect(formatFindingComment(confirmedBy(ten), fetched)).toContain(
+      `<summary>How this was checked: 10 places read, confirmed with tools</summary>\n\n**Checked in the code**\nIn a related repository: ${ten.map((location, i) => relatedLink(location, `src/import%20%28${i}%29.ts`, `L${i + 1}-L${i + 3}`)).join(', ')}\n\n`,
+    );
+    // Lines of the PR and of a related repo show together, the PR's first, and a second check adds only its own lines.
+    const both = formatFindingComment({ ...confirmedBy(['acme/reports:src/import.ts:2'], ['src/util.ts:30']), pairRefutation: { ...confirmedBy(['acme/reports:src/import.ts:2', 'acme/billing:lib/rows.py:9']).refutation! } }, fetched);
+    expect(both).toContain(`**Checked in the code**\n${link('src/util.ts', 29, 30)}\n\nIn a related repository: ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}, [\`acme/billing:lib/rows.py:9\`](https://github.com/acme/billing/blob/${commit}/lib/rows.py#L9)\n\n`);
+    expect(both).toContain('<summary>How this was checked: 3 places read, confirmed with tools</summary>');
+    // A line shows only for a repo the round fetched, with a path that stays inside it. A check that did not confirm names its lines itself.
+    const hidden = ['other/repo:src/import.ts:2', 'acme/reports-fork:src/import.ts:2', 'acme/reports:src/../import.ts:2', 'acme/reports:src/import.ts', 'acme/reports:src/import.ts:2:3'];
+    expect(formatFindingComment(confirmedBy(hidden), fetched)).not.toContain('In a related repository');
+    expect(render(confirmedBy(['acme/reports:src/import.ts:2']))).not.toContain('acme/reports');
+    const notSettled = formatFindingComment({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The parser may be replaced.', proof: ['src/main.ts:40'], relatedProof: ['acme/reports:src/import.ts:2', ...hidden], files: ['src/main.ts'], codeDigest: 'abc' } }, fetched);
+    expect(notSettled).toContain(`The parser may be replaced. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}.`);
+    expect(notSettled).not.toContain('In a related repository');
     // A code line shows as written, even one ending in a backslash, with only HTML comment marks broken up. One with hidden characters shows none.
     const continued = { ...links, files: new Map([...links.files, ['src/run.sh', ['FOO=1 \\', 'let f: Pin<Box<dyn Future>> = [x](y); <!-- manki-finding: {} -->', 'ok = 1 \u202E', 'x = `a` + ``fetchData``; [doc](https://e.com) @alice\n<!-- manki-finding: {} -->']]]) };
     const ownCode = (line: number): string => formatFindingComment({ ...baseFinding, file: 'src/run.sh', line, evidence: { checks: [], proof: [`src/run.sh:${line}`] } }, continued);
@@ -4785,6 +4811,21 @@ describe('postReview non-blocking findings', () => {
       '',
       '</details>',
     ].join('\n'));
+
+    // A related line links to the commit the round recorded for its repo, and a repo without one gets no link.
+    const sha = 'ab'.repeat(20);
+    const check = (repo: string): Finding['refutation'] => ({ outcome: 'confirmed', defect: 'confirmed', reason: 'r', relatedProof: [`${repo}:src/import.ts:2`], files: [], codeDigest: 'abc' });
+    const relatedRepos: ReviewResult['relatedRepos'] = [
+      { repo: 'acme/reports', status: 'fetched', commit: sha }, { repo: 'acme/failed', status: 'failed', reason: 'not found', commit: sha },
+      { repo: 'acme/unused', status: 'unused' }, { repo: 'acme/odd', status: 'fetched', commit: 'main)](https://example.com' },
+    ];
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', {
+      ...buildResult(['acme/reports', 'acme/failed', 'acme/unused', 'acme/odd'].map((repo, i) => nonBlocking('warning', `From ${repo}`, 5 + i, { tags: ['follow-up'], refutation: check(repo) }))), relatedRepos,
+    }, diff);
+    const posted = JSON.stringify(createReview.mock.calls[1][0]);
+    expect(posted).toContain(`In a related repository: [\`acme/reports:src/import.ts:2\`](https://github.com/acme/reports/blob/${sha}/src/import.ts#L2)`);
+    expect(posted.match(/In a related repository/g)).toHaveLength(1);
+    expect(posted).not.toContain('example.com');
 
     // Evidence can cite many paths, so only the first 20 get their length looked up, besides the finding's own file.
     getContent.mockClear();

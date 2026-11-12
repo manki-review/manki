@@ -1051,6 +1051,9 @@ describe('refuteBlockers', () => {
       'Line past the end': answer('confirmed', 'acme/reports:src/import.ts:40'),
       'Repo not configured': answer('confirmed', 'other/repo:src/import.ts:2'),
       'Path leaves the checkout': answer('confirmed', 'acme/reports:../src/import.ts:2'),
+      'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
+      'Line zero': answer('confirmed', 'acme/reports:src/import.ts:0'),
+      'Range backwards': answer('confirmed', 'acme/reports:src/import.ts:2-1'),
     });
     const noProof = { severity: 'warning' as const, evidence: { checks: [], proof: [] }, doubts: parsesDate };
     const titles = ['Related line confirms', 'Related line alone disproves', 'Related line beside the finding line disproves', 'Repo not fetched', 'Line past the end', 'Repo not configured', 'Path leaves the checkout'];
@@ -1068,6 +1071,9 @@ describe('refuteBlockers', () => {
         ['Repo not configured', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
         ['Path leaves the checkout', 'warning', 'unsettled', undefined, undefined, 'unsettled_check'],
       ]);
+      // The stored location is the file's own path in the checkout, which is what the posted link is built from. A line that cannot exist proves nothing.
+      const odd = await refuteBlockers(client, ['Path with a dot segment', 'Line zero', 'Range backwards'].map(title => finding(title, noProof)), { workspace, diff, related });
+      expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined], ['unsettled', undefined]]);
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
       expect(checkStatus(checked[0])).toBe('confirmed');
       // The finding's own proof lines stay lines of the PR, so no reader of them meets another repository's path.

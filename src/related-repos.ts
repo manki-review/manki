@@ -10,6 +10,8 @@ import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from
 import { gitEnv } from './workspace';
 
 // A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
+/** Where every related repo lives. */
+export const RELATED_REPO_HOST = 'https://github.com';
 const FETCH_TIMEOUT_MS = 60_000;
 const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
@@ -242,7 +244,7 @@ async function checkoutRelatedRepo(
     if (lstatSync(dir, { throwIfNoEntry: false })) throw new Error(`could not remove ${dir}`);
     mkdirSync(dir, { recursive: true });
     await git('init', '-q');
-    await git('remote', 'add', 'origin', `https://github.com/${repo.repo}.git`);
+    await git('remote', 'add', 'origin', `${RELATED_REPO_HOST}/${repo.repo}.git`);
   };
   try {
     // A symlink restored from the cache could point the clone outside it.

@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, agreedOutcome, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, agreedOutcome, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -16,6 +16,7 @@ import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey,
 import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
+import { RELATED_REPO_HOST } from './related-repos';
 import { latestLimits } from './providers/instrumentation';
 import type { LimitUsage } from './providers/types';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
@@ -1698,7 +1699,7 @@ export async function postReview(
   const anchor = changed.at(0);
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
-  const links: CodeLinks = { linkTo, files, changed };
+  const links: CodeLinks = { linkTo, files, changed, related: relatedCommits(result.relatedRepos) };
 
   for (const f of result.findings) {
     const matched = openThreadFor(f, existingThreads);
@@ -2675,11 +2676,36 @@ interface CodeRange { file: string; start: number; end: number }
  */
 interface Check { text: string; at?: CodeRange; also?: CodeRange[] }
 
+/** The commit the round fetched of each related repo, by the repo's configured `owner/name`. */
+type RelatedCommits = ReadonlyMap<string, string>;
+
+/** Returns the commit of each related repo of `repos` that the round fetched. */
+function relatedCommits(repos: readonly RoundRelatedRepo[] = []): RelatedCommits {
+  return new Map(repos.flatMap(({ repo, status, commit }) => (status === 'fetched' && commit && /^[0-9a-f]{40,64}$/.test(commit) ? [[repo, commit] as const] : [])));
+}
+
+/**
+ * Returns each line of a related repo in `proof`, the `relatedProof` of a refuter's check, as a link to that line at
+ * the commit the round fetched. The repo and the commit come from `related`, so a line of any other repo is left out,
+ * and so is one whose path has a `.` or `..` segment. Only the location is shown, never the line's text.
+ */
+function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits = new Map()): string[] {
+  return proof.flatMap((location) => {
+    const repo = [...related.keys()].find(name => location.startsWith(`${name}:`));
+    const [, path, start, end] = (repo && /^([^:]+):(\d+)(?:-(\d+))?$/.exec(location.slice(repo.length + 1))) || [];
+    if (!repo || !path) return [];
+    const [owner, name] = repo.split('/');
+    const url = buildLineLink(owner, name, related.get(repo)!, RELATED_REPO_HOST)(path, Number(start), Number(end ?? start));
+    return url ? [linked(inlineCode(location), url)] : [];
+  });
+}
+
 /**
  * Links a finding's code to the reviewed commit. `files` holds the lines of the files read there, which keep a preview
- * inside its file. With `changed`, the PR's changed files, they give a cited file name its directories.
+ * inside its file. With `changed`, the PR's changed files, they give a cited file name its directories. `related`
+ * links a line of a related repo.
  */
-interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[] }
+interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related?: RelatedCommits }
 
 /**
  * Returns `path` as the repository path it names. A file name with no directories gets those of the one known file
@@ -2797,17 +2823,19 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return linked(inlineCode(rangeLabel(range)), linkTo(range.file, range.start, range.end));
 }
 
-function refutationPart(label: string, lead: string, check: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
-  const { reason, proof } = check;
+function refutationPart(label: string, lead: string, check: Refutation, { linkTo, related }: CodeLinks, known: readonly string[]): FoldPart {
+  const { reason, proof, relatedProof } = check;
+  // The lines of a check that confirmed are listed under "Checked in the code".
+  const confirmed = outcomeOf(check) === 'confirmed';
   // The refuter keeps only proof locations that exist in the workspace, so a bare file name there is a root file.
-  const cited = outcomeOf(check) === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []);
-  const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
+  const cited = confirmed ? [] : [...(proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []).map(r => linkedRange(r, linkTo)), ...relatedLineLinks(relatedProof, related)];
+  const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.join(', ')}.` : '']
     .filter(Boolean).join(' ');
   return { label, text, open: `**${label}:** ${text}` };
 }
 
 /** Returns a part for each refuter that checked `finding`. */
-function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
+function refutationParts(finding: Finding, links: CodeLinks, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
   // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked `unconfirmed`.
   const shown = (check: Refutation): RefutationOutcome =>
@@ -2819,8 +2847,8 @@ function refutationParts(finding: Finding, linkTo: LineLink, known: readonly str
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
   const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[shown(refutation)].text));
   return [
-    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, linkTo, known)] : []),
-    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, linkTo, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, links, known)] : []),
+    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, links, known)] : []),
   ];
 }
 
@@ -2863,10 +2891,13 @@ function rulePart(finding: Finding): FoldPart | undefined {
  * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome. A finding that cites nothing
  * says so, unless a tool reported it or it is an earlier round's finding.
  */
-function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLinks, ownLine: string): FindingChecks {
+function checksSection(finding: Finding, links: CodeLinks, ownLine: string): FindingChecks {
+  const { linkTo, files, changed = [], related } = links;
   const known = [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
   const checks = findingChecks(finding, known);
-  const refutations = refutationParts(finding, linkTo, known);
+  const refutations = refutationParts(finding, links, known);
+  // A check that confirmed from a related repo rests on lines the PR's own files do not hold, so they are listed too.
+  const relatedLines = [...new Set([finding.refutation, finding.pairRefutation].flatMap(check => (check && outcomeOf(check) === 'confirmed' ? relatedLineLinks(check.relatedProof, related) : [])))];
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
   if (checks.length === 0 && refutations.length === 0 && !rule) {
@@ -2896,6 +2927,7 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
       return `${said.length === 1 ? said[0].text : `${said.map(c => `- ${c.text}`).join('\n')}\n`}\n${link}`;
     }),
     ...(listed.length ? [listed.map(listItem).join('\n')] : []),
+    ...(relatedLines.length ? [`In a related repository: ${relatedLines.join(', ')}`] : []),
   ];
   const lone = lines.length === 1 && shown.length === 0 && !lines[0].includes('\n');
   const checked: FoldPart[] = lines.length === 0 ? [] : [{
@@ -2905,9 +2937,10 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
   }];
   const read = checks.filter(c => c.at).length;
   const other = checks.length - read;
+  const places = read + relatedLines.length;
   return {
     parts: [...(rule ? [rule] : []), ...checked, ...refutations],
-    reads: [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
+    reads: [places && `${places} ${places === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
     outcomes: [rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`].filter(o => typeof o === 'string'),
     ...status,
   };
