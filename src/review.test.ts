@@ -2224,7 +2224,7 @@ describe('runReview', () => {
     expect(result.agentNames).not.toContain(reviewer);
   });
 
-  it('gives none of the eight checks to a warning a later step keeps out of the review', async () => {
+  it('gives none of the eight checks to a warning a later step keeps out of the review, and no check to a warning in the `rare` column a memory suppression hides', async () => {
     const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
     const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
     const agreed = (title: string, line: number): LegacyHandoverFindingFixture =>
@@ -2251,7 +2251,13 @@ describe('runReview', () => {
       {
         step: 'memory suppression', title: 'Remembered pattern',
         options: { memory: { learnings: [], suppressions: [{ id: 'sup-1', pattern: 'Remembered pattern', reason: 'Intended.', created_by: 'dev', created_at: '2025-01-01', pr_ref: 'o/r#1' }] } },
-        ends: r => r.memorySuppressed?.map(f => [f.title, f.suppressedBy]), as: [['Remembered pattern', 'sup-1']],
+        ends: r => r.memorySuppressed?.filter(f => f.title === 'Remembered pattern').map(f => [f.title, f.suppressedBy]), as: [['Remembered pattern', 'sup-1']],
+      },
+      {
+        // The check of a warning in the `rare` column is outside the eight, and no answer raises the warning. So the same suppression hides it unchecked.
+        step: 'memory suppression of a warning in the `rare` column', title: 'Remembered pattern in a rare state', verdict: { row: 'wrong', column: 'rare', doubts: [] },
+        ends: r => r.memorySuppressed?.filter(f => f.title === 'Remembered pattern in a rare state').map(f => [f.suppressedBy, f.cell, f.gradeIfConfirmed, f.refutation]),
+        as: [['sup-1', { row: 'wrong', column: 'rare' }, 'blocker', undefined]],
       },
       {
         // No step hides a warning on code the PR did not change, since a check that confirms it posts it. It waits behind
@@ -2860,11 +2866,13 @@ describe('runReview', () => {
       expect(result.outcome).toBe('ADDRESS_FIRST');
     });
 
-    it('never leaves out a finding that would be a blocker if true, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
+    it('never leaves out a finding that would be a blocker if true, a finding in the `rare` column, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
       const rule = { file: 'AGENTS.md', quote: 'Every migration needs a rollback.' };
       const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
       const result = await review({
         'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
+        // No answer makes it a blocker, and it is posted whatever its check answered.
+        'The judge placed it in the rare column': { doubts, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, ...checked('unsettled') },
         'A blocker without cited lines': { tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
         'A build failure no CI result reports': { ...proof, tags: ['unconfirmed-build-claim'], ...lowered('build_claim') },
         'A finder filed it as a blocker': { doubts, reviewerSeverity: 'blocker' },
@@ -2878,7 +2886,7 @@ describe('runReview', () => {
       }, true);
 
       expect(shown(result)).toEqual([
-        ['The judge held a blocker cell down', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
+        ['The judge held a blocker cell down', 'unconfirmed'], ['The judge placed it in the rare column', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
         ['A finder filed it as a blocker', 'unconfirmed'], ['A blocker the judge lowered', 'unconfirmed'], ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
         ['A rule blocker without a search', 'unconfirmed'],
       ]);

@@ -1679,7 +1679,7 @@ export function mapJudgedToFindings(
  * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell with a doubt is a
  * warning until the refuter confirms every doubt. A doubt that only decides the cell counts only on a row where
  * `columnDecidesBlock`. A finding that `isRareClaim` gets `REACH_DOUBT` and the grade of the `normal` column as its
- * `gradeIfConfirmed`. So the refuter checks it and `wouldBlockIfTrue` holds for it, and no answer raises it. A tool
+ * `gradeIfConfirmed`. So the refuter checks it, and it has no `pendingGrade`: no answer raises it. A tool
  * alert takes its cell as stated, with no doubts.
  */
 function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'doubts'>> {

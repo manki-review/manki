@@ -622,9 +622,9 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
   return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
 }
 
-/** Whether the judge or a finder graded `f` a blocker at any point, or its cell would give one if its `doubts` hold. `REACH_DOUBT` is such a doubt, although no answer to it raises a finding. */
-export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'reviewerSeverity' | 'gradePath'>): boolean {
-  return f.gradeIfConfirmed === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
+/** Whether the judge or a finder graded `f` a blocker at any point, or its `pendingGrade` is one. */
+export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'reviewerSeverity' | 'gradePath'>): boolean {
+  return pendingGrade(f) === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
 }
 
 /** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */

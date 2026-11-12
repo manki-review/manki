@@ -335,9 +335,16 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
 
 const rank = (severity: FindingSeverity): number => SEVERITY_ORDER.indexOf(severity);
 
-function alwaysChecked(finding: Finding): boolean {
+/** Whether a grade hangs on the check of `finding`: the check can lower a blocker, settle a lead, or give back a capped grade or a `pendingGrade`. */
+function decidesGrade(finding: Finding): boolean {
+  const pending = pendingGrade(finding);
   return finding.severity === 'blocker' || !!finding.lead || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag))
-    || (!!finding.gradeIfConfirmed && rank(finding.gradeIfConfirmed) < rank(finding.severity));
+    || (!!pending && rank(pending) < rank(finding.severity));
+}
+
+/** Whether the refuter checks `finding` outside the `MAX_DOUBT_CHECKS` of a round: its check `decidesGrade`, or it answers `REACH_DOUBT` for a finding that `isRareClaim`. */
+function alwaysChecked(finding: Finding): boolean {
+  return decidesGrade(finding) || (!!finding.gradeIfConfirmed && rank(finding.gradeIfConfirmed) < rank(finding.severity));
 }
 
 const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => d.decides === 'defect');
@@ -468,7 +475,7 @@ export interface RefuteOptions {
   blockingThreads?: readonly OpenThread[];
   /** Whether a later step drops `finding` at its grade. Such a finding is checked only when a confirmation can raise it. */
   hiddenLater?: (finding: Finding) => boolean;
-  /** Whether a later step keeps the warning `finding` out of the review whatever a check says. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks. */
+  /** Whether a later step keeps the warning `finding` out of the review whatever a check says. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks, and none at all unless its check `decidesGrade`. */
   unpostedLater?: (finding: Finding) => boolean;
   /** Whether the warning `finding` probably restates an earlier finding that nothing links it to yet. Such a warning is checked after the others, like a linked one. */
   restatesEarlier?: (finding: Finding) => boolean;
@@ -534,8 +541,9 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (overLimit.has(finding)) return { ...finding, overCheckLimit: true as const };
     // A finding the judge dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || !((!roundEnd && alwaysChecked(finding)) || doubtChecks.has(finding))) return finding;
-    // Only a check that can raise a finding changes what happens to one a later step hides.
-    if (!confirmedGrade(finding) && hiddenLater?.(finding)) return finding;
+    // Only a check that can raise a finding changes what happens to one a later step hides. A check no grade hangs on
+    // is skipped for a finding `noCheck` accepts, as for any warning.
+    if (decidesGrade(finding) ? !confirmedGrade(finding) && hiddenLater?.(finding) : noCheck(finding)) return finding;
     if (!checkable(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
