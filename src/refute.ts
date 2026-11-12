@@ -99,7 +99,7 @@ function refutationFiles(file: string, proof: readonly string[] = []): string[] 
  * Keeps the locations whose file is in the workspace and `holdsLines` they cite, so no made-up citation settles anything.
  * A file `readFileInRoot` does not read, such as one over its size limit, holds no line.
  */
-function existingLocations(workspace: string, proof: readonly string[]): string[] {
+export function existingLocations(workspace: string, proof: readonly string[]): string[] {
   return proof.filter(location => {
     const file = readFileInRoot(workspace, locationFile(location));
     return !!file && file !== 'too large' && holdsLines(file.lines.length, ...locationLines(location));

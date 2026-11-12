@@ -2143,9 +2143,13 @@ function linkText(text: string): string {
   return plain === text ? text : linkText(plain);
 }
 
-/** Returns `linkText(text)` in lower case, without emphasis and code marks, and with each run of whitespace as one space. */
+/** Returns `text` in lower case, without emphasis and code marks, and with each run of whitespace as one space. */
+export function unmarkedText(text: string): string {
+  return text.toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 function plainText(text: string): string {
-  return linkText(text).toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  return unmarkedText(linkText(text));
 }
 
 /**
