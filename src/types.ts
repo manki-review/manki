@@ -568,7 +568,7 @@ export interface RoundNameTranslation {
 
 /** What the search of the related repos for the claims of the PR text gave, which only the claims' own checks are shown. */
 export interface RoundClaimTerms {
-  /** Why no term was guessed, so every claim check started without lines of the related repos. */
+  /** Why no term was guessed or the search did not finish, so every claim check started without lines of the related repos. */
   skipped?: string;
   /**
    * Each term a model guessed: the position of its claim in `prClaims.claims`, the repo, the term, the lines of the repo

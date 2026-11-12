@@ -811,16 +811,22 @@ export async function runReview(
   const claimLines = async (claims: PrClaim[]): ReturnType<typeof listClaimLines> => {
     if (!related || !checkWorkspace || !pickReviewerClient(clients, comparisonModel).client.repoTools || claims.length === 0) return { lines: new Map() };
     const fetched = await fetchRelatedRepos(related);
-    const terms = await guessClaimTerms(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claim_terms'), claims.map(c => c.quote), fetched);
-    return listClaimLines(fetched, terms);
+    const termClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claim_terms'), comparisonDeadline.signal);
+    return listClaimLines(fetched, await guessClaimTerms(termClient, claims.map(c => c.quote), fetched));
   };
+  // The fetch and the search take no signal, so the round stops waiting for the lines at the checks' deadline.
+  const claimLinesCut = new Promise<Awaited<ReturnType<typeof listClaimLines>>>(resolve => {
+    const cut = () => resolve({ lines: new Map(), record: { skipped: 'the search was still running at the deadline of the checks' } });
+    if (comparisonDeadline.signal.aborted) cut();
+    else comparisonDeadline.signal.addEventListener('abort', cut, { once: true });
+  });
   // Each claim of the PR text gets a check of its own beside the finders, under the comparisons' deadline. No finder waits for it or
   // is shown it or its lines. When the quick check alone reads the change, its claims are recorded without a check.
   const claimChecksPromise = claimsPromise.then(async ({ claims, ...listed }) => {
-    const { lines, record: terms } = await claimLines(claims).catch((error: unknown) => {
+    const { lines, record: terms } = await Promise.race([claimLines(claims).catch((error: unknown) => {
       core.warning(`Could not search the related repos for the claims of the PR text, so their checks start without lines of them: ${error instanceof Error ? error.message : String(error)}`);
       return { lines: new Map<number, string[]>(), record: undefined };
-    });
+    }), claimLinesCut]);
     const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
       rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal,
     });

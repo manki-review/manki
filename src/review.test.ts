@@ -3033,10 +3033,21 @@ describe('runReview', () => {
     const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
     const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
     const quote = 'a finished id is never started again';
-    const clients = { ...makeClients(), dedup: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify([quote]) }) } as unknown as LLMClient };
+    // The call that names the claim's terms never answers, even when it is aborted, so only the deadline ends the wait for its
+    // lines. The finders answer once it is asked, so the deadline comes while it hangs.
+    let termsAsked = () => undefined as void;
+    const asked = new Promise<void>(resolve => { termsAsked = resolve; });
+    const dedup = jest.fn(async (system: string) => {
+      if (!system.startsWith('You name the code')) return { content: system.startsWith('You list the statements') ? JSON.stringify([quote]) : '{}' };
+      termsAsked();
+      return new Promise<never>(() => undefined);
+    });
+    const clients = { ...makeClients(), dedup: { sendMessage: dedup } as unknown as LLMClient };
+    const checkout = mkdtempSync(join(tmpdir(), 'manki-claim-deadline-'));
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: checkout }]);
     Object.assign(clients.reviewer, { repoTools: true });
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
-      if (!system.startsWith('You compare code') && !system.startsWith('You check one statement')) return { content: '[]' };
+      if (!system.startsWith('You compare code') && !system.startsWith('You check one statement')) return asked.then(() => ({ content: '[]' }));
       return new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
     });
     // The grace timer fires at once, so the hanging comparison is cut as soon as the finders are done.
@@ -3051,14 +3062,17 @@ describe('runReview', () => {
     let result;
     try {
       result = await runReview(clients, {
-        config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, signal: new AbortController().signal,
+        config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, signal: new AbortController().signal,
         prContext: { title: 'Skip started ids', body: `Safe, since ${quote}.`, baseBranch: 'main' },
       });
     } finally {
       timers.mockRestore();
-      rmSync(root, { recursive: true, force: true });
+      fetchSpy.mockRestore();
+      for (const dir of [root, checkout]) rmSync(dir, { recursive: true, force: true });
     }
 
+    expect(dedup.mock.calls.filter(([system]) => system.startsWith('You name the code'))).toHaveLength(1);
+    expect(result.usesOutsideDiff?.claimTerms).toEqual({ skipped: 'the search was still running at the deadline of the checks' });
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: pending vs done', at: ['src/queue.ts:6'], status: 'timed_out' }]);
     expect(result.prClaims).toEqual({ claims: [{ quote, source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'timed_out' }] });
     expect(result.findings).toEqual([]);
