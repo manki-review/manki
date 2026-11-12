@@ -3,6 +3,7 @@ import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolve
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
+import { highlightCode } from './highlight';
 import { applyCrossRoundSuppression } from './judge';
 
 jest.mock('@actions/core', () => ({
@@ -2460,22 +2461,27 @@ describe('parseFindingFromComment', () => {
     const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
     // A thread posted on another file opens with a note on where the finding is, which is no part of the description.
-    for (const file of ['src/store.ts', '']) {
+    // The note is read by its place, so it is skipped whatever the highlighting of the diff's identifiers makes of it.
+    const identifiers = new Set(['GitHub', '_This', 'here._', '_store_file_', 'src/_store_file_.ts']);
+    for (const file of ['src/store.ts', 'src/_store_file_.ts', 'src/a*b*.ts', '']) {
       const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus: 'unconfirmed' }, TEST_LINKS, true);
-      expect(detached).toContain('so the thread is posted here.\n\n_Manki could not confirm this');
-      expect(parseFindingFromComment(detached)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+      expect(detached).toContain('so the thread is posted here._\n\n_Manki could not confirm this');
+      for (const posted of [detached, highlightCode(detached, identifiers)]) {
+        expect(parseFindingFromComment(posted)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+      }
     }
-    // A late warning on such a thread has all three notes under its title, and they are skipped in any order.
+    // A late warning on such a thread has all three notes under its title. The first is the one on where the finding is, and the other two are skipped in either order.
     const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, true);
-    const notes = late.match(/(This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
+    const notes = late.match(/(_This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
     expect(notes).not.toBeNull();
-    for (const order of [[1, 2, 3], [3, 1, 2], [2, 3, 1]]) {
+    for (const order of [[1, 2, 3], [1, 3, 2]]) {
       const body = late.replace(notes![0], `${order.map(i => notes![i]).join('\n\n')}\n\n`);
       expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     }
-    // The note is skipped only on a thread whose finding data says it is posted elsewhere.
-    const quoted = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'GitHub only allows comments on changed files, so the thread is posted here.', reviewers: [] }, TEST_LINKS);
-    expect(parseFindingFromComment(quoted).description).toBe('GitHub only allows comments on changed files, so the thread is posted here.');
+    // The first line is skipped only on a thread whose finding data says it is posted elsewhere.
+    const sentence = '_This is not tied to a file or line. GitHub only allows comments on changed files, so the thread is posted here._';
+    const quoted = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: sentence, reviewers: [] }, TEST_LINKS);
+    expect(parseFindingFromComment(quoted).description).toBe(sentence);
   });
 
   it('extracts description up to the <details> stop marker', () => {

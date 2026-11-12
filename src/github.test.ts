@@ -1850,7 +1850,7 @@ describe('postReview body lead', () => {
       summary: 'Nothing to flag.',
       findings: [{ ...blocker, file: '', line: 0, description: 'A synced client cannot start. Storage starts above 0. Handle `None`.' }],
     });
-    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\* A synced client cannot start\. Storage starts above 0\.\n\n---\n\n\*\*Blockers not on a changed file:\*\*\n\n- The last partial page of results is never returned\n\nGitHub only allows comments on changed files, so the thread of each is on `src\/a\.ts`\./u);
+    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\* A synced client cannot start\. Storage starts above 0\.\n\n---\n\n\*\*Blockers not on a changed file:\*\*\n\n- The last partial page of results is never returned\n\n_GitHub only allows comments on changed files, so the thread of each is on `src\/a\.ts`\._/u);
     expect(body).not.toContain('Nothing to flag');
   });
 
@@ -4192,6 +4192,7 @@ describe('postReview fallback paths', () => {
       rest: { pulls: { createReview: createReviewMock, createReviewComment } },
     } as unknown as Parameters<typeof postReview>[0];
 
+    const where = '_GitHub only allows comments on changed files, so the thread is posted here._';
     const diff: ParsedDiff = {
       files: [{ path: 'src/other.ts', changeType: 'modified', hunks: [] }, { path: 'src/second.ts', changeType: 'modified', hunks: [] }],
       totalAdditions: 5,
@@ -4215,18 +4216,18 @@ describe('postReview fallback paths', () => {
       '- `src/missing.ts`: Whole file issue',
       '- Design issue',
       '',
-      'GitHub only allows comments on changed files, so the thread of each is on `src/other.ts`.',
+      '_GitHub only allows comments on changed files, so the thread of each is on `src/other.ts`._',
     ].join('\n'));
     expect(body).not.toContain('Blockers in files outside this diff');
     expect((JSON.parse(extractReviewRecords(body).records[0]) as RoundContext).findings.entries.map(e => [e.posted, e.description])).toEqual(Array(3).fill(['thread', undefined]));
 
     const comments = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
     expect(comments.map(c => [c.path, c.subject_type])).toEqual(Array(3).fill(['src/other.ts', 'file']));
-    const where = 'GitHub only allows comments on changed files, so the thread is posted here.';
+    const end = where.slice(1);
     expect(comments.map(c => c.body.split('\n\n')[2])).toEqual([
-      `This is in [\`src/missing.ts:10\`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10), not in the file this thread is on. ${where}`,
-      `This is in [\`src/missing.ts\`](https://github.com/owner/repo/blob/sha/src/missing.ts), not in the file this thread is on. ${where}`,
-      `This is not tied to a file or line. ${where}`,
+      `_This is in [\`src/missing.ts:10\`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10), not in the file this thread is on. ${end}`,
+      `_This is in [\`src/missing.ts\`](https://github.com/owner/repo/blob/sha/src/missing.ts), not in the file this thread is on. ${end}`,
+      `_This is not tied to a file or line. ${end}`,
     ]);
     // The hidden finding data keeps the blocker's own file and line, and says the thread sits elsewhere.
     expect(comments.map(c => parseFindingData(c.body))).toEqual([
@@ -4234,6 +4235,14 @@ describe('postReview fallback paths', () => {
       { title: 'Whole file issue', file: 'src/missing.ts', flaggedBy: [], detached: true },
       { title: 'Design issue', flaggedBy: [], detached: true },
     ]);
+
+    // A PR that quotes the note, as a PR on Manki does, makes its words identifiers of the diff. However the posted
+    // note then reads, the next round reads the description without it.
+    const quoting: ParsedDiff = { ...diff, files: [{ ...diff.files[0], hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, content: `+const NOTES = ['${where}', '_This is not tied to a file or line. ${end}'];` }] }] };
+    expect([...codeTokensFromDiff(quoting)]).toEqual(expect.arrayContaining(['_GitHub', '_This', 'GitHub', 'here._']));
+    createReviewComment.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, quoting, context);
+    expect(createReviewComment.mock.calls.map(([c]) => parseFindingFromComment((c as { body: string }).body).description)).toEqual(Array(3).fill('Desc.'));
 
     // Without a changed file no thread can hold the blocker, so the body lists it and the record keeps its description.
     createReviewMock.mockClear();
@@ -4277,7 +4286,7 @@ describe('postReview fallback paths', () => {
         expect(text).toContain('`../../../../evil/x:10`');
         expect(text).not.toContain('evil/x#L');
       }
-      if (files.length > 0) expect(posted[1]).toContain(`This is in \`../../../../evil/x:10\`, not in the file this thread is on. ${where}`);
+      if (files.length > 0) expect(posted[1]).toContain(`_This is in \`../../../../evil/x:10\`, not in the file this thread is on. ${end}`);
     }
   });
 
