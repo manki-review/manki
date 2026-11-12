@@ -638,27 +638,35 @@ function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthor
 }
 
 /**
- * Whether Manki's own resolve settles a thread the PR author cannot clear. GitHub has to name Manki as the resolver, and
- * the latest reply by a person has to come from someone who may clear the thread (`replierMayClear`).
+ * Whether a resolved blocking or security thread is settled, so it stops blocking. Someone other than the PR author
+ * resolved it (`mayClearSecurityThread`), or the PR author overrode it with a role that allows it (`override`). Manki's own resolve
+ * settles it only with evidence: a round record says the judge found it addressed (`addressed`), or the latest reply by a
+ * person comes from someone other than the PR author with write access (`replierMayClear`).
  */
-function settledByManki(resolvedByLogin: string | undefined, replierMayClear: boolean, bot: BotIdentity): boolean {
-  return replierMayClear && isBotLogin(bot, resolvedByLogin);
+function threadSettled(
+  t: { isResolved: boolean; resolvedByLogin?: string }, evidence: { addressed: boolean; override: boolean; replierMayClear: boolean },
+  bot: BotIdentity, prAuthorLogin: string | undefined,
+): boolean {
+  if (!t.isResolved) return false;
+  if (evidence.override || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)) return true;
+  return isBotLogin(bot, t.resolvedByLogin) && (evidence.addressed || evidence.replierMayClear);
 }
 
 /**
- * Returns the thread's status for the next round. A resolved guarded thread stays `open` or `replied`
- * unless the judge marked it `addressed`, `mayClearSecurityThread` accepts the resolver, or the PR author overrode it with a role that allows it.
- * A blocker Manki resolved counts as `auto-resolved`, since Manki resolves one only after such a clear. A security
- * thread Manki resolved does too, but only when `settledByManki` holds.
+ * Returns the thread's status for the next round. A resolved guarded thread stays `open` or `replied` unless a round
+ * record says the judge marked it `addressed`, whoever resolved it since, or `threadSettled` holds. A guarded thread
+ * Manki resolved then counts as `auto-resolved`, and so does any other thread without a human resolver.
  */
 function threadStatus(
   t: ReviewThread, addressedThreadIds: Set<string>, bot: BotIdentity, prAuthorLogin: string | undefined, securityOverride: boolean, replierMayClear: boolean,
 ): PreviousFinding['status'] {
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
-  if (addressedThreadIds.has(t.threadId)) return 'resolved';
+  const addressed = addressedThreadIds.has(t.threadId);
+  if (addressed) return 'resolved';
+  if (isGuarded(t) && !threadSettled(t, { addressed, override: securityOverride, replierMayClear }, bot, prAuthorLogin)) return unresolved;
   const cleared = securityOverride || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin);
-  if (t.isSecurity) return cleared ? 'resolved' : settledByManki(t.resolvedByLogin, replierMayClear, bot) ? 'auto-resolved' : unresolved;
+  if (t.isSecurity && cleared) return 'resolved';
   if (!t.resolvedByHuman) return 'auto-resolved';
   return cleared || !authorCannotClear(t) ? 'resolved' : unresolved;
 }
@@ -1257,4 +1265,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, threadSettled, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

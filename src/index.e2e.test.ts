@@ -1506,5 +1506,42 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', title: BLOCKER.title })]);
       expect(again.body).toContain('Needs a human');
     });
+
+    it.each<[string, Record<string, unknown>]>([
+      ['security', { row: 'severe', security: true }],
+      ['plain', { row: 'wrong' }],
+    ])('blocks on a %s blocker thread Manki resolved with nothing to back it, until a round confirms the fix', async (_label, cell) => {
+      const raised = JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, ...cell, reasoning: 'Reachable from any caller.' }] });
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: raised });
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      // As after a run that resolved the thread and stopped before it posted the review with the record.
+      await resolveThread(thread, 'manki-review');
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+
+      // A push that leaves the file alone shows the judge the thread, and the round blocks on it.
+      const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are not checked.\n';
+      mockGitHub.headSha = 'e5'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
+      Object.assign(mockLLM.replies, READY_REPLIES);
+      await reviewRound();
+      expect(mockLLM.asked.judge).toContain('PRRT_1');
+      const blocked = postedReviews().at(-1)!;
+      expect(blocked.state).toBe('CHANGES_REQUESTED');
+      expect(blocked.body).toContain('Still open from earlier reviews');
+
+      // The fix push lets the judge mark the thread addressed, and that record backs Manki's resolve from then on.
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${FIXED_PR_DIFF}${readme}`;
+      Object.assign(mockLLM.replies, READY_REPLIES, {
+        judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+      });
+      await reviewRound();
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(postedReviews().at(-1)!.state).toBe('APPROVED');
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
+    });
   });
 });

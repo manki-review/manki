@@ -199,7 +199,8 @@ async function resolveIsHeld(
 
 /**
  * Resolves `thread` with `reason`. A blocking or security thread is left as it is unless `mayClear`.
- * With `held`, the thread is resolved in a way that does not clear it, so it is reopened first and Manki's own resolve clears it.
+ * With `held`, the thread is resolved in a way that does not clear it, so it is reopened first. Manki's own resolve then
+ * counts, backed by the maintainer's comment or by the recorded override.
  * With `authorOverride`, the PR author clears such a thread with a role that allows it, and Manki records that in the thread first.
  * Returns whether the thread is resolved.
  */
