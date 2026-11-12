@@ -167,6 +167,7 @@
 #     not_blocker:
 #       - "A slow export of the monthly report: `note`."
 #   sweep: false                     # search the diff for other instances of each kept blocker's defect class
+#   notes: 3                         # how many notes a review lists at most. 0 lists none
 #   rules: warn                      # a broken required rule of AGENTS.md, CLAUDE.md or CONTRIBUTING.md, such as
 #                                    # "every migration needs a rollback", is posted as a warning. `block` makes it
 #                                    # a blocker, so the PR is not approved until the rule is followed
@@ -215,7 +216,7 @@
 # convergence:
 #   max_auto_rounds: 10
 #   rounds_after_restart: 3
-#   test_path_patterns: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]   # test files, where later rounds drop the smallest findings
+#   test_path_patterns: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]   # test files, where later rounds drop the notes
 #   suppress_resolved_threads: true   # a resolved thread suppresses matching findings in later rounds
 
 # On merge, count per severity and finder how many posted findings were fixed,
