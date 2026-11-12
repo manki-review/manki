@@ -821,7 +821,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(client.sendMessage).mockResolvedValue({ content: reply });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_other', rootCommentId: 98, isResolved: false, isBlocking: true, findingTitle: 'Other' },
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolver && { resolvedByLogin: resolver }), isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolver && { resolvedByLogin: resolver, writerResolverLogin: resolver }), isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This' },
     ]);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
@@ -1451,7 +1451,7 @@ describe('handleReviewCommentCommand', () => {
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(kind), path: 'src/file.ts', line: 10 } });
     jest.mocked(ghUtils.authorClearRole).mockResolvedValue(authorMayClear ? 'maintain' : undefined);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: resolver, isBlocking: kind !== 'warning', ...(kind === 'security' && { isSecurity: true }), findingTitle: 'Token' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: resolver, writerResolverLogin: resolver, isBlocking: kind !== 'warning', ...(kind === 'security' && { isSecurity: true }), findingTitle: 'Token' },
     ]);
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(result !== 'failed');
 

@@ -489,7 +489,7 @@ describe('fetchRecapState', () => {
       comments: {
         nodes: [{
           body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Missing null check\n\nDescription here.',
-          author: { login: 'manki-review[bot]' },
+          author: { login: 'manki-review[bot]' } as { login: string; __typename?: string },
         }],
       },
       ...overrides,
@@ -516,6 +516,8 @@ describe('fetchRecapState', () => {
         pulls: {
           listReviews: jest.fn().mockResolvedValue({ data: reviews }),
         },
+        // Every login is a person with write access unless a test says otherwise.
+        repos: { getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: 'write', role_name: 'write', user: { type: 'User' } } }) },
       },
     } as unknown as ReturnType<typeof import('@actions/github').getOctokit>;
   }
@@ -982,7 +984,7 @@ describe('fetchRecapState', () => {
     const backed = async (pageInfo: { hasNextPage: boolean; endCursor: string | null }) => {
       const nodes = [...makeThread().comments.nodes, { body: 'Every caller checks it.', author: { login: 'bob' } }];
       const cut = mockOctokit([makeThread({ id: 'tb', isResolved: true, resolvedBy: { login: 'manki-review[bot]' }, comments: { pageInfo, nodes } })]);
-      Object.assign(cut.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'write' } })) } });
+      Object.assign(cut.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'write', user: { type: 'User' } } })) } });
       return (await fetchRecapState(cut, TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.map(f => [f.status, !!f.authorReplyMayClear]);
     };
     expect(await backed(LAST_PAGE)).toEqual([['auto-resolved', true]]);
@@ -1356,9 +1358,10 @@ describe('fetchRecapState', () => {
       });
       // Manki's own resolve settles a blocker only after the latest reply by a person came from someone with write access.
       const settled = thread('T_BOT', files.bot, 'manki-review');
-      settled.comments.nodes.push({ body: 'The caller checks this.', author: { login: 'alice' } });
+      // A later comment by another bot is no reply by a person, so alice's reply stays the latest one.
+      settled.comments.nodes.push({ body: 'The caller checks this.', author: { login: 'alice' } }, { body: 'Coverage is unchanged.', author: { login: 'ci-app', __typename: 'Bot' } });
       const withWriter = (octokit: ReturnType<typeof mockOctokit>) => {
-        Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => ({ data: { permission: username === 'alice' ? 'write' : 'none' } })) } });
+        Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => ({ data: { permission: username === 'alice' ? 'write' : 'none', user: { type: 'User' } } })) } });
         return octokit;
       };
       const octokit = withWriter(mockOctokit([
@@ -1452,6 +1455,16 @@ describe('fetchRecapState', () => {
         // A blocker thread follows the same rule as a security thread: Manki's own resolve alone settles nothing.
         'src/blocker-bot-resolved.ts': { resolver: BOT_LOGIN, security: false, blocker: true, blocks: true },
         'src/blocker-collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: false, blocker: true, blocks: false },
+        // GraphQL types every resolver as `User`. Only the permission lookup tells that a workflow token is no person,
+        // under either login GitHub could name it by.
+        'src/workflow-resolved.ts': { resolver: 'github-actions[bot]', security: true, blocks: true },
+        'src/blocker-workflow-resolved.ts': { resolver: 'github-actions[bot]', security: false, blocker: true, blocks: true },
+        'src/bare-workflow-resolved.ts': { resolver: 'github-actions', security: true, blocks: true },
+        'src/blocker-bare-workflow-resolved.ts': { resolver: 'github-actions', security: false, blocker: true, blocks: true },
+        // A person clears by resolving only with write access.
+        'src/blocker-reader-resolved.ts': { resolver: 'dave', security: false, blocker: true, blocks: true },
+        'src/blocker-triage-resolved.ts': { resolver: 'tina', security: false, blocker: true, blocks: true },
+        'src/triage-resolved.ts': { resolver: 'tina', security: true, blocks: true },
       };
       const severity = (file: string) => cases[file].security || cases[file].blocker ? 'blocker' as const : 'warning' as const;
       const files = Object.keys(cases);
@@ -1488,9 +1501,14 @@ describe('fetchRecapState', () => {
         });
       }), [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
       // Each login's `role_name`. The legacy `permission` beside it reports `maintain` as `write`.
-      const roles: Record<string, string> = { author: 'write', bob: 'write', dave: 'read', erin: 'write' };
-      const legacy: Record<string, string> = { admin: 'admin', maintain: 'write', write: 'write', read: 'read' };
-      const permission = jest.fn(async ({ username }: { username: string }) => ({ data: roles[username] ? { permission: legacy[roles[username]], role_name: roles[username] } : { permission: 'none' } }));
+      const roles: Record<string, string> = { author: 'write', alice: 'write', bob: 'write', dave: 'read', erin: 'write', tina: 'triage' };
+      const legacy: Record<string, string> = { admin: 'admin', maintain: 'write', write: 'write', triage: 'read', read: 'read' };
+      // GitHub answers for a bot account with its type and no permission, and with a 404 for the bare `github-actions`.
+      const permission = jest.fn(async ({ username }: { username: string }) => {
+        if (username === 'github-actions') throw new Error('github-actions is not a user');
+        if (username.endsWith('[bot]')) return { data: { permission: 'none', role_name: '', user: { type: 'Bot' } } };
+        return { data: roles[username] ? { permission: legacy[roles[username]], role_name: roles[username], user: { type: 'User' } } : { permission: 'none' } };
+      });
       Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: permission } });
 
       // The author can push, which is below the default level `maintain`, so their own resolve clears nothing.
@@ -1814,7 +1832,7 @@ describe('fetchRecapState', () => {
 
       // An author whose role allows it still clears their own resolved thread, as with a blocker.
       const admin = Object.create(octokit);
-      Object.assign(admin, { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'admin', role_name: 'admin' } })) } } });
+      Object.assign(admin, { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'admin', role_name: 'admin', user: { type: 'User' } } })) } } });
       const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
       expect(adminState.previousFindings.map(f => [f.status, !!f.reopen, f.securityOverride?.login])).toEqual([['resolved', false, 'author'], ['replied', false, undefined], ['resolved', false, undefined], ['open', false, undefined]]);
       expect(state.priorRounds).toHaveLength(1);

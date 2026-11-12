@@ -188,9 +188,8 @@ const LLM_DEDUP_TIMEOUT_MS = 120_000;
 const LLM_DEDUP_DESCRIPTION_CHARS = 400;
 
 /**
- * Whether `login` may clear a security thread by resolving it, or by agreeing when they also have write access:
- * a human other than the PR author. Only the PR author and people with write access can resolve a thread,
- * so with the author unknown any human resolver has write access.
+ * Whether `login` is someone other than the PR author, and by its login no bot. Such a login clears a thread the PR
+ * author cannot clear only once `hasWriteAccess` confirmed it as a person with write access.
  */
 function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
   if (!login || isBotLogin(bot, login) || login.endsWith('[bot]')) return false;
@@ -563,6 +562,7 @@ async function fetchRecapState(
   const backing = await resolveBacking(octokit, owner, repo, priorRounds, botThreads.map(t => ({
     id: t.threadId,
     ...(authorCannotClear(t) && !t.commentsIncomplete && t.authorReplyLogin && { latestReplyLogin: t.authorReplyLogin }),
+    ...(authorCannotClear(t) && t.resolvedByHuman && t.resolvedByLogin && { resolverLogin: t.resolvedByLogin }),
   })));
 
   const previousFindings = botThreads.map(t => {
@@ -651,26 +651,29 @@ interface ThreadFacts extends OverrideCandidate {
   addressed?: boolean;
   /** Who wrote the latest reply by a person, when that person has write access and every comment of the thread was read. */
   writerReplyLogin?: string;
+  /** Who resolved the thread, when `hasWriteAccess` confirms a person with write access. GraphQL types every resolver as `User`, a bot included. */
+  writerResolverLogin?: string;
 }
 
-/** The latest reply in a thread that Manki did not write. */
-function latestPersonReply<T extends { author?: { login: string } | null }>(bot: BotIdentity, comments: T[]): T | undefined {
-  return comments.slice(1).filter(c => !isBotLogin(bot, c.author?.login)).at(-1);
+/** The latest reply in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
+function latestPersonReply<T extends { author?: { login: string; __typename?: string } | null }>(bot: BotIdentity, comments: T[]): T | undefined {
+  return comments.slice(1).filter(c => !isBotLogin(bot, c.author?.login) && c.author?.__typename !== 'Bot').at(-1);
 }
 
 /**
- * Returns `addressed` and `writerReplyLogin` of `ThreadFacts` for each thread. A caller leaves out `latestReplyLogin`
- * when it did not read every comment of the thread, since a later reply may be hidden.
+ * Returns `addressed`, `writerReplyLogin` and `writerResolverLogin` of `ThreadFacts` for each thread. A caller leaves
+ * out `latestReplyLogin` when it did not read every comment of the thread, since a later reply may be hidden.
  */
 async function resolveBacking(
-  octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[], threads: Array<{ id: string; latestReplyLogin?: string }>,
-): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin'>>> {
+  octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[], threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string }>,
+): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin'>>> {
   const addressed = judgeAddressedThreadIds(priorRounds, true);
-  const repliers = [...new Set(threads.flatMap(t => t.latestReplyLogin ?? []))];
-  const writers = new Set((await Promise.all(repliers.map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
+  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? []].flat()))];
+  const writers = new Set((await Promise.all(logins.map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
   return new Map(threads.map(t => [t.id, {
     ...(addressed.has(t.id) && { addressed: true }),
     ...(t.latestReplyLogin && writers.has(t.latestReplyLogin) && { writerReplyLogin: t.latestReplyLogin }),
+    ...(t.resolverLogin && writers.has(t.resolverLogin) && { writerResolverLogin: t.resolverLogin }),
   }]));
 }
 
@@ -680,7 +683,7 @@ type Settled = 'addressed' | 'override' | 'resolver' | 'reply';
 /**
  * Returns why the resolved thread `t` is settled, or `undefined` while it still blocks. The review round and the approval
  * check both ask this for a thread the PR author cannot clear. `override`: the PR author cleared it with `prAuthorRole`.
- * `resolver`: someone other than the PR author resolved it. Manki's own resolve settles the thread only with backing:
+ * `resolver`: `writerResolverLogin` is someone other than the PR author. Manki's own resolve settles the thread only with backing:
  * `addressed` when the latest round that evaluated the thread says so, `reply` when `writerReplyLogin` is someone
  * other than the PR author.
  */
@@ -689,7 +692,7 @@ function settledBy(t: ThreadFacts, bot: BotIdentity, prAuthorLogin: string | und
   const byManki = isBotLogin(bot, t.resolvedByLogin);
   if (byManki && t.addressed) return 'addressed';
   if (securityOverrideOf(t, prAuthorLogin, prAuthorRole)) return 'override';
-  if (mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)) return 'resolver';
+  if (mayClearSecurityThread(t.writerResolverLogin, bot, prAuthorLogin)) return 'resolver';
   return byManki && mayClearSecurityThread(t.writerReplyLogin, bot, prAuthorLogin) ? 'reply' : undefined;
 }
 
@@ -916,7 +919,7 @@ interface FetchReviewThreadsResult {
   state: OpenThreadsState;
 }
 
-const THREAD_COMMENT_FIELDS = 'body url authorAssociation author { login } originalCommit { oid }';
+const THREAD_COMMENT_FIELDS = 'body url authorAssociation author { login __typename } originalCommit { oid }';
 
 const THREAD_COMMENTS_QUERY = `
   query($threadId: ID!, $cursor: String) {
@@ -935,7 +938,7 @@ interface ThreadCommentNode {
   body: string;
   url?: string;
   authorAssociation?: string;
-  author: { login: string } | null;
+  author: { login: string; __typename?: string } | null;
   originalCommit?: { oid: string } | null;
 }
 

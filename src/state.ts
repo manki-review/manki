@@ -69,6 +69,8 @@ interface ReviewThread {
   addressed?: boolean;
   /** Who wrote the latest reply by a person, when that person has write access. Read only for a thread Manki resolved, and only below the comment limit. */
   writerReplyLogin?: string;
+  /** Who resolved the thread, when GitHub confirms a person with write access. */
+  writerResolverLogin?: string;
   /** Set on a thread Manki resolved that is at the comment limit, so its latest reply is unknown. */
   repliesUnread?: boolean;
   isBlocking: boolean;
@@ -116,7 +118,7 @@ async function fetchBotReviewThreads(
         databaseId?: number | null;
         body: string;
         url?: string;
-        author: { login: string } | null;
+        author: { login: string; __typename?: string } | null;
         originalCommit?: { oid: string } | null;
       }>;
     };
@@ -136,6 +138,7 @@ async function fetchBotReviewThreads(
         url
         author {
           login
+          __typename
         }
         originalCommit {
           oid
@@ -157,7 +160,8 @@ async function fetchBotReviewThreads(
   const repliesUnread = (thread: typeof botThreads[number]) => byManki(thread) && thread.comments.nodes.length >= THREAD_COMMENTS_LIMIT;
   const backing = await resolveBacking(octokit, owner, repo, records.priorRounds, botThreads.map(thread => {
     const replier = byManki(thread) && !repliesUnread(thread) ? latestPersonReply(bot, thread.comments.nodes)?.author?.login : undefined;
-    return { id: thread.id, ...(replier && { latestReplyLogin: replier }) };
+    const resolver = thread.isResolved && !byManki(thread) ? thread.resolvedBy?.login : undefined;
+    return { id: thread.id, ...(replier && { latestReplyLogin: replier }), ...(resolver && { resolverLogin: resolver }) };
   }));
   if ('priorRoundsIncomplete' in records) core.warning('Without every round record, every Manki thread counts as blocking');
   return botThreads
@@ -544,7 +548,7 @@ function rolePhrase(role: AuthorClearRole, orHigher = false): string {
 function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, bot: BotIdentity, clearRole: AuthorClearRole | undefined, instead?: string): string {
   const list = open.map(t => {
     const title = sanitizeMarkdown(t.findingTitle);
-    const unbacked = t.repliesUnread ? 'the thread has too many comments for Manki to read its latest reply' : 'the latest reply is not from a maintainer other than the PR author';
+    const unbacked = t.repliesUnread ? 'the thread has too many comments for Manki to read its latest reply, so someone other than the PR author with write access has to reopen it and resolve it' : 'the latest reply is not from a maintainer other than the PR author';
     const note = isBotLogin(bot, t.resolvedByLogin) ? ` (Manki resolved it, but no review record confirms a fix, and ${unbacked})`
       : t.isResolved ? ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, who may not clear it)`
       : !t.isBlocking && named.has(t.id) ? ' (Manki\'s latest review blocks on this thread)' : '';

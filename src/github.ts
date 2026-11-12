@@ -53,6 +53,8 @@ interface RepoAccess {
   permission: string;
   /** GitHub's `role_name`: `admin`, `maintain`, `write`, `triage`, `read`, or the name of a custom role. */
   role?: string;
+  /** Whether GitHub reports the account's type as `User`. A bot, an organisation and an answer without a type are no person. */
+  person: boolean;
 }
 
 const permissionLookups = new WeakMap<Octokit, Map<string, Promise<RepoAccess>>>();
@@ -60,7 +62,7 @@ const permissionLookups = new WeakMap<Octokit, Map<string, Promise<RepoAccess>>>
 /**
  * Returns the repo access of `login`. `author_association` cannot tell, since an org member with read access shows
  * as `MEMBER` and a private org member with write access as `NONE`. Each client caches its answers, so a run asks
- * once per login. A failed lookup counts as `none` with no role.
+ * once per login. A failed lookup counts as `none` with no role, and as no person.
  */
 function repoPermission(octokit: Octokit, owner: string, repo: string, login: string): Promise<RepoAccess> {
   let lookups = permissionLookups.get(octokit);
@@ -74,10 +76,10 @@ function repoPermission(octokit: Octokit, owner: string, repo: string, login: st
     lookup = (async () => {
       try {
         const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
-        return { permission: data.permission, ...(typeof data.role_name === 'string' && { role: data.role_name }) };
+        return { permission: data.permission, ...(typeof data.role_name === 'string' && { role: data.role_name }), person: data.user?.type === 'User' };
       } catch (error) {
         core.warning(`Could not read the repo permission of ${login}, treating it as none: ${error}`);
-        return { permission: 'none' };
+        return { permission: 'none', person: false };
       }
     })();
     lookups.set(key, lookup);
@@ -87,19 +89,21 @@ function repoPermission(octokit: Octokit, owner: string, repo: string, login: st
 
 /**
  * Returns the repository role of `login` when it is at least `needed`, the base branch's `author_clear_role`.
- * Returns none for a lower role, a custom role, a failed lookup and an unset `needed`. So only a role GitHub
- * confirmed lets a PR author clear a guarded finding on their own PR.
+ * Returns none for a lower role, a custom role, an account that is no person, a failed lookup and an unset `needed`.
+ * So only a role GitHub confirmed lets a PR author clear a guarded finding on their own PR.
  */
 async function authorClearRole(octokit: Octokit, owner: string, repo: string, login: string, needed: AuthorClearRole | undefined): Promise<AuthorClearRole | undefined> {
   if (!needed) return undefined;
-  const { role } = await repoPermission(octokit, owner, repo, login);
+  const { role, person } = await repoPermission(octokit, owner, repo, login);
+  if (!person) return undefined;
   const held = AUTHOR_CLEAR_ROLES.findIndex(r => r === role);
   return held >= AUTHOR_CLEAR_ROLES.indexOf(needed) ? AUTHOR_CLEAR_ROLES[held] : undefined;
 }
 
-/** Whether `login` can push to the repo. A `maintain` role reads as `write`. */
+/** Whether `login` is a person who can push to the repo. A `maintain` role reads as `write`. A bot never counts, whatever its permission. */
 async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
-  return ['admin', 'write'].includes((await repoPermission(octokit, owner, repo, login)).permission);
+  const { permission, person } = await repoPermission(octokit, owner, repo, login);
+  return person && ['admin', 'write'].includes(permission);
 }
 
 const BOT_MARKER = '<!-- manki-bot -->';
