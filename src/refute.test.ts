@@ -1084,10 +1084,15 @@ describe('refuteBlockers', () => {
       const cited = await refuteBlockers(client, notThere.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
       expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(notThere.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
-      // A list keeps its first 10 related lines, and the answer keeps 10 of its own and its premises' lines together. No line past the first 10 is looked up.
+      // A list keeps its first 10 related lines, and the answer keeps 10 of its own and its premises' lines together, its own first. No line past the first 10 is looked up.
       const [many, madeUp] = await refuteBlockers(client, ['Many lines', 'Made-up lines first'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(many.refutation?.premises?.[0].relatedProof).toEqual([consumerLine, ...rowLines.slice(0, 9)]);
-      expect(many.refutation?.relatedProof).toEqual([consumerLine, ...rowLines.slice(0, 9)]);
+      expect(many.refutation?.relatedProof).toEqual(rowLines.slice(0, 10));
+      // The finding keeps 10 as well, however many lines two checks add to it.
+      const second = fakeClient({ 'Many lines': answer('confirmed', consumerLine, ...rowLines.slice(3)) }, 'model-b');
+      const [both] = await refuteBlockers(client, [finding('Many lines', noProof)], { workspace, diff, related, pair: second });
+      expect(both.pairRefutation?.relatedProof).toEqual([consumerLine, ...rowLines.slice(3)]);
+      expect(both.evidence?.relatedProof).toEqual(rowLines.slice(0, 10));
       expect([outcomeOf(madeUp.refutation!), madeUp.refutation?.relatedProof]).toEqual(['unsettled', undefined]);
       expect(checkStatus(checked[0])).toBe('confirmed');
       // The finding's own proof lines stay lines of the PR, so no reader of them meets another repository's path. The

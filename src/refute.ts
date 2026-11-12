@@ -247,7 +247,8 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
     const cites = (p: PremiseCheck, i: number): boolean => disproved ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
     const ownAnswer = defect === (disproved ? 'disproved' : 'confirmed');
     proof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []), ...(ownAnswer ? shown : [])])];
-    relatedProof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.relatedProof ?? [] : []), ...(ownAnswer ? shownRelated : [])])].slice(0, MAX_RELATED_PROOF);
+    // The answer's own lines come first, so the cut drops lines of a premise before a line that decides the defect.
+    relatedProof = [...new Set([...(ownAnswer ? shownRelated : []), ...premises.flatMap((p, i) => cites(p, i) ? p.relatedProof ?? [] : [])])].slice(0, MAX_RELATED_PROOF);
   }
   const files = refutationFiles(finding.file, proof);
   return {
@@ -285,10 +286,13 @@ function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   return raisedTo(finding, grade);
 }
 
-/** Returns `evidence` with the lines of `answers` added as proof: their lines of the PR to `proof`, and their lines of related repos to `relatedProof`. */
+/**
+ * Returns `evidence` with the lines of `answers` added as proof: their lines of the PR to `proof`, and their lines of
+ * related repos to `relatedProof`, which keeps its first `MAX_RELATED_PROOF` however many answers add to it.
+ */
 function withProof(evidence: FindingEvidence | undefined, answers: readonly Pick<Refutation, 'proof' | 'relatedProof'>[]): FindingEvidence {
   const proof = [...new Set([...(evidence?.proof ?? []), ...answers.flatMap(a => a.proof ?? [])])];
-  const relatedProof = [...new Set([...(evidence?.relatedProof ?? []), ...answers.flatMap(a => a.relatedProof ?? [])])];
+  const relatedProof = [...new Set([...(evidence?.relatedProof ?? []), ...answers.flatMap(a => a.relatedProof ?? [])])].slice(0, MAX_RELATED_PROOF);
   return { ...(evidence ?? { checks: [] }), proof, ...(relatedProof.length > 0 && { relatedProof }) };
 }
 
