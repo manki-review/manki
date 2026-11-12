@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
@@ -460,7 +460,7 @@ async function coveredCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   pr: PullHead, reviews: ReviewEntry[],
 ): Promise<string | undefined> {
-  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !hasOwnMarker(r.body ?? '', NO_VERDICT_MARKER))) return pr.head.sha;
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && givesVerdict(r))) return pr.head.sha;
   const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
   if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
   return standing?.commitSha;
@@ -491,7 +491,7 @@ function blockOf(
 ): { held?: string; named: Set<string> } {
   const sha = `\`${commitSha.slice(0, 7)}\``;
   // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
-  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && !hasOwnMarker(r.body ?? '', NO_VERDICT_MARKER) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
+  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && givesVerdict(r) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
   if (review && restatesApproval(review)) return { named: new Set() };
   const round = review && parseContextBlocks([{ body: review.body ?? '', id: review.id }], owner, repo, prNumber).rounds.at(0);
   if (!round || round.meta.commitSha !== commitSha) {
@@ -606,17 +606,18 @@ async function postStaleApproveSkippedComment(
 /**
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
+ * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
-  recordFor?: (reason: string) => string,
+  autoApprove = true, recordFor?: (reason: string) => string,
 ): Promise<ApprovalHeld> {
   const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
   core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
   assertWritesAllowed();
   try {
-    const line = approvalHoldLine(hold);
+    const line = approvalHoldLine(hold, autoApprove);
     await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
@@ -698,7 +699,7 @@ async function approveOrSayWhy(
   });
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');
-    return withheld(approvalHoldLine({ reason: 'draft' }));
+    return withheld(approvalHoldLine({ reason: 'draft' }, config?.auto_approve));
   }
 
   const prAuthorLogin = pr.user?.login;
@@ -772,10 +773,10 @@ async function approveOrSayWhy(
     return withheld(blockingThreadsLine(open, block.named, bot, config?.author_clear_role));
   }
 
-  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, reason => approvalRecord('held', reason, pr.head.sha));
+  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, reason => approvalRecord('held', reason, pr.head.sha));
   if (hold) {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-    return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }));
+    return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }, config?.auto_approve));
   }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);

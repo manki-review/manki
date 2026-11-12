@@ -1691,7 +1691,13 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
     const { body, event, approvalHeld } = await postedBody(ready);
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
-    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n${approved.body}`);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`@manki check\`, and Manki approves or says what holds the approval.\n\n${approved.body}`);
+
+    // With `auto_approve` off, marking the PR ready approves nothing, so the line names the Review again box and no check command.
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
+    mockCreateReview.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { autoApprove: false });
+    expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n${approved.body}`);
   });
 
   it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, without reading the PR, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
@@ -5559,13 +5565,21 @@ describe('hasBotReviewOnCommit', () => {
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 
-  it('does not count an incomplete review, so a later run still reviews the commit', async () => {
+  it('does not count a newest review without a verdict, so a later run still reviews the commit', async () => {
+    const reviewed = (reviews: Parameters<typeof makeMockOctokit>[0]) => hasBotReviewOnCommit(makeMockOctokit(reviews), TEST_BOT, 'owner', 'repo', 1, 'sha-123');
     const incomplete = { state: 'COMMENTED', commit_id: 'sha-123', body: `⏸️ **Review incomplete:** Claude subscription limit reached.\n\n${BOT_MARKER}`, user: { login: BOT_LOGIN, type: 'Bot' } };
-    expect(await hasBotReviewOnCommit(makeMockOctokit([incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    const unread = { ...incomplete, body: `**Not reviewed** at \`sha-123\`: no model read this PR.\n\n${BOT_MARKER}\n\n<!-- manki-no-verdict -->` };
+    expect(await reviewed([incomplete])).toBe(false);
+    expect(await reviewed([unread])).toBe(false);
 
-    // A blocking review that quotes the incomplete line elsewhere in its body still counts.
-    const quoting = { ...incomplete, state: 'CHANGES_REQUESTED', body: `🔴 **Changes requested:** 1 blocker.\n\n⏸️ **Review incomplete:** quoted\n\n${BOT_MARKER}` };
-    expect(await hasBotReviewOnCommit(makeMockOctokit([quoting, incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    // A blocking review that quotes the incomplete line or the marker elsewhere in its body still counts.
+    const quoting = { ...incomplete, state: 'CHANGES_REQUESTED', body: `🔴 **Changes requested:** 1 blocker.\n\n⏸️ **Review incomplete:** quoted \`<!-- manki-no-verdict -->\`\n\n${BOT_MARKER}` };
+    expect(await reviewed([incomplete, unread, quoting])).toBe(true);
+
+    // The newest review decides: a retry that ended without a verdict leaves the commit to be reviewed again.
+    expect(await reviewed([quoting, incomplete])).toBe(false);
+    expect(await reviewed([quoting, unread])).toBe(false);
+    expect(await reviewed([quoting, { ...incomplete, commit_id: 'sha-other' }])).toBe(true);
   });
 
   it('returns true when the matching review is the 501st (beyond the 500-cap), not among the first 500', async () => {

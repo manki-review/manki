@@ -223,6 +223,12 @@ function isAnswered(comments: Awaited<ReturnType<typeof fetchPRComments>>, bot: 
   return comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.trimEnd().endsWith(marker));
 }
 
+/**
+ * The `pull_request` action the token service dispatches for a PR marked ready on a head that already has a review. No
+ * GitHub webhook has it. It runs the approval check and never a review.
+ */
+const APPROVAL_CHECK_ACTION = 'approval_check';
+
 async function run(): Promise<void> {
   const eventName = github.context.eventName;
   const action = github.context.payload.action;
@@ -247,7 +253,7 @@ async function run(): Promise<void> {
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
   if (eventName === 'pull_request') {
-    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review' && action !== 'closed') {
+    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review' && action !== 'closed' && action !== APPROVAL_CHECK_ACTION) {
       core.info(`Ignoring pull_request action: ${action}`);
       return;
     }
@@ -353,6 +359,9 @@ async function run(): Promise<void> {
     case 'pull_request':
       if (action === 'closed') {
         await handleMergedPullRequest();
+      } else if (action === APPROVAL_CHECK_ACTION) {
+        core.info('Approval check asked for, checking if auto-approve is warranted');
+        await handleReviewStateCheck();
       } else {
         await handlePullRequest();
       }
@@ -490,6 +499,8 @@ async function handlePullRequest(): Promise<void> {
   if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info(`Bot already reviewed commit ${commitSha.slice(0, 7)} — skipping serialized sibling run`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, commitSha, settings, draft);
+    // The review of a draft held its approval, so a PR marked ready gets the approval check on that review.
+    if (github.context.payload.action === 'ready_for_review') await handleReviewStateCheck();
     return;
   }
 
@@ -606,9 +617,12 @@ interface OctokitErrorFields {
   response?: { headers?: Record<string, string | undefined> };
 }
 
-function failureReason(error: unknown, retryHint = RETRY_HINT): string {
+function failureReason(error: unknown, retryHint = FAILED_RUN_HINT): string {
   return sanitizeLogOutput(sanitizeTokens(describeFailure(error, retryHint)));
 }
+
+/** How to retry a run that failed. The review command starts nothing on a commit whose newest review gave a verdict, as after a failed box run, so the hint names the box too. */
+const FAILED_RUN_HINT = `${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
 
 /**
  * Describes a failure in a sentence that always names a cause. A 5xx from GitHub reads as a
@@ -824,7 +838,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft);
+        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
@@ -1622,6 +1636,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     existingThreads: recap.previousFindings,
     disproved,
     draft: run.options.draft,
+    autoApprove: run.config.auto_approve,
     configHold: run.configHold,
     memorySkip: run.memorySkip?.message,
     restart,
@@ -2235,7 +2250,8 @@ async function reportTokenFailure({ event, action, number }: ReturnType<typeof d
   const token = core.getInput('github_token');
   if (!token || (event === 'pull_request' && action === 'closed')) return;
   const { owner, repo } = github.context.repo;
-  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
+  const reviews = event === 'pull_request' && action !== APPROVAL_CHECK_ACTION;
+  const body = `${reviews ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
   try {
     const octokit = createOctokit(token, { deadline: AbortSignal.timeout(TOKEN_FAILURE_NOTE_TIMEOUT_MS) });
     const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
@@ -2283,7 +2299,7 @@ async function main(): Promise<void> {
   } catch (error) {
     if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
     // No hint for a merge. A review command would review the merged PR instead of recording its fix rate.
-    const retryHint = dispatched?.event === 'pull_request' && dispatched.action === 'closed' ? '' : RETRY_HINT;
+    const retryHint = dispatched?.event === 'pull_request' && dispatched.action === 'closed' ? '' : FAILED_RUN_HINT;
     core.setFailed(`Manki encountered an error: ${failureReason(error, retryHint)}`);
   } finally {
     if (stopSampler) {

@@ -1683,18 +1683,23 @@ describe('main', () => {
       await main();
       expect(createComment).toHaveBeenCalledTimes(1);
 
-      // A command gets a note that does not speak of a review, and a merge gets none.
+      // A command and an approval check get a note that does not speak of a review, and a merge gets none.
+      const didNotRun = '⚠️ **Manki did not run:** Could not get a token from the Manki token service (HTTP 503). Retry the run.';
       jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'issue_comment', action: 'created', number: 7 });
       await main();
-      expect(comments.map(c => c.body)).toEqual([reviewNote, '⚠️ **Manki did not run:** Could not get a token from the Manki token service (HTTP 503). Retry the run.']);
+      expect(comments.map(c => c.body)).toEqual([reviewNote, didNotRun]);
+      jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'pull_request', action: 'approval_check', number: 7 });
+      comments.length = 0;
+      await main();
+      expect(comments.map(c => c.body)).toEqual([didNotRun]);
       jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'pull_request', action: 'closed', number: 7 });
       comments.length = 0;
       await main();
-      expect(createComment).toHaveBeenCalledTimes(2);
+      expect(createComment).toHaveBeenCalledTimes(3);
 
       jest.mocked(core.getState).mockReturnValueOnce('true');
       await main();
-      expect(createComment).toHaveBeenCalledTimes(2);
+      expect(createComment).toHaveBeenCalledTimes(3);
 
       // The reason can be the text of a failed request, so the note shows it without a marker or a mention.
       jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValue(new authModule.TokenServiceError('TypeError: fetch failed <!-- manki-bot --> @octocat'));
@@ -3409,7 +3414,7 @@ describe('runFullReview orchestration', () => {
     ['an empty message', new Error(''), 'Error with no message'],
     ['a blank string', ' ', 'A string with no message'],
     ['an empty GitHub 404', githubError(404, ''), 'GitHub returned 404 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234).'],
-    ['a GitHub 502', githubError(502, '<html>Bad gateway</html>'), `GitHub returned 502 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234). ${reviewModule.RETRY_HINT}`],
+    ['a GitHub 502', githubError(502, '<html>Bad gateway</html>'), `GitHub returned 502 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234). ${reviewModule.RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`],
   ])('fails the job, keeps previous reviews and puts the reason in the progress comment when the review throws %s', async (_case, thrown, reason) => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
@@ -6861,7 +6866,8 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expectNoRound();
-      expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined);
+      // The last argument is the config's `auto_approve`, which the notice for a draft depends on.
+      expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined, false);
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 

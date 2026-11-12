@@ -128,6 +128,9 @@ class FakeGitHub {
   mathAt: Record<string, string> = {};
   mergeable: boolean | null = true;
   merged = false;
+  draft = false;
+  /** The account type of the PR's author, `alice`. */
+  authorType = 'User';
   /** The repository's other open PRs, as the GraphQL API lists them. */
   openPrs: Array<{ number: number; title: string; body: string; isDraft: boolean; files: { nodes: Array<{ path: string }> } }> = [];
   /** The open issues the issue search finds, and each query it was sent. */
@@ -192,7 +195,7 @@ class FakeGitHub {
     if (method === 'GET' && route === `/actions/runs/${mockContext.runId}` && this.workflowRun) return json(await this.workflowRun);
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(this.prDiffs[this.headSha] ?? PR_DIFF);
-      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, merged: this.merged, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
+      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: this.draft, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: this.authorType }, merged: this.merged, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
     }
     if ((match = route.match(/^\/pulls\/comments\/(\d+)(\/reactions)?$/))) {
       const id = Number(match[1]);
@@ -502,6 +505,8 @@ function reviewCommand(): Promise<void> {
   return dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(comment.id) });
 }
 
+const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
+const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
@@ -877,7 +882,7 @@ describe('runFullReview end to end', () => {
       expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'again', 'deeper']) })]);
     });
 
-    it('reviews a commit whose only review is incomplete', async () => {
+    it('reviews a commit whose newest review is incomplete, also after a complete one', async () => {
       mockLLM.replies.reviewer = 'I could not finish the review.';
       await reviewRound();
       expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
@@ -887,6 +892,108 @@ describe('runFullReview end to end', () => {
 
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['COMMENTED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
       expect(skipNotices()).toEqual([]);
+
+      // A Review again run that ends incomplete says to retry with the command, so the command reviews the commit again.
+      mockLLM.replies.reviewer = 'I could not finish the review.';
+      await forcedRound();
+      expect(postedReviews().at(-1)?.body).toMatch(/^⏸️ \*\*Review incomplete:\*\* All reviewers failed\. Retry with @\u200bmanki review\./);
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED', 'COMMENTED']);
+
+      mockLLM.replies.reviewer = READY_REPLIES.reviewer;
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED', 'COMMENTED', 'APPROVED']);
+
+      // The newest review has a verdict again, so one more command starts nothing.
+      await reviewCommand();
+      expect(postedReviews()).toHaveLength(4);
+    });
+
+    it('runs the round again when no model could read a file in the newest one', async () => {
+      mockGitHub.prDiffs[HEAD_SHA] = 'diff --git a/dist/index.js b/dist/index.js\n--- a/dist/index.js\n+++ b/dist/index.js\n@@ -1,1 +1,1 @@\n-old();\n+built();\n';
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.body.split(':')[0]])).toEqual([['COMMENTED', '**Not reviewed** at `a1b2c3d`']]);
+
+      // The approval check counts no review on this commit, and the command it names agrees.
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED']);
+      expect(mockLLM.calls).toEqual([]);
+
+      mockGitHub.prDiffs[HEAD_SHA] = PR_DIFF;
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED', 'APPROVED']);
+    });
+
+    it('approves a reviewed draft once it is marked ready, without another round', async () => {
+      mockGitHub.draft = true;
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.body.split('\n')[0]])).toEqual([['COMMENTED', DRAFT_HOLD]]);
+      const calls = mockLLM.calls.length;
+
+      mockGitHub.draft = false;
+      await dispatch({ event: 'pull_request', action: 'ready_for_review', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
+      expect(postedReviews()[1].body).toContain('All blocking threads are resolved.');
+      expect(mockLLM.calls).toHaveLength(calls);
+    });
+
+    it('starts no round and approves nothing when a draft whose review found a blocker is marked ready', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      mockGitHub.draft = true;
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      const calls = mockLLM.calls.length;
+
+      mockGitHub.draft = false;
+      await dispatch({ event: 'pull_request', action: 'ready_for_review', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      expect(mockLLM.calls).toHaveLength(calls);
+    });
+
+    it('runs only the approval check for the service\'s `approval_check`, and never a round', async () => {
+      const approvalCheck = () => dispatch({ event: 'pull_request', action: 'approval_check', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      // A head without a review would get a round from any other `pull_request` action. This one starts none.
+      await approvalCheck();
+      expect(postedReviews()).toEqual([]);
+      expect(mockLLM.calls).toEqual([]);
+      expect(mockGitHub.writes.filter(write => write.includes('/check-runs'))).toEqual([]);
+
+      mockGitHub.draft = true;
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.body.split('\n')[0]])).toEqual([['COMMENTED', DRAFT_HOLD]]);
+      const calls = mockLLM.calls.length;
+
+      mockGitHub.draft = false;
+      // The check runs only on the head it was queued for.
+      await dispatch({ event: 'pull_request', action: 'approval_check', pr: String(PR_NUMBER), head_sha: 'c3'.repeat(20) });
+      // The run's sender is the PR's author, and a bot's run is dropped, as for a thread a bot's PR had resolved.
+      mockGitHub.authorType = 'Bot';
+      await approvalCheck();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
+
+      mockGitHub.authorType = 'User';
+      await approvalCheck();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
+      expect(postedReviews()[1].body).toContain('All blocking threads are resolved.');
+      expect(mockLLM.calls).toHaveLength(calls);
+    });
+
+    it('approves nothing when a reviewed draft is marked ready with `auto_approve` off, and approves in the round its hold line names', async () => {
+      mockGitHub.configs.main = 'auto_approve: false\n';
+      mockGitHub.draft = true;
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.body.split('\n')[0]])).toEqual([['COMMENTED', DRAFT_HOLD_WITHOUT_AUTO_APPROVE]]);
+
+      mockGitHub.draft = false;
+      for (const action of ['ready_for_review', 'approval_check']) {
+        await dispatch({ event: 'pull_request', action, pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+      }
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
+
+      await forcedRound();
+      expect(postedReviews().map(r => r.state).at(-1)).toBe('APPROVED');
     });
 
     it('reviews the head the PR has when it runs, after a push', async () => {
@@ -1271,7 +1378,7 @@ describe('runFullReview end to end', () => {
     });
 
     it.each<[string, string, () => void, string]>([
-      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT}`],
+      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`],
       // A review command would review the merged PR, so the failure names none.
       ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record'), ''],
     ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled, hint) => {

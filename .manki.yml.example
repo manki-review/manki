@@ -6,7 +6,8 @@
 # auto_review: true
 
 # Auto-approve when all blocking findings are resolved (default: true)
-# Triggers on thread resolution and via @manki check
+# Triggers on thread resolution, via @manki check, and when a draft with a
+# clean review is marked ready. When off, only a review round approves.
 # auto_approve: true
 
 # The lowest repository role with which a PR author may clear a blocker or a

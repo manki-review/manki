@@ -65,7 +65,7 @@ Changes to security-sensitive paths, CI or dependency files and data contracts a
 
 | Command | What it does |
 |---------|-------------|
-| `/manki review` | Review the head commit, unless Manki already has a complete review of it. Then the settings block shows it as up to date, and ticking Review again there reviews the commit again |
+| `/manki review` | Review the head commit, unless Manki's newest review of it is complete. Then the settings block shows it as up to date, and ticking Review again there reviews the commit again |
 | `/manki explain [topic]` | Ask about the PR changes |
 | `/manki dismiss [finding]` | Dismiss a finding. In a Manki finding's thread it resolves the thread, or says in the thread why it stays open or keeps blocking. A named finding is stored as a suppression in memory when its text matches a finding Manki posted on the PR. Without either, Manki replies with how to use it |
 | `/manki remember <instruction>` | Teach it something for future reviews |
