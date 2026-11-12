@@ -989,6 +989,7 @@ describe('handleReviewCommentReply', () => {
     ['cites the line the finding cites in one code span', 'See `src/file.ts:10`.', 'src/file.ts:10 still logs the token.', false],
     ['cites the line the finding cites with the path in a code span', 'See `src/file.ts`:10.', 'src/file.ts:10 still logs the token.', false],
     ['cites the finding\'s line by the file name alone', 'See src/file.ts:10.', 'file.ts:10 still logs the token.', false],
+    ['cites the line of another file the finding cites with the path in a code span', 'See `src/other.ts`:4.', 'src/other.ts:4 still logs the token.', false],
     ['cites no line', '', 'The token is still logged.', false],
     ['names a version', '', 'Release 2.4.1 still logs the token.', false],
     ['names a field of the changed code and a number', '', 'opts.retries:3 still logs the token.', false],
