@@ -606,17 +606,18 @@ async function postStaleApproveSkippedComment(
 /**
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
+ * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
-  recordFor?: (reason: string) => string,
+  autoApprove = true, recordFor?: (reason: string) => string,
 ): Promise<ApprovalHeld> {
   const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
   core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
   assertWritesAllowed();
   try {
-    const line = approvalHoldLine(hold);
+    const line = approvalHoldLine(hold, autoApprove);
     await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
@@ -698,7 +699,7 @@ async function approveOrSayWhy(
   });
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');
-    return withheld(approvalHoldLine({ reason: 'draft' }));
+    return withheld(approvalHoldLine({ reason: 'draft' }, config?.auto_approve));
   }
 
   const prAuthorLogin = pr.user?.login;
@@ -772,10 +773,10 @@ async function approveOrSayWhy(
     return withheld(blockingThreadsLine(open, block.named, bot, config?.author_clear_role));
   }
 
-  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, reason => approvalRecord('held', reason, pr.head.sha));
+  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, reason => approvalRecord('held', reason, pr.head.sha));
   if (hold) {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-    return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }));
+    return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }, config?.auto_approve));
   }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);

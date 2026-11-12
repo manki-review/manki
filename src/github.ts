@@ -233,10 +233,18 @@ export function withheldSummary(summary: string): string {
 /** Ends a line that tells someone to push for a review. A push starts none while automatic review is off or paused. */
 export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
-/** Returns the line that says why Manki does not approve. */
-export function approvalHoldLine(hold: ApprovalHold): string {
-  // The token service starts no approval check for a PR marked ready in the states the last sentence names, so it names the check command.
-  if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`.';
+/**
+ * Returns the line that says why Manki does not approve. `autoApprove` is the `auto_approve` setting. With it off the
+ * approval check of a PR marked ready approves nothing, so the line for a draft names the Review again box and promises
+ * no approval for marking the PR ready.
+ */
+export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string {
+  if (hold.reason === 'draft') {
+    if (!autoApprove) return '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+    // "Nothing else" covers only what the PR shows, such as an open thread or a conflict. For every other case, in which
+    // nothing follows, the check command names the reason.
+    return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
+  }
   if (hold.reason === 'config') {
     return hold.file === 'base'
       ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'
@@ -1640,8 +1648,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [] }: {
+  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [] }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
+    /** The `auto_approve` setting, which decides what the line for a held draft tells the reader to do. */
+    autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
     disproved?: DisprovedFinding[];
     /** The reviews whose round record could not be read while a thread stays open, named in the review's first line. */
@@ -1777,7 +1787,7 @@ export async function postReview(
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files says so in its verdict line, so only the other holds get a line of their own.
-  const heldLine = lineHold && lineHold.reason !== 'unread' && approvalHoldLine(lineHold);
+  const heldLine = lineHold && lineHold.reason !== 'unread' && approvalHoldLine(lineHold, autoApprove);
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
 

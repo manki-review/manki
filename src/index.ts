@@ -838,7 +838,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft);
+        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
@@ -1636,6 +1636,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     existingThreads: recap.previousFindings,
     disproved,
     draft: run.options.draft,
+    autoApprove: run.config.auto_approve,
     configHold: run.configHold,
     memorySkip: run.memorySkip?.message,
     restart,

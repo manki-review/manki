@@ -108,6 +108,8 @@ describe('restoreDispatchedEvent', () => {
     const pushed = { event: 'pull_request', pr: '7', head_sha: 'b2'.repeat(20) };
 
     expect(await dispatch({ ...pushed, action: 'synchronize' })).toBe('superseded');
+    // The approval check of a PR marked ready runs only on the head it was queued for.
+    expect(await dispatch({ ...pushed, action: 'approval_check' })).toBe('superseded');
     expect(await dispatch({ ...pushed, action: 'closed' })).toBe('run');
   });
 

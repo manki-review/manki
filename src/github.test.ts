@@ -1691,7 +1691,13 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
     const { body, event, approvalHeld } = await postedBody(ready);
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
-    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`@manki check\`.\n\n${approved.body}`);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`@manki check\`, and Manki approves or says what holds the approval.\n\n${approved.body}`);
+
+    // With `auto_approve` off, marking the PR ready approves nothing, so the line names the Review again box and no check command.
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
+    mockCreateReview.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { autoApprove: false });
+    expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n${approved.body}`);
   });
 
   it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, without reading the PR, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
