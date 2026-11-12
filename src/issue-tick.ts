@@ -191,27 +191,27 @@ export async function handleReviewBoxTick(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, review: TickedReview, editor: string,
 ): Promise<void> {
   for (const id of tickedIssueBoxes(review.body)) {
+    // The review has no thread to reply in, so the PR gets the reason. The box is cleared either way.
+    const sayNotFiled = (text: string): Promise<unknown> => octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, BOT_MARKER) })
+      .catch((reportError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${reportError}`));
     const finding = bodyFinding(review.body, id);
-    if (!finding) {
-      core.warning(`Found no finding for the ticked issue box ${id} in review ${review.id}`);
-      continue;
-    }
     // The id names the finding's file and line, which a listed finding has no hidden data for.
     const [, encodedFile = '', line = '0'] = id.match(/^(.*):(\d+):[^:]*$/) ?? [];
     const file = decodeURIComponent(encodedFile);
     let filed: { number: number; existing: boolean } | undefined;
-    try {
-      filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, {
-        title: finding.title, text: finding.text, file, line: Number(line), commit: review.commit_id, postedAt: review.html_url, postedIn: 'review',
-      });
-      core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
-    } catch (error) {
-      core.warning(`Failed to file an issue for finding ${id}: ${error}`);
-      // The review has no thread to reply in, so the PR gets the reason. The box is cleared for a retry either way.
-      await octokit.rest.issues.createComment({
-        owner, repo, issue_number: prNumber,
-        body: withMarkers(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${sanitizeMarkdown(String(error).slice(0, 200))}. Tick its box in the review again to retry.`, BOT_MARKER),
-      }).catch((reportError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${reportError}`));
+    if (!finding) {
+      core.warning(`Found no finding for the ticked issue box ${id} in review ${review.id}`);
+      await sayNotFiled(`No issue was filed for the box ticked in [this review](${review.html_url}): Manki could not find the finding it belongs to. Create the issue by hand.`);
+    } else {
+      try {
+        filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, {
+          title: finding.title, text: finding.text, file, line: Number(line), commit: review.commit_id, postedAt: review.html_url, postedIn: 'review',
+        });
+        core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
+      } catch (error) {
+        core.warning(`Failed to file an issue for finding ${id}: ${error}`);
+        await sayNotFiled(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${sanitizeMarkdown(String(error).slice(0, 200))}. Tick its box in the review again to retry.`);
+      }
     }
     // Each box is saved as soon as it is handled, on the review as it is now, so a tick made meanwhile stays.
     const { data: current } = await octokit.rest.pulls.getReview({ owner, repo, pull_number: prNumber, review_id: review.id });

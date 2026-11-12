@@ -803,6 +803,8 @@ async function approveOrSayWhy(
         body,
       });
       core.info('Auto-approved PR');
+      // Each step after the approval catches its own failure, so only the write stop still throws from here on. A
+      // caller can therefore read any other failure as "nothing was approved".
       // An approval ends the pause, so the coordinator again starts push reviews.
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, bot, owner, repo, prNumber);

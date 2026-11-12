@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
+import { assertWritesAllowed } from './abort';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
@@ -13,7 +14,7 @@ import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSay
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
-import { COMMENT_MARKER as BOT_MARKER, safeTruncate, withMarkers } from './utils';
+import { COMMENT_MARKER as BOT_MARKER, redactSecrets, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -292,10 +293,49 @@ async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: s
   return `Saved a learning for \`${findingLocation({ file: path, line: 0 })}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.`;
 }
 
+const MAX_UNANSWERED_REASON_CHARS = 200;
+
+/**
+ * Returns the note for a thread `reply` or a PR `comment` that Manki took and could not answer, with the reason from
+ * `error`. A new reply or comment starts a new run, so the note asks for one.
+ */
+function unansweredNote(what: 'reply' | 'comment', error: unknown): string {
+  const message = redactSecrets(sanitizeTokens(error instanceof Error ? error.message : String(error))).trim().replace(/[.\s]+$/, '');
+  const reason = sanitizeMarkdown(safeTruncate(message, MAX_UNANSWERED_REASON_CHARS));
+  return withMarkers(`Manki could not answer this ${what}${reason ? ` (${reason})` : ''}. ${what === 'reply' ? 'Reply' : 'Comment'} again to start a new try.`, BOT_MARKER);
+}
+
+/**
+ * Says with `post` that a thread `reply` or a PR `comment` got no answer because of `error`. A run that stopped
+ * writing posts nothing, and it is the only one that can fail after its answer, as a check cancelled after it approved.
+ */
+async function sayUnanswered(what: 'reply' | 'comment', error: unknown, post: (body: string) => Promise<unknown>): Promise<void> {
+  try {
+    assertWritesAllowed();
+    await post(unansweredNote(what, error));
+  } catch (noteError) {
+    core.warning(`Failed to say that the ${what} got no answer: ${noteError}`);
+  }
+}
+
+/**
+ * Runs `answer` for a comment on PR or issue `issueNumber`. When it throws, says there that the comment got no answer,
+ * as `sayUnanswered` does, and throws the error again so the run fails.
+ */
+async function answerOrSayWhy(octokit: Octokit, owner: string, repo: string, issueNumber: number, answer: () => Promise<void>): Promise<void> {
+  try {
+    await answer();
+  } catch (error) {
+    await sayUnanswered('comment', error, body => octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body }));
+    throw error;
+  }
+}
+
 /**
  * Handle a reply to one of our review comments. `loadWorkspace` checks out the PR head once the thread turns out to be
  * Manki's, and with it a client with `repoTools` checks the developer's point with read-only tools. With `config`, a reply
- * in a guarded thread the PR author resolved reopens the thread, and the answer says why.
+ * in a guarded thread the PR author resolved reopens the thread, and the answer says why. Throws when the reply gets no
+ * answer, after saying so in a thread that is Manki's.
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
@@ -329,6 +369,8 @@ export async function handleReviewCommentReply(
     return;
   }
 
+  // Until the thread is known to be Manki's, a failure posts nothing in it.
+  let ownThread = false;
   try {
     const { data: parentComment } = await octokit.rest.pulls.getReviewComment({
       owner,
@@ -341,6 +383,7 @@ export async function handleReviewCommentReply(
       core.info('Thread was not started by Manki');
       return;
     }
+    ownThread = true;
 
     // Acknowledge the reply
     await reactToReviewComment(octokit, owner, repo, comment.id, 'eyes');
@@ -450,7 +493,10 @@ export async function handleReviewCommentReply(
       }
     }
   } catch (error) {
-    core.warning(`Failed to handle review comment reply: ${error}`);
+    if (ownThread) {
+      await sayUnanswered('reply', error, body => octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: comment.id, body }));
+    }
+    throw error;
   }
 }
 
@@ -501,7 +547,7 @@ export async function handlePRComment(
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       if (!client) { core.warning('Claude client required for explain command'); return; }
       const topic = command.args.slice(0, 500).trim();
-      await handleExplain(octokit, client, owner, repo, issueNumber, topic);
+      await answerOrSayWhy(octokit, owner, repo, issueNumber, () => handleExplain(octokit, client, owner, repo, issueNumber, topic));
       break;
     }
     case 'dismiss': {
@@ -522,7 +568,7 @@ export async function handlePRComment(
       break;
     case 'check':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      await handleCheck(octokit, bot, owner, repo, issueNumber, config, configHeld);
+      await answerOrSayWhy(octokit, owner, repo, issueNumber, () => handleCheck(octokit, bot, owner, repo, issueNumber, config, configHeld));
       break;
     case 'help':
       await reactToIssueComment(octokit, owner, repo, commentId, '+1');
@@ -533,7 +579,7 @@ export async function handlePRComment(
       if (!client) { core.warning('Claude client required for generic questions'); return; }
       // Strip the command prefix and truncate before forwarding to the LLM.
       const question = body.replace(/(?:@manki-review|@manki|\/manki)\s*/gi, '').trim().slice(0, 500);
-      await handleGenericQuestion(octokit, client, owner, repo, issueNumber, question);
+      await answerOrSayWhy(octokit, owner, repo, issueNumber, () => handleGenericQuestion(octokit, client, owner, repo, issueNumber, question));
     }
   }
 }

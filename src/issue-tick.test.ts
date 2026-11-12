@@ -299,6 +299,15 @@ describe('handleReviewBoxTick', () => {
       body: expect.stringMatching(/^Could not file an issue for \*\*Close the menu\*\*: Error: Resource not accessible by integration {2}@\u200Boctocat\. Tick its box in the review again to retry\./),
     });
     expect(jest.mocked(failing.rest.pulls.updateReview).mock.calls[0][0].body).toContain('- [ ] Create an issue for this <!-- manki-box:issue:src/menu.html:3:Close-the-menu -->\r\n');
+
+    // A box with no finding above it files nothing. The PR gets the reason and the box is cleared, as for a failed filing.
+    const orphan = makeOctokit();
+    await tickReview(orphan, { ...review, body: `Some text.\n\n${box('src/gone.ts:3:Gone')}` });
+    expect(orphan.rest.issues.create).not.toHaveBeenCalled();
+    expect(jest.mocked(orphan.rest.issues.createComment).mock.calls.map(([args]) => args.body)).toEqual([
+      expect.stringMatching(/^No issue was filed for the box ticked in \[this review\]\(https:\/\/github\.com\/o\/r\/pull\/5#pullrequestreview-900\): Manki could not find the finding it belongs to\. Create the issue by hand\./),
+    ]);
+    expect(jest.mocked(orphan.rest.pulls.updateReview).mock.calls.map(([args]) => args.body)).toEqual(['Some text.\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/gone.ts:3:Gone -->']);
   });
 
   it('files a blocker block in a CRLF body, and goes on after a failed report of a failed filing', async () => {

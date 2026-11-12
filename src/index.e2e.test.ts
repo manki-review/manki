@@ -469,6 +469,9 @@ const FAKE_INTERVALS: Parameters<typeof jest.useFakeTimers>[0] = {
   doNotFake: ['Date', 'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout'],
 };
 
+/** How long Manki waits before it tries a token service call or a pinned download again. */
+const RETRY_WAIT_MS = 2000;
+
 let mockGitHub: FakeGitHub;
 let mockLLM: FakeLLM;
 let mockThrottling: boolean;
@@ -559,6 +562,11 @@ describe('runFullReview end to end', () => {
     jest.mocked(core.getInput).mockImplementation((name: string) => INPUTS[name] ?? '');
     jest.mocked(core.getIDToken).mockResolvedValue('oidc-token');
     jest.spyOn(globalThis, 'fetch').mockImplementation((url, init) => mockGitHub.fetch(String(url), init));
+    // The wait before a second try passes at once here, as the GitHub client's retry waits do.
+    const realSetTimeout = globalThis.setTimeout;
+    jest.spyOn(globalThis, 'setTimeout').mockImplementation(
+      ((run: () => void, ms?: number) => realSetTimeout(run, ms === RETRY_WAIT_MS ? 1 : ms)) as unknown as typeof setTimeout,
+    );
   });
 
   it('approves a clean round, records it, and retires the notices the verdict makes stale', async () => {
@@ -1112,6 +1120,33 @@ describe('runFullReview end to end', () => {
     expect(core.info).toHaveBeenCalledWith('The run was cancelled by SIGTERM, writing nothing more to GitHub');
   });
 
+  it('posts no note for a check command that SIGTERM cancels right after its approval', async () => {
+    const listeners = new Map<string | symbol, (signal: NodeJS.Signals) => void>();
+    jest.spyOn(process, 'on').mockImplementation(((event: string | symbol, listener: (signal: NodeJS.Signals) => void) => {
+      listeners.set(event, listener);
+      return process;
+    }) as typeof process.on);
+    Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+    await reviewRound();
+    // A maintainer resolved the only blocking thread, so the check approves.
+    Object.assign(mockGitHub.threads[0], { isResolved: true, resolvedBy: { login: 'bob' } });
+    let writesAtSignal = -1;
+    mockGitHub.onWrite = write => {
+      if (write !== `POST /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/reviews`) return;
+      listeners.get('SIGTERM')!('SIGTERM');
+      writesAtSignal = mockGitHub.writes.length;
+    };
+
+    const command = mockGitHub.addComment('@manki check', 'alice');
+    await dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(command.id) });
+
+    // The approval is the answer. The cancelled run writes nothing after it, so no note says the comment got none.
+    expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED', 'APPROVED']);
+    expect(writesAtSignal).toBeGreaterThan(0);
+    expect(mockGitHub.writes).toHaveLength(writesAtSignal);
+    expect(mockGitHub.comments.map(c => c.body).join('\n')).not.toContain('could not answer');
+  });
+
   it('reads past the first 100 comments and review threads', async () => {
     for (let i = 0; i < 150; i++) mockGitHub.addComment(`Comment ${i}`, 'alice');
     for (let i = 0; i < 120; i++) mockGitHub.addThread('src/math.ts', 2, `Question ${i}`, 'bob', true);
@@ -1404,6 +1439,34 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.failures[0].times).toBe(0);
     });
 
+    // What a failed run is repeated with decides the hint, so no hint sends the reader to a review round for less.
+    const REVIEW_HINT = ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
+    const CHECK_HINT = ' Retry with @manki check.';
+    const REPEAT_HINT = ' Repeat the comment or the tick that started this run.';
+    it.each<[string, Record<string, string>, string]>([
+      ['a new PR', { event: 'pull_request', action: 'opened', head_sha: HEAD_SHA }, REVIEW_HINT],
+      ['a push', { event: 'pull_request', action: 'synchronize', head_sha: HEAD_SHA }, REVIEW_HINT],
+      ['a draft marked ready', { event: 'pull_request', action: 'ready_for_review', head_sha: HEAD_SHA }, REVIEW_HINT],
+      ['a merge', { event: 'pull_request', action: 'closed', head_sha: HEAD_SHA }, ''],
+      ['an approval check', { event: 'pull_request', action: 'approval_check', head_sha: HEAD_SHA }, CHECK_HINT],
+      ['a submitted review', { event: 'pull_request_review', action: 'submitted', review_id: '7' }, CHECK_HINT],
+      ['a dismissed review', { event: 'pull_request_review', action: 'dismissed', review_id: '7' }, CHECK_HINT],
+      ['a resolved thread', { event: 'pull_request_review_thread', action: 'resolved' }, CHECK_HINT],
+      ['a reopened thread', { event: 'pull_request_review_thread', action: 'unresolved' }, CHECK_HINT],
+      ['a tick of an issue box in a review', { event: 'pull_request_review', action: 'edited', review_id: '7' }, REPEAT_HINT],
+      ['a comment', { event: 'issue_comment', action: 'created', comment_id: '7' }, REPEAT_HINT],
+      ['a tick in a comment', { event: 'issue_comment', action: 'edited', comment_id: '7' }, REPEAT_HINT],
+      ['a reply in a thread', { event: 'pull_request_review_comment', action: 'created', comment_id: '7' }, REPEAT_HINT],
+      ['a tick of an issue box in a thread', { event: 'pull_request_review_comment', action: 'edited', comment_id: '7' }, REPEAT_HINT],
+    ])('ends the reason of a run for %s that fails on a GitHub 5xx with how to repeat that run', async (_event, inputs, hint) => {
+      mockGitHub.failures = [{ method: 'GET', path: new RegExp(`^/repos/${OWNER}/${REPO}/(pulls|issues)/`), status: 503 }];
+
+      await dispatch({ pr: String(PR_NUMBER), ...inputs });
+
+      expect(jest.mocked(core.setFailed).mock.calls).toEqual([[expect.stringMatching(new RegExp(`^Manki encountered an error: GitHub returned 503 on GET \\S+\\.${hint.replace(/[.@]/g, '\\$&')}$`))]]);
+      expect(mockLLM.calls).toEqual([]);
+    });
+
     it.each<[string, Partial<FakeFailure>]>([
       ['a rate limit', { message: 'API rate limit exceeded', headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1) } }],
       ['a secondary rate limit', { message: 'You have exceeded a secondary rate limit', headers: { 'retry-after': '1' } }],
@@ -1516,6 +1579,31 @@ describe('runFullReview end to end', () => {
         ? [`Finding dismissed by @alice, the PR author, who has the \`${overrodeAs}\` role on this repository.\n\n<!-- manki -->\n${securityOverrideMarker('resolve', 'alice')}`]
         : []);
       expect(thread.comments.at(-1)?.body).toMatch(/^Kept\. Nothing bounds `b`/);
+    });
+
+    it('tells the person when a reply gets no answer, fails the run, and changes no thread and approves nothing', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      // A maintainer resolved the thread, so an approval check would approve the PR.
+      Object.assign(thread, { isResolved: true, resolvedBy: { login: 'bob' } });
+      const writes = mockGitHub.writes.length;
+
+      mockLLM.onCall = () => { throw new Error('Failed to install Claude CLI: The operation was aborted due to timeout'); };
+      await replyInThread(thread, 'The caller bounds both inputs.', 'unused');
+
+      expect(thread.comments.at(-1)?.body).toBe('Manki could not answer this reply (Failed to install Claude CLI: The operation was aborted due to timeout). Reply again to start a new try.\n\n<!-- manki -->');
+      expect(core.setFailed).toHaveBeenCalledWith('Manki encountered an error: Failed to install Claude CLI: The operation was aborted due to timeout');
+      expect(thread).toMatchObject({ isResolved: true, resolvedBy: { login: 'bob' } });
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      // The reaction and the note are all the run wrote.
+      expect(mockGitHub.writes.slice(writes).filter(write => !write.includes('/reactions'))).toHaveLength(1);
+
+      // A new reply starts a new try, and that run ends with the approval check as every answered reply does.
+      mockLLM.onCall = undefined;
+      await replyInThread(thread, 'The caller bounds both inputs, as I said.', 'Kept. Nothing bounds `b` before `src/math.ts:3` returns the sum.');
+      expect(thread.comments.at(-1)?.body).toMatch(/^Kept\. Nothing bounds `b`/);
+      expect(postedReviews().map(r => r.state)).toContain('APPROVED');
     });
 
     it('never approves a PR that conflicts with its base, and says so once per head', async () => {
