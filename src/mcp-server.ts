@@ -262,8 +262,19 @@ export interface GrepArgs {
   maxResults?: number;
 }
 
-/** Returns each line under `path` that contains `text`, as `file:line: line`. Matches plain text, not a regular expression. */
-export async function grepRepo(root: string, { text, path = '.', glob, ignoreCase = false, maxResults = 100 }: GrepArgs): Promise<string> {
+/** What a search found: the first matches as `file:line: line`, and what it did not search. */
+export interface LineSearch {
+  matches: string[];
+  /** The search ended at its match limit, so more lines may match. */
+  stopped: boolean;
+  /** The search ended at `MAX_FILES` files, so later files were not searched. */
+  cut: boolean;
+  /** How many binary files, or files over `MAX_FILE_BYTES`, were not searched. */
+  skipped: number;
+}
+
+/** Finds each line under `path` that contains `text`. Matches plain text, not a regular expression, and starts no process. */
+export function findLines(root: string, { text, path = '.', glob, ignoreCase = false, maxResults = 100 }: GrepArgs): LineSearch {
   const realRoot = realpathSync(root);
   const { files, cut } = listFiles(realRoot, resolveInRoot(root, path));
   const filter = glob === undefined ? undefined : compileGlob(glob);
@@ -282,9 +293,16 @@ export async function grepRepo(root: string, { text, path = '.', glob, ignoreCas
     for (let i = 0; i < lines.length; i++) {
       if (!(ignoreCase ? lines[i].toLowerCase() : lines[i]).includes(needle)) continue;
       matches.push(`${file}:${i + 1}: ${lines[i].slice(0, 200)}`);
-      if (matches.length >= limit) return capOutput(`${matches.join('\n')}\n[stopped at ${limit} matches]`);
+      if (matches.length >= limit) return { matches, stopped: true, cut, skipped };
     }
   }
+  return { matches, stopped: false, cut, skipped };
+}
+
+/** Returns each line under `path` that contains `text`, as `file:line: line`. Matches plain text, not a regular expression. */
+export async function grepRepo(root: string, args: GrepArgs): Promise<string> {
+  const { matches, stopped, cut, skipped } = findLines(root, args);
+  if (stopped) return capOutput(`${matches.join('\n')}\n[stopped at ${matches.length} matches]`);
   const notes = [
     ...(cut ? [`[the search stopped after ${MAX_FILES} files, so later files were not searched]`] : []),
     ...(skipped > 0 ? [`[${skipped} binary files or files over ${MAX_FILE_BYTES / 1024} KB were not searched]`] : []),

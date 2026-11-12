@@ -2463,6 +2463,27 @@ export interface ReplyRecord {
   relatedRepos?: RoundRelatedRepo[];
   /** What a thread reply that settles the finding decided. */
   decision?: ReplyDecision;
+  /** The statements of the developer's reply that a thread reply checked, in the order it lists them. */
+  statements?: ReplyStatementRecord[];
+  /** How many statements a thread reply left unchecked because the developer's reply held more than it checks. */
+  uncheckedStatements?: number;
+  /** How many statements a thread reply did not list because their quote is not in the developer's reply, or repeats one. */
+  droppedStatements?: number;
+}
+
+/** Why a thread reply could not check a statement. The first two are the model's answer, the rest come from Manki's own checks. */
+export type UncheckedReason =
+  | 'outside_code' | 'not_reachable'
+  | 'no_line' | 'search_term' | 'not_related' | 'not_fetched' | 'no_checkout' | 'search_failed' | 'search_found' | 'search_cut';
+
+/** How one statement of a developer's reply fared. It holds no words of the developer and no search term. */
+export interface ReplyStatementRecord {
+  status: 'confirmed' | 'contradicted' | 'not_checkable';
+  /** The lines the status rests on, each checked to exist: `path:line` of the PR, or `owner/name:path:line`. */
+  places?: string[];
+  /** Where Manki's own search found no line: `owner/name`, or `pr` for the PR's repository. */
+  searched?: string;
+  why?: UncheckedReason;
 }
 
 /**

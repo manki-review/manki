@@ -133,7 +133,7 @@ function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] 
  * Returns the lines a refuter's `proof` list cites that are there: `proof` in the PR's workspace, `relatedProof` in the
  * related checkouts. An entry that starts with a line of a related repo is never read as a line of the PR as well.
  */
-function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
+export function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
   const names = related?.repos.map(r => r.repo) ?? [];
   const own = Array.isArray(proof) ? proof.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, names)) : proof;
   return { proof: existingLocations(workspace, parseProof(own)), relatedProof: relatedLocations(proof, related) };
@@ -144,14 +144,15 @@ function citesRelatedRepo(refutation: Refutation): boolean {
   return !!refutation.relatedProof?.length || !!refutation.premises?.some(p => p.relatedProof?.length);
 }
 
+/** Whether the `file:line` or `file:start-end` `location` cites a line in `diff`. */
+export function isDiffLocation(location: string, diff?: ParsedDiff): boolean {
+  const diffFile = diff?.files.find(f => f.path === locationFile(location));
+  return !!diffFile && isLineInDiff(diffFile, ...locationLines(location));
+}
+
 /** Whether `proof` cites a line of the finding's own `file` or a line in `diff`, so PR text cannot point a disproof at any file. */
 function citesFindingCode(file: string, proof: readonly string[], diff?: ParsedDiff): boolean {
-  return proof.some(location => {
-    const cited = locationFile(location);
-    if (cited === file) return true;
-    const diffFile = diff?.files.find(f => f.path === cited);
-    return !!diffFile && isLineInDiff(diffFile, ...locationLines(location));
-  });
+  return proof.some(location => locationFile(location) === file || isDiffLocation(location, diff));
 }
 
 /**
