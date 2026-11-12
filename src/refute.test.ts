@@ -264,6 +264,8 @@ describe('refuteBlockers', () => {
       ['Same as an earlier warning', { ...raised(), sameAs: 'src/old.ts:3:3:old-warning' }],
       // When finders disagree the highest grade counts, and a merged duplicate a finder filed as a blocker makes it a finder's blocker.
       ['Highest finder grade', { ...raised('note'), reviewerSeverity: 'warning' }],
+      // A confirmed rule alone gives a warning, so the finding goes no lower than that, whatever its finder filed.
+      ['Breaks a rule', { ...raised('note'), rule: { file: 'AGENTS.md', quote: 'Every bound must be checked.', verdict: 'confirmed' } }],
       ['Merged finder blocker', { ...raised(), reviewerSeverity: 'blocker' }],
       ['Finder blocker', {}],
       // Any second answer but a disproof keeps the blocker.
@@ -289,15 +291,17 @@ describe('refuteBlockers', () => {
     const earlier = (line: number, slug: string, severity: Finding['severity'], threadId?: string) => ({ fingerprint: { file: 'src/old.ts', lineStart: line, lineEnd: line, slug }, severity, threadId });
     const priorRounds = [{ findings: { entries: [earlier(1, 'old-blocker', 'blocker'), earlier(2, 'in-thread', 'warning', 'T1'), earlier(3, 'old-warning', 'warning', 'T2')] }, judge: {} }] as unknown as RoundContext[];
     const blocking = (file: string) => [{ threadId: 'T1', file, line: 4, severity: 'blocker' }] as OpenThread[];
-    const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts')) =>
-      refuteBlockers(first, picked.map(([title, overrides]) => finding(title, overrides)), { workspace, diff, pair, priorRounds, blockingThreads });
+    const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts'), rules?: 'block') =>
+      refuteBlockers(first, picked.map(([title, overrides]) => finding(title, overrides)), { workspace, diff, pair, priorRounds, blockingThreads, rules });
 
     const result = await run(fakeClient(replies, 'gpt-6.1-sol'));
 
     expect(result.map(f => [f.title, f.severity])).toEqual([
-      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ...cases.slice(3).map(([title]) => [title, 'blocker']),
+      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'warning'], ...cases.slice(4).map(([title]) => [title, 'blocker']),
     ]);
-    const [lowered, , , merged] = result;
+    // With `review.rules: block` the rule alone gives a blocker, so that finding stays one.
+    expect((await run(fakeClient(replies, 'gpt-6.1-sol'), cases.slice(2, 4), undefined, 'block')).map(f => f.severity)).toEqual(['warning', 'blocker']);
+    const [lowered, , , , merged] = result;
     const reason = 'claude-opus-5-5 and gpt-6.1-sol both disproved it, and no finder graded it a blocker';
     expect(lowered.gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation', reason }]);
     expect([lowered.refutation?.model, lowered.pairRefutation?.model]).toEqual(['claude-opus-5-5', 'gpt-6.1-sol']);
@@ -505,8 +509,12 @@ describe('refuteBlockers', () => {
     const noDefect = (...premises: object[]) => ({ outcome: 'disproved', reason: 'Both inputs are checked.', proof: ['src/api.ts:9'], premises });
     const columns = (f: Finding) => [f.title, f.severity, f.refutation?.outcome, f.refutation?.defect, f.pairRefutation?.defect, !!disproof(f), checkStatus(f)];
 
+    const rule = { file: 'AGENTS.md', quote: 'Every bound must be checked.' };
+    const doubtedRule = (verdict: 'confirmed' | 'not_broken', tags?: string[]): Partial<Finding> => ({ severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT], rule: { ...rule, verdict }, ...(tags && { tags }) });
     const client = fakeClient({
       'Reach open': noDefect(open), 'Grade premise holds': noDefect(holds), 'Reach holds': noDefect(holds), 'Security finding': noDefect(open), 'Blocker': noDefect(open),
+      'Rule confirmed': noDefect(open), 'Rule confirmed, reach holds': noDefect(holds), 'Rule not confirmed': noDefect(open), 'Security rule finding': noDefect(open),
+      'Rule lead': noDefect(open),
     });
     const alone = await refuteRound(client, [
       finding('Reach open', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
@@ -514,7 +522,12 @@ describe('refuteBlockers', () => {
       finding('Reach holds', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
       finding('Security finding', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists], tags: ['security'] }),
       finding('Blocker', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
-    ], { workspace, diff });
+      finding('Rule confirmed', doubtedRule('confirmed')),
+      finding('Rule confirmed, reach holds', doubtedRule('confirmed')),
+      finding('Rule not confirmed', doubtedRule('not_broken')),
+      finding('Security rule finding', doubtedRule('confirmed', ['security'])),
+      finding('Rule lead', { ...doubtedRule('confirmed'), notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }),
+    ], { workspace, diff, rules: 'block' });
 
     expect(alone.map(columns)).toEqual([
       // The premises settle nothing, and the answer about the defect drops the warning.
@@ -525,7 +538,18 @@ describe('refuteBlockers', () => {
       ['Reach holds', 'ignore', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
       ['Security finding', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
       ['Blocker', 'blocker', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      // A rule the judge confirmed keeps its warning, and the answer raises nothing, also with the reach confirmed and with `block`.
+      ['Rule confirmed', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      ['Rule confirmed, reach holds', 'warning', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
+      // Any other rule verdict keeps nothing.
+      ['Rule not confirmed', 'ignore', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      ['Security rule finding', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      ['Rule lead', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
     ]);
+    // The check finished the lead, so it is a finding to post and no longer one listed as not finished checking.
+    expect([alone[9].lead, alone[9].notChecked, alone[9].cell]).toEqual([undefined, undefined, undefined]);
+    // The kept rule warning loses the cell and the grade that stated the damage. A security finding changes only when confirmed, so it keeps them.
+    expect(alone.slice(5, 9).map(f => [f.cell, f.gradeIfConfirmed, f.doubts?.length])).toEqual([[undefined, undefined, undefined], [undefined, undefined, undefined], [rare, 'blocker', 1], [rare, 'blocker', 1]]);
     expect(alone[0].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);
     expect(alone[0].judgeNotes).toBe(`Refutation disproved: Both inputs are checked.\n- Premise "${REACH_DOUBT.premise}" unsettled. No caller found.`);
     // Each disproof keeps the lines that disprove the defect, never the lines that confirmed a premise, and covers their file.
