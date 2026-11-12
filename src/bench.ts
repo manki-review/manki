@@ -10,7 +10,7 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, isGradeCell, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, VERDICT_READER_NAME, VerdictReason } from './types';
+import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, isGradeCell, isSecurityFinding, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, VERDICT_READER_NAME, VerdictReason } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -400,6 +400,8 @@ interface GradeRoute {
   finderGrade: FindingSeverity;
   cell?: GradeCell;
   gradeIfConfirmed?: FindingSeverity;
+  /** The judge's own answer for `gradeIfConfirmed`. A finding the judge stated none for has none. */
+  judgeIfConfirmed?: Finding['judgeIfConfirmed'];
   /** The steps of the finding's `gradePath`, without their reasons. */
   gradePath?: Array<Omit<GradeStep, 'reason'>>;
   /** How many doubts of each `decides` kind the judge named. */
@@ -408,6 +410,8 @@ interface GradeRoute {
   checkStatus?: CheckStatus;
   /** Set on a finding the verdict reader named. */
   byReader?: true;
+  /** Set on a security finding, which no doubt holds down. */
+  security?: true;
 }
 
 interface FollowUpScore {
@@ -601,17 +605,19 @@ function resolvedThreads(benchCase: BenchCase, review: LocalReview): string[] {
 
 /** Returns how `f` got its grade, without any text of the finding. */
 function gradeRoute(f: Finding): GradeRoute {
-  const { cell, gradeIfConfirmed, gradePath, doubts = [], refutation, checkStatus } = f;
+  const { cell, gradeIfConfirmed, judgeIfConfirmed, gradePath, doubts = [], refutation, checkStatus } = f;
   const doubtsOf = (decides: Doubt['decides']) => doubts.filter(d => d.decides === decides).length;
   return {
     finderGrade: finderGrade(f),
     ...(cell && { cell: { row: cell.row, column: cell.column, ...(cell.judgeColumn && { judgeColumn: cell.judgeColumn }) } }),
     ...(gradeIfConfirmed && { gradeIfConfirmed }),
+    ...(judgeIfConfirmed && { judgeIfConfirmed }),
     ...(gradePath && { gradePath: gradePath.map(({ from, to, by }) => ({ from, to, by })) }),
     ...(doubts.length > 0 && { doubts: { defect: doubtsOf('defect'), grade: doubtsOf('grade') } }),
     ...(refutation && { refutation: { outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }) } }),
     ...(checkStatus && { checkStatus }),
     ...(f.reviewers.includes(VERDICT_READER_NAME) && { byReader: true as const }),
+    ...(isSecurityFinding(f.tags, f.reviewers) && { security: true as const }),
   };
 }
 

@@ -418,9 +418,9 @@ describe('scoreRun', () => {
     };
     const blocker = (title: string, overrides: Partial<Finding>) => makeFinding({ severity: 'blocker', title, ...overrides });
     const findings = [
-      // A finder filed it as a blocker. A doubt held it down, and a check gave the blocker back.
+      // A finder filed it as a blocker. A doubt held it down, and a check gave the blocker back. The judge's own answer for that case is stored too.
       blocker('Kept', {
-        file: 'src/read.rs', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker',
+        file: 'src/read.rs', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker',
         doubts: [doubt('defect'), doubt('grade'), doubt('defect')], refutation, checkStatus: 'confirmed',
       }),
       // The judge's cell raised it. A check gave back what the cap for want of proof took, which is no raise of its own.
@@ -430,7 +430,7 @@ describe('scoreRun', () => {
       }),
       blocker('Doubted', { gradePath: [step('note', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker', doubts: [doubt('grade')] }),
       blocker('Read', { reviewers: [VERDICT_READER_NAME] }),
-      blocker('Ruled', { gradePath: [step('warning', 'blocker', 'rule')] }),
+      blocker('Ruled', { gradePath: [step('warning', 'blocker', 'rule')], tags: ['security'] }),
       makeFinding({ title: 'Lowered', gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'proven' }),
     ];
     const review = makeReview('ADDRESS_FIRST', findings);
@@ -442,7 +442,7 @@ describe('scoreRun', () => {
     expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 2 });
     expect(score.findings.map(f => f.route)).toEqual([
       {
-        finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
+        finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
         doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed',
       },
       {
@@ -451,7 +451,7 @@ describe('scoreRun', () => {
       },
       { finderGrade: 'note', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], doubts: { defect: 0, grade: 1 } },
       { finderGrade: 'blocker', byReader: true },
-      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }] },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true },
       { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], checkStatus: 'proven' },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');

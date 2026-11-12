@@ -357,10 +357,10 @@ describe('buildJudgeSystemPrompt', () => {
     expect(unsure).toContain('A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in `doubts`, as a fact the code can confirm or disprove: "a public request handler passes `index` to `getItem` unchecked", not "callers probably validate `index`". Set `decides` to `defect` when the defect does not exist if the premise is false, and to `grade` when the finding stands either way and only its cell depends on the premise. Manki counts a `grade` doubt only on the `wrong` row, where the column decides whether the finding blocks. When you doubt nothing, leave `doubts` empty.');
     expect(prompt).not.toContain('Manki checks each premise with tools');
     expect(prompt).toContain('"doubts": [{"premise": "A fact the code can confirm or disprove", "decides": "defect" | "grade"}],');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools on a `blocker` cell with a doubt where confirming every premise raises the grade, and on the `rare` column of the `wrong` row, where no answer raises the grade. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to 8 findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding with a `blocker` cell gets that grade only when every premise is confirmed and its `gradeIfConfirmed` is not `warning`. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools on a `blocker` cell with a doubt where confirming every premise can raise the grade, and on the `rare` column of the `wrong` row, where no answer raises the grade. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to 8 findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding with a `blocker` cell gets that grade only when every premise is confirmed and its `gradeIfConfirmed` is not `warning`. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
     // The judge states one grade itself: what a blocker cell it doubts earns once every doubt holds. A doubt, a rare state and "not a regression" are no reason for `warning`.
     expect(unsure).toContain('On a finding whose cell gives `blocker` and that you list a doubt for, also set `gradeIfConfirmed`: the grade its consequence earns if every premise you doubt holds, `blocker` or `warning`. No check asks how serious the damage is, so this is where you say it. Set `warning` only when the finding would still fail one of the five blocker tests with every doubt confirmed.');
-    expect(unsure).toContain('Name the test in `reasoning` and say what in the code makes it fail. A premise you list in `doubts` is no such reason, since it holds in that case. Neither is the state being rare, which is the claim of the `rare` column, nor the change being "not a regression". When you cannot tell which grade it earns, set `blocker`. Leave `gradeIfConfirmed` empty on every other finding. Manki reads it only on a `blocker` cell with a doubt, and never on a security finding: with `warning` no check raises the finding, and with `blocker` or nothing a check that confirms every premise gives it the cell\'s grade.');
+    expect(unsure).toContain('Name the test in `reasoning` and say what in the code makes it fail. A premise you list in `doubts` is no such reason, since it holds in that case. Neither is the state being rare, which is the claim of the `rare` column, nor the change being "not a regression". When you cannot tell which grade it earns, set `blocker`. Leave `gradeIfConfirmed` empty on every other finding. Manki reads it only on a `blocker` cell with a doubt, and never on a security finding: with `warning` no check raises the finding, and with `blocker` or nothing a check that confirms every premise can give it the cell\'s grade.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
@@ -1250,11 +1250,11 @@ describe('parseJudgeResponse', () => {
       { id: 3, title: 'C', row: 'degraded', reasoning: 'r', doubts: 'none' },
     ] })).findings;
     expect(doubts.map(f => f.doubts)).toEqual([[{ premise: 'A caller passes `n` unchecked', decides: 'grade' }, { premise: 'The copy is never dropped', decides: 'defect' }], undefined, undefined]);
-    // Only `warning` is kept as the grade a doubted finding earns once its doubts hold. Any other answer leaves the cell's grade.
+    // `blocker` and `warning` are kept as the grade the judge states for a doubted finding once its doubts hold. Any other answer is none.
     const stated = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [' Warning ', 'blocker', '', 'note', 3, undefined].map((gradeIfConfirmed, i) => (
       { id: i + 1, title: `F${i + 1}`, row: 'wrong', reasoning: 'r', gradeIfConfirmed }
     )) })).findings;
-    expect(stated.map(f => f.gradeIfConfirmed)).toEqual(['warning', undefined, undefined, undefined, undefined, undefined]);
+    expect(stated.map(f => f.gradeIfConfirmed)).toEqual(['warning', 'blocker', undefined, undefined, undefined, undefined]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
     warnSpy.mockRestore();
@@ -1882,7 +1882,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].tags).toBeUndefined();
   });
 
-  it('shows the code a finding cites outside the diff, and sends a finding with a doubt or in the `rare` column to the refuter, which can give a blocker cell its grade once the doubts hold and never moves a finding out of the `rare` column', async () => {
+  it('shows the code a finding cites outside the diff, and sends a finding with a doubt or in the `rare` column to the refuter, which gives a blocker cell its grade once the doubts hold only when a finder filed a blocker, and never moves a finding out of the `rare` column', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -1890,7 +1890,7 @@ describe('runJudgeAgent', () => {
     fs.writeFileSync(path.join(workspace, 'src', 'lock.ts'), Array.from({ length: 200 }, (_, i) => lockLine(i)).join('\n'));
     fs.writeFileSync(path.join(workspace, 'src', 'bundle.js'), `${'a'.repeat(1024 * 1024)}\nsecond line`);
     const findings = [
-      makeFinding({ title: 'Deadlock on stop', severity: 'warning', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30', 'src/lock.ts:60', 'src/lock.ts:90', 'src/lock.ts:120', 'src/lock.ts:150', 'src/lock.ts:180'] } }),
+      makeFinding({ title: 'Deadlock on stop', severity: 'blocker', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30', 'src/lock.ts:60', 'src/lock.ts:90', 'src/lock.ts:120', 'src/lock.ts:150', 'src/lock.ts:180'] } }),
       makeFinding({ title: 'Missing bound', severity: 'warning', line: 5, evidence: { checks: [], proof: ['src/index.ts:5', 'src/bundle.js:2'] } }),
       makeFinding({ title: 'Slow path', severity: 'blocker', line: 6, evidence: { checks: [], proof: ['src/index.ts:6'] } }),
       makeFinding({ title: 'Unseen kept', severity: 'warning', line: 7 }),
@@ -1900,6 +1900,7 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Copy never removed', severity: 'warning', line: 12 }),
       makeFinding({ title: 'Doubted nit', severity: 'warning', line: 13 }),
       makeFinding({ title: 'Wrong retry count', severity: 'warning', line: 14, evidence: { checks: [], proof: ['src/index.ts:14'] } }),
+      makeFinding({ title: 'Stale index after rename', severity: 'warning', line: 15, evidence: { checks: [], proof: ['src/index.ts:15'] } }),
     ];
     mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({
       summary: 's',
@@ -1913,6 +1914,7 @@ describe('runJudgeAgent', () => {
         { id: 8, title: 'Copy never removed', row: 'degraded', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.' },
         { id: 9, title: 'Doubted nit', row: 'degraded', column: 'rare', doubts: [{ premise: 'A request logs the name', decides: 'grade' }], reasoning: 'r' },
         { id: 10, title: 'Wrong retry count', row: 'wrong', column: 'normal', gradeIfConfirmed: 'warning', doubts: [{ premise: 'The status line prints the counter', decides: 'defect' }], reasoning: 'blocker. Test 3 fails even then: only the status line shows the count.' },
+        { id: 11, title: 'Stale index after rename', row: 'wrong', column: 'normal', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'The rename path skips the index update', decides: 'defect' }], reasoning: 'warning. The rename path sits outside the code shown.' },
       ],
     }) }).mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [{ id: 6, title: 'No entry', row: 'improvement', reasoning: 'r' }] }) });
     const refuterMessages: string[] = [];
@@ -1925,6 +1927,7 @@ describe('runJudgeAgent', () => {
       'Second cache left stale': { reason: 'The sweeper reads it.', premises: [{ outcome: 'confirmed', reason: 'The sweeper reads it after the write.', proof: ['src/index.ts:11'] }, { outcome: 'unsettled', reason: 'No request path found either way.' }] },
       'Copy never removed': { reason: 'The sweep removes it.', premises: [{ outcome: 'disproved', reason: 'The sweep removes it.', proof: ['src/index.ts:12'] }] },
       'Wrong retry count': { outcome: 'confirmed', reason: 'The status line prints it.', proof: ['src/index.ts:14'], premises: [{ outcome: 'confirmed', reason: 'The status line prints it.', proof: ['src/index.ts:15'] }] },
+      'Stale index after rename': { reason: 'The rename path skips it.', premises: [{ outcome: 'confirmed', reason: 'The rename path skips it.', proof: ['src/index.ts:16'] }] },
     };
     const refuter: LLMClient = {
       repoTools: true,
@@ -1941,7 +1944,7 @@ describe('runJudgeAgent', () => {
       });
 
       expect(result.findings.map(f => [f.title, f.severity])).toEqual([
-        // A blocker cell with a doubt is a warning until the refuter confirms the doubt.
+        // A blocker cell with a doubt is a warning until the refuter confirms the doubt. A finder filed this one as a blocker, so it rises.
         ['Deadlock on stop', 'blocker'],
         // The refuter found the path the judge doubted. The judge still placed the finding in the `rare` column, so it stays a warning there.
         ['Missing bound', 'warning'],
@@ -1959,14 +1962,18 @@ describe('runJudgeAgent', () => {
         ['Doubted nit', 'note'],
         // The judge stated `warning` as the grade this blocker cell earns once its doubt holds, so the confirmation raises nothing.
         ['Wrong retry count', 'warning'],
+        // No finder filed this one as a blocker, so the confirmed doubt raises nothing, whatever grade the judge stated for that case.
+        ['Stale index after rename', 'warning'],
       ]);
-      expect(refuterMessages).toHaveLength(6);
+      expect(refuterMessages).toHaveLength(7);
       expect(result.findings.map(f => f.cell)).toEqual([
         { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'wrong', column: 'rare' },
         undefined, { row: 'improvement', column: 'normal' }, { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'degraded', column: 'rare' },
-        { row: 'wrong', column: 'normal' },
+        { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'normal' },
       ]);
-      expect(result.findings.map(f => f.gradeIfConfirmed)).toEqual(['blocker', 'blocker', undefined, 'blocker', undefined, undefined, 'blocker', 'warning', undefined, 'warning']);
+      expect(result.findings.map(f => f.gradeIfConfirmed)).toEqual(['blocker', 'blocker', undefined, 'blocker', undefined, undefined, 'blocker', 'warning', undefined, 'warning', 'warning']);
+      // The judge's own answer is kept beside the grade Manki settled on.
+      expect(result.findings.map(f => f.judgeIfConfirmed)).toEqual([...Array(9).fill(undefined), 'warning', 'blocker']);
       // Manki adds the claim the `rare` column makes as a premise of its own, next to any doubt the judge names.
       expect(result.findings[3].doubts).toEqual([REACH_DOUBT]);
       expect(result.findings[6].doubts).toEqual([{ premise: 'A request reads the second cache after the write', decides: 'grade' }, REACH_DOUBT]);
@@ -1981,7 +1988,7 @@ describe('runJudgeAgent', () => {
       expect(refuterMessages.find(m => m.includes(': Second cache left stale\n'))).toContain("- **Judge's reasoning**: warning. Not sure a request reads it");
       expect(refuterMessages.every(m => m.includes('- **Outside input in this repository, as its maintainers define it**: Callers of the public API.'))).toBe(true);
       // Only the blocker cell rises. The finding in the `rare` column keeps the grade the judge's cell gave it, with no step of the refuter's.
-      expect(result.findings.slice(0, 2).map(f => f.gradePath)).toEqual([[{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'Both paths take the lock.' }], undefined]);
+      expect(result.findings.slice(0, 2).map(f => f.gradePath)).toEqual([[{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation', reason: 'Both paths take the lock.' }], undefined]);
       const [, userMessage] = mockSendMessage.mock.calls[0];
       expect(userMessage).toContain("- **Cited code outside the diff** (src/lock.ts:30), at the PR's head.");
       expect(userMessage).toContain('>>> 30: const guard = lock.acquire();');
@@ -1993,18 +2000,21 @@ describe('runJudgeAgent', () => {
       expect(userMessage).not.toContain('(src/lock.ts:180)');
       expect(userMessage).not.toContain('(src/bundle.js:2)');
 
-      // The record keeps the blocker cell beside the judge's `warning`. The next round's judge is shown the grade without that
-      // cell, in both lists, so Grade Stability asks for a cell that gives a warning and no later round restates the blocker from it.
-      const kept = result.findings[9];
-      expect([kept.gradePath, kept.refutation?.outcome, kept.refutation?.defect, pendingGrade(kept)]).toEqual([undefined, 'confirmed', 'confirmed', 'warning']);
-      const { cell, doubts, gradeIfConfirmed, refutation } = kept;
-      const entry = { ...makeFindingFingerprintEntry({ title: kept.title, severity: kept.severity, file: kept.file, lineStart: kept.line }), cell, doubts, gradeIfConfirmed, refutation };
-      const next = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [entry] } })]);
-      expect(next).toContain(`- **P1** (round 1, warning): "Wrong retry count" at ${kept.file}:14`);
-      const recent = next.slice(next.indexOf('## Prior Round Findings'), next.indexOf('## Prior Findings'));
-      expect(recent).toContain('"severity": "warning"');
-      expect(recent).toContain('"check": "confirmed"');
-      expect(recent).not.toMatch(/"row"|"column"|"gradeIfConfirmed"/);
+      // The record keeps the blocker cell beside the `warning` a confirmation leaves, whether the judge stated it or no finder had filed
+      // a blocker. The next round's judge is shown the grade without that cell, in both lists, so Grade Stability asks for a cell that
+      // gives a warning and no later round restates the blocker from it.
+      for (const kept of result.findings.slice(9)) {
+        expect([kept.gradePath, kept.refutation?.outcome, pendingGrade(kept)]).toEqual([undefined, 'confirmed', 'warning']);
+        const { cell, doubts, gradeIfConfirmed, refutation } = kept;
+        const entry = { ...makeFindingFingerprintEntry({ title: kept.title, severity: kept.severity, file: kept.file, lineStart: kept.line }), cell, doubts, gradeIfConfirmed, refutation };
+        const next = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [entry] } })]);
+        expect(next).toContain(`- **P1** (round 1, warning): "${kept.title}" at ${kept.file}:${kept.line}`);
+        const recent = next.slice(next.indexOf('## Prior Round Findings'), next.indexOf('## Prior Findings'));
+        expect(recent).toContain('"severity": "warning"');
+        expect(recent).toContain('"check": "confirmed"');
+        expect(recent).not.toMatch(/"row"|"column"|"gradeIfConfirmed"/);
+      }
+      expect(result.findings[9].refutation?.defect).toBe('confirmed');
 
       // The check of a warning on code the PR did not change waits for the round's end, so a judge call never makes it.
       const old = (title: string, preExisting?: string) => makeFinding({ title, severity: 'warning', file: 'src/lock.ts', line: 30, evidence: { checks: [], proof: ['src/lock.ts:30'] }, preExisting });
@@ -2261,6 +2271,9 @@ describe('runJudgeAgent', () => {
       'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // The judge confirmed the rule, so the refuter's own answer that the defect does not exist drops nothing either.
       'Defect disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
+      // No finder filed this one as a blocker, so no answer raises it for its damage. With `warn` its check only changes the
+      // status it shows and waits for the round's end. With `block` the rule made it a blocker, which the refuter checks.
+      'Damage doubted and no finder blocker': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // A note whose damage the judge doubts too. The refuter answers the damage first, then the fact.
       ...Object.fromEntries([
         'Fact confirmed, damage disproved', 'Fact confirmed, damage unsettled', 'Fact confirmed, damage confirmed', 'Fact disproved, damage confirmed',
@@ -2281,6 +2294,8 @@ describe('runJudgeAgent', () => {
     const findings = titles.map((title, i) => makeFinding({
       title, line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...((title === 'Fact confirmed without a search' || title.startsWith('No search')) && { emptySearch: '' }) },
       ...(!title.includes('no rule') && { rule }), ...(title.startsWith('Build claim') && { buildClaim: true }),
+      // A finder filed these two as blockers, so a confirmed doubt could raise them and the judge call checks them.
+      ...(['Damage disproved', 'Defect disproved'].includes(title) && { severity: 'blocker' as const }),
     }));
     const premise = (...outcomes: string[]) => ({ reason: `It is ${outcomes.at(-1)}.`, premises: outcomes.map(outcome => ({ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] })) });
     const replies: Record<string, unknown> = {
@@ -2292,7 +2307,7 @@ describe('runJudgeAgent', () => {
       'Fact confirmed, damage confirmed': premise('confirmed', 'confirmed'), 'Fact disproved, damage confirmed': premise('confirmed', 'disproved'),
       'Fact unsettled, damage confirmed': premise('confirmed', 'unsettled'),
       'Fact confirmed, defect disproved': { ...premise('unsettled', 'confirmed'), outcome: 'disproved', proof: ['src/index.ts:3'] },
-      'Fact disputed': premise('confirmed'),
+      'Fact disputed': premise('confirmed'), 'Damage doubted and no finder blocker': premise('confirmed'),
       'No search, check disproves': { outcome: 'disproved', reason: 'The entry is there.', proof: ['src/index.ts:3'] },
       'No search, check confirms': { outcome: 'confirmed', reason: 'No entry anywhere.', proof: ['src/index.ts:3'] },
       'No search, check unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
@@ -2328,6 +2343,7 @@ describe('runJudgeAgent', () => {
         ['Damage disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
         // No disproof lowers a blocker the rule raised, or drops the warning the judge's rule verdict keeps.
         ['Defect disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
+        ['Damage doubted and no finder blocker', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
         // The confirmed fact confirms the rule and gives its grade, whatever the answer about the damage.
         ['Fact confirmed, damage disproved', grade, 'confirmed', `rule: ${grade}`],
         ['Fact confirmed, damage unsettled', grade, 'confirmed', `rule: ${grade}`],
@@ -2356,7 +2372,9 @@ describe('runJudgeAgent', () => {
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(47);
+      expect(refuterMessages).toHaveLength(48);
+      // Only the run with `block` checked the finding no finder filed as a blocker.
+      expect(refuterMessages.filter(m => m.includes(': Damage doubted and no finder blocker\n'))).toHaveLength(1);
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
       expect(await graded(undefined, second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
       expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
@@ -2366,8 +2384,12 @@ describe('runJudgeAgent', () => {
       const raised = byTitle['Fact confirmed, damage disproved'];
       expect([raised.cell, raised.doubts, raised.gradeIfConfirmed, raised.refutation?.outcome]).toEqual([undefined, undefined, undefined, 'disproved']);
       expect(byTitle['Fact confirmed, damage unsettled'].doubts?.map(d => d.premise)).toEqual(['The service fails to start without the variable', '`.env.example` has no entry for the variable']);
+      // The rule finding no finder filed as a blocker is kept at a warning before any check: its cell's blocker can no longer come.
+      expect([byTitle['Damage doubted and no finder blocker']].map(f => [f.gradeIfConfirmed, f.cell, f.refutation])).toEqual([['warning', { row: 'wrong', column: 'normal' }, undefined]]);
       // A note whose fact stays open leaves the judge call without the rule's grade and without the fact as a doubt, so no later step takes them for the damage's. The check's answer and the damage doubt stay.
       const open = Object.fromEntries((await run('block')).map(f => [f.title, f]));
+      // A blocker the rule step made is not kept down, so it keeps the pending grade of its cell.
+      expect([open['Damage doubted and no finder blocker']].map(f => [f.severity, f.gradeIfConfirmed, f.refutation?.outcome])).toEqual([['blocker', 'blocker', 'confirmed']]);
       // So does a note the refuter dropped, which the round record keeps.
       expect(['Fact unsettled', 'Fact unsettled, damage confirmed', 'Fact disproved', 'Fact disproved, damage confirmed'].map(title => [open[title].gradeIfConfirmed, open[title].doubts?.map(d => d.premise), open[title].rule?.unseen, open[title].refutation?.premises?.length])).toEqual([
         [undefined, undefined, '`.env.example` has no entry for the variable', 1],
@@ -2375,7 +2397,7 @@ describe('runJudgeAgent', () => {
         [undefined, undefined, '`.env.example` has no entry for the variable', 1],
         [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
       ]);
-      expect(raised.evidence?.proof).toEqual(['src/index.ts:17', 'src/index.ts:3']);
+      expect(raised.evidence?.proof).toEqual(['src/index.ts:18', 'src/index.ts:3']);
       // A finding a check disproved stays with that check's answer, which the comment shows, and without the cell that stated the damage.
       expect(['No search, check disproves', 'No search, damage blocker, check disproves'].map(title => [open[title].refutation?.outcome, open[title].cell])).toEqual([['disproved', undefined], ['disproved', undefined]]);
       expect([byTitle['Defect disproved'].refutation?.defect, byTitle['Defect disproved'].cell, byTitle['Defect disproved'].gradeIfConfirmed]).toEqual(['disproved', undefined, undefined]);
@@ -4192,8 +4214,9 @@ describe('mapJudgedToFindings', () => {
       ['Wrong result, warning if confirmed', {}, { row: 'wrong', ...kept }, ['warning', 'warning', [doubt]]],
       ['Lost data, warning if confirmed', {}, { row: 'severe', ...kept }, ['warning', 'warning', [doubt]]],
       ['Reach doubted, warning if confirmed', {}, { row: 'wrong', ...kept, doubts: [reach] }, ['warning', 'warning', [reach]]],
-      // A missing answer leaves the cell's grade, and `parseJudgeResponse` keeps no other answer.
+      // A missing answer and a stated `blocker` leave the cell's grade.
       ['Wrong result, nothing stated', {}, { row: 'wrong', doubts: [doubt], reasoning: 'r' }, ['warning', 'blocker', [doubt]]],
+      ['Wrong result, blocker if confirmed', {}, { row: 'wrong', ...kept, gradeIfConfirmed: 'blocker' }, ['warning', 'blocker', [doubt]]],
       // Without a doubt the cell blocks at once, whatever the judge states beside it.
       ['Wrong result, no doubt', {}, { row: 'wrong', ...kept, doubts: undefined }, ['blocker', undefined, undefined]],
       ['Lost data, a doubt that decides nothing', {}, { row: 'severe', ...kept, doubts: [reach] }, ['blocker', undefined, undefined]],
@@ -4207,6 +4230,9 @@ describe('mapJudgedToFindings', () => {
     ];
     const lowered = mapJudgedToFindings(stated.map(([title, extra]) => proven(title, extra)), stated.map(([title, , entry], i) => ({ id: i + 1, title, ...entry })));
     expect(lowered.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual(stated.map(([title, , , expected]) => [title, ...expected]));
+    // The judge's own answer is kept for the record on every finding with a doubt, whether or not it changed the grade.
+    expect(lowered.map(f => f.judgeIfConfirmed)).toEqual(stated.map(([, , entry, [, , doubts]]) => (doubts ? entry.gradeIfConfirmed : undefined)));
+    expect(lowered.filter(f => f.judgeIfConfirmed === 'blocker').map(f => f.title)).toEqual(['Wrong result, blocker if confirmed']);
     // The record keeps the cell beside the judge's answer, and only the `rare` column leaves a finding without a `pendingGrade`.
     // Such a finding is a warning to every later step, so `wouldBlockIfTrue` does not hold for it.
     expect(lowered.slice(0, 3).map(f => [f.cell, pendingGrade(f), staysWarningIfConfirmed(f), wouldBlockIfTrue(f)])).toEqual([

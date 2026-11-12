@@ -165,7 +165,7 @@ describe('formatFindingComment', () => {
       ['a doubt held a blocker cell at a warning, and the two checks disagree', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: check('disproved') }, true],
       ['the same, where the second check says the defect does not exist', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: { ...check('unsettled'), defect: 'disproved' } }, true],
       ['the same, where the second check disproved a premise that only decides the grade', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: { ...check('unsettled'), premises: [{ premise: 'A caller passes it', outcome: 'disproved', reason: 'r' }] } }, true],
-      // The judge stated `warning` for the case that every doubt holds, so the confirmation gives no blocker.
+      // The judge stated `warning` for the case that every doubt holds, or no finder filed a blocker, so the confirmation gives no blocker.
       ['a doubt held a blocker cell at a warning the judge keeps, and a check confirmed it', { cell: cell('wrong'), gradeIfConfirmed: 'warning', gradePath: [byTheRule], refutation: check('confirmed') }, true],
       // Without the rule, the confirmation gives each of these its blocker.
       ['a doubt held a blocker cell at a warning, and a check confirmed it', { ...held, gradePath: [byTheRule], refutation: check('confirmed') }, false],

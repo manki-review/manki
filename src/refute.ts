@@ -216,6 +216,18 @@ function raisedTo(finding: Finding, grade: FindingSeverity | undefined): Finding
 }
 
 /**
+ * Whether no confirmation gives `finding` the pending blocker of its cell. A doubt means the judge named that cell for
+ * code it had not seen, and the refuter confirms premises, never how serious the damage is. So the blocker is given
+ * only when a finder filed one, on a security finding, or when the finding `restates` an earlier blocker. A grade that
+ * a step after the judge's moved, such as a rule blocker, is left alone.
+ */
+function keepsWarning(finding: Finding, restates: boolean): boolean {
+  const held = pendingGrade(finding) === 'blocker' && isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) === 'blocker'
+    && (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge';
+  return held && finderGrade(finding) !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
+}
+
+/**
  * Returns the grade a confirmation gives, while nothing lowered the finding further since the judge: the blocker an
  * unproven cap lowered, or the finding's `pendingGrade`. So a finding that `isRareClaim` gets none: the judge placed it
  * in the `rare` column, and the refuter's answer to `REACH_DOUBT` is recorded without moving it.
@@ -529,8 +541,11 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       return undefined;
     }
   };
+  // No answer raises a finding that `keepsWarning`. With `warning` as its `gradeIfConfirmed` it `staysWarningIfConfirmed`,
+  // so this call and every later step and round treat it as the warning the judge keeps in a blocker cell.
+  const keptDown = (f: Finding): Finding => (keepsWarning(f, restatesBlocker(f, priorRounds, blockingThreads)) ? { ...f, gradeIfConfirmed: 'warning' } : f);
   // The judge call settled each grade, so the call at the round's end reopens none and checks no finding for its grade.
-  const reopened = roundEnd ? findings : findings.map(f => reopenCappedGrade(f, priorRounds));
+  const reopened = roundEnd ? findings : findings.map(f => keptDown(reopenCappedGrade(f, priorRounds)));
   const checkable = (finding: Finding): boolean => !!codeDigest(workspace, [finding.file]);
   const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.

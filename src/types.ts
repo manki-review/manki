@@ -343,10 +343,14 @@ export interface Finding {
   /**
    * The grade the finding gets once every premise in `doubts` holds. Set when the finding has a doubt. Manki works it
    * out from the `cell`, except that it is `warning` in a cell that gives a blocker when the judge stated `warning`.
-   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. On a finding that
-   * `isRareClaim` it is the grade of the `normal` column, which no confirmation gives.
+   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. Before its checks,
+   * `refuteBlockers` sets `warning` here on a blocker cell that no confirmation may raise: no finder filed a blocker,
+   * it is no security finding and it restates no earlier blocker. On a finding that `isRareClaim` it is the grade of
+   * the `normal` column, which no confirmation gives.
    */
   gradeIfConfirmed?: FindingSeverity;
+  /** The judge's own answer for `gradeIfConfirmed`, on a finding with a doubt. Unset when it stated none. Only for the record. */
+  judgeIfConfirmed?: 'blocker' | 'warning';
   /** The premises the judge doubts, which the refuter checks one by one. */
   doubts?: Doubt[];
   /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings checked for a doubt the judge named. */
@@ -637,7 +641,10 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
   return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
 }
 
-/** Whether the judge stated a cell for `f` that gives a blocker, and `warning` as the grade `f` earns once every doubt holds. */
+/**
+ * Whether the cell of `f` gives a blocker that no confirmation of its doubts gives. Either the judge stated `warning`
+ * for that case, or `refuteBlockers` set it because no finder filed a blocker.
+ */
 export function staysWarningIfConfirmed(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): boolean {
   return f.gradeIfConfirmed === 'warning' && isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker';
 }
@@ -2024,6 +2031,8 @@ export interface RoundJudgeDrop {
   gradePath?: GradeStep[];
   /** Mirrors `Finding.gradeIfConfirmed`. */
   gradeIfConfirmed?: FindingSeverity;
+  /** Mirrors `Finding.judgeIfConfirmed`. */
+  judgeIfConfirmed?: 'blocker' | 'warning';
   /** Mirrors `Finding.doubts`. */
   doubts?: Doubt[];
   /** Mirrors `Finding.cell`. A dropped finding has one only when a later stage dropped it. */
@@ -2333,6 +2342,8 @@ export interface FindingFingerprintEntry {
   pairRefutation?: Refutation;
   /** Mirrors `Finding.gradeIfConfirmed`. */
   gradeIfConfirmed?: FindingSeverity;
+  /** Mirrors `Finding.judgeIfConfirmed`. */
+  judgeIfConfirmed?: 'blocker' | 'warning';
   /** Mirrors `Finding.doubts`. */
   doubts?: Doubt[];
   /** Mirrors `Finding.cell`. A record from before cells has none. */
