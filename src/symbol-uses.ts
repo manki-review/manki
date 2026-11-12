@@ -546,7 +546,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
       (await grepWords(dir, words, { onDisk: true, ignoreCase })).filter(hit => !GUIDE_FILES.includes(hit.file));
     // A translation the name's own search already finds, or one too short or too common to tell anything, is not searched.
     const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
-      list.filter(as => !isGeneric(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
+      list.filter(as => isSearchable(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
     const recordOf = (group: typeof guesses) => group.map(({ pattern: _pattern, ...guess }) => guess);
     let hits: Hit[];
     try {
@@ -714,11 +714,11 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
 
   const searched = [...symbols.values()]
-    .filter(s => !isGeneric(s.name))
+    .filter(s => isSearchable(s.name))
     .sort((a, b) => a.tier - b.tier || Number(TEST_PATH.test(a.file)) - Number(TEST_PATH.test(b.file)))
     .slice(0, MAX_SYMBOLS);
   const referenced = [...references.entries()]
-    .filter(([name]) => !isGeneric(name))
+    .filter(([name]) => isSearchable(name))
     .sort(([a, x], [b, y]) => y.code - x.code || y.count - x.count || a.localeCompare(b))
     .slice(0, MAX_REFERENCED_FIELDS);
   const lookupFields = [...new Set(lookups.map(l => l.field))].slice(0, MAX_LOOKUP_FIELDS);
@@ -726,12 +726,12 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const referenceNames = [...new Set([
     // A name a comment quotes, often from the reference itself, points most directly at its counterpart there.
     ...files.flatMap(mentionedNames), ...searched.filter(s => s.tier < 2 && !s.test && !TEST_PATH.test(s.file)).map(s => s.name), ...referenced.map(([name]) => name),
-  ])].filter(name => isCodeLike(name) && !isGeneric(name)).slice(0, MAX_SYMBOLS);
+  ])].filter(name => isSearchable(name) && isCodeLike(name)).slice(0, MAX_SYMBOLS);
   // A dependency does not hold what the change declares, so a called or read name the change also declares is left out.
   const dependencyNames = forDependency ? [...new Set([
     ...files.flatMap(mentionedNames),
     ...[...reliedOn].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).map(([name]) => name).filter(name => !symbols.has(name)),
-  ])].filter(name => isCodeLike(name) && !isGeneric(name)).slice(0, MAX_SYMBOLS) : [];
+  ])].filter(name => isSearchable(name) && isCodeLike(name)).slice(0, MAX_SYMBOLS) : [];
   const nothing = { section: '', ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }) };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
@@ -821,8 +821,9 @@ function touchedLines(file: DiffFile): Set<number> {
   return touched;
 }
 
-function isGeneric(name: string): boolean {
-  return name.length < MIN_NAME_LENGTH || GENERIC_NAMES.has(name);
+/** Whether a search for `name` can tell anything: it is long enough to be distinct and no name every codebase uses. */
+function isSearchable(name: string): boolean {
+  return name.length >= MIN_NAME_LENGTH && !GENERIC_NAMES.has(name);
 }
 
 /** Whether `name` reads as code, `snake_case`, `camelCase`, `URLInfo` or `ALL_CAPS`, so a search that ignores case finds no common word. */
@@ -924,7 +925,7 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
 
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
 export function declaredNames(diff: ParsedDiff): string[] {
-  return [...new Set(diff.files.flatMap(file => keywordDeclarations(file)).map(s => s.name).filter(name => !isGeneric(name)))];
+  return [...new Set(diff.files.flatMap(file => keywordDeclarations(file)).map(s => s.name).filter(name => isSearchable(name)))];
 }
 
 /** Reads and parses head files once each. */
