@@ -1675,7 +1675,7 @@ describe('main', () => {
 
     try {
       await main();
-      expect(jest.mocked(authModule.createOctokit)).toHaveBeenLastCalledWith('ghs_workflow', expect.any(AbortSignal));
+      expect(jest.mocked(authModule.createOctokit)).toHaveBeenLastCalledWith('ghs_workflow', { deadline: expect.any(AbortSignal) });
       expect(createComment).toHaveBeenCalledWith({ owner: 'test-owner', repo: 'test-repo', issue_number: 7, body: reviewNote });
       expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Could not get a token from the Manki token service'));
 

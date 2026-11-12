@@ -39,7 +39,8 @@ jest.mock('@actions/github', () => {
     getOctokit: (token: string, options: Record<string, unknown> = {}, ...plugins: unknown[]) => actual.getOctokit(token, {
       ...options,
       request: { fetch: (url: string, init: RequestInit) => mockGitHub.fetch(url, init) },
-      throttle: { ...(options.throttle as object), enabled: false },
+      // Only a test of rate limits turns the plugin on, since it also spaces writes a second apart.
+      throttle: { ...(options.throttle as object), enabled: mockThrottling, retryAfterBaseValue: 1 },
       retry: { ...(options.retry as object), retryAfterBaseValue: 1 },
     }, ...plugins),
   };
@@ -101,7 +102,7 @@ interface FakeReview { id: number; body: string; state: string; commit_id: strin
 interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string }; originalCommit?: { oid: string } }
 interface FakeThread { id: string; isResolved: boolean; resolvedBy: { login: string } | null; path: string; line: number; startLine: number | null; originalLine: number; comments: FakeThreadComment[] }
 /** A status the API answers matching requests with, for the next `times` of them or for all. */
-interface FakeFailure { method: string; path: RegExp; status: number; times?: number }
+interface FakeFailure { method: string; path: RegExp; status: number; times?: number; message?: string; headers?: Record<string, string> }
 
 const REVIEW_STATES: Record<string, string> = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' };
 
@@ -175,7 +176,7 @@ class FakeGitHub {
     }
     const failure = this.failures.find(f => f.method === method && f.path.test(pathname) && f.times !== 0);
     if (failure?.times) failure.times -= 1;
-    if (failure) return json({ message: 'Server Error' }, failure.status);
+    if (failure) return json({ message: failure.message ?? 'Server Error' }, failure.status, failure.headers);
     // The App's review token holds no `contents: write`, so only the token service's `/resolve` can change its threads.
     const resolving = /\b(un)?resolveReviewThread\b/.test(String(body.query));
     if (pathname === '/graphql' && resolving && (login === APP_LOGIN || (this.refuseResolve && !/\bunresolveReviewThread\b/.test(String(body.query))))) {
@@ -467,6 +468,7 @@ const FAKE_INTERVALS: Parameters<typeof jest.useFakeTimers>[0] = {
 
 let mockGitHub: FakeGitHub;
 let mockLLM: FakeLLM;
+let mockThrottling: boolean;
 
 const INPUTS: Record<string, string> = {
   github_token: 'ghs_workflow',
@@ -548,6 +550,7 @@ describe('runFullReview end to end', () => {
     mockContext.payload = {};
     mockGitHub = new FakeGitHub();
     mockLLM = new FakeLLM();
+    mockThrottling = false;
     jest.mocked(core.getInput).mockImplementation((name: string) => INPUTS[name] ?? '');
     jest.mocked(core.getIDToken).mockResolvedValue('oidc-token');
     jest.spyOn(globalThis, 'fetch').mockImplementation((url, init) => mockGitHub.fetch(String(url), init));
@@ -1292,6 +1295,20 @@ describe('runFullReview end to end', () => {
 
       expect(core.setFailed).toHaveBeenCalledWith(`Manki encountered an error: GitHub returned 503 on GET /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}.${hint}`);
       expect(mockGitHub.failures[0].times).toBe(0);
+    });
+
+    it.each<[string, Partial<FakeFailure>]>([
+      ['a rate limit', { message: 'API rate limit exceeded', headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1) } }],
+      ['a secondary rate limit', { message: 'You have exceeded a secondary rate limit', headers: { 'retry-after': '1' } }],
+    ])('fails the run at once when the first read of the PR meets %s', async (_case, limit) => {
+      mockThrottling = true;
+      mockGitHub.failures = [{ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 403, times: 3, ...limit }];
+
+      await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      expect(core.setFailed).toHaveBeenCalledWith(`Manki encountered an error: ${limit.message}`);
+      expect(mockGitHub.failures[0].times).toBe(2);
+      expect(mockGitHub.writes).toEqual([]);
     });
 
     it('reopens a blocker thread its author resolved, once, and approves when someone else resolves the last open thread', async () => {

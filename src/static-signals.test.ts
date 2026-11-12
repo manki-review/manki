@@ -25,21 +25,11 @@ jest.mock('@actions/core', () => ({
   debug: jest.fn(),
 }));
 
-// The real client, for the tests of its retries and rate limit waits. `mockFetch` answers every request, and the waits are a thousandth as long.
-// The throttling plugin shares its limiters by `id` across clients, and the tests set the clock back, so each client gets its own.
-jest.mock('@actions/github', () => {
-  const actual = jest.requireActual('@actions/github');
-  let clients = 0;
-  return {
-    context: { job: 'review' },
-    getOctokit: (token: string, options: { retry?: object; throttle?: object } = {}, ...plugins: unknown[]) => actual.getOctokit(token, {
-      ...options,
-      request: { fetch: (url: string, init: RequestInit) => mockFetch(url, init) },
-      retry: { ...options.retry, retryAfterBaseValue: 1 },
-      throttle: { ...options.throttle, retryAfterBaseValue: 1, id: `client-${clients++}` },
-    }, ...plugins),
-  };
-});
+// The real client, for the tests of its retries and rate limits. `mockFetch` answers every request.
+jest.mock('@actions/github', () => ({
+  context: { job: 'review' },
+  getOctokit: (...args: unknown[]) => jest.requireActual('./test-utils').realOctokit((url: string, init: RequestInit) => mockFetch(url, init), ...args),
+}));
 
 let mockFetch: (url: string, init: RequestInit) => Promise<Response>;
 
@@ -730,6 +720,25 @@ describe('collectStaticSignals with analyzers and waits', () => {
     expect(record).toBeUndefined();
     // The last poll starts when the 60 seconds are over, and gets 10 seconds to answer.
     expect(timeout).toHaveBeenCalledWith(70_000);
+  });
+
+  it.each<[string, () => Response, number, string]>([
+    ['at once when its read meets a rate limit', () => json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2' }), 1, 'the token cannot read it (HTTP 403)'],
+    ['at once when its read meets a secondary rate limit', () => json(403, { message: 'You have exceeded a secondary rate limit' }, { 'retry-after': '2' }), 1, 'the token cannot read it (HTTP 403)'],
+    ['after three retries when its read gets a 5xx on every try', () => json(503, { message: 'Service Unavailable' }), 4, 'Service Unavailable'],
+  ])('skips a source %s, on the real client', async (_case, answer, tries, reason) => {
+    const config = 'static_analysis:\n  checks: false\n  dependency_review: false\n';
+    let reads = 0;
+    mockFetch = async (url) => {
+      if (url.includes('/contents/')) return json(200, { content: Buffer.from(config).toString('base64'), encoding: 'base64', size: config.length });
+      reads += 1;
+      return answer();
+    };
+
+    const { record } = await collectStaticSignals(createOctokit('ghs_workflow'), request(), runtime);
+
+    expect(reads).toBe(tries);
+    expect(record).toEqual({ sources: [{ source: 'code_scanning', status: 'skipped', reason }] });
   });
 
   it.each<[string, number, boolean, object | undefined, RegExp, number]>([

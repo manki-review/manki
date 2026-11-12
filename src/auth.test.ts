@@ -5,7 +5,7 @@ import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
 import { RunCancelledError, stopWritesOn } from './abort';
-import { changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, reportPrState, resolveGitHubToken, tokenServiceCalls, TokenResult, TokenServiceError } from './auth';
+import { changeThreadThroughService, createAuthenticatedOctokit, createOctokit, fetchPrState, reportPrState, resolveGitHubToken, tokenServiceCalls, TokenResult, TokenServiceError } from './auth';
 import { startReviewCheck } from './check-run';
 import { pastRetryWait } from './test-utils';
 
@@ -364,7 +364,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(mockGetOctokit).not.toHaveBeenCalled();
   });
 
-  it('retries a rate-limited request at most twice, and one with its own deadline never', async () => {
+  it('retries a rate-limited request at most twice, and never one with its own deadline or one of another client', async () => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
     mockFetch(async () => Response.json({ token: 'resolved-app-token' }));
     mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
@@ -384,6 +384,13 @@ describe('createAuthenticatedOctokit', () => {
     const withDeadline = { method: 'POST', url: '/graphql', request: { signal: new AbortController().signal } };
     for (const handler of [throttle.onRateLimit, throttle.onSecondaryRateLimit]) {
       expect(handler(5, withDeadline, {}, 0)).toBe(false);
+    }
+
+    // Only the client Manki reviews and posts with waits. A workflow-token or memory read takes its skip path at once.
+    createOctokit('ghs_workflow');
+    const other = (mockGetOctokit.mock.calls.at(-1)![1] as { throttle: typeof throttle }).throttle;
+    for (const handler of [other.onRateLimit, other.onSecondaryRateLimit]) {
+      expect(handler(5, request, {}, 0)).toBe(false);
     }
   });
 

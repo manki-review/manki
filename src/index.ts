@@ -2237,7 +2237,7 @@ async function reportTokenFailure({ event, action, number }: ReturnType<typeof d
   const { owner, repo } = github.context.repo;
   const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
   try {
-    const octokit = createOctokit(token, AbortSignal.timeout(TOKEN_FAILURE_NOTE_TIMEOUT_MS));
+    const octokit = createOctokit(token, { deadline: AbortSignal.timeout(TOKEN_FAILURE_NOTE_TIMEOUT_MS) });
     const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
     if (comments.some(comment => comment.body === body)) return;
     await octokit.rest.issues.createComment({ owner, repo, issue_number: number, body });
