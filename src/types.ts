@@ -496,6 +496,12 @@ export interface RoundUses {
   consumerMissing?: string[];
   /** Names found in the consumer repos that the cap on consumer lines left out. */
   consumerCapped?: string[];
+  /** Each name found in the dependency repos, with the lines shown. */
+  dependency?: RoundReferenceUse[];
+  /** Names searched for that no dependency line holds. */
+  dependencyMissing?: string[];
+  /** Names found in the dependency repos that the cap on dependency lines left out. */
+  dependencyCapped?: string[];
   /** The names a model translated for the search of the related repos. Unset when that search did not run. */
   translation?: RoundNameTranslation;
 }
@@ -1296,8 +1302,11 @@ export interface AnalyzerSettings {
   shellcheck?: boolean;
 }
 
-/** `reference`: a repo this one implements or ports, such as a protocol. `consumer`: a repo that depends on this one. */
-export const RELATED_REPO_KINDS = ['reference', 'consumer'] as const;
+/**
+ * `reference`: a repo this one implements or ports, such as a protocol. `consumer`: a repo that depends on this one.
+ * `dependency`: a repo this one depends on, read at the `ref` this one pins.
+ */
+export const RELATED_REPO_KINDS = ['reference', 'consumer', 'dependency'] as const;
 export type RelatedRepoKind = (typeof RELATED_REPO_KINDS)[number];
 
 export interface RelatedRepo {

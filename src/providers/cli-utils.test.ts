@@ -237,6 +237,18 @@ describe('repoToolsPrompt', () => {
     expect(prompt()).not.toContain('guide');
     expect(prompt()).toMatchSnapshot();
     expect(guided).toMatchSnapshot();
+
+    // A dependency adds its line, its rule for reading and its grading, and changes nothing else.
+    const lib = { repo: 'acme/lib', kind: 'dependency' as const, ref: 'v1.4.2' };
+    const withDependency = repoToolsPrompt({ root: '/work/repo', steps: 15, related: { ...related, repos: [...related.repos, lib] } }, 'Read, Grep and Glob');
+    const added = [
+      '\n- `acme/lib` at `v1.4.2`, dependency: a codebase this one depends on.',
+      '\n- Read a **dependency** when the changed code calls it or relies on what it does: open the code the change calls and check that what the change assumes about it holds there, such as what a function validates, what a signature or hash covers, which errors it returns, and what it guarantees about ordering, retries or concurrency.',
+      ' An assumption about a dependency that its code does not keep is graded like any other finding. A different design in the dependency is not a finding by itself.',
+    ];
+    for (const text of added) expect(withDependency).toContain(text);
+    expect(added.reduce((text, part) => text.replace(part, ''), withDependency)).toBe(prompt());
+    expect(prompt()).not.toContain('dependency');
   });
 });
 

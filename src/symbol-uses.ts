@@ -497,6 +497,7 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
 const RELATED_SECTIONS: Record<RelatedRepoKind, { title: string; task: string }> = {
   reference: { title: 'Reference', task: "Each line is quoted from the reference's fetched commit. Cite one as `owner/name:path:line`, and compare what the change does with what the reference does, in both directions." },
   consumer: { title: 'Consumer', task: "Each line is quoted from the consumer's fetched commit and may use what the change touches. Cite one as `owner/name:path:line`, and check that it still works with the change." },
+  dependency: { title: 'Dependency', task: "Each line is quoted from the dependency's fetched commit and may define what the change relies on. Cite one as `owner/name:path:line`, and check that what the change assumes about it holds in that code." },
 };
 
 type RelatedUsesRecord = Pick<RoundUses, RelatedRepoKind | `${RelatedRepoKind}Missing` | `${RelatedRepoKind}Capped` | 'translation'>;
@@ -505,9 +506,9 @@ type TranslatedNames = NonNullable<RoundNameTranslation['names']>;
 type RelatedHit = Hit & { repo: string; as?: string };
 
 /**
- * Returns one prompt section per related repo kind, the references first. Each lists, for each of `names`, the lines of
+ * Returns one prompt section per related repo kind, in the order of `RELATED_REPO_KINDS`. Each lists, for each of `names`, the lines of
  * that kind's checkouts that hold it, ignoring case and underscores, so `retry_delay` finds `retryDelay`. The repo's own
- * code comes first: for a reference a line that declares a constant or type, then the files that hold the most of
+ * code comes first: for a reference or a dependency a line that declares a constant or type, then the files that hold the most of
  * `names`, code before comments and documents. Tests come next, then vendored code. The record holds the same lists
  * without the quoted code. A section is empty when nothing matches. A checkout whose search fails is left out with a
  * warning.
@@ -600,14 +601,14 @@ function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<st
     const hits = found.get(name)!;
     // The name a line was found by, the diff's or a translated one, with the pattern of a line that declares it. A
     // constant or type is best shown where the reference defines it. A lowercase name declared elsewhere is mostly a
-    // local namesake, and a consumer is read for its uses.
+    // local namesake, and a consumer is read for its uses. A dependency is ranked like a reference.
     const searched = new Map<string, { word: RegExp; declaration?: RegExp }>();
     const searchedAs = ({ as }: RelatedHit) => {
       const key = as ?? name;
       let entry = searched.get(key);
       if (!entry) {
         const word = as ? translatedPattern(as) : referencePattern(name);
-        entry = { word, ...(kind === 'reference' && /^[A-Z]/.test(key) && { declaration: declarationPattern(word) }) };
+        entry = { word, ...(kind !== 'consumer' && /^[A-Z]/.test(key) && { declaration: declarationPattern(word) }) };
         searched.set(key, entry);
       }
       return entry;

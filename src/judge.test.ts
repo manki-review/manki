@@ -180,6 +180,15 @@ describe('buildJudgeSystemPrompt', () => {
       return built.slice(built.indexOf('## Related Repos'), built.indexOf('## Project Instructions'));
     };
     expect(rulesFor([{ repo: 'acme/spec', kind: 'reference' }, { repo: 'acme/app', kind: 'consumer' }])).toMatchSnapshot();
+    // A dependency adds its list and its rule, and changes nothing else.
+    const withDependency = rulesFor([{ repo: 'acme/spec', kind: 'reference' }, { repo: 'acme/app', kind: 'consumer' }, { repo: 'acme/lib', kind: 'dependency', ref: 'v1.4.2' }]);
+    const added = [
+      ' Dependencies, which this repository depends on: `acme/lib`.',
+      '\n- **An assumption about a dependency that its code does not keep** is graded by the blocker tests and the severity table, like any other finding. A finding that only says the dependency is designed differently, with no assumption of the change that fails, names no defect, so mark it `ignore`.',
+    ];
+    for (const text of added) expect(withDependency).toContain(text);
+    expect(added.reduce((text, part) => text.replace(part, ''), withDependency)).toBe(rulesFor([{ repo: 'acme/spec', kind: 'reference' }, { repo: 'acme/app', kind: 'consumer' }]));
+    expect(rulesFor([{ repo: 'acme/lib', kind: 'dependency' }])).toContain('References, which this repository implements or ports: none. Consumers, which depend on this repository: none. Dependencies, which this repository depends on: `acme/lib`.');
     // Configured repos that no finder could read this round give no rules.
     expect(buildJudgeSystemPrompt(makeConfig({ related_repos }), 5, false, 0, [])).not.toContain('## Related Repos');
     expect(buildJudgeSystemPrompt(makeConfig({ related_repos }), 5)).not.toContain('## Related Repos');

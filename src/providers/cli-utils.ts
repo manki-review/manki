@@ -519,7 +519,9 @@ Use the tools to follow every path the change affects: the callers of changed co
  * the path of a guide, never its text, so a related repo cannot add to these instructions.
  */
 function relatedReposPrompt({ repos, guides }: RelatedRepoTools): string {
-  const kinds = { reference: 'a codebase this one implements or ports', consumer: 'a codebase that depends on this one' };
+  const kinds = { reference: 'a codebase this one implements or ports', consumer: 'a codebase that depends on this one', dependency: 'a codebase this one depends on' };
+  // The rules for a dependency show only with a dependency repo, so every other prompt keeps its text.
+  const dependency = repos.some(r => r.kind === 'dependency');
   const list = repos.map(({ repo, kind, ref, paths }) =>
     `- \`${repo}\`${ref ? ` at \`${ref}\`` : ''}, ${kind}: ${kinds[kind]}.${paths ? ` Only ${paths.map(p => `\`${p}\``).join(', ')} is fetched.` : ''}${guides?.[repo] ? ` Its guide is \`${guides[repo]}\`${paths ? ', fetched too' : ''}.` : ''}`);
   const guideRule = guides
@@ -534,9 +536,9 @@ ${list.join('\n')}
 A repo not fetched yet is fetched the first time you name it, which takes a while, so name one only for these checks:
 - Read a **reference** whenever the PR title, description or changed code says the change matches it, or follows its spec or proposal: open the code the claim names and compare it with the change. A claim nobody compared leaves the PR's main promise unchecked.
 - Read a **reference** when the changed code implements or mirrors it, such as a spec, a file or wire format, another implementation or an API this code talks to. Compare both directions of each contract: what this code produces against what the reference accepts, and the reverse, along with limits, field order, field types and versions.
-- Read a **consumer** only when the PR changes public API or a wire or data format, to find the consumer's code that uses what changed.${guideRule}
+- Read a **consumer** only when the PR changes public API or a wire or data format, to find the consumer's code that uses what changed.${dependency ? '\n- Read a **dependency** when the changed code calls it or relies on what it does: open the code the change calls and check that what the change assumes about it holds there, such as what a function validates, what a signature or hash covers, which errors it returns, and what it guarantees about ordering, retries or concurrency.' : ''}${guideRule}
 
-Cite a related repo's code as \`owner/name:path:line\`. A divergence from a reference is graded like any other finding. A change that breaks a consumer is a \`warning\` that lists the consumer's call sites and says the consumer breaks once it upgrades. It is a \`blocker\` only when the PR says it does not break anything.`;
+Cite a related repo's code as \`owner/name:path:line\`. A divergence from a reference is graded like any other finding. A change that breaks a consumer is a \`warning\` that lists the consumer's call sites and says the consumer breaks once it upgrades. It is a \`blocker\` only when the PR says it does not break anything.${dependency ? ' An assumption about a dependency that its code does not keep is graded like any other finding. A different design in the dependency is not a finding by itself.' : ''}`;
 }
 
 export interface RunCliOptions {

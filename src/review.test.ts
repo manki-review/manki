@@ -35,7 +35,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -1523,12 +1523,12 @@ describe('selectTeam', () => {
     // repository tools on a checked-out PR head. Without a repo of that kind, or for any other finder, the check is not shown.
     const withTools: LLMClient = { sendMessage: jest.fn(), repoTools: true };
     const noTools: LLMClient = { sendMessage: jest.fn() };
-    const focusesWith = (related: Array<'reference' | 'consumer'>, clients?: ReviewClients, workspace?: string) => {
+    const focusesWith = (related: RelatedRepoKind[], clients?: ReviewClients, workspace?: string) => {
       const related_repos = related.map(kind => ({ repo: `acme/${kind}`, kind }));
       return selectTeam(plainDiff, makeConfig({ reviewers, related_repos }), { trivial: false, subtle: true, paired: true }, false, clients, workspace).finders.map(f => f.prompt.focus);
     };
     const toolClients: ReviewClients = { reviewer: withTools, judge: withTools };
-    const focusWith = (...related: Array<'reference' | 'consumer'>) => focusesWith(related, toolClients, '/work/pr-head')[0];
+    const focusWith = (...related: RelatedRepoKind[]) => focusesWith(related, toolClients, '/work/pr-head')[0];
     expect(focusWith()).toBe(focus);
     expect(focusesWith(['reference', 'consumer'])).toEqual([focus, focus]);
     expect(focusesWith(['reference', 'consumer'], toolClients)).toEqual([focus, focus]);
@@ -1545,6 +1545,13 @@ describe('selectTeam', () => {
     expect(withConsumer).not.toContain('Specifications:');
     expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n14\. Readers: [^\n]*\n15\. Consumers: [^\n]*\n16\. Sibling state: /);
     expect({ focus: focusWith('reference', 'consumer') }).toMatchSnapshot();
+    // A dependency adds its check after the reference checks and changes no other line, so a config without one keeps its checklist.
+    const withDependency = focusWith('reference', 'consumer', 'dependency');
+    expect(withDependency).toMatch(/\n5\. Specifications: [^\n]*\n6\. Dependencies: for each function, type or message of a \*\*dependency\*\* related repo that the changed code calls or relies on, name what the change assumes about it: [^\n]* A different design in the dependency is not a finding by itself\. [^\n]*\n7\. Error paths: /);
+    const unnumbered = (text: string): string[] => text.split('\n').map(line => line.replace(/^\d+\. /, ''));
+    expect(unnumbered(withDependency).filter(line => !line.startsWith('Dependencies: '))).toEqual(unnumbered(focusWith('reference', 'consumer')));
+    expect(focusWith('dependency')).not.toMatch(/Specifications:|Consumers:/);
+    for (const related of [[], ['reference'], ['consumer'], ['reference', 'consumer']] as RelatedRepoKind[][]) expect(focusWith(...related)).not.toContain('Dependencies:');
   });
 
   describe('configured routing', () => {
