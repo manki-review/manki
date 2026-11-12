@@ -720,6 +720,8 @@ describe('refuteBlockers', () => {
       doubted('Doubted warning 8', 'warning'),
       finding('Second warning without proof', { severity: 'warning', ...noProof }),
       finding('Proven warning', { severity: 'warning' }),
+      // No check raises a blocker cell that no finder filed as a blocker, so its check counts among the eight.
+      finding('Blocker cell no finder filed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: exists }),
     ];
     const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, unsettled])));
 
@@ -727,7 +729,7 @@ describe('refuteBlockers', () => {
     const options = { workspace, diff, unpostedLater: (f: Finding) => f.title.startsWith('Left out later'), restatesEarlier, doubtBudget: { left: 8 } };
     const judged = await refuteBlockers(client, findings, options);
     // A judge call marks none of the warnings whose check waits for the round's end, since a check may be left for them then.
-    expect(judged.filter(f => f.overCheckLimit).map(f => f.title)).toEqual(['Doubted warning 8', 'Second warning without proof']);
+    expect(judged.filter(f => f.overCheckLimit).map(f => f.title)).toEqual(['Doubted warning 8', 'Second warning without proof', 'Blocker cell no finder filed']);
     // The call at the round's end checks no finding a second time, and finds the limit used up.
     const result = await refuteBlockers(client, judged, { ...options, roundEnd: true });
 
@@ -744,7 +746,7 @@ describe('refuteBlockers', () => {
       'Warning to blocker': undefined, 'Second warning to blocker': undefined, 'Grade doubt at its grade': undefined, 'Proven warning': undefined,
       'Doubted warning 1': 'unsettled_check', 'Doubted warning 2': 'unsettled_check', 'Doubted warning 3': 'unsettled_check', 'Doubted warning 4': 'unsettled_check',
       'Doubted warning 5': 'unsettled_check', 'Doubted warning 6': 'unsettled_check', 'Doubted warning 7': 'unsettled_check', 'Warning without proof': 'unsettled_check',
-      'Doubted warning 8': 'not_checked', 'Second warning without proof': 'not_checked',
+      'Doubted warning 8': 'not_checked', 'Second warning without proof': 'not_checked', 'Blocker cell no finder filed': 'not_checked',
       'Linked to an open thread': 'not_checked', 'Matches an earlier finding': 'not_checked',
       'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
