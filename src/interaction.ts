@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -337,7 +337,7 @@ export async function handleReviewCommentReply(
     });
 
     const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parentComment);
-    if (!root || !isBotComment(root.comment.body ?? '')) {
+    if (!root || !isOwnComment(bot, root.comment)) {
       core.info('Thread was not started by Manki');
       return;
     }
@@ -369,7 +369,7 @@ export async function handleReviewCommentReply(
       comment.body,
       filePath,
       currentFindingLine(place),
-      root.id !== inReplyTo && isBotComment(parentComment.body ?? '') ? parentComment.body : undefined,
+      root.id !== inReplyTo && isOwnComment(bot, parentComment) ? parentComment.body : undefined,
     );
 
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
@@ -673,7 +673,7 @@ async function resolveDismissedThread(
   try {
     const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
     const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
-    if (!root || !isBotComment(root.comment.body ?? '')) return undefined;
+    if (!root || !isOwnComment(bot, root.comment)) return undefined;
     const prAuthorLogin: string | undefined = payload.pull_request?.user?.login;
     const { mayResolve, isPrAuthor, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     if (!mayResolve) return { resolved: false, note: 'Only the PR author or someone with write access can dismiss this finding, so the thread stays open.' };
@@ -988,8 +988,14 @@ export function scopeDiffToFile(fullDiff: string, filePath: string): string {
   return result.length > 0 ? result.join('\n') : '';
 }
 
+/** Whether `body` holds one of Manki's markers. Anyone can write one, so this only tells which comments to leave unanswered. */
 function isBotComment(body: string): boolean {
   return body.includes('<!-- manki');
+}
+
+/** Whether Manki wrote `comment`, by its author. Only then is its hidden data Manki's. */
+function isOwnComment(bot: BotIdentity, comment: ReviewComment): boolean {
+  return isBotUser(bot, comment.user) && isBotComment(comment.body ?? '');
 }
 
 function hasBotMention(body: string): boolean {
