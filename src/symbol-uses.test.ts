@@ -399,11 +399,13 @@ describe('listUsesOutsideDiff', () => {
     // pattern. The ones left out are named as not searched, in the section and in the record.
     const wide = Array.from({ length: 100 }, (_, i) => `${'$'.repeat(150)}${i}`);
     const shape = (type: string) => `export interface WideShape {\n  realFieldHere: ${type};\n${wide.map(f => `  ${f}: number;\n`).join('')}}\n`;
-    const crowded = await usesFor({ 'src/shape.ts': shape('number'), 'src/read.ts': 'export const read = (s: WideShape) => s.realFieldHere;\n' }, { 'src/shape.ts': shape('string') });
+    // A line found for another name can hold a name that was not searched. That is no use of it, so it gets the note alone.
+    const reads = `export const read = (s: WideShape) => s.realFieldHere;\nexport const both = (s: WideShape) => [s.realFieldHere, s.${wide[60]}];\n`;
+    const crowded = await usesFor({ 'src/shape.ts': shape('number'), 'src/read.ts': reads }, { 'src/shape.ts': shape('string') });
     expect(core.warning).not.toHaveBeenCalled();
     expect(crowded.record?.symbols).toEqual([
-      { name: 'realFieldHere', declared: 'src/shape.ts:2', uses: ['src/read.ts:1'] },
-      { name: 'WideShape', declared: 'src/shape.ts:1', uses: ['src/read.ts:1'] },
+      { name: 'realFieldHere', declared: 'src/shape.ts:2', uses: ['src/read.ts:1', 'src/read.ts:2'] },
+      { name: 'WideShape', declared: 'src/shape.ts:1', uses: ['src/read.ts:1', 'src/read.ts:2'] },
     ]);
     // The list holds the first 80 symbols, so 78 of the fields. The first 50 fill the pattern to just under 15 KiB, which
     // still fits the Windows command line of 32,767 characters when quoting doubles it.
