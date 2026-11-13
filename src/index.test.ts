@@ -2105,6 +2105,9 @@ describe('runFullReview orchestration', () => {
       const keepCommit = held.includes('warnings') ? undefined : 'abc123';
       expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', keepCommit);
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
+      // The outputs match the COMMENT review a held approval posts, and name the first hold.
+      expect(core.setOutput).toHaveBeenCalledWith('verdict', 'COMMENT');
+      expect(core.setOutput).toHaveBeenCalledWith('approval_held', approvalHeld);
     });
 
     it('completes the check as action required for a diff too large to review', async () => {
@@ -2845,6 +2848,7 @@ describe('runFullReview orchestration', () => {
     );
     // Outputs set
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('verdict', 'REQUEST_CHANGES');
+    expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('approval_held', '');
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('findings_count', '1');
     // `severity_counts` uses the new key shape (#593): blocker/warning/suggestion/nitpick.
     const setOutputCalls = jest.mocked(core.setOutput).mock.calls;

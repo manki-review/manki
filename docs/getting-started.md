@@ -289,7 +289,9 @@ The workflow above uses the only inputs most setups need: a provider credential 
 
 ### Action outputs
 
-The action exposes outputs you can chain into later workflow steps: `review_id`, `verdict`, `findings_count`, `findings_json`, `severity_counts`, and `judge_model`. See [`action.yml`](../action.yml) for the source of truth on each output's shape and semantics.
+The action exposes outputs you can chain into later workflow steps: `review_id`, `verdict`, `approval_held`, `findings_count`, `findings_json`, `severity_counts`, and `judge_model`. See [`action.yml`](../action.yml) for the source of truth on each output's shape and semantics.
+
+`verdict` is the event of the review Manki posted: `APPROVE`, `COMMENT` or `REQUEST_CHANGES`. A round that would approve but has its approval held posts a `COMMENT` review, so `verdict` is `COMMENT` too. `approval_held` then names the first reason: `conflict` (the PR conflicts with its base), `draft`, `config` (a config file did not load), `unread` (no model read some changed files) or `warnings` (a warning waits for a fix or an answer). It is empty when the approval is not held, so a step that gates on `verdict == 'APPROVE'` never passes a PR whose approval is held.
 
 ### Pinning the action version
 

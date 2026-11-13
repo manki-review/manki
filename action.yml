@@ -47,7 +47,9 @@ outputs:
   review_id:
     description: 'The GitHub review ID that was posted'
   verdict:
-    description: 'Review verdict: APPROVE, COMMENT, or REQUEST_CHANGES'
+    description: 'The event of the posted review: APPROVE, COMMENT, or REQUEST_CHANGES. A held approval posts COMMENT.'
+  approval_held:
+    description: 'Why a round that would approve posted COMMENT instead: conflict, draft, config, unread, or warnings. Empty when the approval is not held.'
   findings_count:
     description: 'Total number of findings'
   findings_json:

@@ -606,6 +606,7 @@ describe('runFullReview end to end', () => {
     // The claims of the PR text are listed while the planner runs, and this PR makes none.
     expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'judge', 'verdict']);
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
+    expect(core.setOutput).toHaveBeenCalledWith('approval_held', '');
     // No finder client has repository tools, so the PR head is not fetched.
     expect(fetchWorkspace).not.toHaveBeenCalled();
   });
@@ -1673,8 +1674,10 @@ describe('runFullReview end to end', () => {
     it('never approves a PR that conflicts with its base, and says so once per head', async () => {
       mockGitHub.mergeable = false;
       const held = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
+      const outputs = () => Object.fromEntries(jest.mocked(core.setOutput).mock.calls.filter(([name]) => name === 'verdict' || name === 'approval_held'));
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
+      expect(outputs()).toEqual({ verdict: 'REQUEST_CHANGES', approval_held: '' });
       Object.assign(mockGitHub.threads[0], { isResolved: true, resolvedBy: { login: 'bob' } });
 
       for (const id of ['0a', '0b']) {
@@ -1692,6 +1695,8 @@ describe('runFullReview end to end', () => {
       expect(ready.state).toBe('COMMENTED');
       expect(ready.body.startsWith(`${held}\n\n\u2705 **Approved.**`)).toBe(true);
       expect(mockGitHub.roundContext(ready)).toMatchObject({ meta: { outcome: 'READY' }, verdict: 'APPROVE' });
+      // The record keeps the round's own verdict, and the outputs match the COMMENT review it posted.
+      expect(outputs()).toEqual({ verdict: 'COMMENT', approval_held: 'conflict' });
       expect(mockGitHub.comments.filter(c => c.body.startsWith(held))).toEqual([]);
     });
 
