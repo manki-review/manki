@@ -5539,9 +5539,9 @@ describe('postReview non-blocking findings', () => {
     expect(updated).not.toContain('Blockers that could not be posted as threads');
     const refusedEntries = JSON.parse(extractReviewRecords(updated).records[0]).findings.entries;
     expect(refusedEntries).toEqual([expect.objectContaining({ posted: 'body', citedLine: { hash: expect.any(String), count: 1 }, holds: true }), expect.objectContaining({ posted: 'body' })]);
-    // Only the warning without a thread is marked as holding, never a suggestion listed in the body or a warning with a thread.
+    // A holding warning is marked as holding with or without its thread, a suggestion never is.
     expect(refusedEntries[1]).not.toHaveProperty('holds');
-    expect(JSON.parse(extractReviewRecords(bare.body).records[0]).findings.entries[0]).not.toHaveProperty('holds');
+    expect(JSON.parse(extractReviewRecords(bare.body).records[0]).findings.entries).toEqual([expect.objectContaining({ posted: 'thread', holds: true }), expect.not.objectContaining({ holds: true })]);
     expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed|Found this round/);
     // From the second round, the findings new to this round are "Found this round". A restatement of a security note an
     // earlier review body listed is "Still open" from that round, even on a changed line, and one of an open thread is not

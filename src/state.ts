@@ -572,7 +572,7 @@ const NEXT_ROUND_LINE = `The next review round decides. To start one, tick **Rev
  * says the round posted the blocker as a thread and one of the threads posted on `commitSha` matches it. A standing
  * approval posted again on `commitSha` blocks on nothing. Anything else is unknown and holds the approval: a record
  * that cannot be read, a round that blocked without naming a blocker, and a blocker without a live thread. A warning
- * the record marks with `holds`, which the round listed only in its body, also holds it.
+ * the record marks with `holds` also holds it when the round listed it only in its body or no live thread carries it.
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
@@ -610,9 +610,21 @@ function blockOf(
     return [`The record of Manki's review of ${sha} ${claim} for ${list.length === 1 ? '1 blocker' : `${list.length} blockers`}, so resolving threads cannot lift the block:\n${lines}`];
   };
   const claimed = (b: typeof loose[number]): boolean => !!b.threadId || !!b.posted;
-  const unthreaded = round.findings.entries.filter(e => e.holds);
-  const warned = unthreaded.length === 0 ? [] : [
-    `Manki's review of ${sha} lists ${unthreaded.length === 1 ? '1 warning' : `${unthreaded.length} warnings`} with no thread, so resolving threads cannot lift its hold on the approval:\n${unthreaded.map(e => `- ${sanitizeMarkdown(e.title ?? 'Untitled warning')}${e.fingerprint.file ? ` (${inline(e.fingerprint.file)})` : ''}`).join('\n')}`,
+  // A holding warning the round gave a thread holds while no thread carries it, as a blocker does.
+  const holding = round.findings.entries.filter(e => e.holds);
+  let ownWarnings = threads.flatMap(t => t.place?.commit === commitSha && !named.has(t.id) && (t.isWarning || t.mayCarryBlocker) ? [{ threadId: t.id, ...t.place }] : []);
+  const gone: typeof holding = [];
+  for (const e of holding.filter(e => e.posted !== 'body')) {
+    const carrier = e.threadId && live.has(e.threadId) ? e.threadId : e.posted === 'thread' && findPriorThreadId(e.fingerprint, ownWarnings);
+    if (!carrier) gone.push(e);
+    ownWarnings = ownWarnings.filter(t => t.threadId !== carrier);
+  }
+  const warnedOf = (said: (count: string) => string, list: typeof holding): string[] => list.length === 0 ? [] : [
+    `${said(list.length === 1 ? '1 warning' : `${list.length} warnings`)}, so resolving threads cannot lift its hold on the approval:\n${list.map(e => `- ${sanitizeMarkdown(e.title ?? 'Untitled warning')}${e.fingerprint.file ? ` (${inline(e.fingerprint.file)})` : ''}`).join('\n')}`,
+  ];
+  const warned = [
+    ...warnedOf(count => `Manki's review of ${sha} lists ${count} with no thread`, holding.filter(e => e.posted === 'body')),
+    ...warnedOf(count => `The record of Manki's review of ${sha} names a thread that does not exist for ${count}`, gone),
   ];
   const held = [...told('names no thread', loose.filter(b => !claimed(b))), ...told('names a thread that does not exist', loose.filter(claimed)), ...warned].join('\n\n');
   return { ...(held && { held }), named };
