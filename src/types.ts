@@ -1823,6 +1823,11 @@ export interface RoundContext {
    */
   approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings' | 'refused'; warningsHeld?: true };
   /**
+   * What the change does and how to test it, from the verdict reader. Set when warnings held the round's approval and
+   * no person must approve it. The held review leaves both out, and the approval posted once the warnings clear shows them.
+   */
+  readyReport?: Pick<VerdictReport, 'whatThisDoes' | 'whatToTest'>;
+  /**
    * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
    * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.
    */

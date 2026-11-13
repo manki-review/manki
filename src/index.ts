@@ -2198,8 +2198,15 @@ async function handleIssueTick(): Promise<void> {
   if (!pr || !sender?.login) return;
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
-  if (comment) await handleIssueBoxTick(octokit, bot, owner, repo, pr.number, comment as Parameters<typeof handleIssueBoxTick>[5], sender.login);
-  else if (review) await handleReviewBoxTick(octokit, bot, owner, repo, pr.number, review as Parameters<typeof handleReviewBoxTick>[5], sender.login);
+  if (review) {
+    await handleReviewBoxTick(octokit, bot, owner, repo, pr.number, review as Parameters<typeof handleReviewBoxTick>[5], sender.login);
+    return;
+  }
+  if (!comment || !await handleIssueBoxTick(octokit, bot, owner, repo, pr.number, comment as Parameters<typeof handleIssueBoxTick>[5], sender.login)) return;
+  // Manki's own resolve starts no approval check, so it runs here, as it does after a person resolves a thread.
+  const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base?.ref ?? 'main');
+  if (held || !config.auto_approve) return;
+  if (await checkAndAutoApprove(octokit, bot, owner, repo, pr.number, config)) core.info(`PR #${pr.number} auto-approved after a ticked issue box resolved its thread`);
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {

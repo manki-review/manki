@@ -1,7 +1,7 @@
 /** Starts the line that holds a finding's issue box, or what replaced it, so readers of the finding can skip it. */
 export const ISSUE_BOX_ANCHOR = '<!-- manki-issue-box -->';
 
-const ISSUE_BOX_LABEL = 'Create an issue for this';
+export const ISSUE_BOX_LABEL = 'Create an issue for this';
 
 // A box is a task list line that ends with the finding's id. GitHub turns `[ ]` into `[x]` on a tick.
 const ISSUE_BOX_LINE = /^[ \t]*[-*] \[([ xX])\] .*<!-- manki-box:issue:(.+?) -->[ \t]*\r?$/;

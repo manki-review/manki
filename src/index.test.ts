@@ -834,6 +834,29 @@ describe('run', () => {
       expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
     });
 
+    it('runs the approval check after a ticked box resolves its thread, only with `auto_approve` on and a config that loads', async () => {
+      const comment = {
+        id: 77, body: '**Off by one**\n\n<!-- manki-issue-box -->\n- [x] Create an issue for this <!-- manki-box:issue:src/a.ts:3:Off-by-one -->',
+        user: { login: 'manki-review[bot]', type: 'Bot' }, path: 'src/a.ts',
+      };
+      setContext({ eventName: 'pull_request_review_comment', payload: { action: 'edited', sender: { login: 'bob', type: 'User' }, comment, pull_request: { number: 5, base: { ref: 'main' } } } });
+      const config = (autoApprove: boolean) => ({ auto_review: true, auto_approve: autoApprove, max_diff_lines: 5000, exclude_paths: [], reviewers: [], instructions: '', memory: { enabled: false, repo: '' } });
+      const tick = async (resolved: boolean, autoApprove = true, unreadConfig = false) => {
+        jest.mocked(stateModule.checkAndAutoApprove).mockClear();
+        jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(true);
+        jest.mocked(issueTick.handleIssueBoxTick).mockResolvedValueOnce(resolved);
+        jest.mocked(configModule.loadConfig).mockReturnValue(config(autoApprove));
+        if (unreadConfig) jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+        await run();
+        return jest.mocked(stateModule.checkAndAutoApprove).mock.calls;
+      };
+      expect(await tick(true)).toEqual([[mockOctokitInstance, { logins: ['manki-review[bot]'] }, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true })]]);
+      // A tick that resolved nothing, as on a blocker or a security thread, changes no hold.
+      expect(await tick(false)).toEqual([]);
+      expect(await tick(true, false)).toEqual([]);
+      expect(await tick(true, true, true)).toEqual([]);
+    });
+
     it.each([
       ['a writer ticks a box in Manki\'s review', 'manki-review[bot]', '[x]', true, true],
       ['an editor without write access ticks it', 'manki-review[bot]', '[x]', false, false],

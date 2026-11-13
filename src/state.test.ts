@@ -1221,8 +1221,8 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread the PR author sent a mid-line command in', [warning('t1', { replies: [reply('author', 'ok - /manki explain the retry')] })]],
       ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
         body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
-          .replace('**Warning, needs an answer**', '**Warning, not blocking**')
-          .replace('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._', '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._'),
+          .replace('**Warning**', '**Warning, not blocking**')
+          .replace('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._', '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._'),
       })]],
     ])('holds the approval while it is %s', async (_label, threads, role = 'write') => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
@@ -1255,6 +1255,48 @@ describe('checkAndAutoApprove', () => {
       expect(approved).toBe(true);
       expect(events).toEqual(['APPROVE']);
       expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved, and every warning thread is resolved or answered\.\n/u);
+    });
+
+    it('shows what the change does and how to test it, kept by the round the warnings held, in the approval that follows', async () => {
+      const answered = [warning('t1', { replies: [reply('author')] })];
+      const line = '\u2705 **Approved.** All blocking threads are resolved, and every warning thread is resolved or answered.';
+      const approval = async (readyReport?: RoundContext['readyReport']) => {
+        const round = { ...roundThatPosted(HEAD, []), approval: { held: 'warnings' as const, warningsHeld: true as const }, ...(readyReport && { readyReport }) };
+        const { body } = await check(answered, 'write', false, [{ id: 7, body: roundBody(round), state: 'COMMENTED', commit_id: HEAD, user, submitted_at: '' }]);
+        return body!.split(`\n\n${BOT_MARKER}`)[0];
+      };
+      expect(await approval({ whatThisDoes: 'Adds a cache <script>x</script>. It halves requests. It also logs hits.', whatToTest: { steps: ['Load the page twice.'] } })).toBe([
+        line,
+        '**What this does:** Adds a cache x. It halves requests.',
+        '<details>\n<summary>What to test</summary>\n\n_The review model wrote these steps. Check what a step runs before you follow it._\n\n1. Load the page twice.\n\n</details>',
+      ].join('\n\n'));
+      // Either part alone shows, and a record that keeps neither, as one from before, gives the one line.
+      expect((await approval({ whatThisDoes: '', whatToTest: { steps: ['Load the page twice.'] } })).startsWith(`${line}\n\n<details>\n<summary>What to test</summary>`)).toBe(true);
+      expect(await approval()).toBe(line);
+    });
+
+    it('shows the kept summary in the refusal notice when repository settings refuse that approval, once per head', async () => {
+      const readyReport = { whatThisDoes: 'Adds a cache. It halves requests.', whatToTest: { steps: ['Load the page twice.'] } };
+      const round = { ...roundThatPosted(HEAD, []), approval: { held: 'warnings' as const, warningsHeld: true as const }, readyReport };
+      const reviews = [{ id: 7, body: roundBody(round), state: 'COMMENTED', commit_id: HEAD, user, submitted_at: '' }];
+      const createReviewFn = jest.fn().mockRejectedValue(new Error(SETTING_REFUSAL));
+      const createCommentFn = jest.fn().mockResolvedValue({});
+      const refuse = (existingComments: Array<{ body: string; user: { login: string } }> = []) => approveOrSayWhy(makeMockOctokit({
+        threads: [warning('t1', { replies: [reply('author')] })], prHeadSha: HEAD, mergeable: true, createReviewFn, createCommentFn, existingReviews: reviews, existingComments,
+      }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      const result = await refuse();
+      const notice = createCommentFn.mock.calls[0][0].body as string;
+      expect(notice.split('\n\n<!-- manki-approval-record: ')[0]).toBe([
+        'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.',
+        '**What this does:** Adds a cache. It halves requests.',
+        '<details>\n<summary>What to test</summary>\n\n_The review model wrote these steps. Check what a step runs before you follow it._\n\n1. Load the page twice.\n\n</details>',
+      ].join('\n\n'));
+      // The notice still ends with its record, and a person who asks gets the short line.
+      expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused' })]);
+      expect(result.approved ? undefined : await result.why()).toBe('All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.');
+      // A repeat on the same head posts nothing new.
+      await refuse([{ body: notice, user: { login: 'manki-review[bot]' } }]);
+      expect(createCommentFn).toHaveBeenCalledTimes(1);
     });
 
     it('counts only a reply made after the review that lowered a blocker thread to a warning was posted', async () => {

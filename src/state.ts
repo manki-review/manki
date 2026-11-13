@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { newestCheckPassed, outcomeReport, reportCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
@@ -574,10 +574,11 @@ const NEXT_ROUND_LINE = `The next review round decides. To start one, tick **Rev
  * approval posted again on `commitSha` blocks on nothing. Anything else is unknown and holds the approval: a record
  * that cannot be read, a round that blocked without naming a blocker, and a blocker without a live thread. A warning
  * the record marks with `holds` also holds it when the round listed it only in its body or no live thread carries it.
+ * `report` is what the change does and how to test it, which the round kept for the approval because warnings held it.
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
-): { held?: string; named: Set<string> } {
+): { held?: string; named: Set<string>; report?: RoundContext['readyReport'] } {
   const sha = `\`${commitSha.slice(0, 7)}\``;
   // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
   const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && givesVerdict(r) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
@@ -628,7 +629,7 @@ function blockOf(
     ...warnedOf(count => `The record of Manki's review of ${sha} names a thread that does not exist for ${count}`, gone),
   ];
   const held = [...told('names no thread', loose.filter(b => !claimed(b))), ...told('names a thread that does not exist', loose.filter(claimed)), ...warned].join('\n\n');
-  return { ...(held && { held }), named };
+  return { ...(held && { held }), named, ...(round.readyReport && { report: round.readyReport }) };
 }
 
 /**
@@ -732,11 +733,12 @@ type HeldApproval = { reason: Exclude<ApprovalHeld, false>; line: string; posted
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
- * With `refused`, it holds because GitHub refused the approval, and does not read the PR.
+ * With `refused`, it holds because GitHub refused the approval, and does not read the PR. Its `summary` follows the
+ * notice's line, since that notice stands in for the approval that would have shown it.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
-  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused' },
+  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused'; summary?: string },
 ): Promise<HeldApproval | false> {
   const hold = refused ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
@@ -748,7 +750,8 @@ async function holdApproval(
   const marker = `${APPROVAL_HELD_MARKER_PREFIX}${headSha}${hold.reason === 'refused' ? ':refused' : ''} -->`;
   let posted = false;
   try {
-    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, marker, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
+    const text = [line, refused?.summary, recordFor?.(hold.reason)].filter(Boolean).join('\n\n');
+    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, marker, text);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
@@ -976,8 +979,10 @@ async function approveOrSayWhy(
   const overrideLine = formatSecurityOverrides(overrides);
   const cleared = threads.some(t => t.isWarning) ? 'All blocking threads are resolved, and every warning thread is resolved or answered.' : 'All blocking threads are resolved.';
   const reason = overrides.length > 0 ? `all blocking threads are resolved, ${overrides.length} by a security override` : 'all blocking threads are resolved';
+  const report = formatReadyReport(block.report);
   const body = withMarkers(
-    `${APPROVED_LINE} ${cleared}${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER, AUTO_APPROVE_MARKER, approvalRecord('approved', reason, pr.head.sha),
+    [`${APPROVED_LINE} ${cleared}`, report?.whatThisDoes, overrideLine, report?.whatToTest].filter(Boolean).join('\n\n'),
+    BOT_MARKER, AUTO_APPROVE_MARKER, approvalRecord('approved', reason, pr.head.sha),
   );
 
   try {
@@ -1008,7 +1013,8 @@ async function approveOrSayWhy(
       core.warning(
         'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.',
       );
-      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused' });
+      const summary = [report?.whatThisDoes, report?.whatToTest].filter(Boolean).join('\n\n');
+      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused', ...(summary && { summary }) });
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.

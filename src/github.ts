@@ -6,10 +6,10 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
-import { issueBox } from './issue-box';
+import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -306,19 +306,21 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
       return autoApprove ? `${line} Comment \`@manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
     }
-    const lead = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
+    const lead = `**${countOf(hold.count, 'warning')} to address.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
     // A warning without a thread can only be fixed, and holds until a later round no longer finds it.
     const unthreaded = hold.unthreaded ?? 0;
     const threaded = hold.count - unthreaded;
     const noThread = (n: number) => `${n === 1 ? 'has no thread and holds' : 'have no thread and hold'} until a later review round no longer finds ${n === 1 ? 'it' : 'them'}.`;
     if (threaded === 0) return `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}`;
-    // A reply never clears a security warning, which needs a fix or a resolve by someone allowed to clear it.
+    // Neither a reply nor the issue box clears a security warning, which needs a fix or a resolve by someone allowed to
+    // clear it. The box is named only when every holding warning has a thread to tick it in.
     const security = hold.security ?? 0;
-    const or = security === threaded ? 'or have a maintainer resolve its thread' : 'or dismiss it with a reason in its thread';
-    const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it.' : '';
-    const line = `${lead}, ${or}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
-    const after = security === threaded ? 'a resolve' : security > 0 ? 'a dismissal or a resolve' : 'a dismissal';
-    return autoApprove ? line : `${line} After ${after}, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+    const explain = 'explain in its thread why it needs no fix';
+    const ways = security === threaded ? 'or have a maintainer resolve its thread'
+      : unthreaded > 0 ? `or ${explain}` : `${explain}, or tick \`${ISSUE_BOX_LABEL}\` to track it for later`;
+    const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve its thread.' : '';
+    const line = `${lead}, ${ways}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
+    return autoApprove ? line : `${line} Once every warning is handled, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
   }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
@@ -1475,7 +1477,7 @@ function inlineHtml(markdown: string): string {
 const MISSED_EARLIER = 'Missed by an earlier review';
 
 /** Shown under the title of a thread for a warning on such code. */
-const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
+const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._';
 
 /** `MISSED_EARLIER_NOTE` for a security warning, which a reply does not clear. */
 const MISSED_EARLIER_SECURITY_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it._';
@@ -1922,6 +1924,14 @@ export async function postReview(
   // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
+  const warningsHeld = event === 'APPROVE' && !!warningHold;
+  // A review that warnings hold reads like a change request, so what the change does waits for the approval check's
+  // approval. A review held for a person, or posted with `auto_approve` off, gets no such approval, so it keeps both parts
+  // for whoever approves.
+  const keepForApproval = warningsHeld && !standingHold && autoApprove;
+  const verdictReport = result.outcome === 'READY' ? result.verdictReport : undefined;
+  const readyReport = keepForApproval ? null : formatReadyReport(verdictReport);
+  const keptReport = keepForApproval && verdictReport && formatReadyReport(verdictReport) ? { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest } : undefined;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
@@ -1946,7 +1956,6 @@ export async function postReview(
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
-    const readyReport = formatReadyReport(result);
     if (readyReport?.whatThisDoes) {
       head += `\n\n${readyReport.whatThisDoes}`;
     }
@@ -2005,6 +2014,7 @@ export async function postReview(
         }),
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
         ...(event === 'APPROVE' && { approval: { held: approvalRefused ? 'refused' : approvalHeld, ...(warningHold && { warningsHeld: true as const }) } }),
+        ...(keptReport && { readyReport: keptReport }),
       }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };
@@ -2065,7 +2075,7 @@ export async function postReview(
     }
   }
   // Warnings can hold behind another hold that comes first, and still take back an approval of this commit.
-  return { id: review.id, approvalHeld: approvalRefused ? 'refused' : approvalHeld, warningsHeld: event === 'APPROVE' && !!warningHold };
+  return { id: review.id, approvalHeld: approvalRefused ? 'refused' : approvalHeld, warningsHeld };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */
@@ -2273,7 +2283,9 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
   READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
     const unread = hold?.reason === 'unread' && hold.skipped.excluded.length + hold.skipped.binary.length;
     // Another hold has a line of its own or is named here, and the warnings still hold once it lifts.
-    if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
+    // Handling the warnings brings the approval only when they are all that holds. Another hold's line says what it needs.
+    const approves = hold?.reason === 'warnings' && hold.count !== undefined && autoApprove ? ' Manki approves once every warning is handled.' : '';
+    if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${approves}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
     if (unread) return `✅ **Approved, but a person must approve:** no model read ${unread} of the changed files.`;
     const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
@@ -2487,16 +2499,17 @@ function formatTestGuide(guide: TestGuide): string {
 }
 
 /**
- * Returns what an approved change does, in at most two sentences, and the collapsed steps to test it, or none. Either part
- * is left out when the reader left it blank, as a reader that asked for changes may.
+ * Returns what an approved change does, in at most two sentences, and the collapsed steps to test it, or null when
+ * `report` has neither. Either part is left out when the reader left it blank, as a reader that asked for changes may.
  */
-function formatReadyReport(result: ReviewResult): { whatThisDoes?: string; whatToTest?: string } | null {
-  if (result.outcome !== 'READY' || !result.verdictReport) return null;
-  const { whatThisDoes, whatToTest } = result.verdictReport;
-  return {
+export function formatReadyReport(report: Pick<VerdictReport, 'whatThisDoes' | 'whatToTest'> | undefined): { whatThisDoes?: string; whatToTest?: string } | null {
+  if (!report) return null;
+  const { whatThisDoes, whatToTest } = report;
+  const parts = {
     ...(whatThisDoes.trim() && { whatThisDoes: formatLabelled('What this does', splitLead(whatThisDoes, 2, 400).lead) }),
     ...(whatToTest.steps.length > 0 && { whatToTest: `<details>\n<summary>What to test</summary>\n\n${formatTestGuide(whatToTest)}\n\n</details>` }),
   };
+  return parts.whatThisDoes || parts.whatToTest ? parts : null;
 }
 
 /** How often `sanitizeMarkdown` strips before it gives up and encodes what could still form markup. Model text needs two or three rounds. */
@@ -2690,9 +2703,12 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 function formatFindingHeader(finding: Finding, noThread = false): string {
   const name = SEVERITY_NAME[finding.severity];
   const severity = `${name[0].toUpperCase()}${name.slice(1)}`;
-  // A reply clears neither a security warning nor a warning with no thread to reply in.
-  const holds = holdsApproval(finding) && (noThread || isSecurityFinding(finding.tags, finding.reviewers) ? 'needs a fix' : 'needs an answer');
-  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, ${holds || 'not blocking'}`}**`;
+  // A reply clears neither a security warning nor a warning with no thread to reply in. Any other holding warning
+  // carries a plain label, since the review's first line says how to clear it.
+  const tail = isBlockingFinding(finding) ? ''
+    : !holdsApproval(finding) ? ', not blocking'
+    : noThread || isSecurityFinding(finding.tags, finding.reviewers) ? ', needs a fix' : '';
+  const label = `**${severity}${tail}**`;
   // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';
   const kind = [isPreExisting(finding) && 'Pre-existing', finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);

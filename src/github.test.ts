@@ -196,7 +196,7 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     // A rule warning on code an earlier round reviewed says so under its title and names the rule the same way.
     const late = render({ ...baseFinding, severity: 'warning', origin: 'reviewed', tags: ['follow-up'], rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] });
-    expect(late).toContain("_An earlier round already reviewed these lines and missed this. It is in this PR's own code, so it still needs a fix or an answer._\n\n");
+    expect(late).toContain("_An earlier round already reviewed these lines and missed this. It is in this PR's own code, so it still holds the approval._\n\n");
     expect(late).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, cell: { row: 'severe', column: 'normal' } })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
     // A quote with a hidden character is not printed, and a rule the judge did not confirm gives no line.
@@ -1673,29 +1673,41 @@ describe('postReview body lead', () => {
     return body.slice(0, -TRAILING_MARKERS.length);
   }
 
-  it('opens a READY review with the verdict line, then what the change does and how to test it', async () => {
-    const { body, event, approvalHeld } = await postedBody({ ...ready, findings: [{ ...ready.findings[0], severity: 'warning', tags: ['follow-up'] }] });
+  it('leaves what the change does and how to test it out of a READY review that warnings hold, and keeps both in its record', async () => {
+    const warned: ReviewResult = { ...ready, findings: [{ ...ready.findings[0], severity: 'warning', tags: ['follow-up'] }] };
+    const { body, event, approvalHeld } = await postedBody(warned);
     // A warning thread holds the approval, and the verdict line says what lifts the hold.
     expect([event, approvalHeld]).toEqual(['COMMENT', 'warnings']);
     // The verdict counts what this round posted as threads. Each thread sits under the review, so the body does not list them.
     expect(lead(body)).toBe([
-      '\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.',
-      '',
-      '**What this does:** Adds a cache in front of the API. x',
-      '',
-      '---',
-      '',
-      '<details>',
-      '<summary>What to test</summary>',
-      '',
-      '_The review model wrote these steps. Check what a step runs before you follow it._',
-      '',
-      '1. Load the page twice. Expect one request.',
-      '',
-      '</details>',
+      '\u26A0\uFE0F **1 warning to address.** Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later. Manki approves once every warning is handled.',
       '',
       aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)'),
     ].join('\n'));
+    const record = async (result: ReviewResult): Promise<RoundContext> => JSON.parse(extractReviewRecords((await postedBody(result, [], makeContext({}))).body).records[0]);
+    const kept = { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest };
+    expect((await record(warned)).readyReport).toEqual(kept);
+    // Warnings behind a draft hold drop both parts too, and the approval that follows the draft and the warnings shows them.
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
+    const drafted = await record(warned);
+    expect([drafted.approval, drafted.readyReport]).toEqual([{ held: 'draft', warningsHeld: true }, kept]);
+    expect(mockCreateReview.mock.calls[0][0].body).not.toMatch(/What this does|What to test/);
+    // A review held for a person, or posted with `auto_approve` off, gets no approval check's approval, so with warnings it
+    // keeps both parts in its body.
+    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [] };
+    for (const options of [{ skipped }, { configHold: 'base' as const }, { autoApprove: false }]) {
+      mockCreateReview.mockClear();
+      const { warningsHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', warned, diff, makeContext({}), 1000, options);
+      const { body: personBody } = mockCreateReview.mock.calls[0][0] as { body: string };
+      expect([warningsHeld, JSON.parse(extractReviewRecords(personBody).records[0]).readyReport]).toEqual([true, undefined]);
+      expect(personBody).toContain('**What this does:** Adds a cache in front of the API. x');
+      expect(personBody).toContain('<summary>What to test</summary>');
+    }
+    // An approval shows both parts in its body, so its record does not keep them, nor does a hold that leaves them blank.
+    expect((await record(ready)).readyReport).toBeUndefined();
+    expect((await record({ ...warned, verdictReport: { ...verdictReport, whatThisDoes: ' ', whatToTest: { steps: [] } } })).readyReport).toBeUndefined();
+    // Either part alone is kept.
+    expect((await record({ ...warned, verdictReport: { ...verdictReport, whatThisDoes: '' } })).readyReport).toEqual({ ...kept, whatThisDoes: '' });
   });
 
   it('puts what the change does under the verdict, with its first two sentences, and a rule before the findings', async () => {
@@ -1789,7 +1801,7 @@ describe('postReview body lead', () => {
     const held = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Retry never stops', 3), warning('Missed before', 9, { origin: 'reviewed' })] }, diff, undefined, undefined, { openWarnings: [{}] });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, held.approvalHeld, held.warningsHeld]).toEqual(['COMMENT', 'warnings', true]);
-    expect(body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 3 warnings.** Fix each one, or dismiss it with a reason in its thread.');
+    expect(body.split('\n')[0]).toBe('\u26A0\uFE0F **3 warnings to address.** Fix each one, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later. Manki approves once every warning is handled.');
     expect(body).not.toContain('<!-- manki-held-for-person -->');
     // The PR is still read, so a draft or a conflict is not hidden behind the warnings.
     expect(mockGet).toHaveBeenCalled();
@@ -1798,29 +1810,29 @@ describe('postReview body lead', () => {
     expect([drafted.approvalHeld, drafted.warningsHeld]).toEqual(['draft', true]);
     const draftBody = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n');
     expect(draftBody[0]).toMatch(/^\*\*Approval held:\*\* this PR is a draft\./);
-    expect(draftBody[1]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
+    expect(draftBody[1]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later.');
     // With files no model read, the verdict line names the warnings and the person who must approve.
     const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [] };
     const unreadFiles = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}], skipped });
     expect([unreadFiles.approvalHeld, unreadFiles.warningsHeld]).toEqual(['unread', true]);
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread. A person must also approve, since no model read 1 of the changed files.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later. A person must also approve, since no model read 1 of the changed files.');
     // An earlier warning thread alone holds too.
     expect((await postedBody(ready, [], undefined)).event).toBe('APPROVE');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}] });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later. Manki approves once every warning is handled.');
     // With `auto_approve` off an answer runs no approval check, so the line names the Review again box.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}], autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread. After a dismissal, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later. Once every warning is handled, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A reply never clears a security warning, so the line asks for a fix or a maintainer's resolve, alone or among others.
     const security = warning('Token in log', 3, { tags: ['follow-up', 'security'], origin: 'reviewed' });
     mockCreateReview.mockClear();
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [security] }, diff);
     const securityReview = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ body: string }> };
-    expect(securityReview.body.split('\n')[0]).toBe('⚠️ **Approval waits on 1 warning.** Fix it, or have a maintainer resolve its thread.');
+    expect(securityReview.body.split('\n')[0]).toBe('⚠️ **1 warning to address.** Fix it, or have a maintainer resolve its thread. Manki approves once every warning is handled.');
     expect(securityReview.comments[0].body).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
     expect(securityReview.comments[0].body).toContain('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it._');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}, { isSecurity: true }], autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **Approval waits on 2 warnings.** Fix each one, or dismiss it with a reason in its thread. A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it. After a dismissal or a resolve, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **2 warnings to address.** Fix each one, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later. A security warning needs a fix or a maintainer to resolve its thread. Once every warning is handled, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // Warning threads that could not be read hold the approval too, in both wordings.
     const unread = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread' });
     expect(unread.approvalHeld).toBe('warnings');
@@ -1833,7 +1845,7 @@ describe('postReview body lead', () => {
     expect([config.approvalHeld, config.warningsHeld]).toEqual(['config', true]);
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n').slice(0, 2)).toEqual([
       '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
-      '\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one, or dismiss it with a reason in its thread.',
+      '\u26A0\uFE0F **2 warnings to address.** Fix each one, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later.',
     ]);
     // A pre-existing warning never holds, nor does one that goes into its answered thread, and a suggestion never does.
     const answeredIn = { threadId: 'T1', answer: 'Agreed. Leave it.', grade: { severity: 'warning' as const } };
@@ -1844,7 +1856,7 @@ describe('postReview body lead', () => {
     const many = [warning('Listed before', 5, { origin: 'earlier', raisedIn: 1 }), ...[10, 11, 12, 13, 14, 15].map(line => warning(`Warning on ${line}`, line)), warning('Off the changed lines', 40)];
     const all = await postedBody({ ...ready, findings: many });
     expect([all.event, all.approvalHeld]).toEqual(['COMMENT', 'warnings']);
-    expect(all.body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 8 warnings.** Fix each one, or dismiss it with a reason in its thread.');
+    expect(all.body.split('\n')[0]).toBe('\u26A0\uFE0F **8 warnings to address.** Fix each one, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later. Manki approves once every warning is handled.');
     const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number }> };
     expect(comments.map(c => c.line)).toEqual([5, 10, 11, 12, 13, 14, 15]);
     expect(mockCreateReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.split('\n\n')[1]])).toEqual([['src/a.ts', 'file', '**Off the changed lines**']]);
@@ -1853,16 +1865,16 @@ describe('postReview body lead', () => {
     const nowhere = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 });
     const unthreaded = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
     expect(nowhere.approvalHeld).toBe('warnings');
-    expect(unthreaded.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it. It has no thread and holds until a later review round no longer finds it.');
+    expect(unthreaded.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it. It has no thread and holds until a later review round no longer finds it. Manki approves once every warning is handled.');
     expect(unthreaded).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs a fix**\n**Nowhere**\n');
     expect(unthreaded).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     // Beside warnings with a thread, the line says how many have none, and a security warning with a thread still sets the wording.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' }), warning('Nor here', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one. They have no thread and hold until a later review round no longer finds them.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **2 warnings to address.** Fix each one. They have no thread and hold until a later review round no longer finds them. Manki approves once every warning is handled.');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 }, undefined, undefined, { openWarnings: [{}] });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one, or dismiss it with a reason in its thread. 1 of them has no thread and holds until a later review round no longer finds it.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **2 warnings to address.** Fix each one, or explain in its thread why it needs no fix. 1 of them has no thread and holds until a later review round no longer finds it. Manki approves once every warning is handled.');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 }, undefined, undefined, { openWarnings: [{ isSecurity: true }], autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one, or have a maintainer resolve its thread. 1 of them has no thread and holds until a later review round no longer finds it. After a resolve, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **2 warnings to address.** Fix each one, or have a maintainer resolve its thread. 1 of them has no thread and holds until a later review round no longer finds it. Once every warning is handled, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A blocker still requests changes.
     const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: [{}] });
     expect([mockCreateReview.mock.calls.at(-1)![0].event, blocked.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
@@ -2143,7 +2155,7 @@ describe('postReview body lead', () => {
     const disproved = await postedBody(round({ allJudgedFindings: [droppedBy('refutation')] }));
     expect(lead(disproved.body)).toBe(`\u2705 **Approved.**\n\n${about}`);
     const listed = await postedBody(round({ allJudgedFindings: [kept, droppedBy('refutation')], findings: [kept] }));
-    expect(lead(listed.body)).toBe(`\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.\n\n**Summary:** ${summary}\n\n${about}`);
+    expect(lead(listed.body)).toBe(`\u26A0\uFE0F **1 warning to address.** Fix it, explain in its thread why it needs no fix, or tick \`Create an issue for this\` to track it for later. Manki approves once every warning is handled.\n\n**Summary:** ${summary}\n\n${about}`);
 
     // A blocking round still says what blocks: the top blocker's description, or the earlier threads still open.
     const blocking = round({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', allJudgedFindings: [kept] });
@@ -5335,7 +5347,7 @@ describe('postReview non-blocking findings', () => {
     const review = createReview.mock.calls[0][0];
     const byLine = new Map<number, string>(review.comments.map((c: { line: number; body: string }) => [c.line, c.body]));
     expect([...byLine.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14]);
-    expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, needs an answer\*\*\n\n\*\*Deferred warning\*\*\n/u);
+    expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning\*\*\n\n\*\*Deferred warning\*\*\n/u);
     expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
     expect(byLine.get(5)).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Suggestion one\*\*\n/u);
     expect(review.body).toContain('### Findings · 1 suggestion\n\n<details>\n<summary>\u2728 <b>Unescaped path 15</b>');
@@ -5440,7 +5452,7 @@ describe('postReview non-blocking findings', () => {
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning, needs an answer**']]);
+    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning**']]);
     expect(createReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.split('\n')[0]])).toEqual([['src/a.ts', 'file', '\u{1F6AB} **Blocker**']]);
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
@@ -5549,13 +5561,13 @@ describe('postReview non-blocking findings', () => {
 
   it('lists smaller findings by where they sit, found this round, missed earlier or pre-existing, and posts a warning or a blocker on reviewed code as a thread', async () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
-    const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
+    const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._';
     const unconfirmedNote = '_Manki could not confirm this, so please check it._';
     const guideNote = '_The review model wrote these steps. Check what a step runs before you follow it._';
     // The PR quotes Manki's own notes, as a PR on Manki does. The first and last word of each are then identifiers of
     // the diff with their underscore, which the posted text must not show as code.
     const quoting: ParsedDiff = { ...diff, files: [...diff.files, { path: 'src/notes.ts', changeType: 'added', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, content: `+const NOTES = '${missedNote} ${unconfirmedNote} ${guideNote}';` }] }] };
-    expect([...codeTokensFromDiff(quoting)]).toEqual(expect.arrayContaining(['_An', 'answer._', '_Manki', 'it._', '_The']));
+    expect([...codeTokensFromDiff(quoting)]).toEqual(expect.arrayContaining(['_An', 'approval._', '_Manki', 'it._', '_The']));
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
       nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'] }),
@@ -5574,13 +5586,13 @@ describe('postReview non-blocking findings', () => {
     // note is posted as written, so the next round reads the description without them.
     const threads: string[] = review.comments.map((c: { body: string }) => c.body);
     expect(threads.map(body => body.split('\n')[2])).toEqual(['**On new code**', '**On old code**', '**Old blocker**']);
-    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning, needs an answer**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
+    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
     expect(parseFindingFromComment(threads[1]).description).toBe('It goes wrong. Second sentence. Third sentence.');
     expect([threads[0], threads[2]].join('\n')).not.toContain('An earlier round');
     // A late warning off the changed lines gets a file-level thread with the same notes.
     const [offDiff] = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
     expect([offDiff.path, offDiff.subject_type]).toEqual(['src/a.ts', 'file']);
-    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning, needs an answer**\n\n**Old code off the diff**\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
+    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning**\n\n**Old code off the diff**\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
     expect(review.body).not.toContain('Old code off the diff');
     // Each origin gets its section with exact counts, and the sections follow each other under rules. A security note on
     // reviewed code stays listed.
@@ -5603,7 +5615,7 @@ describe('postReview non-blocking findings', () => {
     ]), outcome: 'READY' }, diff);
     const counted = counting.createReview.mock.calls[0][0].body as string;
     // Both late warnings have a thread, so both hold the approval. The pre-existing ones never do.
-    expect(counted).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 2 warnings\.\*\* Fix each one, or dismiss it with a reason in its thread\./u);
+    expect(counted).toMatch(/^\u26A0\uFE0F \*\*2 warnings to address\.\*\* Fix each one, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
     expect(counted).toContain('### Missed by an earlier review · 1 suggestion\n\nIt sits on lines an earlier round already reviewed, so it doesn\'t block this PR.');
     expect(counted).toContain('### Pre-existing · 2 warnings\n\nThese sit on code this PR did not change, so none of them block. A blocker among them is listed as a warning.');
     // With every late warning in a thread, the body has no section for them.
@@ -5611,8 +5623,11 @@ describe('postReview non-blocking findings', () => {
     const verdictReport = { verdict: 'READY' as const, blockers: [], summary: 'Nothing blocks.', whatThisDoes: 'Adds a retry.', whatToTest: { steps: ['Load the page twice.'] } };
     await postReview(threaded.octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([late[0]]), outcome: 'READY', verdictReport }, quoting);
     expect(threaded.createReview.mock.calls[0][0].comments).toHaveLength(1);
-    expect(threaded.createReview.mock.calls[0][0].body).toContain(`<summary>What to test</summary>\n\n${guideNote}\n\n1. Load the page twice.`);
-    expect(threaded.createReview.mock.calls[0][0].body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\.(?![\s\S]*Missed by an earlier review)/u);
+    expect(threaded.createReview.mock.calls[0][0].body).toMatch(/^\u26A0\uFE0F \*\*1 warning to address\.\*\* Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\.(?![\s\S]*Missed by an earlier review)/u);
+    // An approval shows the note above the test steps as written.
+    const approving = makeOctokit();
+    await postReview(approving.octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), outcome: 'READY', verdictReport }, quoting);
+    expect(approving.createReview.mock.calls[0][0].body).toContain(`<summary>What to test</summary>\n\n${guideNote}\n\n1. Load the page twice.`);
     // When GitHub refuses the line comments, the late warning gets a file-level thread as a blocker does, and the record says so.
     const refusing = makeOctokit({ 'src/a.ts': 'load();\nretry();\nend();\n' });
     refusing.createReview.mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'));
@@ -5628,7 +5643,7 @@ describe('postReview non-blocking findings', () => {
     expect(bare.body).not.toContain('could not be posted');
     expect(bare.body).toContain('<summary><b>1 suggestion</b> · not blocking</summary>\n\n<details>\n<summary>\u2728 <b>Name the retry</b>');
     expect(bare.body).toContain('**Why:** It goes wrong. Second sentence. Third sentence.');
-    expect(bare.body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\./u);
+    expect(bare.body).toMatch(/^\u26A0\uFE0F \*\*1 warning to address\.\*\* Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
     expect(JSON.parse(extractReviewRecords(bare.body).records[0]).findings.entries).toEqual([expect.objectContaining({ posted: 'thread' }), expect.objectContaining({ posted: 'body' })]);
     // When GitHub refuses the file-level thread too, the review lists the warning, which still holds, says what clears it, and records it with its line.
     const unthreading = makeOctokit({ 'src/a.ts': 'load();\nretry();\nend();\n' });
@@ -5636,7 +5651,7 @@ describe('postReview non-blocking findings', () => {
     unthreading.createReviewComment.mockRejectedValue(new Error('Validation Failed'));
     await postReview(unthreading.octokit, 'owner', 'repo', 1, 'sha', refusedLines, diff, lateContext, 1000);
     const updated = unthreading.updateReview.mock.calls[0][0].body as string;
-    expect(updated.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it. It has no thread and holds until a later review round no longer finds it.');
+    expect(updated.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it. It has no thread and holds until a later review round no longer finds it. Manki approves once every warning is handled.');
     expect(updated).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs a fix**\n**On old code**\n');
     expect(updated).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     expect(updated).not.toContain('Blockers that could not be posted as threads');
