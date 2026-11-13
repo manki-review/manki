@@ -6887,6 +6887,21 @@ describe('runFullReview orchestration', () => {
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['holds the approval', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([{ id: 'T1', isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'Retry never stops' }])],
+      ['cannot be read', () => jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValueOnce(new Error('rate limited'))],
+    ])('reviews in full rather than post the previous APPROVE again when a warning thread %s', async (_label, seed) => {
+      seedPush('APPROVE', REVIEWED_DIFF);
+      seed();
+
+      await callRunFullReview();
+
+      // The first read is the restatement's, with no round to grade the threads.
+      expect(jest.mocked(stateModule.fetchHeldWarnings).mock.calls[0].slice(2)).toEqual(['test-owner', 'test-repo', 42, undefined, undefined]);
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
     it('leaves a previous REQUEST_CHANGES standing without posting another review', async () => {
       seedPush('REQUEST_CHANGES', REBASED_DIFF);
 

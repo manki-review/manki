@@ -830,8 +830,9 @@ async function changesConfig(target: RunTarget, configPath: string, headContent:
 /**
  * Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. With
  * `configBroken`, an unchanged PR is reviewed again, so the full round decides whether the config holds its approval.
+ * So is an approved one while a warning thread holds the approval.
  */
-async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft }: FullReviewOptions, configBroken: boolean): Promise<boolean> {
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft, prAuthorLogin }: FullReviewOptions, configBroken: boolean): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
   // A run queued behind another can find its commit reviewed already. `forceReview` reviews it again, as a box tick asks.
@@ -859,6 +860,11 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       try {
         const approved = standing.verdict === 'APPROVE';
         const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
+        // A warning thread can hold an approval given before warnings held one, or one given before the thread was reopened.
+        if (approved && !held && (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role)).length > 0) {
+          core.info(`A warning thread holds the approval of ${shortSha}, reviewing in full`);
+          return false;
+        }
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
