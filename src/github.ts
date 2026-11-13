@@ -13,7 +13,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, pendingGrade, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
@@ -828,7 +828,7 @@ export function buildDashboard(data: DashboardData): string {
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
     if (data.suppressionCount) judgeLines.push(`${INDENT}suppressed by memory: ${data.suppressionCount}`);
     if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
-      judgeLines.push(`${INDENT}suppressed: ${data.testNitSuppressedCount} test-only note${data.testNitSuppressedCount === 1 ? '' : 's'} (round ≥2 throttle)`);
+      judgeLines.push(`${INDENT}suppressed: ${countOf(data.testNitSuppressedCount, 'test-only suggestion')} (round ≥2 throttle)`);
     }
   }
   sections.push(judgeLines.join('\n'));
@@ -1050,7 +1050,7 @@ export async function updateProgressComment(
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
         const outcome = d.listed ? 'Not finished' : d.kept ? 'Kept' : d.unpostedReason ? `Not listed, ${UNPOSTED_REASONS[d.unpostedReason]}` : 'Dropped';
-        parts.push(`- ${outcome}: "${sanitizeMarkdown(d.title)}" (${d.severity}): "${sanitizeMarkdown(d.reasoning)}"`);
+        parts.push(`- ${outcome}: "${sanitizeMarkdown(d.title)}" (${SEVERITY_NAME[d.severity]}): "${sanitizeMarkdown(d.reasoning)}"`);
       }
       parts.push('');
     }
@@ -1193,14 +1193,6 @@ const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
   warning: '⚠️',
   note: '✨',
   ignore: '⚪',
-};
-
-/** What a review calls each severity. A note is posted as a suggestion. */
-const SEVERITY_NAME: Record<FindingSeverity, string> = {
-  blocker: 'blocker',
-  warning: 'warning',
-  note: 'suggestion',
-  ignore: 'ignore',
 };
 
 /** Shown under the title of a finding whose `checkStatus` is `unconfirmed`. */
@@ -1518,7 +1510,7 @@ export function formatVariantReply(variants: Finding[]): string {
 /** Returns Manki's reply in an open thread whose problem `raised` name again at a higher grade. A blocker makes the thread block. */
 export function formatRaisedReply(raised: Finding[]): string {
   const grade = SEVERITY_ORDER.find(s => raised.some(f => f.severity === s)) ?? 'blocker';
-  const lead = grade === 'blocker' ? 'This round raises this problem again as a blocker, so this thread now blocks.' : `This round raises this problem again as a ${grade}.`;
+  const lead = grade === 'blocker' ? 'This round raises this problem again as a blocker, so this thread now blocks.' : `This round raises this problem again as a ${SEVERITY_NAME[grade]}.`;
   return formatReplyListing(lead, raised);
 }
 

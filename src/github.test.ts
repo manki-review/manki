@@ -3277,7 +3277,7 @@ describe('buildDashboard', () => {
       suppressionCount: 2, testNitSuppressedCount: 7,
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}suppressed by memory: 2\n${INDENT}suppressed: 7 test-only notes (round ≥2 throttle)`);
+    expect(md).toContain(`${INDENT}suppressed by memory: 2\n${INDENT}suppressed: 7 test-only suggestions (round ≥2 throttle)`);
   });
 
   it('omits test-nit suppression line when testNitSuppressedCount is not set', () => {
@@ -3621,7 +3621,7 @@ describe('updateProgressComment', () => {
     expect(body).toContain('**Judge decisions:**');
     expect(body).toContain('- Kept: "Null dereference" (blocker): "Valid bug"');
     expect(body).toContain('- Dropped: "Style nitpick" (ignore): "Intentional pattern"');
-    expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (note): "Clearer"');
+    expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (suggestion): "Clearer"');
     expect(body).toContain('- Not listed, a tool check could not confirm it: "Slow path" (warning): "May be slow"');
   });
 

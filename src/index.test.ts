@@ -6028,7 +6028,7 @@ describe('runFullReview orchestration', () => {
     };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-    const partly = (threadId: string, remaining: string) => ({ threadId, status: 'partly_addressed' as const, reason: 'r', remaining, grade: 'warning' as const });
+    const partly = (threadId: string, remaining: string, grade: ThreadEvaluation['grade'] = 'warning') => ({ threadId, status: 'partly_addressed' as const, reason: 'r', remaining, grade });
     const run = async (lastReviewed: string, priorRoundsIncomplete?: true, addressed: string[] = []) => {
       mockGraphql.mockClear();
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
@@ -6048,7 +6048,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
         threadEvaluations: ([
-          partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.'),
+          partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.', 'note'),
           { threadId: 'PRRT_jkl', status: 'not_addressed', reason: 'The timeout is gone again.', grade: 'blocker' },
           { threadId: 'PRRT_mno', status: 'not_addressed', reason: 'Still keyed by user only.' },
         ] as ThreadEvaluation[]).map(e => (addressed.includes(e.threadId) ? { threadId: e.threadId, status: 'addressed' as const, reason: 'Fixed.' } : e)),
@@ -6062,12 +6062,12 @@ describe('runFullReview orchestration', () => {
     // record keeps each grade, so a reply only tells the thread and carries no marker.
     expect(await run('abc123')).toEqual([
       { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->' },
-      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left. What remains is a suggestion.\n\n<!-- manki -->' },
       { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->' },
     ]);
     // The record carries each thread's grade with the review that decided it.
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![7]!.judge.threadEvaluations?.map(e => [e.threadId, e.grade])).toEqual([
-      ['PRRT_abc', 'warning'], ['PRRT_def', 'warning'], ['PRRT_ghi', 'warning'], ['PRRT_jkl', 'blocker'], ['PRRT_mno', undefined],
+      ['PRRT_abc', 'warning'], ['PRRT_def', 'warning'], ['PRRT_ghi', 'note'], ['PRRT_jkl', 'blocker'], ['PRRT_mno', undefined],
     ]);
 
     // A reply that fails loses only the note: the review still posts.

@@ -7,6 +7,14 @@ export type FindingSeverity = 'blocker' | 'warning' | 'note' | 'ignore';
 /** Severities from most to least severe. */
 export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'note', 'ignore'];
 
+/** What a review calls each severity. A note is posted as a suggestion. */
+export const SEVERITY_NAME: Record<FindingSeverity, string> = {
+  blocker: 'blocker',
+  warning: 'warning',
+  note: 'suggestion',
+  ignore: 'ignore',
+};
+
 export type CellRow = 'severe' | 'wrong' | 'degraded' | 'improvement' | 'style';
 export type CellColumn = 'normal' | 'rare';
 
