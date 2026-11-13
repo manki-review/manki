@@ -107,6 +107,10 @@ describe('reviewLocal', () => {
     expect(review.result.findings.map(f => f.title)).toEqual([finding.title, 'Note one', 'Note two', 'Note three']);
     expect(review.context.findings.unposted).toMatchObject([{ title: 'Note four', unpostedReason: 'note_cap', posted: 'record' }]);
     expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
+
+    // A round that would approve holds the approval for the excluded file no model read, as a pull request round does.
+    jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    expect((await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', providerInputs: inputs })).approvalHeld).toBe('unread');
   });
 
   it('reviews a follow-up round from an earlier round: its threads with the code now, its record, and the diff since', async () => {
@@ -200,7 +204,8 @@ describe('reviewLocal', () => {
     const thread = (overrides: Partial<EarlierFinding>): EarlierFinding => ({ id: 'W1', severity: 'warning', title: 'Retry never stops', file: 'src/b.ts', line: 1, thread: 'open', ...overrides });
     const heldBy = async (findings: EarlierFinding[], threadEvaluations?: ThreadEvaluation[]) => {
       jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'], ...(threadEvaluations && { threadEvaluations }) });
-      return (await reviewLocal({ repoRoot: repo, base: 'main', head: fixed, earlier: { head: reviewed, findings }, providerInputs: inputs })).approvalHeld;
+      // From `later`, so the excluded `docs/x.md` does not hold the approval as unread.
+      return (await reviewLocal({ repoRoot: repo, base: later, head: fixed, earlier: { head: reviewed, findings }, providerInputs: inputs })).approvalHeld;
     };
     expect(await heldBy([thread({})])).toBe('warnings');
     expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'addressed', reason: 'Bounded now.' }])).toBe(false);
@@ -274,8 +279,12 @@ describe('reviewLocal', () => {
     commit(repo, 'Bump hex', { 'Cargo.lock': lock('0.4.3') });
     git(repo, 'checkout', '-q', 'locked');
 
-    await reviewLocal({ repoRoot: repo, base: 'locked', head: 'bumped', providerInputs: inputs });
-    await reviewLocal({ repoRoot: repo, base: 'main', head: 'locked', patch: git(repo, 'diff', 'locked', 'bumped'), providerInputs: inputs });
+    const reviews = [
+      await reviewLocal({ repoRoot: repo, base: 'locked', head: 'bumped', providerInputs: inputs }),
+      await reviewLocal({ repoRoot: repo, base: 'main', head: 'locked', patch: git(repo, 'diff', 'locked', 'bumped'), providerInputs: inputs }),
+    ];
+    // The excluded lockfile is read through its package list, so it holds no approval.
+    expect(reviews.map(r => r.approvalHeld)).toEqual([false, false]);
 
     for (const [, options] of jest.mocked(runReview).mock.calls) {
       expect([options.diff.files, options.excludedPaths, formatLockfileChanges(options.lockfiles ?? [])]).toEqual([[], ['Cargo.lock'], 'Cargo.lock\n  updated hex 0.4.2 -> 0.4.3 (line 5)']);
