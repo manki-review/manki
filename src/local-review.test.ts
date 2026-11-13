@@ -320,6 +320,9 @@ describe('reviewLocal', () => {
     const review = await reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', providerInputs: inputs });
 
     expect(review.approvalHeld).toBe('config');
+    // A round that requests changes has no approval to hold, as in a pull request round.
+    jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'One blocker', findings: [{ ...finding }], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    expect((await reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', providerInputs: inputs })).approvalHeld).toBe(false);
 
     expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual(jest.requireActual('./config').DEFAULT_CONFIG.exclude_paths);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, using the defaults'));

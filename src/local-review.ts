@@ -393,8 +393,9 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || (!!p.isSecurity && !p.fixed));
     });
     const unread = skippedFiles(excludedFiles, lockfiles, diff);
-    const approvalHeld = brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
-      : result.verdict !== 'APPROVE' ? false
+    // As in a pull request round, only a round that would approve has its approval held.
+    const approvalHeld = result.verdict !== 'APPROVE' ? false
+      : brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
       : unread.excluded.length + unread.binary.length > 0 ? 'unread'
       : threadHolds || result.findings.some(holdsApproval) ? 'warnings' : false;
     return { result, context, base, head, approvalHeld };
