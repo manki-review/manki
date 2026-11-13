@@ -211,7 +211,10 @@ const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
-export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings';
+export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings' | 'refused';
+
+/** Leads a review that would approve when GitHub refused the approval, so Manki posted it as a comment. */
+const APPROVAL_REFUSED_LINE = '**Approval held:** GitHub refused the approval, so this review is a comment. A person needs to approve the PR, or enable "Allow GitHub Actions to create and approve pull requests" in the repository settings if it is off.';
 
 /** The changed files no model reads: those `exclude_paths` drops, and those with no code to read, such as binaries. */
 export interface SkippedFiles {
@@ -1927,12 +1930,13 @@ export async function postReview(
    * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
    * `withoutLineThreads` leaves out the non-blocking line comments, for a review GitHub only takes without them.
    */
-  const renderBody = (withoutLineThreads = false): string => {
+  const renderBody = (withoutLineThreads = false, approvalRefused = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
     const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
     const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
-    let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
+    const line = approvalRefused ? APPROVAL_REFUSED_LINE : heldLine;
+    let head = line ? `${line}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
@@ -1974,7 +1978,7 @@ export async function postReview(
   const postedComments = [...validComments, ...fileComments].map(highlight);
   const inBody = new Set([...bodyFindings, ...listedNotes, ...unthreaded]);
   // The record with each finding's place. A finding in `refused` got no thread from GitHub, so the body carries it.
-  const recordFor = (refused: ReadonlySet<Finding> = new Set()): string => {
+  const recordFor = (refused: ReadonlySet<Finding> = new Set(), approvalRefused = false): string => {
     const placeOf = (f: Finding): PostedPlace => refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
       const posted = placeOf(f);
@@ -1994,7 +1998,7 @@ export async function postReview(
           findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => recordPlace(entry, result.findings[i])) },
         }),
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
-        ...(event === 'APPROVE' && { approval: { held: approvalHeld, ...(warningHold && { warningsHeld: true as const }) } }),
+        ...(event === 'APPROVE' && { approval: { held: approvalRefused ? 'refused' : approvalHeld, ...(warningHold && { warningsHeld: true as const }) } }),
       }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };
@@ -2013,8 +2017,10 @@ export async function postReview(
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
-  const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), headlined.map(highlight));
+  const withoutLineThreads = (approvalRefused = false): string => highlightCode(renderBody(true, approvalRefused), codeTokens);
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, approvalRefused => recordFor(inline, approvalRefused), headlined.map(highlight));
+  // GitHub took a COMMENT for an approval only when it refused the approval.
+  const approvalRefused = postedVerdict === 'APPROVE' && review.verdict === 'COMMENT';
   onPosted?.();
   // A blocker or a holding warning whose line comment GitHub refused gets a file-level thread on its file.
   const retried = review.lineComments ? [] : lineThreads.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
@@ -2025,7 +2031,7 @@ export async function postReview(
     const blockerSection = refusedBlockers.length > 0 ? `\n\n**Blockers that could not be posted as threads:**\n\n${refusedBlockers.map(f => formatFindingBlock(f, links, true)).join('\n\n')}` : '';
     const warningSection = formatUnthreadedWarnings(refused.filter(f => !isBlockingFinding(f)), links);
     const section = highlightCode(`${blockerSection}${warningSection ? `\n\n${warningSection}` : ''}`, codeTokens);
-    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]));
+    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]), approvalRefused);
     // The verdict line counted each refused warning as one with a thread, so it is restated with them among those without one.
     const refusedHolding = refused.filter(holdsApproval);
     const holdLine = (h: ApprovalHold): string => highlightCode(approvalHoldLine(h, autoApprove), codeTokens);
@@ -2054,7 +2060,7 @@ export async function postReview(
     }
   }
   // Warnings can hold behind another hold that comes first, and still take back an approval of this commit.
-  return { id: review.id, approvalHeld, warningsHeld: event === 'APPROVE' && !!warningHold };
+  return { id: review.id, approvalHeld: approvalRefused ? 'refused' : approvalHeld, warningsHeld: event === 'APPROVE' && !!warningHold };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */
@@ -2079,13 +2085,13 @@ async function submitReview(
   record: string,
   validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}>,
   reviewedCommitFooter: string,
-  /** The body without the line comments listed as threads, for when GitHub refuses their lines. */
-  bodyWithoutLineComments: () => string = () => body,
+  /** The body without the line comments listed as threads, for when GitHub refuses their lines or the approval. */
+  bodyWithoutLineComments: (approvalRefused?: boolean) => string = () => body,
   /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
-  recordWithoutLineComments: () => string = () => record,
+  recordWithoutLineComments: (approvalRefused?: boolean) => string = () => record,
   /** The line comments the body names by their headline when the review posts without them. The caller posts a blocker as a file-level thread instead. */
   unthreaded: typeof validComments = validComments,
-): Promise<{ id: number; body: string; lineComments: boolean }> {
+): Promise<{ id: number; verdict: ReviewVerdict; body: string; lineComments: boolean }> {
   const event = mapVerdictToEvent(verdict);
   const fit = (text: string, trailer = record): string => truncateBody(text, REVIEW_BODY_BUDGET - trailer.length);
   const compose = (text: string, trailer = record): string => appendReviewFooter(`${text}${trailer}`, reviewedCommitFooter);
@@ -2104,7 +2110,7 @@ async function submitReview(
     });
 
     core.info(`Posted review #${review.id} with verdict ${verdict}`);
-    return { id: review.id, body: fit(body), lineComments: true };
+    return { id: review.id, verdict, body: fit(body), lineComments: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isLineError = errorMessage.includes('pull_request_review_thread.line') ||
@@ -2127,7 +2133,7 @@ async function submitReview(
       });
 
       core.info(`Posted review #${review.id} without inline comments (line validation failed)`);
-      return { id: review.id, body: lineErrFallbackBody, lineComments: false };
+      return { id: review.id, verdict, body: lineErrFallbackBody, lineComments: false };
     }
 
     // Only a 422 is GitHub refusing this review event (e.g. approving or requesting
@@ -2143,8 +2149,8 @@ async function submitReview(
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
-    const bare = recordWithoutLineComments();
-    const fallbackBody = fit(`${bodyWithoutLineComments()}${listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`)}`, bare);
+    const bare = recordWithoutLineComments(event === 'APPROVE');
+    const fallbackBody = fit(`${bodyWithoutLineComments(event === 'APPROVE')}${listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`)}`, bare);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -2157,7 +2163,7 @@ async function submitReview(
     });
 
     core.info(`Posted fallback COMMENT review #${review.id} (original verdict: ${verdict})`);
-    return { id: review.id, body: fallbackBody, lineComments: false };
+    return { id: review.id, verdict: 'COMMENT', body: fallbackBody, lineComments: false };
   }
 }
 

@@ -2084,6 +2084,7 @@ describe('runFullReview orchestration', () => {
       ['warnings', 'Approval held: warnings wait for a fix or an answer'],
       ['unread warnings', 'Approval held: warnings wait for a fix or an answer'],
       ['config with warnings', 'Approval held: a config file did not load'],
+      ['refused', 'Approval held: GitHub refused the approval'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       const approvalHeld = held === 'unread warnings' ? 'warnings' : held === 'config with warnings' ? 'config' : held;
       jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld, warningsHeld: held.includes('warnings') });

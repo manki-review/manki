@@ -649,6 +649,21 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.threads).toEqual([]);
   });
 
+  it('posts a comment that says why when GitHub refuses the approval, and reports the approval as held', async () => {
+    mockGitHub.failures.push({ method: 'POST', path: /\/pulls\/\d+\/reviews$/, status: 422, times: 1, message: 'GitHub Actions is not permitted to approve pull requests.' });
+
+    await reviewRound();
+
+    expect(core.setFailed).not.toHaveBeenCalled();
+    const [review] = postedReviews();
+    expect(review.state).toBe('COMMENTED');
+    expect(review.body).toMatch(/^\*\*Approval held:\*\* GitHub refused the approval, so this review is a comment\./);
+    expect(mockGitHub.roundContext(review)).toMatchObject({ verdict: 'APPROVE', approval: { held: 'refused' } });
+    expect(core.setOutput).toHaveBeenCalledWith('verdict', 'COMMENT');
+    expect(core.setOutput).toHaveBeenCalledWith('approval_held', 'refused');
+    expect(mockGitHub.stateReports).toContainEqual(expect.objectContaining({ approval: { commit: HEAD_SHA, held: true } }));
+  });
+
   it('gives only the finders read-only tools on the fetched PR head with a step budget, and reviews without them when the fetch fails', async () => {
     mockLLM.repoTools = true;
     jest.mocked(fetchWorkspace).mockResolvedValueOnce('/work/pr-head');
