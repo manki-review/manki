@@ -1823,8 +1823,8 @@ export interface RoundContext {
    */
   approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings' | 'refused'; warningsHeld?: true };
   /**
-   * Set on a round whose approval warnings held: what the change does and how to test it, from the verdict reader. The
-   * held review leaves both out, and the approval posted once the warnings clear shows them.
+   * What the change does and how to test it, from the verdict reader. Set when warnings held the round's approval and
+   * no person must approve it. The held review leaves both out, and the approval posted once the warnings clear shows them.
    */
   readyReport?: Pick<VerdictReport, 'whatThisDoes' | 'whatToTest'>;
   /**

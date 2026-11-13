@@ -2282,7 +2282,7 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
   READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
     const unread = hold?.reason === 'unread' && hold.skipped.excluded.length + hold.skipped.binary.length;
     // Another hold has a line of its own or is named here, and the warnings still hold once it lifts.
-    // Only when the warnings are all that holds does handling them bring the approval. Another hold says what it needs.
+    // Handling the warnings brings the approval only when they are all that holds. Another hold's line says what it needs.
     const approves = hold?.reason === 'warnings' && hold.count !== undefined && autoApprove ? ' Manki approves once every warning is handled.' : '';
     if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${approves}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
     if (unread) return `✅ **Approved, but a person must approve:** no model read ${unread} of the changed files.`;
