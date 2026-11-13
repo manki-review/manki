@@ -150,6 +150,7 @@ prior_round:
       doubts:                            # optional, the premises the earlier round left open
         - premise: A caller passes it.
           decides: grade                 # defect or grade
+          consequence: true              # optional, only beside grade: the premise states the consequence that makes the cell a blocker
       posted: thread                     # thread or body
       state: open                        # a thread's state before the push: open, resolved by a person, or fixed (resolved by a round)
       description: What goes wrong.      # optional, as the thread shows it

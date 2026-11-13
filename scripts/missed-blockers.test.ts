@@ -62,7 +62,7 @@ describe('collectFollowUps', () => {
   const rounds = [
     round(1, [
       entry('Lock order', { file: 'src/a.go', fingerprint: { file: 'src/a.go', lineStart: 0, lineEnd: 0, slug: '-Lock-order' } }),
-      entry('Missing timeout', { file: 'src/b.go', severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }] }),
+      entry('Missing timeout', { file: 'src/b.go', severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }, { premise: 'The request hangs forever', decides: 'grade', consequence: true }] }),
       // A cell the table does not know, as another Manki version could record, is left out of the follow-up.
       entry('Name the helper', { file: 'src/c.go', severity: 'note', suggestedFix: 'func name() {}', cell: { row: 'serious', column: 'normal' } as never }),
       entry('Old style', { file: 'src/d.go', severity: 'note' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
@@ -100,7 +100,7 @@ describe('collectFollowUps', () => {
       priorHead: 'sha1',
       findings: [
         { id: 'P1', severity: 'blocker', title: 'Lock order', file: 'src/a.go', line: 1, description: 'Lock order breaks.', howToFix: 'Fix it.', security: true, thread: 'open' },
-        { id: 'P2', severity: 'warning', title: 'Missing timeout', file: 'src/b.go', line: 10, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }], description: 'Missing timeout breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P2', severity: 'warning', title: 'Missing timeout', file: 'src/b.go', line: 10, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }, { premise: 'The request hangs forever', decides: 'grade', consequence: true }], description: 'Missing timeout breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P3', severity: 'note', title: 'Name the helper', file: 'src/c.go', line: 10, suggestedFix: 'func name() {}' },
         { id: 'P4', severity: 'note', title: 'Old style', file: 'src/d.go', line: 10, description: 'Old style breaks.', howToFix: 'Fix it.', thread: 'resolved' },
         { id: 'P5', severity: 'blocker', title: 'Overflow', file: 'src/e.go', line: 10, description: 'Overflow breaks.', howToFix: 'Fix it.', thread: 'open' },
@@ -147,7 +147,7 @@ describe('collectFollowUps', () => {
       .toContain('# The body is the pull request body as it was when round 2 reviewed.');
     const parsed = parseCase(text, `${id}.yml`);
     // The draft keeps the cell and the doubts behind a conditional grade, so the case reopens it as the pull request round did.
-    expect(parsed.priorRound?.findings[1]).toMatchObject({ id: 'P2', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }] });
+    expect(parsed.priorRound?.findings[1]).toMatchObject({ id: 'P2', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }, { premise: 'The request hangs forever', decides: 'grade', consequence: true }] });
     expect(parsed).toMatchObject({
       source: 'manki-review/token-service#12: round 2, a follow-up of the rounds before it, and round 3 raised blockers on code round 2 had reviewed',
       head: 'b'.repeat(40), keyVersion: 0, mustResolve: ['P1', 'P6'], mustNotRepeat: ['P3', 'P5', 'P10', 'P11'],

@@ -249,7 +249,7 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string, f
         head: followUp.priorHead,
         findings: followUp.findings.map(f => ({
           id: f.id, severity: f.severity, title: plain(f.title), file: f.file, line: f.line, ...(f.gradeIfConfirmed && { grade_if_confirmed: f.gradeIfConfirmed }),
-          ...(f.cell && { cell: { row: f.cell.row, column: f.cell.column } }), ...(f.doubts && { doubts: f.doubts.map(d => ({ premise: plain(d.premise), decides: d.decides })) }),
+          ...(f.cell && { cell: { row: f.cell.row, column: f.cell.column } }), ...(f.doubts && { doubts: f.doubts.map(d => ({ premise: plain(d.premise), decides: d.decides, ...(d.consequence && { consequence: true }) })) }),
           posted: f.thread ? 'thread' : 'body', ...(f.thread && { state: f.thread }),
           ...(f.description && { description: plain(f.description) }), ...(f.howToFix && { how_to_fix: plain(f.howToFix) }),
           ...(f.suggestedFix && { suggested_fix: f.suggestedFix }), ...(f.security && { security: true }),

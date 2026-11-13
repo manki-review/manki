@@ -138,8 +138,10 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       throw caseError(where, `\`cell\` must have a \`row\` of ${Object.keys(CELL_GRADES).join(', ')} and a \`column\` of normal or rare`);
     }
     const doubts = f.doubts as Array<Record<string, unknown>> | undefined;
-    if (doubts !== undefined && !(Array.isArray(doubts) && doubts.every(d => d && typeof d.premise === 'string' && d.premise.trim() && ['defect', 'grade'].includes(d.decides as string)))) {
-      throw caseError(where, '`doubts` must be a list of mappings with a `premise` and a `decides` of defect or grade');
+    const validDoubt = (d: Record<string, unknown>): boolean => !!d && typeof d.premise === 'string' && !!d.premise.trim() && ['defect', 'grade'].includes(d.decides as string)
+      && (d.consequence === undefined || (d.consequence === true && d.decides === 'grade'));
+    if (doubts !== undefined && !(Array.isArray(doubts) && doubts.every(validDoubt))) {
+      throw caseError(where, '`doubts` must be a list of mappings with a `premise`, a `decides` of defect or grade, and `consequence: true` only beside `decides: grade`');
     }
     const [description, howToFix, suggestedFix] = PRIOR_FIELDS.map((field) => {
       if (f[field] !== undefined && typeof f[field] !== 'string') throw caseError(where, `\`${field}\` must be a string`);
@@ -149,7 +151,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       id: requireString(f, 'id', where), severity: f.severity as KeySeverity, title: requireString(f, 'title', where), file: requireString(f, 'file', where), line: f.line as number,
       ...(f.grade_if_confirmed !== undefined && { gradeIfConfirmed: f.grade_if_confirmed as KeySeverity }),
       ...(cell && { cell: { row: cell.row, column: cell.column } }),
-      ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'] })) }),
+      ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'], ...(d.consequence === true && { consequence: true }) })) }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
       ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
     };
