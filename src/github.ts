@@ -887,8 +887,8 @@ export function buildDashboard(data: DashboardData): string {
 }
 
 /**
- * Post a "review in progress" comment on the PR.
- * Returns the comment ID so we can update/delete it later.
+ * Post a "review in progress" comment on the PR, or turn comment `reuseId` into one. A new comment is posted when
+ * `reuseId` cannot be edited. Returns the comment ID so we can update/delete it later.
  */
 export async function postProgressComment(
   octokit: Octokit,
@@ -897,20 +897,25 @@ export async function postProgressComment(
   prNumber: number,
   dashboard?: DashboardData,
   settings?: SettingsView,
+  reuseId?: number,
 ): Promise<number> {
   const body = withSettingsBlock(withMarkers(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
   ), settings);
 
-  const { data } = await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body,
-  });
-  core.saveState(PROGRESS_STATE_KEY, String(data.id));
-  return data.id;
+  let id = reuseId;
+  if (id !== undefined) {
+    try {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: id, body });
+    } catch (error) {
+      core.warning(`Failed to reuse comment ${id}, posting a new one: ${error instanceof Error ? error.message : error}`);
+      id = undefined;
+    }
+  }
+  id ??= (await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body })).data.id;
+  core.saveState(PROGRESS_STATE_KEY, String(id));
+  return id;
 }
 
 /**

@@ -78,6 +78,7 @@ import {
   hasBotReviewOnCommit,
   fetchPRComments,
   fetchReviewThreadNodes,
+  isFailedProgress,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   markProgressCommentSuperseded,
@@ -718,9 +719,13 @@ function progressSettings(
 const runningSettings = (target: RunTarget, progress: RunProgress): SettingsView | undefined =>
   progressSettings(target, progress, 'review running', { boxes: ['cancel'] });
 
-/** Posts the run's progress comment, ending with the settings block, which older comments then lose, so only the newest progress comment has one. */
+/**
+ * Posts the run's progress comment, ending with the settings block, which older comments then lose, so only the newest
+ * progress comment has one. The failed progress comment of an earlier run on the same head becomes this run's instead,
+ * so a head never gets two.
+ */
 async function postRunProgress(target: RunTarget, progress: RunProgress, { settings = NO_SETTINGS, draft = false }: FullReviewOptions): Promise<number> {
-  const { octokit, bot, owner, repo, prNumber } = target;
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   let comments: Awaited<ReturnType<typeof fetchPRComments>> = [];
   try {
     comments = await fetchPRComments(octokit, owner, repo, prNumber);
@@ -728,11 +733,12 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
     core.warning(`Failed to read the earlier settings block, so it stays: ${error instanceof Error ? error.message : error}`);
   }
   const latest = latestSettings(comments, bot);
+  const failedId = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest.id : undefined;
   progress.settings = {
     lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
-    ...(latest && { previousId: latest.id }),
+    ...(latest && failedId === undefined && { previousId: latest.id }),
   };
-  const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));
+  const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress), failedId);
   await retireSettingsBlocks(octokit, bot, owner, repo, comments, commentId);
   return commentId;
 }

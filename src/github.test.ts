@@ -4067,6 +4067,24 @@ describe('postProgressComment', () => {
     saveState.mockRestore();
   });
 
+  it('turns the comment to reuse into the progress comment, or posts a new one when it cannot be edited', async () => {
+    const saveState = jest.spyOn(core, 'saveState').mockImplementation(() => {});
+    const createComment = jest.fn().mockResolvedValue({ data: { id: 42 } });
+    const updateComment = jest.fn().mockResolvedValue({});
+    const mockOctokit = { rest: { issues: { createComment, updateComment } } } as unknown as Parameters<typeof postProgressComment>[0];
+
+    expect(await postProgressComment(mockOctokit, 'owner', 'repo', 1, undefined, undefined, 9)).toBe(9);
+    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 9, body: expect.stringMatching(/^\*\*Review started\*\*/) });
+    expect(createComment).not.toHaveBeenCalled();
+    expect(saveState).toHaveBeenLastCalledWith('manki_progress_comment', '9');
+
+    updateComment.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
+    expect(await postProgressComment(mockOctokit, 'owner', 'repo', 1, undefined, undefined, 9)).toBe(42);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(saveState).toHaveBeenLastCalledWith('manki_progress_comment', '42');
+    saveState.mockRestore();
+  });
+
   it('uses dashboard data when provided', async () => {
     const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 43 } });
     const mockOctokit = {
