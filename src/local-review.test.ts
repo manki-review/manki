@@ -111,6 +111,13 @@ describe('reviewLocal', () => {
     // A round that would approve holds the approval for the excluded file no model read, as a pull request round does.
     jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
     expect((await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', providerInputs: inputs })).approvalHeld).toBe('unread');
+    // So does a binary file, which no model reads either.
+    git(repo, 'checkout', '-q', '-b', 'binary', later);
+    commit(repo, 'Add a logo', { 'src/a.ts': 'const a = 1;\nconst b = 5;\n', 'logo.bin': 'logo\u0000' });
+    git(repo, 'checkout', '-q', 'main');
+    jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    expect((await reviewLocal({ repoRoot: repo, base: later, head: 'binary', providerInputs: inputs })).approvalHeld).toBe('unread');
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].excludedPaths).toEqual([]);
   });
 
   it('reviews a follow-up round from an earlier round: its threads with the code now, its record, and the diff since', async () => {
