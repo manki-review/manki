@@ -1144,6 +1144,8 @@ describe('checkAndAutoApprove', () => {
       ['a second warning thread nobody answered', [warning('t1', { isResolved: true }), warning('t2')]],
       ['a warning thread the PR author only asked a question in', [warning('t1', { replies: [reply('author', 'Why would the caller pass more than three?  ')] })]],
       ['a warning thread the PR author only sent a command in', [warning('t1', { replies: [reply('author', '@manki explain why this matters')] })]],
+      ['a warning thread the PR author addressed Manki in mid-sentence', [warning('t1', { replies: [reply('author', 'It is bounded, so (@Manki-review) please drop it.')] })]],
+      ['a warning thread the PR author sent a `/manki` line in', [warning('t1', { replies: [reply('author', 'It is bounded.\n  /manki dismiss')] })]],
       ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
         body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
           .replace('**Warning, needs an answer**', '**Warning, not blocking**')
@@ -1167,6 +1169,10 @@ describe('checkAndAutoApprove', () => {
       ['a security warning a maintainer resolved', [warning('t1', { isResolved: true, resolvedBy: 'maria' }, ['security'])]],
       ['the last of several, all answered', [warning('t1', { isResolved: true }), warning('t2', { replies: [reply('author')] })]],
       ['answered by the PR author after a question and a command', [warning('t1', { replies: [reply('author', 'Why?'), reply('author', '/manki explain'), reply('author')] })]],
+      // Only a command counts as one: a path, a link or a quoted command in a reason does not.
+      ['answered with a reason that names a path', [warning('t1', { replies: [reply('author', 'The caller in src/manki.ts bounds it.')] })]],
+      ['answered with a reason that links the Manki repository', [warning('t1', { replies: [reply('author', 'See https://github.com/manki-review/manki/blob/main/src/recap.ts, the caller bounds it.')] })]],
+      ['answered with a reason that quotes a command as code', [warning('t1', { replies: [reply('author', 'It is bounded, so `@manki dismiss` is not needed.')] })]],
       // Neither a pre-existing defect nor a suggestion holds, though nobody answered them.
       ['answered, beside an open pre-existing warning and an open suggestion', [
         warning('t1', { replies: [reply('author')] }), warning('t2', {}, ['pre-existing']), makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:note:style --> style' }),

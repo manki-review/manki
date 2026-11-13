@@ -9,7 +9,7 @@ import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isB
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { BOT_MENTION_PATTERN, fetchPriorRoundContexts, hasBotMention, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ParsedDiff, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
@@ -648,6 +648,7 @@ interface ParsedCommand {
   args: string;
 }
 
+const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
 const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/;
 
 /** Parses the first command in `body`. A command quoted in inline code or a code block is text, not a command. */
@@ -1102,6 +1103,10 @@ function isBotComment(body: string): boolean {
 /** Whether Manki wrote `comment`, by its author. Only then is its hidden data Manki's. */
 function isOwnComment(bot: BotIdentity, comment: ReviewComment): boolean {
   return isBotUser(bot, comment.user) && isBotComment(comment.body ?? '');
+}
+
+function hasBotMention(body: string): boolean {
+  return BOT_MENTION_PATTERN.test(body.toLowerCase());
 }
 
 function isReviewRequest(body: string): boolean {
