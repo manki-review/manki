@@ -5239,6 +5239,7 @@ describe('postReview non-blocking findings', () => {
       thread('Withdrawn one', { answer: 'Withdrawn. Fine.' }),
       thread('Agreed then kept', { answer: 'Kept. `src/b.ts:3` still loops.' }),
       thread('No marker', { severity: 'unknown' }),
+      thread('Agreed suggestion', { severity: 'note' }),
     ] });
 
     const { body } = createReview.mock.calls[0][0];
@@ -5250,7 +5251,7 @@ describe('postReview non-blocking findings', () => {
     // A fix given in words stays words, never a diff against the flagged line.
     expect(body).toContain('**How to fix it**\nAdd a retry limit\n');
     expect(body).not.toContain('+Add a retry limit');
-    for (const title of ['Still open', 'Fixed since', 'Withdrawn one', 'Agreed then kept', 'No marker']) expect(body).not.toContain(title);
+    for (const title of ['Still open', 'Fixed since', 'Withdrawn one', 'Agreed then kept', 'No marker', 'Agreed suggestion']) expect(body).not.toContain(title);
   });
 
   it('notes the related open PRs and issues, most telling first, with their titles neutralized and no model reason, and keeps the approval', async () => {

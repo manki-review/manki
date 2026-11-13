@@ -1489,9 +1489,12 @@ async function postFileLevelComments(
 
 const AGREED_ANSWER_RE = /^\**Agreed\./;
 
-/** Returns the findings of the closed threads where Manki's latest answer agreed to leave them for later work. */
+/**
+ * Returns the findings of the closed threads where Manki's latest answer agreed to leave them for later work. A suggestion
+ * is optional, so an agreed one is not listed again.
+ */
 function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
-  return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !t.fixed
+  return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !isNote(t.recordedGrade ?? t.severity) && !t.fixed
     && (t.status === 'resolved' || t.status === 'auto-resolved')
     ? [{ severity: t.severity, title: t.title, file: t.file, line: currentFindingLine(t), description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
     : []));
