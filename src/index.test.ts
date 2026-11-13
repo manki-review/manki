@@ -2094,7 +2094,7 @@ describe('runFullReview orchestration', () => {
       // The earlier warning threads that still hold are read with the round's own grades and counted in its review.
       const [, , , , , , , context, , options] = jest.mocked(ghUtils.postReview).mock.calls[0];
       expect(jest.mocked(stateModule.fetchHeldWarnings).mock.calls[0].at(-1)).toBe(context);
-      expect(options).toEqual(expect.objectContaining({ openWarnings: held === 'warnings' ? 2 : held === 'unread warnings' ? 'unread' : 0 }));
+      expect(options).toEqual(expect.objectContaining({ openWarnings: held === 'warnings' ? [open, { ...open, id: 'T2' }] : held === 'unread warnings' ? 'unread' : [] }));
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
       // An approval of the same commit stays for every hold but warnings, which a round run again on the commit can find.

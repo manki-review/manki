@@ -23,7 +23,7 @@ Install Manki on a GitHub repository: the App, a provider credential and the wor
 
 Require the review as well as the check when you rely on Manki to gate merges. The `Manki` check alone does not hold every PR, for two reasons. GitHub counts a skipped or neutral check as passed, and the check is neutral when Manki holds its approval: the PR conflicts, is a draft, has files no model read, a config file did not load, or a warning thread waits for an answer. The check also sits on the head commit, so of two PRs with the same head commit, the one Manki does not review shows the check of the other, and its diff differs when the two have different base branches. The required review covers both cases, since Manki approves only a PR it reviewed.
 
-> **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. An open warning thread holds the approval with a COMMENT review until the warning is fixed, resolved, or answered in its thread with a reason. Suggestions alone still result in APPROVE.
+> **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. An open warning thread holds the approval with a COMMENT review until the warning is fixed, resolved, or answered in its thread with a reason. A security warning needs a fix or a maintainer's resolve. Suggestions alone still result in APPROVE.
 
 When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES review. If a ruleset turns on **Restrict who can dismiss reviews** (in its **Require a pull request before merging** rule), add the App Manki posts as to the allowed actors: the Manki app, or your own App. Otherwise GitHub refuses the dismissal, and the old REQUEST_CHANGES keeps blocking the merge after Manki approves.
 

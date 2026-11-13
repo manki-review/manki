@@ -2540,6 +2540,10 @@ describe('parseFindingFromComment', () => {
       expect(old).toContain('**Warning, not blocking**\n\n**Extract helper**\n\n');
       expect(parseFindingFromComment(old)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
       expect(threadSeverity(old)).toBe('warning');
+      // A security warning has its own header and note, which are not part of the description either.
+      const security = formatFindingComment({ severity: 'warning', title: 'Token in log', file: 'src/a.ts', line: 2, description: 'The token is logged.', reviewers: [], origin: 'reviewed', tags: ['follow-up', 'security'], checkStatus }, TEST_LINKS);
+      expect(security).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
+      expect(parseFindingFromComment(security)).toEqual({ description: 'The token is logged.', suggestedFix: undefined });
     }
     // The issue box, and the link that replaces it once ticked, are not part of the description.
     expect(body).toContain('Create an issue for this');

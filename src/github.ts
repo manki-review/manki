@@ -194,10 +194,10 @@ export type ConfigHold = 'base' | 'head';
 
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
- * model read some of its files, or `count` warning threads wait for an answer. Without `count` the warning threads could
- * not be read.
+ * model read some of its files, or `count` warning threads wait for an answer, `security` of them security warnings.
+ * Without `count` the warning threads could not be read.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number; security?: number };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -262,8 +262,13 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
       return autoApprove ? `${line} Comment \`@manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
     }
-    const line = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}, or dismiss it with a reason in its thread.`;
-    return autoApprove ? line : `${line} After a dismissal, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+    // A reply never clears a security warning, which needs a fix or a resolve by someone allowed to clear it.
+    const security = hold.security ?? 0;
+    const or = security === hold.count ? 'or have a maintainer resolve its thread' : 'or dismiss it with a reason in its thread';
+    const mixed = security > 0 && security < hold.count ? ' A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it.' : '';
+    const line = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}, ${or}.${mixed}`;
+    const after = security === hold.count ? 'a resolve' : security > 0 ? 'a dismissal or a resolve' : 'a dismissal';
+    return autoApprove ? line : `${line} After ${after}, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
   }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
@@ -1398,6 +1403,9 @@ const MISSED_EARLIER = 'Missed by an earlier review';
 /** Shown under the title of a thread for a warning on such code. */
 const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
 
+/** `MISSED_EARLIER_NOTE` for a security warning, which a reply does not clear. */
+const MISSED_EARLIER_SECURITY_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it._';
+
 /** Lines shown on each side of the flagged line in a finding's code preview. */
 const PREVIEW_CONTEXT = 2;
 
@@ -1679,10 +1687,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = 0 }: {
+  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [] }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
-    /** How many earlier warning threads still hold the approval, or `unread` when they could not be read, which holds it too. */
-    openWarnings?: number | 'unread';
+    /** The earlier warning threads that still hold the approval, or `unread` when they could not be read, which holds it too. */
+    openWarnings?: ReadonlyArray<{ isSecurity?: boolean }> | 'unread';
     /** The `auto_approve` setting, which decides what the lines for a held draft and for warnings tell the reader to do. */
     autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
@@ -1831,8 +1839,10 @@ export async function postReview(
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
-  const warnings = openWarnings === 'unread' ? undefined : openWarnings + [...threadFindings, ...unthreaded].filter(holdsApproval).length;
-  const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' } : warnings > 0 ? { reason: 'warnings', count: warnings } : undefined;
+  const holding = [...threadFindings, ...unthreaded].filter(holdsApproval);
+  const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length;
+  const security = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity).length + holding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length;
+  const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' } : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }) } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? warningHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
@@ -2587,7 +2597,8 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 function formatFindingHeader(finding: Finding): string {
   const name = SEVERITY_NAME[finding.severity];
   const severity = `${name[0].toUpperCase()}${name.slice(1)}`;
-  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, ${holdsApproval(finding) ? 'needs an answer' : 'not blocking'}`}**`;
+  const holds = holdsApproval(finding) && (isSecurityFinding(finding.tags, finding.reviewers) ? 'needs a fix' : 'needs an answer');
+  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, ${holds || 'not blocking'}`}**`;
   // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';
   const kind = [isPreExisting(finding) && 'Pre-existing', finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
@@ -3094,7 +3105,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
-  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
+  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${isSecurityFinding(finding.tags, finding.reviewers) ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
   // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
@@ -3621,5 +3632,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

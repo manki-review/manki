@@ -1773,7 +1773,7 @@ describe('postReview body lead', () => {
       ({ severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: [], tags: ['follow-up'], ...extra });
     mockGet.mockClear();
     // Each new warning thread counts, and so does each earlier warning thread that still holds.
-    const held = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Retry never stops', 3), warning('Missed before', 9, { origin: 'reviewed' })] }, diff, undefined, undefined, { openWarnings: 1 });
+    const held = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Retry never stops', 3), warning('Missed before', 9, { origin: 'reviewed' })] }, diff, undefined, undefined, { openWarnings: [{}] });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, held.approvalHeld, held.warningsHeld]).toEqual(['COMMENT', 'warnings', true]);
     expect(body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 3 warnings.** Fix each one, or dismiss it with a reason in its thread.');
@@ -1781,11 +1781,21 @@ describe('postReview body lead', () => {
     expect(mockGet).not.toHaveBeenCalled();
     // An earlier warning thread alone holds too.
     expect((await postedBody(ready, [], undefined)).event).toBe('APPROVE');
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 1 });
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}] });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
     // With `auto_approve` off an answer runs no approval check, so the line names the Review again box.
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 1, autoApprove: false });
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}], autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread. After a dismissal, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    // A reply never clears a security warning, so the line asks for a fix or a maintainer's resolve, alone or among others.
+    const security = warning('Token in log', 3, { tags: ['follow-up', 'security'], origin: 'reviewed' });
+    mockCreateReview.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [security] }, diff);
+    const securityReview = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ body: string }> };
+    expect(securityReview.body.split('\n')[0]).toBe('⚠️ **Approval waits on 1 warning.** Fix it, or have a maintainer resolve its thread.');
+    expect(securityReview.comments[0].body).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
+    expect(securityReview.comments[0].body).toContain('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it._');
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}, { isSecurity: true }], autoApprove: false });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **Approval waits on 2 warnings.** Fix each one, or dismiss it with a reason in its thread. A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it. After a dismissal or a resolve, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // Warning threads that could not be read hold the approval too, in both wordings.
     const unread = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread' });
     expect(unread.approvalHeld).toBe('warnings');
@@ -1794,7 +1804,7 @@ describe('postReview body lead', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread', autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
-    const config = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 2, configHold: 'base' });
+    const config = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}, {}], configHold: 'base' });
     expect([config.approvalHeld, config.warningsHeld]).toEqual(['config', true]);
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n').slice(0, 2)).toEqual([
       '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
@@ -1822,7 +1832,7 @@ describe('postReview body lead', () => {
     expect(unthreaded).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs an answer**\n**Nowhere**\n');
     expect(unthreaded).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     // A blocker still requests changes.
-    const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: 1 });
+    const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: [{}] });
     expect([mockCreateReview.mock.calls.at(-1)![0].event, blocked.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
   });
 
