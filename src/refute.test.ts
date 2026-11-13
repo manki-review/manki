@@ -191,6 +191,8 @@ describe('refuteBlockers', () => {
       'First fails': new Error('CLI crashed'),
       'Reach confirmed and disproved': { reason: 'A handler passes it.', premises: [confirmed('src/api.ts:4')] },
       'Grade premise confirmed and disproved': { reason: 'A handler passes it.', premises: [confirmed('src/api.ts:4')] },
+      'Consequence confirmed by both': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
+      'Consequence confirmed and left open': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
     });
     const pair = fakeClient({
       'Both confirm': confirmed('src/api.ts:4'),
@@ -206,7 +208,10 @@ describe('refuteBlockers', () => {
       'First fails': disproved('Both inputs are checked.'),
       'Reach confirmed and disproved': { reason: 'Only the job produces it.', premises: [{ outcome: 'disproved', reason: 'Only the job produces it.', proof: ['src/math.ts:1'] }] },
       'Grade premise confirmed and disproved': { reason: 'Only tests call it.', premises: [{ outcome: 'disproved', reason: 'Only tests call it.', proof: ['src/math.ts:1'] }] },
-    });
+      'Consequence confirmed by both': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
+      // It confirms the defect and runs out of steps before it settles the consequence.
+      'Consequence confirmed and left open': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), unsettled] },
+    }, undefined, { 'Consequence confirmed and left open': 15 });
     const findings = [
       finding('Both confirm'),
       finding('Both disprove'),
@@ -222,6 +227,11 @@ describe('refuteBlockers', () => {
       finding('Reach confirmed and disproved', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }),
       // A finder filed it as a blocker, so the confirmation of its doubt could raise it.
       finding('Grade premise confirmed and disproved', { severity: 'warning', reviewerSeverity: 'blocker', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: [{ premise: 'A public handler passes `a` through', decides: 'grade' }] }),
+      // No finder filed these as blockers, so every check has to confirm the defect and the consequence.
+      ...['Consequence confirmed by both', 'Consequence confirmed and left open'].map(title => finding(title, {
+        severity: 'warning', reviewerSeverity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'severe', column: 'normal' },
+        doubts: [{ premise: 'No caller bounds `a`', decides: 'defect' }, { premise: 'The overflowed sum is the total `report` prints', decides: 'grade', consequence: true }],
+      })),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff, pair });
@@ -249,8 +259,12 @@ describe('refuteBlockers', () => {
       // still never raises the finding or moves it out of the `rare` column.
       ['Reach confirmed and disproved', 'warning', 'confirmed', 'unsettled', undefined],
       ['Grade premise confirmed and disproved', 'warning', 'confirmed', 'unsettled', undefined],
+      ['Consequence confirmed by both', 'blocker', 'confirmed', 'confirmed', undefined],
+      // The other refuter's confirmation abstains no more where the consequence decides the blocker.
+      ['Consequence confirmed and left open', 'warning', 'confirmed', 'unsettled', undefined],
     ]);
-    expect(result.slice(-2).map(f => [f.cell, f.refutation?.premises?.[0].outcome, f.pairRefutation?.premises?.[0].outcome])).toEqual([
+    expect(result.at(-1)?.pairRefutation?.stepsUsedUp).toBe('yes');
+    expect(result.slice(11, 13).map(f => [f.cell, f.refutation?.premises?.[0].outcome, f.pairRefutation?.premises?.[0].outcome])).toEqual([
       [{ row: 'wrong', column: 'rare' }, 'confirmed', 'disproved'], [{ row: 'wrong', column: 'normal' }, 'confirmed', 'disproved'],
     ]);
     expect(result[0].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
@@ -420,7 +434,7 @@ describe('refuteBlockers', () => {
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
 
-  it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed and a finder filed a blocker, and never raises or moves one in the `rare` column', async () => {
+  it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed and a finder filed a blocker or the check confirmed the defect and its consequence, and never raises or moves one in the `rare` column', async () => {
     const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
     const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };
     const confirmed = (proof: string) => ({ outcome: 'confirmed', reason: 'It holds.', proof: [proof] });
@@ -589,6 +603,49 @@ describe('refuteBlockers', () => {
     expect(message[0]).toContain('The top-level `outcome`, `reason` and `proof` then answer whether the defect itself exists: confirmed when the code does what the finding says is wrong once the state or input the finding names occurs, disproved when it does not, unsettled otherwise. Whether that state or input occurs, and how severe the result is, is for a premise to answer and never changes the top-level outcome.');
     expect(message[0]).toContain('- A premise that normal use or outside input can produce a state is such a doubt about the state: the judge holds that only the code\'s own logic produces it. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces the state, and cite the lines of that path. Disprove it only when the code shows nothing but its own logic produces the state.');
     expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
+
+    // With a premise about the consequence, a finding no finder filed as a blocker rises only when the check confirms
+    // the defect and every premise. A finder's blocker, a security finding and a restatement are checked without that
+    // premise, as if the judge had not named it, unless it is the only doubt that holds the finding down.
+    const harm = { premise: 'The overflowed sum is the total `report` prints', decides: 'grade' as const, consequence: true as const };
+    const withHarm = { ...held, doubts: [exists, harm] };
+    const harmReplies = {
+      'Defect and consequence confirmed': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
+      'Defect confirmed, consequence unsettled': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), { outcome: 'unsettled', reason: 'No caller prints it.' }] },
+      'Defect confirmed, consequence disproved': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), { outcome: 'disproved', reason: 'Only a log reads it.', proof: ['src/math.ts:1'] }] },
+      'Premises confirmed, defect open': { reason: 'Both hold.', premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
+      'Consequence confirmed, defect premise disproved': { ...confirmed('src/math.ts:2'), premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }, confirmed('src/api.ts:4')] },
+      'Finder blocker with a consequence': { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] },
+      'Security with a consequence': { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] },
+      'Only the consequence, finder blocker': { reason: 'It holds.', premises: [{ outcome: 'unsettled', reason: 'No caller prints it.' }] },
+    };
+    const harmed = [
+      finding('Defect and consequence confirmed', withHarm),
+      finding('Defect confirmed, consequence unsettled', withHarm),
+      finding('Defect confirmed, consequence disproved', withHarm),
+      finding('Premises confirmed, defect open', withHarm),
+      finding('Consequence confirmed, defect premise disproved', withHarm),
+      finding('Finder blocker with a consequence', { ...withHarm, reviewerSeverity: 'blocker' }),
+      finding('Security with a consequence', { ...withHarm, tags: ['security'] }),
+      finding('Only the consequence, finder blocker', { ...held, reviewerSeverity: 'blocker', doubts: [harm] }),
+    ];
+    const harmClient = fakeClient(harmReplies);
+    const harmResult = await refuteBlockers(harmClient, harmed, { workspace, diff, doubtBudget: { left: 0 } });
+    expect(harmResult.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.refutation?.outcome, f.doubts?.length, checkStatus(f)])).toEqual([
+      ['Defect and consequence confirmed', 'blocker', 'blocker', 'confirmed', 2, 'confirmed'],
+      ['Defect confirmed, consequence unsettled', 'warning', 'blocker', 'unsettled', 2, 'confirmed'],
+      // A disproved consequence keeps the finding as a warning, since the defect stands.
+      ['Defect confirmed, consequence disproved', 'warning', 'blocker', 'unsettled', 2, 'confirmed'],
+      ['Premises confirmed, defect open', 'warning', 'blocker', 'confirmed', 2, 'unconfirmed'],
+      // The reply contradicts itself, so it raises nothing.
+      ['Consequence confirmed, defect premise disproved', 'warning', 'blocker', 'unsettled', 2, 'confirmed'],
+      ['Finder blocker with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
+      ['Security with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
+      ['Only the consequence, finder blocker', 'warning', 'blocker', 'unsettled', 1, 'unconfirmed'],
+    ]);
+    // Each is checked with none of the round's checks of warnings left, since its answer can raise the finding.
+    expect(harmClient.calls.map(([title]) => title)).toEqual(harmed.map(f => f.title));
+    expect(harmResult[0].gradePath?.at(-1)).toEqual({ from: 'warning', to: 'blocker', by: 'refutation', reason: 'It holds.' });
   });
 
   it('drops a finding below blocker when the refuter answers that the defect does not exist, whatever its premises add up to', async () => {
