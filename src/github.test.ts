@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -4627,16 +4627,22 @@ describe('postReview fallback paths', () => {
         expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:2`: Floor class runs on one model ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))\n\n  This round names it as:\n\n  **Blocker**\n  **Floor class weakened by the PR**\n  [`src/a.ts:');
       }
       expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  **What goes wrong:** Desc.');
-      // A blocker in a thread that did not block before is raised by this round, so the verdict counts it as new.
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(2)]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
-        existingThreads: [{ ...existingThreads[0], severity: 'warning' as const }],
-      });
-      expect(createReview.mock.calls[3][0].comments).toEqual([]);
-      expect(createReview.mock.calls[3][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker\./u);
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(2)]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
-        existingThreads: [{ ...existingThreads[0], severity: 'warning' as const, gradeUnknown: true }],
-      });
-      expect(createReview.mock.calls[4][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\./u);
+      // A thread graded below the blocker never carries it, even when the judge links them, so the blocker gets a thread
+      // of its own and counts as new. One off the diff's lines gets a file-level comment.
+      const lower = [{ severity: 'warning' as const }, { severity: 'note' as const }, { severity: 'warning' as const, gradeUnknown: true }, { recordedGrade: 'warning' as const }];
+      for (const grade of lower) {
+        for (const finding of [named(2), named(40)]) {
+          createReview.mockClear();
+          createReviewComment.mockClear();
+          await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([finding]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
+            existingThreads: [{ ...existingThreads[0], ...grade }],
+          });
+          const [review] = createReview.mock.calls[0];
+          const posted = [...review.comments, ...createReviewComment.mock.calls.map(([c]) => c)];
+          expect(posted.map((c: { line?: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[finding.line === 2 ? 2 : undefined, '\u{1F6AB} **Blocker**']]);
+          expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker\./u);
+        }
+      }
     });
 
     it.each([
@@ -5200,8 +5206,8 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('note', 'Worse retry', 11, { answeredIn: { threadId: 'T2', answer: 'Withdrawn. Fine.' } }),
       // A warning on code an earlier round reviewed opens no second thread either.
       nonBlocking('warning', 'Retry leaks a timer', 7, { origin: 'reviewed', tags: ['follow-up'] }),
-      // A suggestion thread never carries a warning, which gets a thread of its own. A blocker off the diff's lines is
-      // left to it, and the record makes that thread block.
+      // A suggestion thread never carries a warning or a blocker, which get a thread of their own, a blocker off the
+      // diff's lines a file-level one.
       nonBlocking('warning', 'Retry never stops', 9, { tags: ['follow-up'] }),
       nonBlocking('blocker', 'Lock order flips', 40),
     ];
@@ -5213,7 +5219,7 @@ describe('postReview non-blocking findings', () => {
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning, not blocking**']]);
-    expect(createReviewComment).not.toHaveBeenCalled();
+    expect(createReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.split('\n')[0]])).toEqual([['src/a.ts', 'file', '\u{1F6AB} **Blocker**']]);
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
     expect(visible).not.toContain('Fallback line');
@@ -5221,7 +5227,7 @@ describe('postReview non-blocking findings', () => {
     expect(visible).not.toContain('Retry leaks a timer');
     // The record says which thread carries each finding.
     const record = JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext;
-    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4'], ['thread', undefined], ['earlier_thread', 'T6']]);
+    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4'], ['thread', undefined], ['thread', undefined]]);
   });
 
   it('lists the findings of closed threads Manki agreed to leave for later as follow-ups', async () => {
@@ -5318,14 +5324,6 @@ describe('postReview non-blocking findings', () => {
       '**The filter misses `queued`**',
       '**What goes wrong:** A pending entry survives.',
     ]);
-    // A blocker that restates a thread that does not block yet says the thread blocks now.
-    expect(formatRaisedReply([variant, { ...variant, severity: 'blocker' }]).split('\n\n').slice(0, 3)).toEqual([
-      'This round raises this problem again as a blocker, so this thread now blocks.',
-      expect.stringContaining('**Warning'),
-      '**The filter misses `pending`**',
-    ]);
-    // Below blocker, it names the grade and says nothing about blocking.
-    expect(formatRaisedReply([variant]).split('\n\n')[0]).toBe('This round raises this problem again as a warning.');
   });
 
   it('lists smaller findings by where they sit, found this round, missed earlier or pre-existing, and posts a warning or a blocker on reviewed code inline', async () => {

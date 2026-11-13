@@ -664,14 +664,14 @@ describe('checkAndAutoApprove', () => {
     it('approves a blocker left to an open thread at its place once that thread is resolved', async () => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       const title = 'Lock is never released';
-      // The blocker sits outside the hunks of its file, where an open warning thread with its title already is.
+      // The blocker sits outside the hunks of its file, where an open blocker thread with its title already is.
       const posted = jest.fn().mockResolvedValue({ data: { id: 7 } });
       const postedComment = jest.fn().mockResolvedValue({ data: { id: 70 } });
       await postReview({ rest: { pulls: { createReview: posted, createReviewComment: postedComment } } } as unknown as Octokit, 'owner', 'repo', 1, HEAD,
         { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: '', findings: [{ severity: 'blocker', title, file: 'src/lock.ts', line: 40, description: 'd', reviewers: [] }], highlights: [], reviewComplete: true, agentNames: [] },
         { files: [{ path: 'src/lock.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, content: '' }] }], totalAdditions: 1, totalDeletions: 0 },
         blockingRound(HEAD, { findings: { count: 1, severityCounts: {}, entries: [blocker({ lineStart: 40 })] } }), undefined,
-        { existingThreads: [{ title, file: 'src/lock.ts', line: 0, severity: 'warning', status: 'open', threadId: 't1', markerSlug: titleToSlug(title) }] });
+        { existingThreads: [{ title, file: 'src/lock.ts', line: 0, severity: 'blocker', status: 'open', threadId: 't1', markerSlug: titleToSlug(title) }] });
       expect(postedComment).not.toHaveBeenCalled();
       const body = posted.mock.calls[0][0].body as string;
 
@@ -681,11 +681,11 @@ describe('checkAndAutoApprove', () => {
         const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
         return result.approved || result.why();
       };
-      // The record names the thread, so it blocks though its own marker says warning, and the check reply names that thread and no missing one.
-      expect(await check([thread('t1', 'warning')])).toBe(`1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}`);
+      // The check reply names that thread and no missing one.
+      expect(await check([thread('t1', 'blocker')])).toBe(`1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}`);
       expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
       expect(createReviewMock).not.toHaveBeenCalled();
-      expect(await check([fixed('t1', 'warning')])).toBe(true);
+      expect(await check([fixed('t1', 'blocker')])).toBe(true);
       expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(['APPROVE']);
     });
 

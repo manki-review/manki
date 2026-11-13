@@ -1510,13 +1510,6 @@ export function formatVariantReply(variants: Finding[]): string {
   return formatReplyListing(variants.length === 1 ? 'This round found another instance of this problem.' : `This round found ${variants.length} more instances of this problem.`, variants);
 }
 
-/** Returns Manki's reply in an open thread whose problem `raised` name again at a higher grade. A blocker makes the thread block. */
-export function formatRaisedReply(raised: Finding[]): string {
-  const grade = SEVERITY_ORDER.find(s => raised.some(f => f.severity === s)) ?? 'blocker';
-  const lead = grade === 'blocker' ? 'This round raises this problem again as a blocker, so this thread now blocks.' : `This round raises this problem again as a ${SEVERITY_NAME[grade]}.`;
-  return formatReplyListing(lead, raised);
-}
-
 /** Returns a reply that opens with `lead` and lists `findings`. */
 function formatReplyListing(lead: string, findings: Finding[]): string {
   return [lead, findings.map(f => formatReplyFinding(f).join('\n\n')).join('\n\n---\n\n')].join('\n\n');
@@ -1535,13 +1528,11 @@ function formatReplyFinding(finding: Finding): string[] {
 
 /**
  * Returns the ID of the unresolved Manki thread already posted for this finding, unless the finding is posted on its own.
- * A thread graded below a finding that does not block never carries it, so a warning is not left to a suggestion thread.
- * A blocker left to such a thread makes it block through the round record.
+ * A thread graded below the finding never carries it, so a warning or a blocker is never left to a suggestion thread.
  */
 function openThreadFor(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
   if (finding.ownThread) return undefined;
-  const carries = (t: PreviousFinding): boolean => isBlockingFinding(finding) || !gradedAbove(finding.severity, t);
-  const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug && carries(t));
+  const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug && !gradedAbove(finding.severity, t));
   const fingerprint = { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) };
   return findPriorThreadId(fingerprint, open);
 }
@@ -1731,14 +1722,10 @@ export async function postReview(
 
     const threadId = f.threadId ?? f.answeredIn?.threadId;
     const openThread = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
-    if (threadId && openThread) {
+    if (threadId && openThread && !gradedAbove(f.severity, openThread)) {
       core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
-      // A thread that did not block before is raised by this round, so its blocker counts as new. One whose grade could
-      // not be read may have blocked, so it counts as still open.
-      if (threadBlocks(openThread) || openThread.gradeUnknown) {
-        carriedBlockers++;
-        carriedThreadIds.add(threadId);
-      }
+      carriedBlockers++;
+      carriedThreadIds.add(threadId);
       if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
         stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, links)}`.replace(/^(?=.)/gm, '  ')}`);

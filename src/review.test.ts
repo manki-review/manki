@@ -4127,9 +4127,12 @@ describe('runReview', () => {
     const answeredRepeat: Finding = { ...repeat, sameAs: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.' } };
     expect(await gradeAfter(open, elsewhere, [answeredRepeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(open, elsewhere, [{ ...repeat, sameAs: undefined, threadId: 'T1' }])).toEqual(['blocker', 'ADDRESS_FIRST']);
-    // A blocker this round only links to the thread by folding it there after grading raises it too.
+    // A blocker that only restates the lowered thread is graded above it, so the thread does not take it and the blocker
+    // is posted on its own.
     const restated: Finding = { severity: 'blocker', title: 'Old issue', file: 'src/x.ts', line: 10, description: 'd', reviewers: ['r'] };
-    expect(await gradeAfter(open, elsewhere, [restated])).toEqual(['blocker', 'ADDRESS_FIRST']);
+    expect(await gradeAfter(open, elsewhere, [restated])).toEqual([undefined, 'ADDRESS_FIRST']);
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [restated], summary: 's', threadEvaluations: [open] });
+    expect((await runWith(elsewhere)).findings[0]).not.toHaveProperty('threadId');
     // A warning thread a later round raised to blocker keeps that grade: finding it open again never drops it to its
     // own, and a partial fix lowers it only after a push to its file.
     openThread.severity = 'warning';
@@ -4156,7 +4159,7 @@ describe('runReview', () => {
     ]);
     const finding = (severity: Finding['severity'], title: string, file: string, line: number, link: Partial<Finding> = {}): Finding => ({ severity, title, file, line, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: [`${file}:${line}`] }, ...link });
     const findings = [
-      // The judge links these. A blocker in an open warning thread still blocks, and is listed under that thread.
+      // The judge links these. A blocker is graded above the open warning thread, so the thread does not take it.
       finding('warning', 'Retry loop has no cap', 'src/x.ts', 12, { sameAs: 'src/x.ts:10:10:retry-never-ends', evidence: undefined }),
       finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 11, { variantOf: 'src/x.ts:10:10:retry-never-ends', evidence: undefined }),
       finding('blocker', 'Retry spins the CPU', 'src/x.ts', 30, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
@@ -4186,7 +4189,7 @@ describe('runReview', () => {
     expect(result.findings.map(f => [f.title, f.threadId, f.variantOf, f.raisedIn])).toEqual([
       ['Retry loop has no cap', 'T1', undefined, undefined],
       ['Retry also ignores the backoff field', 'T1', 'src/x.ts:10:10:retry-never-ends', undefined],
-      ['Retry spins the CPU', 'T1', undefined, undefined],
+      ['Retry spins the CPU', undefined, undefined, undefined],
       ['Retry never ends', 'T1', undefined, undefined],
       ['Name is vague', undefined, undefined, 1],
       ['Helper is misnamed', undefined, undefined, 1],
@@ -4202,28 +4205,33 @@ describe('runReview', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"');
 
-    // A verdict reader blocker that restates an open thread goes to that thread too.
+    // A verdict reader blocker that restates an open blocker thread goes to that thread too, but never to a lower one.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+    const blockerThreadOf = makePriorOpenThread({ title: 'Retry never ends', severity: 'blocker' });
     const reading = makeClients();
     jest.mocked(reading.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 10, title: 'Retry never ends', description: 'It spins.' }], summary: 'Spins.', whatThisDoes: '', whatToTest: '' }),
     });
-    const read = await runReview(reading, {
+    const readAgainst = (thread: OpenThread) => runReview(reading, {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
-      openThreads: [makePriorOpenThread({ title: 'Retry never ends' })], previousFindings: [], priorRounds: [prior], headSha: 'sha2',
+      openThreads: [thread], previousFindings: [], priorRounds: [prior], headSha: 'sha2',
     });
+    const read = await readAgainst(blockerThreadOf);
     expect(read.outcome).toBe('ADDRESS_FIRST');
     expect(read.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends', threadId: 'T1' })]);
+    for (const severity of ['warning', 'note'] as const) {
+      const lower = await readAgainst(makePriorOpenThread({ title: 'Retry never ends', severity }));
+      expect(lower.outcome).toBe('ADDRESS_FIRST');
+      expect(lower.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends' })]);
+      expect(lower.findings[0]).not.toHaveProperty('threadId');
+    }
 
     // A reader blocker that absorbs a finding restating an open thread takes that thread too.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [finding('warning', 'Retry never ends', 'src/x.ts', 13)], summary: 'One warning.' });
     jest.mocked(reading.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 16, title: 'Retry never ends under load', description: 'It spins.' }], summary: 'Spins.', whatThisDoes: '', whatToTest: '' }),
     });
-    const absorbed = await runReview(reading, {
-      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
-      openThreads: [makePriorOpenThread({ title: 'Retry never ends' })], previousFindings: [], priorRounds: [prior], headSha: 'sha2',
-    });
+    const absorbed = await readAgainst(blockerThreadOf);
     expect(absorbed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends under load', threadId: 'T1' })]);
 
     // A later round matches every finding an earlier round took into a thread, so a variant the thread took already is
@@ -4247,12 +4255,33 @@ describe('runReview', () => {
       ['Retry also ignores the jitter field', 'T1', 'src/x.ts:10:10:retry-never-ends'],
     ]);
 
+    // A suggestion thread takes only a suggestion, so a warning the judge links to it, as a restatement or a variant, is
+    // posted on its own and never hides behind the suggestion label.
+    const suggestionRound = buildPriorRound(1, [makePriorWarningFinding({ severity: 'note', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })]);
+    mockedRunJudgeAgent.mockResolvedValue({
+      summary: 'Findings.',
+      findings: [
+        finding('warning', 'Retry loop has no cap', 'src/x.ts', 12, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
+        finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 30, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
+        finding('note', 'Retry could name its limit', 'src/x.ts', 11, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
+      ],
+    });
+    const onSuggestion = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'note' })], previousFindings: [], priorRounds: [suggestionRound], headSha: 'sha3',
+    });
+    expect(onSuggestion.findings.map(f => [f.title, f.threadId, f.variantOf])).toEqual([
+      ['Retry loop has no cap', undefined, undefined],
+      ['Retry also ignores the backoff field', undefined, 'src/x.ts:10:10:retry-never-ends'],
+      ['Retry could name its limit', 'T1', undefined],
+    ]);
+
     // A security finding never rides a thread that is not a security thread, since only the first comment makes a thread
     // guarded. It is posted on its own, while a security thread takes it.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Retry never ends', 'src/x.ts', 10, { tags: ['security'] })] });
     const guarded = (isSecurity: boolean) => runReview(makeClients(), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
-      openThreads: [makePriorOpenThread({ title: 'Retry never ends', isSecurity })], previousFindings: [], priorRounds: [prior], headSha: 'sha3',
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', isSecurity, severity: 'blocker' })], previousFindings: [], priorRounds: [prior], headSha: 'sha3',
     });
     const unguarded = await guarded(false);
     expect(unguarded.findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
@@ -4261,7 +4290,7 @@ describe('runReview', () => {
     // Next to the plain thread, it finds the security thread it opened before, so it does not open another each round.
     const beside = await runReview(makeClients(), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, previousFindings: [], priorRounds: [prior], headSha: 'sha3',
-      openThreads: [makePriorOpenThread({ title: 'Retry never ends' }), makePriorOpenThread({ threadId: 'S1', title: 'Retry never ends', isSecurity: true })],
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'blocker' }), makePriorOpenThread({ threadId: 'S1', title: 'Retry never ends', isSecurity: true, severity: 'blocker' })],
     });
     expect(beside.findings).toEqual([expect.objectContaining({ title: 'Retry never ends', threadId: 'S1' })]);
     // The unlink comes before the outcome, so an open blocker thread the finding left still counts as open.
