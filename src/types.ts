@@ -985,6 +985,9 @@ export interface InPrSuppression {
   authorLogin?: string;
   /** Set when the PR author alone could not clear the thread. Only such an entry hides a security finding. */
   guarded?: boolean;
+  /** The thread's grade. It hides no finding graded above it. */
+  severity: FindingSeverity | 'unknown';
+  recordedGrade?: FindingSeverity;
 }
 
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';

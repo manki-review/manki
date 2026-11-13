@@ -4628,19 +4628,24 @@ describe('postReview fallback paths', () => {
       }
       expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  **What goes wrong:** Desc.');
       // A thread graded below the blocker never carries it, even when the judge links them, so the blocker gets a thread
-      // of its own and counts as new. One off the diff's lines gets a file-level comment.
+      // of its own and counts as new. One off the diff's lines gets a file-level comment. Its record entry names no
+      // thread, which would make the lower thread block next round.
       const lower = [{ severity: 'warning' as const }, { severity: 'note' as const }, { severity: 'warning' as const, gradeUnknown: true }, { recordedGrade: 'warning' as const }];
       for (const grade of lower) {
         for (const finding of [named(2), named(40)]) {
           createReview.mockClear();
           createReviewComment.mockClear();
-          await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([finding]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
+          const entry = { fingerprint: { file: 'src/a.ts', lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) }, severity: 'blocker' as const, threadId: 'T1' };
+          const context = makeContext({ meta: { ...makeContext().meta, round: 2 }, findings: { count: 1, severityCounts: { blocker: 1 }, entries: [entry] } });
+          await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([finding]), outcome: 'ADDRESS_FIRST' }, diff, context, undefined, {
             existingThreads: [{ ...existingThreads[0], ...grade }],
           });
           const [review] = createReview.mock.calls[0];
           const posted = [...review.comments, ...createReviewComment.mock.calls.map(([c]) => c)];
           expect(posted.map((c: { line?: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[finding.line === 2 ? 2 : undefined, '\u{1F6AB} **Blocker**']]);
           expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker\./u);
+          const [recorded] = (JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext).findings.entries;
+          expect([recorded.posted, recorded.threadId]).toEqual(['thread', undefined]);
         }
       }
     });

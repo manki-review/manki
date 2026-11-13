@@ -3424,6 +3424,7 @@ describe('runJudgeAgent', () => {
       {
         fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
         reason: 'resolved-thread',
+        severity: 'warning',
       },
     ];
 
@@ -3457,6 +3458,7 @@ describe('runJudgeAgent', () => {
       {
         fingerprint: { file: 'src/other.ts', lineStart: 1, lineEnd: 1, slug: 'different-slug' },
         reason: 'agree-reply',
+        severity: 'warning',
       },
     ];
 
@@ -4007,6 +4009,7 @@ describe('applyInPrSuppression', () => {
       ...overrides,
     },
     reason,
+    severity: 'warning',
   });
 
   it('returns findings unchanged when no suppressions', () => {
@@ -4104,6 +4107,13 @@ describe('applyInPrSuppression', () => {
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].originalSeverity).toBe('warning');
 
+    // A resolved or agreed suggestion thread hides a later suggestion on its spot, never a warning.
+    for (const grade of [{ severity: 'note' as const }, { severity: 'warning' as const, recordedGrade: 'note' as const }]) {
+      const suggestion = { ...makeSuppression(), ...grade };
+      expect(applyInPrSuppression([makeFinding({ severity: 'note' })], [suggestion]).count).toBe(1);
+      expect(applyInPrSuppression(findings, [suggestion])).toEqual({ findings, count: 0 });
+    }
+
     // A blocker cell the judge keeps at a warning is a warning here too, whatever its check answered.
     for (const reason of ['resolved-thread', 'agree-reply'] as const) {
       const hidden = applyInPrSuppression(keptWarnings(), [makeSuppression({}, reason)]);
@@ -4177,7 +4187,7 @@ describe('applyInPrSuppression', () => {
     ];
     const suppressions = [
       makeSuppression({}, 'resolved-thread'),
-      { fingerprint: { file: 'src/other.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Missing null check') }, reason: 'agree-reply' as const },
+      { fingerprint: { file: 'src/other.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Missing null check') }, reason: 'agree-reply' as const, severity: 'warning' as const },
     ];
     const result = applyInPrSuppression(findings, suppressions);
     expect(result.count).toBe(2);
@@ -5951,7 +5961,7 @@ describe('runJudgeAgent cross-round suppression', () => {
           round: 1, commitSha: 'abc', timestamp: 't',
           findings: titles.slice(0, 4).map((title, i) => ({ fingerprint: { file: 'src/index.ts', lineStart: 10 + i, lineEnd: 10 + i, slug: titleToSlug(title) }, severity: 'warning' as const, title, authorReply: 'agree' as const })),
         })],
-        inPrSuppressions: [{ fingerprint: { file: 'src/index.ts', lineStart: 14, lineEnd: 14, slug: titleToSlug('Leaky retry') }, reason: 'resolved-thread' }],
+        inPrSuppressions: [{ fingerprint: { file: 'src/index.ts', lineStart: 14, lineEnd: 14, slug: titleToSlug('Leaky retry') }, reason: 'resolved-thread', severity: 'warning' }],
       });
       expect(checked.findings.map(f => [f.title, f.severity, f.cell, f.tags])).toEqual([
         ['Stale cache read', 'ignore', { row: 'wrong', column: 'rare' }, ['suppressed-by-ratchet']],
@@ -6034,6 +6044,7 @@ describe('runJudgeAgent cross-round suppression', () => {
       {
         fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
         reason: 'resolved-thread',
+        severity: 'warning',
       },
     ];
 

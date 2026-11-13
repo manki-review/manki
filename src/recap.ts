@@ -428,6 +428,8 @@ function collectInPrSuppressions(
       fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
       reason,
       ...(isGuarded(pf) && { guarded: true }),
+      severity: pf.severity,
+      ...(pf.recordedGrade && { recordedGrade: pf.recordedGrade }),
     };
     if (reason === 'agree-reply' && pf.authorReplyLogin) {
       entry.authorLogin = pf.authorReplyLogin;

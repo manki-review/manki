@@ -19,7 +19,7 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, restatesEarlier, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
@@ -1630,7 +1630,7 @@ export async function runJudgeAgent(
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
     unpostedLater,
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
-    restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
+    restatesEarlier: finding => restatesEarlier(earlier, finding),
     preExisting: staysPreExisting, rules: config.review?.rules,
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(withoutRuleDoubt));
@@ -1674,7 +1674,7 @@ export function applyInPrSuppression(
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
     if (finding.severity === 'blocker') return finding;
     const security = isSecurityFinding(finding.tags);
-    const match = suppressions.find(s => (s.guarded || !security) && matchesInPrSuppression(finding, s));
+    const match = suppressions.find(s => (s.guarded || !security) && !gradedAbove(finding.severity, s) && matchesInPrSuppression(finding, s));
     if (!match) return finding;
     const next: Finding = { ...finding };
     if (finding.severity !== 'ignore') {

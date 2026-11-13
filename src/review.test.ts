@@ -19,6 +19,8 @@ import {
   findingsMatch,
   intersectFindings,
   carryBodyWarnings,
+  earlierFindings,
+  restatesEarlier,
   runReview,
   runPlanner,
   sanitizePlannerField,
@@ -4257,24 +4259,36 @@ describe('runReview', () => {
 
     // A suggestion thread takes only a suggestion, so a warning the judge links to it, as a restatement or a variant, is
     // posted on its own and never hides behind the suggestion label.
-    const suggestionRound = buildPriorRound(1, [makePriorWarningFinding({ severity: 'note', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })]);
+    // So does a suggestion an earlier review body listed: a warning restating it is not listed as still open from it.
+    const suggestionRound = buildPriorRound(1, [
+      makePriorWarningFinding({ severity: 'note', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
+      makePriorWarningFinding({ severity: 'note', title: 'Cache is unbounded', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 50, lineEnd: 50, slug: 'cache-is-unbounded' } }),
+    ]);
+    const suggestionThread = makePriorOpenThread({ title: 'Retry never ends', severity: 'note' });
     mockedRunJudgeAgent.mockResolvedValue({
       summary: 'Findings.',
       findings: [
         finding('warning', 'Retry loop has no cap', 'src/x.ts', 12, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
         finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 30, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
         finding('note', 'Retry could name its limit', 'src/x.ts', 11, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
+        finding('warning', 'Cache grows without bound', 'src/x.ts', 52, { sameAs: 'src/x.ts:50:50:cache-is-unbounded' }),
+        finding('note', 'Cache could have a limit', 'src/x.ts', 51, { sameAs: 'src/x.ts:50:50:cache-is-unbounded' }),
       ],
     });
     const onSuggestion = await runReview(makeClients(), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
-      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'note' })], previousFindings: [], priorRounds: [suggestionRound], headSha: 'sha3',
+      openThreads: [suggestionThread], previousFindings: [], priorRounds: [suggestionRound], headSha: 'sha3',
     });
-    expect(onSuggestion.findings.map(f => [f.title, f.threadId, f.variantOf])).toEqual([
-      ['Retry loop has no cap', undefined, undefined],
-      ['Retry also ignores the backoff field', undefined, 'src/x.ts:10:10:retry-never-ends'],
-      ['Retry could name its limit', 'T1', undefined],
+    expect(onSuggestion.findings.map(f => [f.title, f.threadId, f.variantOf, f.raisedIn])).toEqual([
+      ['Retry loop has no cap', undefined, undefined, undefined],
+      ['Retry also ignores the backoff field', undefined, 'src/x.ts:10:10:retry-never-ends', undefined],
+      ['Retry could name its limit', 'T1', undefined, undefined],
+      ['Cache grows without bound', undefined, undefined, undefined],
+      ['Cache could have a limit', undefined, undefined, 1],
     ]);
+    // The refuter checks a warning that restates a suggestion like any other, since no suggestion keeps it posted.
+    const earlierOnes = earlierFindings([suggestionRound], [suggestionThread], undefined);
+    expect([finding('warning', 'Retry never ends', 'src/x.ts', 10), finding('note', 'Retry never ends', 'src/x.ts', 10)].map(f => restatesEarlier(earlierOnes, f))).toEqual([false, true]);
 
     // A security finding never rides a thread that is not a security thread, since only the first comment makes a thread
     // guarded. It is posted on its own, while a security thread takes it.
@@ -5103,6 +5117,7 @@ describe('runReview', () => {
           slug: 'Unused-variable',
         },
         reason: 'resolved-thread',
+        severity: 'note',
       },
     ]);
   });
@@ -5148,6 +5163,7 @@ describe('runReview', () => {
         },
         reason: 'agree-reply',
         authorLogin: 'pr-author',
+        severity: 'note',
       },
     ]);
   });

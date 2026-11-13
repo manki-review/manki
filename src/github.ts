@@ -1851,9 +1851,11 @@ export async function postReview(
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
       const posted = placeOf(f);
       const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
-      const threadId = entry.threadId ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
+      // A finding with a thread of its own records no earlier thread, which its record entry would otherwise raise.
+      const { threadId: linked, ...unlinked } = entry;
+      const threadId = posted === 'thread' ? undefined : linked ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
       const description = posted === 'body' && f.severity === 'blocker' && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
-      return { ...entry, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(description && { description }) };
+      return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(description && { description }) };
     };
     return (context
       ? formatRecordTrailer({
