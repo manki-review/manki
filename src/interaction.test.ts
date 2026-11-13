@@ -503,13 +503,17 @@ describe('handlePRComment', () => {
     setContext({ comment: { id: 42, body: '@manki explain the changes', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const client = createMockClient();
+    const truncateDiff = (jest.requireMock('./review') as { truncateDiff: jest.Mock }).truncateDiff;
+    truncateDiff.mockReturnValueOnce('cut diff');
     await handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
     // The diff is read the way a review reads it, so a PR GitHub refuses the diff of is read from its listed files.
     expect(ghUtils.fetchPRDiff).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1);
+    // The prompt gets the diff cut to one review slice, whatever its size.
+    expect(truncateDiff).toHaveBeenCalledWith(await jest.mocked(ghUtils.fetchPRDiff).mock.results[0].value);
     expect(client.sendMessage).toHaveBeenCalledWith(
       expect.any(String),
-      expect.stringContaining('the changes'),
+      expect.stringMatching(/^## PR Diff\n\n```diff\ncut diff\n```\n\n## Question[\s\S]*the changes/),
       undefined,
     );
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(

@@ -673,7 +673,8 @@ async function handleExplain(
   prNumber: number,
   topic: string,
 ): Promise<void> {
-  const diff = await fetchPRDiff(octokit, owner, repo, prNumber);
+  // The diff of a PR GitHub refuses is built from up to 3,000 files, so the prompt gets at most one review slice of it.
+  const diff = truncateDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
 
   const safeDiff = diff.replace(/```/g, '` ` `');
   const response = await askWithRecord(
