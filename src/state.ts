@@ -841,6 +841,13 @@ async function approveOrSayWhy(
     return withheld(unreviewedLine(pr.head.sha, halt));
   }
 
+  // An open warning thread declines as an open blocking thread does, also beside an approval that stands.
+  const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, config?.author_clear_role);
+  if (warnings.length > 0) {
+    core.info('A warning thread is neither resolved nor answered — skipping auto-approve');
+    return withheld(warningThreadsLine(warnings, config?.author_clear_role));
+  }
+
   if (latestBotReview?.state === 'APPROVED') {
     core.info('Already approved — skipping duplicate approval');
     return { approved: true, standing: true };
@@ -863,11 +870,6 @@ async function approveOrSayWhy(
   if (open.length > 0) {
     core.info('A thread the covering review blocks on is not resolved — skipping auto-approve');
     return withheld(blockingThreadsLine(open, block.named, bot, config?.author_clear_role));
-  }
-  const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, config?.author_clear_role);
-  if (warnings.length > 0) {
-    core.info('A warning thread is neither resolved nor answered — skipping auto-approve');
-    return withheld(warningThreadsLine(warnings, config?.author_clear_role));
   }
 
   const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, reason => approvalRecord('held', reason, pr.head.sha));

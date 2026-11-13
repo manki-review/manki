@@ -886,6 +886,11 @@ describe('checkAndAutoApprove', () => {
       ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
         NOT_REVIEWED_YET],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
+      // An open blocking or warning thread declines beside an approval that stands, and neither dismisses that approval.
+      ['an open blocking thread beside an approval that stands', { threads: [thread('t1', 'blocker')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
+        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}`],
+      ['an open warning thread beside an approval that stands', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
+        '1 warning thread holds the approval:\n- Lock is never released\n\nApproval follows once each one is fixed, resolved, or answered in its thread by the PR author or someone with the `maintain` role or a higher one with a reason to keep it.'],
       ['a review that holds its approval for a person', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
         'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.'],
       ['a conflict with the base', { mergeable: false }, '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.'],
