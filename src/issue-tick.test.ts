@@ -48,9 +48,9 @@ function makeOctokit(filed: Array<{ number: number; body: string; pull_request?:
 type TestOctokit = ReturnType<typeof makeOctokit>;
 
 /** Runs a tick of Manki's `ticked` comment. */
-async function tick(octokit: TestOctokit, ticked: ReturnType<typeof comment>): Promise<void> {
+async function tick(octokit: TestOctokit, ticked: ReturnType<typeof comment>): Promise<boolean> {
   octokit.seed(ticked.body);
-  await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, ticked, 'bob');
+  return handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, ticked, 'bob');
 }
 
 /** Runs a tick of Manki's `ticked` review. */
@@ -75,7 +75,8 @@ describe('handleIssueBoxTick', () => {
     const body = ticked(finding());
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, ...grade, findingTitle: 'x' }]);
 
-    await tick(octokit, comment(body));
+    // Only a resolve can lift a hold, so the caller runs the approval check only then.
+    expect(await tick(octokit, comment(body))).toBe(resolved.length > 0);
 
     expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.issues.listForRepo, { owner: 'o', repo: 'r', creator: 'manki-review[bot]', state: 'open', per_page: 100 });
     // The issue holds the finding as posted, without the box or Manki's hidden markers.
@@ -136,7 +137,7 @@ describe('handleIssueBoxTick', () => {
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
     const body = ticked(finding());
 
-    await tick(octokit, comment(body));
+    expect(await tick(octokit, comment(body))).toBe(false);
 
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 501, body: formatFindingComment(finding(), TEST_LINKS) });
     expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Could not file an issue for this finding: Error: Resource not accessible by integration  @\u200Boctocat. Tick the box again to retry.']]);

@@ -87,13 +87,13 @@ function filedLine(id: string, filed: { number: number; existing: boolean } | un
 /**
  * Files each finding whose issue box `editor` ticked in Manki's `comment`, or links the issue Manki already filed for
  * it. The box line becomes a link to the issue, the thread gets a reply, and a thread that does not block is resolved.
- * The caller has checked that `editor` has write access.
+ * The caller has checked that `editor` has write access. Returns whether it resolved the thread.
  */
 export async function handleIssueBoxTick(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, comment: TickedComment, editor: string,
-): Promise<void> {
+): Promise<boolean> {
   const ids = tickedIssueBoxes(comment.body);
-  if (ids.length === 0) return;
+  if (ids.length === 0) return false;
   const finding = parseFindingData(comment.body);
   const source: IssueSource = {
     title: finding?.title ?? 'Manki finding',
@@ -128,7 +128,9 @@ export async function handleIssueBoxTick(
     if (filed && thread) await replyToReviewThread(octokit, thread.id, `Agreed. Filed as #${filed.number} for later work.`);
   }
   // A deferred finding no longer needs this PR, but only someone other than the author clears a blocker or a security finding.
-  if (thread && allFiled && !isGuarded(thread) && !thread.isResolved) await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
+  if (!thread || !allFiled || isGuarded(thread) || thread.isResolved) return false;
+  await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
+  return true;
 }
 
 const BLOCK_HEADER_RE = /^\*\*(?:Blocker|Warning|Suggestion|Nitpick)\b/gm;
