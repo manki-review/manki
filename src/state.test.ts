@@ -1755,6 +1755,8 @@ describe('checkAndAutoApprove', () => {
   });
 });
 
+const ghActualMarker = (headSha: string) => (jest.requireActual('./github') as typeof import('./github')).autoApproveHeadMarker(headSha);
+
 describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
   const ghMock = jest.requireMock('./github') as {
     dismissPreviousReviews: jest.Mock;
@@ -1771,6 +1773,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
   function makeMockOctokit(overrides: {
     createReviewFn?: jest.Mock;
     createCommentFn?: jest.Mock;
+    comments?: Array<{ id: number; body: string; updated_at: string; user: { login: string; type: string } }>;
     prHeadSha?: string;
     existingReviews?: Array<{ id?: number; body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
   } = {}) {
@@ -1791,6 +1794,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
         },
         issues: {
           createComment: createCommentFn,
+          listComments: jest.fn().mockResolvedValue({ data: overrides.comments ?? [] }),
         },
         repos: { getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: 'write', role_name: 'write', user: { type: 'User' } } }) },
       },
@@ -1818,6 +1822,19 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(callOrder).toEqual(['post', 'createReview', 'delete']);
     expect(ghMock.deleteAutoApproveProgressComment).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
     expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
+  });
+
+  it('turns the failed auto-approve comment of the same head into the new attempt\'s, so a second failure posts no second comment', async () => {
+    const failedOn = (id: number, head: string) => ({
+      id, body: `🔴 **Auto-approve failed:** boom\n\n<!-- manki -->\n${ghActualMarker(head)}`, updated_at: `2026-11-13T10:00:0${id % 10}Z`, user: { login: 'manki-review[bot]', type: 'Bot' },
+    });
+
+    await checkAndAutoApprove(makeMockOctokit({ comments: [failedOn(55, 'sha-x'), failedOn(56, 'sha-old')] }), TEST_BOT, 'owner', 'repo', 1);
+    expect(ghMock.postAutoApproveProgressComment).toHaveBeenLastCalledWith(expect.anything(), 'owner', 'repo', 1, 'sha-x', 55);
+
+    // A failure on an earlier head stays, and the new head gets its own comment.
+    await checkAndAutoApprove(makeMockOctokit({ comments: [failedOn(56, 'sha-old')] }), TEST_BOT, 'owner', 'repo', 1);
+    expect(ghMock.postAutoApproveProgressComment).toHaveBeenLastCalledWith(expect.anything(), 'owner', 'repo', 1, 'sha-x', undefined);
   });
 
   it('does not post a marker when unresolved findings remain', async () => {
@@ -1868,7 +1885,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
     await expect(checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).rejects.toThrow(reason);
     expect(ghMock.markProgressCommentFailed).toHaveBeenCalledWith(
-      octokit, 'owner', 'repo', 7777, 'Auto-approve', reason,
+      octokit, 'owner', 'repo', 7777, 'Auto-approve', reason, undefined, [ghActualMarker('sha-x')],
     );
     expect(createCommentMock).toHaveBeenCalledTimes(refusal === SETTING_REFUSAL ? 1 : 0);
     expect(ghMock.deleteAutoApproveProgressComment).not.toHaveBeenCalled();
@@ -1908,11 +1925,29 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     });
     const octokit = { rest: { issues: { createComment } } } as unknown as Octokit;
 
-    await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1);
+    await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1, 'sha-x');
 
     expect(saveState).toHaveBeenCalledWith('manki_progress_comment', '1');
     expect(postedBody).toContain('Auto-approving');
+    expect(postedBody).toContain(ghActual.autoApproveHeadMarker('sha-x'));
     saveState.mockRestore();
+  });
+
+  it('edits the failed comment it is given into the running one, and finds it again by its head once it fails again', async () => {
+    let body = '';
+    const updateComment = jest.fn().mockImplementation(async (args: { body: string }) => {
+      body = args.body;
+      return { data: {} };
+    });
+    const createComment = jest.fn();
+    const octokit = { rest: { issues: { updateComment, createComment } } } as unknown as Octokit;
+
+    expect(await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1, 'sha-x', 55)).toBe(55);
+    expect([body.startsWith('**Auto-approving:**'), createComment.mock.calls.length]).toEqual([true, 0]);
+
+    await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 55, 'Auto-approve', 'boom', undefined, [ghActual.autoApproveHeadMarker('sha-x')]);
+    const comment = { id: 55, body, user: { login: 'manki-review[bot]', type: 'Bot' } } as Parameters<typeof ghActual.failedAutoApproveId>[0][number];
+    expect([ghActual.failedAutoApproveId([comment], TEST_BOT, 'sha-x'), ghActual.failedAutoApproveId([comment], TEST_BOT, 'sha-y')]).toEqual([55, undefined]);
   });
 
   it('deletes the comment, and only warns when the deletion fails', async () => {

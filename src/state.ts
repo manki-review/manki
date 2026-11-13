@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { newestCheckPassed, outcomeReport, reportCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
@@ -932,7 +932,11 @@ async function approveOrSayWhy(
     return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }, config?.auto_approve));
   }
 
-  const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
+  const comments = await fetchPRComments(octokit, owner, repo, prNumber).catch((error: unknown) => {
+    core.warning(`Failed to look up an earlier failed auto-approve, posting a new comment: ${error instanceof Error ? error.message : error}`);
+    return [];
+  });
+  const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber, pr.head.sha, failedAutoApproveId(comments, bot, pr.head.sha));
 
   core.info('All findings resolved — auto-approving');
   // A visible body so the API does not render this review as `body_length: 0`.
@@ -984,7 +988,7 @@ async function approveOrSayWhy(
     // A cancelled run leaves its progress comment to the post step.
     assertWritesAllowed();
     const rawReason = error instanceof Error ? error.message : String(error);
-    await markProgressCommentFailed(octokit, owner, repo, progressCommentId, 'Auto-approve', rawReason);
+    await markProgressCommentFailed(octokit, owner, repo, progressCommentId, 'Auto-approve', rawReason, undefined, [autoApproveHeadMarker(pr.head.sha)]);
     throw error;
   }
 

@@ -946,16 +946,34 @@ async function editProgressComment(
   await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: withSettingsBlock(body, settings) });
 }
 
-/** Posts the comment that shows an auto-approve is running. The post step marks it cancelled when the run stops early. */
+/**
+ * Posts the comment that shows an auto-approve of `headSha` is running, or turns comment `reuseId` into it. The post step
+ * marks it cancelled when the run stops early.
+ */
 export async function postAutoApproveProgressComment(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
+  headSha: string,
+  reuseId?: number,
 ): Promise<number> {
-  const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS);
-  return placeProgressComment(octokit, owner, repo, prNumber, body);
+  const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS, autoApproveHeadMarker(headSha));
+  return placeProgressComment(octokit, owner, repo, prNumber, body, reuseId);
 }
+
+/** The hidden marker naming the head an auto-approve comment is for. Pass it to `markProgressCommentFailed` so a failure keeps it. */
+export function autoApproveHeadMarker(headSha: string): string {
+  return `<!-- manki-auto-approve-head: ${headSha} -->`;
+}
+
+/** Returns the ID of Manki's comment that says an auto-approve of `headSha` failed, or `undefined` when there is none. */
+export function failedAutoApproveId(comments: IssueComment[], bot: BotIdentity, headSha: string): number | undefined {
+  return comments.find(c => isBotUser(bot, c.user) && !!c.body?.startsWith(failedLead('Auto-approve')) && c.body.includes(autoApproveHeadMarker(headSha)))?.id;
+}
+
+/** The start of a progress comment whose `action` failed. */
+const failedLead = (action: 'Review' | 'Auto-approve'): string => `🔴 **${action} failed:**`;
 
 /** Deletes the auto-approve progress comment once the run posted its result, which is the record. */
 export async function deleteAutoApproveProgressComment(
@@ -974,7 +992,7 @@ export async function deleteAutoApproveProgressComment(
 /**
  * Transition a progress comment to a terminal failure state that names the
  * failed `action` and the reason, with tokens redacted. Uses `CANCELLED_MARKER`
- * so the post step leaves the comment alone.
+ * so the post step leaves the comment alone. `markers` are kept on the comment.
  */
 export async function markProgressCommentFailed(
   octokit: Octokit,
@@ -984,11 +1002,13 @@ export async function markProgressCommentFailed(
   action: 'Review' | 'Auto-approve',
   reason: string,
   settings?: SettingsView,
+  markers: readonly string[] = [],
 ): Promise<void> {
   const body = withMarkers(
-    `🔴 **${action} failed:** ${safeTruncate(sanitizeMarkdown(sanitizeTokens(String(reason))), 300)}`,
+    `${failedLead(action)} ${safeTruncate(sanitizeMarkdown(sanitizeTokens(String(reason))), 300)}`,
     ...BOT_MARKERS,
     CANCELLED_MARKER,
+    ...markers,
   );
   try {
     await editProgressComment(octokit, owner, repo, commentId, body, settings);
@@ -1130,7 +1150,7 @@ export async function updateProgressComment(
 
 /** Whether `body` is a progress comment whose review failed or ended incomplete. */
 function isFailedProgress(body: string): boolean {
-  return body.startsWith(REVIEW_FAILED_LINE) || body.startsWith('🔴 **Review failed:**');
+  return body.startsWith(REVIEW_FAILED_LINE) || body.startsWith(failedLead('Review'));
 }
 
 /**
