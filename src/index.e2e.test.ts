@@ -840,7 +840,8 @@ describe('runFullReview end to end', () => {
 
     expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
     expect(skipNotices()).toEqual([]);
-    expect(progress?.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`, which posted its verdict\./);
+    // The run on the same head deletes the failed progress comment, so the head shows one comment.
+    expect(mockGitHub.comments).not.toContain(progress);
     expect(mockGitHub.comments.filter(c => c.body.startsWith('✅ **Review complete**'))).toHaveLength(1);
   });
 
@@ -921,7 +922,8 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
-    expect(progress?.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`/);
+    // The run on the same head deletes the failed progress comment, which has the settings block.
+    expect(mockGitHub.comments).not.toContain(progress);
     expect(other.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`/);
     expect(quoted.body).toBe('🔴 **Review failed:** boom');
   });

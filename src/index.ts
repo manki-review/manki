@@ -55,6 +55,7 @@ import {
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
+  TooManyFilesError,
   postProgressComment,
   updateProgressComment,
   updateProgressDashboard,
@@ -77,6 +78,7 @@ import {
   hasBotReviewOnCommit,
   fetchPRComments,
   fetchReviewThreadNodes,
+  isFailedProgress,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   markProgressCommentSuperseded,
@@ -717,9 +719,13 @@ function progressSettings(
 const runningSettings = (target: RunTarget, progress: RunProgress): SettingsView | undefined =>
   progressSettings(target, progress, 'review running', { boxes: ['cancel'] });
 
-/** Posts the run's progress comment, ending with the settings block, which older comments then lose, so only the newest progress comment has one. */
+/**
+ * Posts the run's progress comment, ending with the settings block, which older comments then lose, so only the newest
+ * progress comment has one. The failed progress comment of an earlier run on the same head is deleted, so a head shows
+ * one. It is not edited into this run's, since the token service takes only a comment created after the run started.
+ */
 async function postRunProgress(target: RunTarget, progress: RunProgress, { settings = NO_SETTINGS, draft = false }: FullReviewOptions): Promise<number> {
-  const { octokit, bot, owner, repo, prNumber } = target;
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   let comments: Awaited<ReturnType<typeof fetchPRComments>> = [];
   try {
     comments = await fetchPRComments(octokit, owner, repo, prNumber);
@@ -727,12 +733,22 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
     core.warning(`Failed to read the earlier settings block, so it stays: ${error instanceof Error ? error.message : error}`);
   }
   const latest = latestSettings(comments, bot);
+  const failedId = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest.id : undefined;
   progress.settings = {
     lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
-    ...(latest && { previousId: latest.id }),
+    ...(latest && failedId === undefined && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));
-  await retireSettingsBlocks(octokit, bot, owner, repo, comments, commentId);
+  let kept = comments;
+  if (failedId !== undefined) {
+    try {
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: failedId });
+      kept = comments.filter(c => c.id !== failedId);
+    } catch (error) {
+      core.warning(`Failed to delete the failed progress comment ${failedId}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  await retireSettingsBlocks(octokit, bot, owner, repo, kept, commentId);
   return commentId;
 }
 
@@ -910,7 +926,7 @@ async function loadRecap(
   return recap;
 }
 
-/** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
+/** Reads the PR's diff and splits it into the files the review reads and the files `exclude_paths` leaves out. */
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
   return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths);
@@ -1874,7 +1890,17 @@ async function runFullReview(
     }
     const { clients, models } = built;
 
-    const { fullDiff, diff, excludedFiles, rawDiff } = await collectDiff(target, config);
+    const shortSha = commitSha.slice(0, 7);
+    let collected: Awaited<ReturnType<typeof collectDiff>>;
+    try {
+      collected = await collectDiff(target, config);
+    } catch (error) {
+      if (!(error instanceof TooManyFilesError)) throw error;
+      core.warning(`Diff too large (${error.message})`);
+      checkReport = await postTooBigNotice(target, progress, `**Too big to review** at \`${shortSha}\`: this PR changes ${error.changedFiles} files, and GitHub lists only ${error.listedFiles} of them, so Manki cannot read it. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
+      return;
+    }
+    const { fullDiff, diff, excludedFiles, rawDiff } = collected;
     const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
@@ -1887,7 +1913,6 @@ async function runFullReview(
     });
 
     const autoLimit = Math.min(config.auto_review_max_lines ?? config.max_diff_lines, config.max_diff_lines);
-    const shortSha = commitSha.slice(0, 7);
     // The prompts show a long removed or unchanged line shortened, so the gate counts it the same way.
     const charCount = rebuildRawDiff({ ...diff, files: diff.files.map(shortenLongLines) }).length;
     if (charCount > MAX_REVIEW_CHARS) {

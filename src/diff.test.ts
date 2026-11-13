@@ -14,6 +14,7 @@ import {
   MAX_LINE_CHARS,
   MAX_SLICE_CHARS,
   rebuildRawDiff,
+  listedFilesDiff,
   tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
@@ -577,6 +578,73 @@ describe('rebuildRawDiff', () => {
     expect(raw).toContain('diff --git a/src/new-file.ts b/src/new-file.ts\n--- /dev/null\n+++ b/src/new-file.ts\n');
     expect(raw).toContain('diff --git a/src/old-file.ts b/src/old-file.ts\n--- a/src/old-file.ts\n+++ /dev/null\n');
     expect(raw).toContain('diff --git a/src/old-name.ts b/src/new-name.ts\n--- a/src/old-name.ts\n+++ b/src/new-name.ts\n');
+  });
+});
+
+describe('listedFilesDiff', () => {
+  // A name that would start a header line of its own if it were written into the diff as it is.
+  const forged = 'x.bin\ndeleted file mode 100644';
+  const quoted = (side: 'a' | 'b') => `"${side}/x.bin\\ndeleted file mode 100644"`;
+  const patch = '@@ -1 +1 @@\n-old\n+new';
+
+  it.each([
+    ['an added file', { filename: forged, status: 'added' }, ['diff --git', '+++'], 'added'],
+    ['a removed file', { filename: forged, status: 'removed', deletions: 0 }, ['diff --git', '---'], 'deleted'],
+    ['a modified file with a patch', { filename: forged, status: 'modified', patch }, ['diff --git', '---', '+++'], 'modified'],
+    ['a renamed file', { filename: 'safe.bin', previous_filename: forged, status: 'renamed' }, ['diff --git', '---'], 'renamed'],
+  ] as const)('quotes a name with a line break in each header line of %s, so the name adds no line', (_label, file, lines, changeType) => {
+    const raw = listedFilesDiff([file, { filename: 'src/next.ts', status: 'modified', patch }]);
+
+    for (const kind of lines) expect(raw.split('\n').find(l => l.startsWith(kind))).toContain(kind === '+++' ? quoted('b') : quoted('a'));
+    expect(raw.split('\n').filter(l => l === 'deleted file mode 100644')).toHaveLength(changeType === 'deleted' ? 1 : 0);
+    const diff = parsePRDiff(raw);
+    expect([...diff.files.map(f => f.changeType), ...(diff.binarySkipped ?? []).map(f => (f.deleted ? 'deleted' : 'unread'))].sort())
+      .toEqual([file.status === 'modified' ? changeType : changeType === 'deleted' ? 'deleted' : 'unread', 'modified'].sort());
+    expect(diff.files.map(f => f.path)).toContain('src/next.ts');
+  });
+
+  // GitHub's own diff of a PR, which finds renames but not copies and lists no unchanged file, decides each row.
+  it.each([
+    ['a copied file with a patch as a new file, never a rename of its source', { filename: 'b.ts', previous_filename: 'a.ts', status: 'copied', patch }, { files: [['b.ts', 'added', undefined]], skipped: [] }],
+    ['a copied file without a patch as an unread new file', { filename: 'b.bin', previous_filename: 'a.bin', status: 'copied' }, { files: [], skipped: [['b.bin', undefined]] }],
+    ['a removed file without a patch that had no lines as deleted', { filename: 'a.bin', status: 'removed', deletions: 0 }, { files: [], skipped: [['a.bin', true]] }],
+    ['a removed file without a patch that had lines as unread', { filename: 'big.sql', status: 'removed', deletions: 50_000 }, { files: [], skipped: [['big.sql', undefined]] }],
+    ['a removed file whose patch is left out as unread', { filename: 'a.ts', status: 'removed', deletions: 2, patch: '@@ -1,2 +0,0 @@\n-a' }, { files: [], skipped: [['a.ts', undefined]] }],
+    ['an unchanged file not at all', { filename: 'same.ts', status: 'unchanged' }, { files: [], skipped: [] }],
+  ] as const)('writes %s', (_label, file, expected) => {
+    const raw = listedFilesDiff([file]);
+    const diff = parsePRDiff(raw);
+
+    expect({
+      files: diff.files.map(f => [f.path, f.changeType, f.oldPath]),
+      skipped: (diff.binarySkipped ?? []).map(f => [f.path, f.deleted]),
+    }).toEqual(expected);
+    if ('previous_filename' in file) expect(raw).not.toContain(file.previous_filename);
+  });
+
+  it('escapes the characters git escapes once a name is quoted, and leaves any other name as it is', () => {
+    expect(listedFilesDiff([{ filename: 't\tq"b\\c\u0001', status: 'modified' }]).split('\n')[0]).toBe('diff --git "a/t\\tq\\"b\\\\c\\001" "b/t\\tq\\"b\\\\c\\001"');
+    expect(listedFilesDiff([{ filename: 'dir/a "b".ts', status: 'modified' }]).split('\n')[0]).toBe('diff --git a/dir/a "b".ts b/dir/a "b".ts');
+  });
+
+  it.each([
+    ['a line past the counted ones', '@@ -1 +1 @@\n-old\n+new\ndiff --git a/evil b/evil\ndeleted file mode 100644'],
+    ['fewer lines than counted', '@@ -1,2 +1,2 @@\n-old\n+new'],
+    ['a line without a diff prefix', '@@ -1,2 +1,2 @@\n-old\n\n+new'],
+  ])('leaves out a patch with %s, so it cannot start a file and the file stays unread', (_label, bad) => {
+    const diff = parsePRDiff(listedFilesDiff([{ filename: 'src/a.ts', status: 'modified', patch: bad }, { filename: 'src/next.ts', status: 'modified', patch }]));
+
+    expect(diff.files.map(f => [f.path, f.hunks.map(h => h.content)])).toEqual([['src/next.ts', ['-old\n+new']]]);
+    expect(diff.binarySkipped?.map(f => f.path)).toEqual(['src/a.ts']);
+  });
+
+  it('keeps a patch of several hunks with a missing newline at the end, and writes only a hex blob id', () => {
+    const several = '@@ -1,2 +1,2 @@\n same\n-old\n+new\n@@ -9 +9 @@\n-end\n+end\n\\ No newline at end of file';
+    const raw = listedFilesDiff([{ filename: 'src/a.ts', status: 'modified', sha: 'abc123', patch: several }, { filename: 'b.bin', status: 'modified', sha: 'x\n+++ b/evil' }]);
+
+    expect(parsePRDiff(raw).files[0].hunks).toHaveLength(2);
+    expect(raw).toContain('index 0000000..abc123');
+    expect(raw).not.toContain('evil');
   });
 });
 

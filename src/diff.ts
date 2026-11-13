@@ -85,17 +85,95 @@ export function filterFilesWithAttribution(
   return { included, excluded };
 }
 
+const isControlChar = (c: string): boolean => c < ' ' || c === '\u007f';
+const C_ESCAPES: Record<string, string> = { '\u0007': '\\a', '\b': '\\b', '\t': '\\t', '\n': '\\n', '\v': '\\v', '\f': '\\f', '\r': '\\r', '"': '\\"', '\\': '\\\\' };
+
+/**
+ * Returns `prefix` and `path` as one diff header path. A path with a control character, such as a line break, is quoted
+ * and escaped as git does, so it can never start a header line of its own.
+ */
+function headerPath(prefix: string, path: string): string {
+  if (![...path].some(isControlChar)) return `${prefix}${path}`;
+  const escaped = [...path].map(c => C_ESCAPES[c] ?? (isControlChar(c) ? `\\${c.charCodeAt(0).toString(8).padStart(3, '0')}` : c)).join('');
+  return `"${prefix}${escaped}"`;
+}
+
+/** Returns the header of one file's diff. `extra` lines, such as a file mode, go between the `diff --git` line and the paths. */
+function fileHeader(oldPath: string, path: string, changeType: DiffFile['changeType'], extra: readonly string[] = []): string {
+  const from = changeType === 'added' ? '/dev/null' : headerPath('a/', oldPath);
+  const to = changeType === 'deleted' ? '/dev/null' : headerPath('b/', path);
+  return [`diff --git ${headerPath('a/', oldPath)} ${headerPath('b/', path)}`, ...extra, `--- ${from}`, `+++ ${to}`].join('\n');
+}
+
 export function rebuildRawDiff(diff: ParsedDiff): string {
   return diff.files.map((f) => {
-    const oldPath = f.oldPath ?? f.path;
-    const from = f.changeType === 'added' ? '/dev/null' : `a/${oldPath}`;
-    const to = f.changeType === 'deleted' ? '/dev/null' : `b/${f.path}`;
-    const header = `diff --git a/${oldPath} b/${f.path}\n--- ${from}\n+++ ${to}`;
+    const header = fileHeader(f.oldPath ?? f.path, f.path, f.changeType);
     const hunks = f.hunks.map(h => {
       const hunkHeader = `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`;
       return `${hunkHeader}\n${h.content}`;
     }).join('\n');
     return `${header}\n${hunks}`;
+  }).join('\n');
+}
+
+/** A changed file as GitHub lists it for a pull request. */
+export interface ListedFile {
+  filename: string;
+  previous_filename?: string;
+  status: string;
+  sha?: string | null;
+  deletions?: number;
+  patch?: string;
+}
+
+const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
+
+/**
+ * Whether every line of `patch` belongs to a hunk whose header counts it. `parsePRDiff` reads a line past a hunk's counted
+ * lines as a header, so a patch that fails this could start a file of its own.
+ */
+function isWellFormedPatch(patch: string): boolean {
+  let oldLeft = 0;
+  let newLeft = 0;
+  for (const line of patch.replace(/\n$/, '').split('\n')) {
+    const hunk = oldLeft === 0 && newLeft === 0 ? line.match(HUNK_HEADER) : null;
+    if (hunk) {
+      oldLeft = Number(hunk[1] ?? 1);
+      newLeft = Number(hunk[2] ?? 1);
+    } else if (line.startsWith('\\')) {
+      continue;
+    } else if (line.startsWith(' ') && oldLeft > 0 && newLeft > 0) {
+      oldLeft--;
+      newLeft--;
+    } else if (line.startsWith('-') && oldLeft > 0) {
+      oldLeft--;
+    } else if (line.startsWith('+') && newLeft > 0) {
+      newLeft--;
+    } else {
+      return false;
+    }
+  }
+  return oldLeft === 0 && newLeft === 0;
+}
+
+/**
+ * Returns a unified diff of `files` in the shape of GitHub's diff of a pull request, which leaves out an unchanged file.
+ * GitHub gives no patch for a binary or for a diff too large to show, so such a file gets a header without lines, which
+ * `parsePRDiff` lists as unread. A patch whose hunks do not add up is left out the same way.
+ */
+export function listedFilesDiff(files: readonly ListedFile[]): string {
+  return files.filter(f => f.status !== 'unchanged').map(f => {
+    // GitHub's diff of a pull request finds renames but not copies, so a copy is a new file there.
+    const changeType = f.status === 'added' || f.status === 'copied' ? 'added' : f.status === 'removed' ? 'deleted' : 'modified';
+    const patch = f.patch && isWellFormedPatch(f.patch) ? f.patch : undefined;
+    // Without its lines, a removed file counts as deleted only when it had none, as a binary or an empty file. Any other stays unread.
+    const deleted = changeType === 'deleted' && (patch !== undefined || f.deletions === 0);
+    const mode = changeType === 'added' ? ['new file mode 100644'] : deleted ? ['deleted file mode 100644'] : [];
+    // The blob id changes with the content, so a changed file without a patch still changes `changeDigest`.
+    const index = f.sha && /^[0-9a-f]+$/.test(f.sha) ? [`index 0000000..${f.sha}`] : [];
+    const oldPath = f.status === 'renamed' ? f.previous_filename ?? f.filename : f.filename;
+    const header = fileHeader(oldPath, f.filename, changeType, [...mode, ...index]);
+    return patch ? `${header}\n${patch}` : header;
   }).join('\n');
 }
 

@@ -62,6 +62,7 @@ jest.mock('./github', () => ({
   isBotUser: jest.requireActual('./github').isBotUser,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
+  TooManyFilesError: jest.requireActual('./github').TooManyFilesError,
   fetchPRDiff: jest.fn().mockResolvedValue('diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -9,2 +9,3 @@\n context\n+  log(opts.retries, sessionToken);\n context'),
   authorClearRole: jest.fn().mockResolvedValue(undefined),
   hasWriteAccess: jest.fn(async (_octokit: unknown, _owner: string, _repo: string, login: string) => login !== 'reader'),
@@ -503,16 +504,36 @@ describe('handlePRComment', () => {
     setContext({ comment: { id: 42, body: '@manki explain the changes', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const client = createMockClient();
+    const truncateDiff = (jest.requireMock('./review') as { truncateDiff: jest.Mock }).truncateDiff;
+    truncateDiff.mockReturnValueOnce('cut diff');
     await handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
+    // The diff is read the way a review reads it, so a PR GitHub refuses the diff of is read from its listed files.
+    expect(ghUtils.fetchPRDiff).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1);
+    // The prompt gets the diff cut to one review slice, whatever its size.
+    expect(truncateDiff).toHaveBeenCalledWith(await jest.mocked(ghUtils.fetchPRDiff).mock.results[0].value);
     expect(client.sendMessage).toHaveBeenCalledWith(
       expect.any(String),
-      expect.stringContaining('the changes'),
+      expect.stringMatching(/^## PR Diff\n\n```diff\ncut diff\n```\n\n## Question[\s\S]*the changes/),
       undefined,
     );
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringMatching(/^AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: \{"kind":"explain","prNumber":1,/) }),
     );
+  });
+
+  it('answers an explain command on a PR with more files than GitHub lists without asking the model', async () => {
+    setContext({ comment: { id: 42, body: '@manki explain the changes', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const client = createMockClient();
+    jest.mocked(ghUtils.fetchPRDiff).mockRejectedValueOnce(new ghUtils.TooManyFilesError(3001, 3000));
+
+    await handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment.mock.calls.map(([c]: [{ body: string }]) => c.body)).toEqual([
+      'This PR changes 3001 files, and GitHub lists only 3000 of them, so Manki cannot read it to explain it. Split it into smaller PRs to get an explanation.\n\n<!-- manki -->',
+    ]);
   });
 
   it('warns when explain command has no client', async () => {

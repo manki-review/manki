@@ -12,6 +12,7 @@ export function buildLLMClient(model: string, providerInputs: ProviderInputs): L
   return createLLMClient(spec.provider, spec.model, buildAuthForProvider(spec.provider, providerInputs));
 }
 
+/** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
 export function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
   const models: ReviewModels = {
     planner: resolveModel(config, 'planner'),
@@ -52,6 +53,11 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
   return { clients: { reviewer, reviewerByModel, judge, ...(refuterPair && { refuterPair }), planner, dedup, fallbacks }, models };
 }
 
+function fallbackClientsOf({ fallbacks }: ReviewClients): LLMClient[] {
+  if (!fallbacks) return [];
+  return [fallbacks.planner, ...(fallbacks.reviewerByModel?.values() ?? []), fallbacks.judge, fallbacks.dedup].flatMap(f => f ? [f.client] : []);
+}
+
 /**
  * Eagerly install any provider CLI before the planner timer starts. The
  * fallback `npm install -g` inside `ensureCLI` takes around 30s on a
@@ -60,11 +66,6 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
  * Deduplicate by client instance so roles that share a client don't
  * serialize redundant install retries on failure.
  */
-function fallbackClientsOf({ fallbacks }: ReviewClients): LLMClient[] {
-  if (!fallbacks) return [];
-  return [fallbacks.planner, ...(fallbacks.reviewerByModel?.values() ?? []), fallbacks.judge, fallbacks.dedup].flatMap(f => f ? [f.client] : []);
-}
-
 export async function warmUpClients(clients: ReviewClients): Promise<void> {
   const warmupTargets = new Set<LLMClient>(
     [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.refuterPair, clients.dedup, ...fallbackClientsOf(clients)].filter(

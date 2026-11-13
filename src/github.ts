@@ -8,7 +8,7 @@ import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
 import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
-import { isLineInDiff } from './diff';
+import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -152,17 +152,47 @@ const HTML_TAGS = 'a|abbr|address|article|aside|audio|b|base|bdi|bdo|blockquote|
 const HTML_TAG_REGEX = new RegExp(`<\\/?(${HTML_TAGS})(?:\\s[^>]*)?\\s*\\/?>`, 'gi');
 const HTML_UNCLOSED_TAG_REGEX = new RegExp(`<\\/?(${HTML_TAGS})(?:\\s[^>]*)?$`, 'gim');
 
+/** Thrown when a PR changes more files than GitHub lists, so its diff cannot be read whole. */
+export class TooManyFilesError extends Error {
+  constructor(readonly changedFiles: number, readonly listedFiles: number) {
+    super(`The PR changes ${changedFiles} files, and GitHub lists only ${listedFiles} of them`);
+    this.name = 'TooManyFilesError';
+  }
+}
+
 /**
- * Fetch the raw diff for a PR.
+ * Whether GitHub refused a diff for its size, as it does for a PR with more than 300 files, or because the diff took
+ * too long to generate.
+ */
+function isDiffRefused(error: unknown): boolean {
+  const errors = (error as { response?: { data?: { errors?: unknown } } } | undefined)?.response?.data?.errors;
+  return (Array.isArray(errors) && errors.some(e => (e as { code?: unknown } | null)?.code === 'too_large'))
+    || /diff exceeded the maximum|diff is taking too long to generate/i.test(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * Fetches the raw diff of a PR. GitHub refuses the diff of a large PR, so that diff is built from the PR's listed files
+ * instead. Throws `TooManyFilesError` when GitHub does not list them all.
  */
 export async function fetchPRDiff(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<string> {
-  const { data } = await octokit.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: prNumber,
-    mediaType: { format: 'diff' },
-  });
-  return data as unknown as string;
+  try {
+    const { data } = await octokit.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: prNumber,
+      mediaType: { format: 'diff' },
+    });
+    return data as unknown as string;
+  } catch (error) {
+    if (!isDiffRefused(error)) throw error;
+    core.info(`GitHub refused the diff of PR #${prNumber}, reading its listed files instead`);
+  }
+  const [files, { data: pr }] = await Promise.all([
+    octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: prNumber, per_page: 100 }),
+    octokit.rest.pulls.get({ owner, repo, pull_number: prNumber }),
+  ]);
+  if (pr.changed_files > files.length) throw new TooManyFilesError(pr.changed_files, files.length);
+  return listedFilesDiff(files);
 }
 
 /** Returns the PR's current head SHA, or `undefined` when the lookup fails or returns none. */
@@ -296,7 +326,7 @@ export function formatUnreviewedNotice(shortSha: string, skipped: SkippedFiles, 
 }
 
 const SKIPPED_REASON: Record<NonNullable<BinaryFile['kind']> | 'binary', string> = {
-  binary: 'no lines to read, such as a binary, a rename, a mode change or an empty file',
+  binary: 'no lines to read, such as a binary, a rename, a mode change, an empty file or a diff too large for GitHub to show',
   lfs: 'a Git LFS pointer, so only its hash changed and no model read the content',
   submodule: 'a submodule bump, so only its commit changed and no model read the code',
 };
@@ -875,15 +905,26 @@ export async function postProgressComment(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
   ), settings);
+  return placeProgressComment(octokit, owner, repo, prNumber, body);
+}
 
-  const { data } = await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body,
-  });
-  core.saveState(PROGRESS_STATE_KEY, String(data.id));
-  return data.id;
+/**
+ * Posts `body` as the run's progress comment, or edits comment `reuseId` into it, and saves the comment's ID for the post
+ * step. A new comment is posted when `reuseId` cannot be edited.
+ */
+async function placeProgressComment(octokit: Octokit, owner: string, repo: string, prNumber: number, body: string, reuseId?: number): Promise<number> {
+  let id = reuseId;
+  if (id !== undefined) {
+    try {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: id, body });
+    } catch (error) {
+      core.warning(`Failed to reuse comment ${id}, posting a new one: ${error instanceof Error ? error.message : error}`);
+      id = undefined;
+    }
+  }
+  id ??= (await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body })).data.id;
+  core.saveState(PROGRESS_STATE_KEY, String(id));
+  return id;
 }
 
 /**
@@ -907,23 +948,34 @@ async function editProgressComment(
   await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: withSettingsBlock(body, settings) });
 }
 
-/** Posts the comment that shows an auto-approve is running. The post step marks it cancelled when the run stops early. */
+/**
+ * Posts the comment that shows an auto-approve of `headSha` is running, or turns comment `reuseId` into it. The post step
+ * marks it cancelled when the run stops early.
+ */
 export async function postAutoApproveProgressComment(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
+  headSha: string,
+  reuseId?: number,
 ): Promise<number> {
-  const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS);
-  const { data } = await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body,
-  });
-  core.saveState(PROGRESS_STATE_KEY, String(data.id));
-  return data.id;
+  const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS, autoApproveHeadMarker(headSha));
+  return placeProgressComment(octokit, owner, repo, prNumber, body, reuseId);
 }
+
+/** The hidden marker naming the head an auto-approve comment is for. Pass it to `markProgressCommentFailed` so a failure keeps it. */
+export function autoApproveHeadMarker(headSha: string): string {
+  return `<!-- manki-auto-approve-head: ${headSha} -->`;
+}
+
+/** Returns the ID of Manki's comment that says an auto-approve of `headSha` failed, or `undefined` when there is none. */
+export function failedAutoApproveId(comments: IssueComment[], bot: BotIdentity, headSha: string): number | undefined {
+  return comments.find(c => isBotUser(bot, c.user) && !!c.body?.startsWith(failedLead('Auto-approve')) && c.body.includes(autoApproveHeadMarker(headSha)))?.id;
+}
+
+/** The start of a progress comment whose `action` failed. */
+const failedLead = (action: 'Review' | 'Auto-approve'): string => `🔴 **${action} failed:**`;
 
 /** Deletes the auto-approve progress comment once the run posted its result, which is the record. */
 export async function deleteAutoApproveProgressComment(
@@ -942,7 +994,7 @@ export async function deleteAutoApproveProgressComment(
 /**
  * Transition a progress comment to a terminal failure state that names the
  * failed `action` and the reason, with tokens redacted. Uses `CANCELLED_MARKER`
- * so the post step leaves the comment alone.
+ * so the post step leaves the comment alone. `markers` are kept on the comment.
  */
 export async function markProgressCommentFailed(
   octokit: Octokit,
@@ -952,11 +1004,13 @@ export async function markProgressCommentFailed(
   action: 'Review' | 'Auto-approve',
   reason: string,
   settings?: SettingsView,
+  markers: readonly string[] = [],
 ): Promise<void> {
   const body = withMarkers(
-    `🔴 **${action} failed:** ${safeTruncate(sanitizeMarkdown(sanitizeTokens(String(reason))), 300)}`,
+    `${failedLead(action)} ${safeTruncate(sanitizeMarkdown(sanitizeTokens(String(reason))), 300)}`,
     ...BOT_MARKERS,
     CANCELLED_MARKER,
+    ...markers,
   );
   try {
     await editProgressComment(octokit, owner, repo, commentId, body, settings);
@@ -1098,7 +1152,7 @@ export async function updateProgressComment(
 
 /** Whether `body` is a progress comment whose review failed or ended incomplete. */
 function isFailedProgress(body: string): boolean {
-  return body.startsWith(REVIEW_FAILED_LINE) || body.startsWith('🔴 **Review failed:**');
+  return body.startsWith(REVIEW_FAILED_LINE) || body.startsWith(failedLead('Review'));
 }
 
 /**
