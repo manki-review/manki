@@ -8,7 +8,7 @@ import { extractCurrentCodeWindow } from './code-window';
 import { loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
-import { ApprovalHeld, brokenConfig, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
@@ -17,7 +17,7 @@ import { carryBodyWarnings, ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
-import { SECURITY_TAG } from './types';
+import { SECURITY_TAG, threadWarns } from './types';
 import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome } from './types';
 import { fetchWorkspace, gitEnv, runGit } from './workspace';
 
@@ -79,6 +79,8 @@ export interface EarlierFinding {
   howToFix?: string;
   suggestedFix?: string;
   security?: boolean;
+  /** A pre-existing defect, whose thread never holds an approval. */
+  preExisting?: boolean;
   /**
    * How its review thread stands before the round: `fixed` when an earlier round resolved it as fixed, and `resolved`
    * when a person resolved it. Unset for a finding posted only in the review body.
@@ -381,7 +383,18 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
       openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled', instructions: repoContext,
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
-    return { result, context, base, head, approvalHeld: brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config' : false };
+    // An earlier warning thread holds as in a pull request round, unless this round found it fixed or graded it lower.
+    // No reply is known here, so an open one holds, and so does a resolved security one that no round found fixed.
+    const evaluationOf = (threadId?: string) => result.threadEvaluations?.find(e => e.threadId === threadId);
+    const preExisting = new Set(input.earlier?.findings.filter(f => f.preExisting).map(f => f.id));
+    const threadHolds = (followUp?.previousFindings ?? []).filter(p => !preExisting.has(p.threadId ?? '')).some(p => {
+      const evaluation = evaluationOf(p.threadId);
+      const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity });
+      return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || (!!p.isSecurity && !p.fixed));
+    });
+    const approvalHeld = brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
+      : result.verdict === 'APPROVE' && (threadHolds || result.findings.some(holdsApproval)) ? 'warnings' : false;
+    return { result, context, base, head, approvalHeld };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   }

@@ -9,7 +9,7 @@ import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isB
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ParsedDiff, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
@@ -649,11 +649,10 @@ interface ParsedCommand {
 }
 
 const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
-const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/;
 
 /** Parses the first command in `body`. A command quoted in inline code or a code block is text, not a command. */
 function parseCommand(body: string): ParsedCommand {
-  const lower = body.replace(/```[\s\S]*?(?:```|$)|`[^`\n]*`/g, ' ').toLowerCase();
+  const lower = withoutCode(body).toLowerCase();
   const match = lower.match(BOT_PREFIX_PATTERN);
 
   if (match) {

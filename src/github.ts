@@ -181,7 +181,7 @@ const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
-export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread';
+export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings';
 
 /** The changed files no model reads: those `exclude_paths` drops, and those with no code to read, such as binaries. */
 export interface SkippedFiles {
@@ -193,10 +193,11 @@ export interface SkippedFiles {
 export type ConfigHold = 'base' | 'head';
 
 /**
- * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, or no
- * model read some of its files.
+ * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
+ * model read some of its files, or `count` warnings wait for a fix or an answer. Of those, `unthreaded` have no thread
+ * and `security` are security warnings with a thread. Without `count` the warning threads could not be read.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number; security?: number; unthreaded?: number };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -232,17 +233,20 @@ export function withheldSummary(summary: string): string {
   return text ? `**Summary:** ${asSentence(text)}` : '';
 }
 
+/** Ends a line that sends someone to the Review again box while `auto_approve` is off. */
+const ROUND_APPROVES_LINE = '`auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+
 /** Ends a line that tells someone to push for a review. A push starts none while automatic review is off or paused. */
 export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
 /**
  * Returns the line that says why Manki does not approve. `autoApprove` is the `auto_approve` setting. With it off the
- * approval check of a PR marked ready approves nothing, so the line for a draft names the Review again box and promises
- * no approval for marking the PR ready.
+ * approval check approves nothing, so the lines for a draft and for warnings name the Review again box and promise no
+ * approval for marking the PR ready or for an answer in a thread.
  */
 export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string {
   if (hold.reason === 'draft') {
-    if (!autoApprove) return '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+    if (!autoApprove) return `**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
     // "Nothing else" covers only what the PR shows, such as an open thread or a conflict. For every other case, in which
     // nothing follows, the check command names the reason.
     return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
@@ -253,6 +257,25 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`;
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
+  if (hold.reason === 'warnings') {
+    if (hold.count === undefined) {
+      const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
+      return autoApprove ? `${line} Comment \`@manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+    }
+    const lead = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
+    // A warning without a thread can only be fixed, and holds until a later round no longer finds it.
+    const unthreaded = hold.unthreaded ?? 0;
+    const threaded = hold.count - unthreaded;
+    const noThread = (n: number) => `${n === 1 ? 'has no thread and holds' : 'have no thread and hold'} until a later review round no longer finds ${n === 1 ? 'it' : 'them'}.`;
+    if (threaded === 0) return `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}`;
+    // A reply never clears a security warning, which needs a fix or a resolve by someone allowed to clear it.
+    const security = hold.security ?? 0;
+    const or = security === threaded ? 'or have a maintainer resolve its thread' : 'or dismiss it with a reason in its thread';
+    const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it.' : '';
+    const line = `${lead}, ${or}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
+    const after = security === threaded ? 'a resolve' : security > 0 ? 'a dismissal or a resolve' : 'a dismissal';
+    return autoApprove ? line : `${line} After ${after}, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+  }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
 
@@ -1202,7 +1225,7 @@ function trustNote(finding: Finding): string | undefined {
   return finding.checkStatus === 'unconfirmed' ? UNCONFIRMED_NOTE : undefined;
 }
 
-/** Non-blocking findings above a note posted as line comments per review. The rest go in the body list. */
+/** Security findings below a warning posted as line comments per review. The rest go in the body list. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
 /** The most of a blocker's description the round record keeps when the blocker got no thread. */
@@ -1213,8 +1236,16 @@ function isFollowUp(finding: Finding): boolean {
   return !!finding.tags?.includes(FOLLOW_UP_TAG);
 }
 
-function isPreExisting(finding: Finding): boolean {
+function isPreExisting(finding: Pick<Finding, 'tags'>): boolean {
   return !!finding.tags?.includes(PRE_EXISTING_TAG);
+}
+
+/**
+ * Whether a warning holds an approval until it is fixed or answered. It takes a finding or a round record entry. A
+ * pre-existing defect never holds, and neither does a warning that goes into its answered thread.
+ */
+export function holdsApproval(finding: { severity: FindingSeverity | 'unknown'; tags?: string[]; answeredIn?: Finding['answeredIn'] }): boolean {
+  return finding.severity === 'warning' && !isPreExisting(finding) && !finding.answeredIn;
 }
 
 /** Whether a finding is posted as a thread. A pre-existing one is only when it still blocks, as a security finding does. */
@@ -1353,8 +1384,8 @@ function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly str
 }
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, then its fold. */
-function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false): string {
-  const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
+function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false, noThread = false): string {
+  const lines = [formatFindingHeader(finding, noThread), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(linked(inlineCode(findingLocation(finding)), links.linkTo(finding.file, finding.line)));
   const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links, 'flagged'));
   const block = [...lines, ...formatFindingDescription(finding), ...(fold ? [fold] : [])].join('\n');
@@ -1375,8 +1406,11 @@ function inlineHtml(markdown: string): string {
 /** Heads the findings on code an earlier round already reviewed. */
 const MISSED_EARLIER = 'Missed by an earlier review';
 
-/** Shown under the title of a thread for a finding on such code that does not block. */
-const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+/** Shown under the title of a thread for a warning on such code. */
+const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
+
+/** `MISSED_EARLIER_NOTE` for a security warning, which a reply does not clear. */
+const MISSED_EARLIER_SECURITY_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it._';
 
 /** Lines shown on each side of the flagged line in a finding's code preview. */
 const PREVIEW_CONTEXT = 2;
@@ -1418,6 +1452,15 @@ function formatCarriedWarnings(carried: FindingFingerprintEntry[]): string | nul
   return formatFindingSection(`Earlier warnings, code unchanged · ${formatSeverityCounts(carried)}`, lines.length > 0 ? [lines.join('\n')] : [], carried.length === 1
     ? 'An earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.'
     : 'An earlier round listed these, and this round did not raise them again. The line each points at still reads the same, so they stay listed. None of them blocks.', '###');
+}
+
+/** Returns the section for the holding warnings that got no thread, which says what clears them, or null when there are none. */
+function formatUnthreadedWarnings(warnings: Finding[], links: CodeLinks): string | null {
+  if (warnings.length === 0) return null;
+  const clears = warnings.length === 1
+    ? 'There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.'
+    : 'There is no thread to answer them in, so each one holds the approval until a later review round no longer finds it.';
+  return `**Warnings that could not be posted as threads:**\n\n${warnings.map(f => formatFindingBlock(f, links, true, true)).join('\n\n')}\n\n${clears}`;
 }
 
 /**
@@ -1621,17 +1664,17 @@ function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLi
 }
 
 /**
- * Post the review. Blocking findings become threads. Other findings on a changed line
- * become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE` and most severe
- * first. The rest go in the body. Every note `capNotes` kept on a changed line gets a line comment as a suggestion,
+ * Post the review. Blocking findings and the warnings that `holdsApproval` become threads. Security findings below a
+ * warning on a changed line become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE`. The rest go
+ * in the body. Every note `capNotes` kept on a changed line gets a line comment as a suggestion,
  * unless it is a tool alert, pre-existing or on code an earlier round reviewed. The body lists the other notes in one collapsed section.
  *
- * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
+ * A blocking finding or a holding warning on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. One outside the diff files, or tied to no file, gets a file-level comment on the first
  * diff file, which says where the finding is. A finding that one of the open `existingThreads` already carries
  * is not posted again. A blocker whose `threadId` names one of them is listed in the body under
- * a link to that thread. Three kinds of finding that do not block stay in the body: a pre-existing one,
- * one that restates a finding an earlier round listed in its body, and a security note on code an
+ * a link to that thread. Three kinds of finding that neither block nor hold stay in the body: a pre-existing one,
+ * a security note that restates a finding an earlier round listed in its body, and a security note on code an
  * earlier round reviewed.
  *
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
@@ -1650,9 +1693,11 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [] }: {
+  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [] }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
-    /** The `auto_approve` setting, which decides what the line for a held draft tells the reader to do. */
+    /** The earlier warning threads that still hold the approval, or `unread` when they could not be read, which holds it too. */
+    openWarnings?: ReadonlyArray<{ isSecurity?: boolean }> | 'unread';
+    /** The `auto_approve` setting, which decides what the lines for a held draft and for warnings tell the reader to do. */
     autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
     disproved?: DisprovedFinding[];
@@ -1667,7 +1712,7 @@ export async function postReview(
     /** Called once GitHub created the review, before the file-level comments, which can still fail. */
     onPosted?: () => void;
   } = {},
-): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
+): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean }> {
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -1677,14 +1722,16 @@ export async function postReview(
   const stillOpen: string[] = [];
   /** The findings posted as threads this round, counted in the verdict line. */
   const threadFindings: Finding[] = [];
-  /** The blockers posted as line comments, which get a file-level thread when GitHub refuses the lines. */
-  const lineBlockers: Array<{ path: string; finding: Finding }> = [];
+  /** The blockers and holding warnings posted as line comments, which get a file-level thread when GitHub refuses the lines. */
+  const lineThreads: Array<{ path: string; finding: Finding }> = [];
   /** The blockers in no changed file, whose threads are on `anchor`. */
   const detached: Finding[] = [];
+  /** The holding warnings in no changed file, whose threads are on `anchor`. */
+  const detachedWarnings: Finding[] = [];
   /** The findings listed as folds in the review body, under one section per origin. */
   const bodyFindings: Finding[] = [];
   const notes: Finding[] = [];
-  /** The blockers the body shows because no thread can hold them. */
+  /** The blockers and holding warnings the body shows because no thread can hold them. */
   const unthreaded: Finding[] = [];
   /** The findings left to an open thread that matches them, with that thread's ID, which the record keeps. */
   const leftTo = new Map<Finding, string>();
@@ -1702,6 +1749,34 @@ export async function postReview(
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
   const links: CodeLinks = { linkTo, files, changed, related: relatedCommits(result.relatedRepos) };
 
+  /**
+   * Posts a blocker or a holding warning as a thread of its own: a line comment on a changed line, a file-level comment
+   * elsewhere in its file, or a file-level comment on `anchor` when its file is not changed. `matched` is its `openThreadFor`.
+   */
+  const postThread = (f: Finding, matched: string | undefined): void => {
+    const blocking = isBlockingFinding(f);
+    const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
+    const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
+    if (elsewhere && !anchor) {
+      if (blocking) (f.file && f.line > 0 ? invalidComments : generalFindings).push(formatFindingBlock(f, links, true));
+      unthreaded.push(f);
+      return;
+    }
+
+    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      lineThreads.push({ path: f.file, finding: f });
+      threadFindings.push(f);
+    } else if (matched) {
+      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
+      leftTo.set(f, matched);
+    } else {
+      fileComments.push({ path: elsewhere ? anchor! : f.file, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f });
+      threadFindings.push(f);
+      if (elsewhere) (blocking ? detached : detachedWarnings).push(f);
+    }
+  };
+
   for (const f of result.findings) {
     const matched = openThreadFor(f, existingThreads);
     if (!isBlockingFinding(f)) {
@@ -1711,6 +1786,8 @@ export async function postReview(
         if (matched) leftTo.set(f, matched);
       } else if (isListedNote(f)) {
         notes.push(f);
+      } else if (holdsApproval(f)) {
+        postThread(f, matched);
       } else if (isPreExisting(f) || f.origin === 'earlier' || (f.origin === 'reviewed' && isNote(f.severity))) {
         // On code an earlier round reviewed, only a warning gets a thread. A security note there stays listed.
         bodyFindings.push(f);
@@ -1732,27 +1809,7 @@ export async function postReview(
       }
       continue;
     }
-
-    const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
-    const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
-    if (elsewhere && !anchor) {
-      (f.file && f.line > 0 ? invalidComments : generalFindings).push(formatFindingBlock(f, links, true));
-      unthreaded.push(f);
-      continue;
-    }
-
-    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
-      lineBlockers.push({ path: f.file, finding: f });
-      threadFindings.push(f);
-    } else if (matched) {
-      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
-      leftTo.set(f, matched);
-    } else {
-      fileComments.push({ path: elsewhere ? anchor! : f.file, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f });
-      threadFindings.push(f);
-      if (elsewhere) detached.push(f);
-    }
+    postThread(f, matched);
   }
 
   const onChangedLine = (f: Finding): boolean => !!diff && f.line > 0 && isOnChangedLine(f, diff);
@@ -1788,14 +1845,24 @@ export async function postReview(
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
-  const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
+  const holding = threadFindings.filter(holdsApproval);
+  const holdingUnthreaded = unthreaded.filter(holdsApproval).length;
+  const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length + holdingUnthreaded;
+  const security = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity).length + holding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length;
+  const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' }
+    : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }) } : undefined;
+  // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
+  const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
-  // An approval held for unread files says so in its verdict line, so only the other holds get a line of their own.
-  const heldLine = lineHold && lineHold.reason !== 'unread' && approvalHoldLine(lineHold, autoApprove);
+  // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
+  const heldLine = lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && approvalHoldLine(lineHold, autoApprove);
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
+  const unthreadedWarnings = unthreaded.filter(f => !isBlockingFinding(f));
+  const onAnchor = (noun: string, list: Finding[]): string | false => list.length > 0
+    && `**${noun} not on a changed file:**\n\n${list.map(formatTraceEntry).join('\n')}\n\nComments are only possible on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`;
 
   /**
    * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
@@ -1804,8 +1871,8 @@ export async function postReview(
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
-    const listed = [...bodyFindings, ...listedNotes, ...(withoutLineThreads ? inline : [])];
-    const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold }, limitWarning, unreadRecords);
+    const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
+    const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -1820,9 +1887,11 @@ export async function postReview(
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
-      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\nComments are only possible on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`,
+      onAnchor('Blockers', detached),
+      onAnchor('Warnings', detachedWarnings),
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
+      formatUnthreadedWarnings(unthreadedWarnings, links),
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
       // Without their threads, the suggestions are listed in full with the other notes.
@@ -1855,7 +1924,8 @@ export async function postReview(
       const { threadId: linked, ...unlinked } = entry;
       const threadId = posted === 'thread' ? undefined : linked ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
       const description = posted === 'body' && f.severity === 'blocker' && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
-      return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(description && { description }) };
+      const holds = holdsApproval(f);
+      return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(holds && { holds }), ...(description && { description }) };
     };
     return (context
       ? formatRecordTrailer({
@@ -1865,7 +1935,7 @@ export async function postReview(
           findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => recordPlace(entry, result.findings[i])) },
         }),
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
-        ...(event === 'APPROVE' && { approval: { held: approvalHeld } }),
+        ...(event === 'APPROVE' && { approval: { held: approvalHeld, ...(warningHold && { warningsHeld: true as const }) } }),
       }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };
@@ -1878,7 +1948,8 @@ export async function postReview(
   if (approvalHeld) {
     const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
       : hold?.reason === 'config' ? (hold.file === 'base' ? 'The base branch config did not load' : 'The PR\'s own config does not load')
-      : hold?.reason === 'unread' ? 'No model read some of the changed files' : 'The PR is a draft';
+      : hold?.reason === 'unread' ? 'No model read some of the changed files'
+      : hold?.reason === 'warnings' ? 'Warnings wait for a fix or an answer' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
@@ -1886,17 +1957,30 @@ export async function postReview(
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), headlined.map(highlight));
   onPosted?.();
-  // A blocker whose line comment GitHub refused gets a file-level thread on its file.
-  const retried = review.lineComments ? [] : lineBlockers.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
+  // A blocker or a holding warning whose line comment GitHub refused gets a file-level thread on its file.
+  const retried = review.lineComments ? [] : lineThreads.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, [...fileComments, ...retried].map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
+    const refusedBlockers = refused.filter(isBlockingFinding);
+    const blockerSection = refusedBlockers.length > 0 ? `\n\n**Blockers that could not be posted as threads:**\n\n${refusedBlockers.map(f => formatFindingBlock(f, links, true)).join('\n\n')}` : '';
+    const warningSection = formatUnthreadedWarnings(refused.filter(f => !isBlockingFinding(f)), links);
+    const section = highlightCode(`${blockerSection}${warningSection ? `\n\n${warningSection}` : ''}`, codeTokens);
     const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]));
-    // Truncate the existing body, never the blocking findings appended to it or the round record.
+    // The verdict line counted each refused warning as one with a thread, so it is restated with them among those without one.
+    const refusedHolding = refused.filter(holdsApproval);
+    const holdLine = (h: ApprovalHold): string => highlightCode(approvalHoldLine(h, autoApprove), codeTokens);
+    const postedBody = warningHold?.count && refusedHolding.length > 0
+      ? review.body.replace(holdLine(warningHold), () => holdLine({
+        ...warningHold,
+        unthreaded: (warningHold.unthreaded ?? 0) + refusedHolding.length,
+        security: (warningHold.security ?? 0) - refusedHolding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length,
+      }))
+      : review.body;
+    // Truncate the existing body, never the findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
-      throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
+      throw new Error(`Could not post findings as threads or fit them in review #${review.id}: ${titles}`);
     }
     try {
       await octokit.rest.pulls.updateReview({
@@ -1904,13 +1988,14 @@ export async function postReview(
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${refusedRecord}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${truncateBody(postedBody, room)}${section}${refusedRecord}`, reviewedCommitFooter),
       });
     } catch (error) {
-      throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
+      throw new Error(`Could not post findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
-  return { id: review.id, approvalHeld };
+  // Warnings can hold behind another hold that comes first, and still take back an approval of this commit.
+  return { id: review.id, approvalHeld, warningsHeld: event === 'APPROVE' && !!warningHold };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */
@@ -2113,8 +2198,11 @@ const APPROVED_LINE = '✅ **Approved.**';
 
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
-  READY: (_result, _blockers, { threads, listed, carried, hold }) => {
-    if (hold?.reason === 'unread') return `✅ **Approved, but a person must approve:** no model read ${hold.skipped.excluded.length + hold.skipped.binary.length} of the changed files.`;
+  READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
+    const unread = hold?.reason === 'unread' && hold.skipped.excluded.length + hold.skipped.binary.length;
+    // Another hold has a line of its own or is named here, and the warnings still hold once it lifts.
+    if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
+    if (unread) return `✅ **Approved, but a person must approve:** no model read ${unread} of the changed files.`;
     const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
     return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;
@@ -2140,6 +2228,9 @@ interface PostedFindings {
   /** The warnings carried from earlier rounds, which an approval counts with the findings it lists. */
   carried: FindingFingerprintEntry[];
   hold?: ApprovalHold;
+  /** The warnings that hold the approval, also when another hold comes first. */
+  warningHold?: ApprovalHold;
+  autoApprove: boolean;
 }
 
 /** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 suggestions". */
@@ -2524,10 +2615,12 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 }
 
 /** Returns the line a finding opens with: severity, the reporting tool if any, category and effort. */
-function formatFindingHeader(finding: Finding): string {
+function formatFindingHeader(finding: Finding, noThread = false): string {
   const name = SEVERITY_NAME[finding.severity];
   const severity = `${name[0].toUpperCase()}${name.slice(1)}`;
-  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, not blocking`}**`;
+  // A reply clears neither a security warning nor a warning with no thread to reply in.
+  const holds = holdsApproval(finding) && (noThread || isSecurityFinding(finding.tags, finding.reviewers) ? 'needs a fix' : 'needs an answer');
+  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, ${holds || 'not blocking'}`}**`;
   // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';
   const kind = [isPreExisting(finding) && 'Pre-existing', finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
@@ -3034,7 +3127,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
-  if (finding.origin === 'reviewed' && !isBlockingFinding(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
+  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${isSecurityFinding(finding.tags, finding.reviewers) ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
   // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
@@ -3561,5 +3654,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

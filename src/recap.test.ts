@@ -1,5 +1,5 @@
 import { Finding, FindingFingerprintEntry, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -2531,8 +2531,19 @@ describe('parseFindingFromComment', () => {
     // The sentence on a warning an earlier round missed is not part of the description either, alone or after the other one.
     for (const checkStatus of [undefined, 'unconfirmed' as const]) {
       const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], origin: 'reviewed', tags: ['follow-up'], checkStatus }, TEST_LINKS);
-      expect(late).toContain('_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._');
+      expect(late).toContain('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._');
       expect(parseFindingFromComment(late)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+      // A thread posted while warnings did not hold reads the same with its old header and note.
+      expect(late).toMatch(/^\u26A0\uFE0F \*\*Warning, needs an answer\*\*\n/u);
+      const old = late.replace('**Warning, needs an answer**', '**Warning, not blocking**')
+        .replace('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._', '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._');
+      expect(old).toContain('**Warning, not blocking**\n\n**Extract helper**\n\n');
+      expect(parseFindingFromComment(old)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+      expect(threadSeverity(old)).toBe('warning');
+      // A security warning has its own header and note, which are not part of the description either.
+      const security = formatFindingComment({ severity: 'warning', title: 'Token in log', file: 'src/a.ts', line: 2, description: 'The token is logged.', reviewers: [], origin: 'reviewed', tags: ['follow-up', 'security'], checkStatus }, TEST_LINKS);
+      expect(security).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
+      expect(parseFindingFromComment(security)).toEqual({ description: 'The token is logged.', suggestedFix: undefined });
     }
     // The issue box, and the link that replaces it once ticked, are not part of the description.
     expect(body).toContain('Create an issue for this');

@@ -226,7 +226,7 @@ jest.mock('./github', () => ({
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
-  postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false }),
+  postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
@@ -266,6 +266,7 @@ jest.mock('./github', () => ({
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  fetchHeldWarnings: jest.fn().mockResolvedValue([]),
   holdApproval: jest.fn().mockResolvedValue(false),
   isNewChange: jest.requireActual('./state').isNewChange,
   pauseState: jest.requireActual('./state').pauseState,
@@ -1905,7 +1906,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
-    jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false });
+    jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false });
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
     jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '', files: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
@@ -2077,13 +2078,30 @@ describe('runFullReview orchestration', () => {
       ['draft', 'Approval held: the PR is a draft'],
       ['config', 'Approval held: a config file did not load'],
       ['unread', 'Approval held: some changed files were not read'],
+      ['warnings', 'Approval held: warnings wait for a fix or an answer'],
+      ['unread warnings', 'Approval held: warnings wait for a fix or an answer'],
+      ['config with warnings', 'Approval held: a config file did not load'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
-      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held });
+      const approvalHeld = held === 'unread warnings' ? 'warnings' : held === 'config with warnings' ? 'config' : held;
+      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld, warningsHeld: held.includes('warnings') });
+      const open = { id: 'T1', isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Retry never stops' };
+      if (held === 'warnings') jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([open, { ...open, id: 'T2' }]);
+      // A failed read of the warning threads still posts the review, which holds the approval.
+      if (held === 'unread warnings') jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValueOnce(new Error('rate limited'));
 
       await callRunFullReview();
 
+      // The earlier warning threads that still hold are read with the round's own grades and counted in its review.
+      const [, , , , , , , context, , options] = jest.mocked(ghUtils.postReview).mock.calls[0];
+      expect(jest.mocked(stateModule.fetchHeldWarnings).mock.calls[0].at(-1)).toBe(context);
+      expect(options).toEqual(expect.objectContaining({ openWarnings: held === 'warnings' ? [open, { ...open, id: 'T2' }] : held === 'unread warnings' ? 'unread' : [] }));
+
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
-      expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123');
+      // Warnings that hold behind another hold are named in the summary, since the title names only the first.
+      expect((completedCheck() as { output: { summary: string } }).output.summary.endsWith('\n\nWarnings also hold the approval. The review names each one and what clears it.')).toBe(held === 'config with warnings');
+      // An approval of the same commit stays for every hold but warnings, which a round run again on the commit can find.
+      const keepCommit = held.includes('warnings') ? undefined : 'abc123';
+      expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', keepCommit);
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
     });
 
@@ -5869,7 +5887,7 @@ describe('runFullReview orchestration', () => {
     if (outcome === 'replaced') {
       jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
         mockPullsGet.mockResolvedValueOnce({ data: { title: 'Test PR', body: 'body', head: { sha: 'def456' }, base: { ref: 'main' } } });
-        return { id: 123, approvalHeld: false };
+        return { id: 123, approvalHeld: false, warningsHeld: false };
       });
     }
     if (outcome === 'cancelled') {
@@ -6877,6 +6895,21 @@ describe('runFullReview orchestration', () => {
       expectNoRound();
       // The last argument is the config's `auto_approve`, which the notice for a draft depends on.
       expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined, false);
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['holds the approval', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([{ id: 'T1', isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'Retry never stops' }])],
+      ['cannot be read', () => jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValueOnce(new Error('rate limited'))],
+    ])('reviews in full rather than post the previous APPROVE again when a warning thread %s', async (_label, seed) => {
+      seedPush('APPROVE', REVIEWED_DIFF);
+      seed();
+
+      await callRunFullReview();
+
+      // The first read is the restatement's, with no round to grade the threads.
+      expect(jest.mocked(stateModule.fetchHeldWarnings).mock.calls[0].slice(2)).toEqual(['test-owner', 'test-repo', 42, undefined, undefined]);
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
@@ -7902,7 +7935,7 @@ describe('runFullReview config and dedupe', () => {
       if (moment === 'dismiss') {
         jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
           mockPullsGet.mockResolvedValueOnce(movedHead);
-          return { id: 123, approvalHeld: false };
+          return { id: 123, approvalHeld: false, warningsHeld: false };
         });
       }
 

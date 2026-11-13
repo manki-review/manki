@@ -1,4 +1,4 @@
-import { MISSED_EARLIER_NOTE, TEST_GUIDE_NOTE, UNCONFIRMED_NOTE } from './github';
+import { MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, TEST_GUIDE_NOTE, UNCONFIRMED_NOTE } from './github';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { ParsedDiff } from './types';
 
@@ -76,7 +76,7 @@ describe('highlightCode', () => {
   it('keeps a line of plain prose in italics as written, whatever identifiers the diff holds', () => {
     // The diff quotes each sentence, so its first and last word are identifiers of the diff with their underscore.
     const note = '_An earlier round already reviewed createReview, and it doesn\'t block this PR._';
-    const notes = [note, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, TEST_GUIDE_NOTE];
+    const notes = [note, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, TEST_GUIDE_NOTE];
     const quoting = codeTokensFromDiff({ ...diff, files: [{ ...diff.files[0], hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 2, content: `+const NOTES = '${notes.join(' ')}';\n+_resetOctokitCache();` }] }] });
     expect([...quoting]).toEqual(expect.arrayContaining(['_An', 'PR._', '_Manki', 'it._', '_The', '_resetOctokitCache']));
     const all = new Set([...tokens, ...quoting]);

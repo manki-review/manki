@@ -6,10 +6,10 @@ import { dirname, join } from 'path';
 import * as core from '@actions/core';
 
 import { formatLockfileChanges } from './lockfile';
-import { overlayConfig, reviewLocal } from './local-review';
+import { EarlierFinding, overlayConfig, reviewLocal } from './local-review';
 import { runReview } from './review';
 import { REACH_DOUBT } from './types';
-import type { Finding, ReviewResult, RoundOutcome } from './types';
+import type { Finding, ReviewResult, RoundOutcome, ThreadEvaluation } from './types';
 
 jest.mock('@actions/core');
 jest.mock('./providers', () => ({
@@ -188,6 +188,35 @@ describe('reviewLocal', () => {
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
   });
 
+  // Each case runs a whole local review over git, which together can pass the default timeout on a CI runner.
+  it('holds a local follow-up round for an earlier warning thread as a pull request round does', async () => {
+    git(repo, 'checkout', '-q', 'feature');
+    const reviewed = commit(repo, 'Add b', { 'src/b.ts': 'retry();\n' });
+    const fixed = commit(repo, 'Bound b', { 'src/b.ts': 'retry(3);\n' });
+    git(repo, 'checkout', '-q', 'main');
+
+    // An earlier warning thread holds an approving round as in a pull request round, until it is found fixed, graded lower
+    // or resolved. A resolved security warning holds until a round finds it fixed.
+    const thread = (overrides: Partial<EarlierFinding>): EarlierFinding => ({ id: 'W1', severity: 'warning', title: 'Retry never stops', file: 'src/b.ts', line: 1, thread: 'open', ...overrides });
+    const heldBy = async (findings: EarlierFinding[], threadEvaluations?: ThreadEvaluation[]) => {
+      jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'], ...(threadEvaluations && { threadEvaluations }) });
+      return (await reviewLocal({ repoRoot: repo, base: 'main', head: fixed, earlier: { head: reviewed, findings }, providerInputs: inputs })).approvalHeld;
+    };
+    expect(await heldBy([thread({})])).toBe('warnings');
+    expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'addressed', reason: 'Bounded now.' }])).toBe(false);
+    expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Smaller.', grade: 'note' }])).toBe(false);
+    expect(await heldBy([thread({ thread: 'resolved' })])).toBe(false);
+    expect(await heldBy([thread({ thread: 'resolved', security: true })])).toBe('warnings');
+    expect(await heldBy([thread({ thread: 'fixed', security: true })])).toBe(false);
+    // Grades are read as a pull request round reads them: a security warning is never graded below its thread, and a blocker grade blocks instead.
+    expect(await heldBy([thread({ security: true })], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Smaller.', grade: 'note' }])).toBe('warnings');
+    expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Worse.', grade: 'blocker' }])).toBe(false);
+    // A warning the earlier round listed only in its review body has no thread, so it holds only if this round finds it again.
+    expect(await heldBy([thread({ thread: undefined })])).toBe(false);
+    // A pre-existing defect never holds, as its thread does not in a pull request round.
+    expect(await heldBy([thread({ preExisting: true })])).toBe(false);
+  }, 30_000);
+
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
     let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
@@ -319,6 +348,14 @@ describe('reviewLocal', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('This change edits `exclude_paths` in .manki.yml'));
     // The patch is applied in a scratch index, so the checkout and its index stay as they were.
     expect(git(repo, 'status', '--porcelain')).toBe('');
+
+    // A warning holds the approval as its thread would in a pull request round, unless it is a pre-existing defect.
+    const approving = (findings: Finding[]): ReviewResult & { outcome: RoundOutcome } => ({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings, highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    const warning: Finding = { ...finding, severity: 'warning', tags: ['follow-up'] };
+    jest.mocked(runReview).mockResolvedValueOnce(approving([warning]));
+    expect((await patched('exclude_paths: ["vendor/**"]\n')).approvalHeld).toBe('warnings');
+    jest.mocked(runReview).mockResolvedValueOnce(approving([{ ...warning, tags: ['follow-up', 'pre-existing'] }]));
+    expect((await patched('exclude_paths: ["vendor/**"]\n')).approvalHeld).toBe(false);
 
     // A patch that does not apply cannot show what config it leaves, so it is refused without tools too.
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'main', patch: git(repo, 'diff', 'feature~1', 'feature'), providerInputs: noTools }))

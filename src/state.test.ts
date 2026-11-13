@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
@@ -143,7 +143,7 @@ function makeGraphqlFetchThreadNode(overrides: {
   databaseId?: number;
   resolvedBy?: string;
   url?: string;
-  replies?: Array<{ body: string; author: { login: string } }>;
+  replies?: Array<{ body: string; author: { login: string; __typename?: string } }>;
   path?: string;
   /** `null` for a file-level thread. */
   line?: number | null;
@@ -208,7 +208,7 @@ describe('fetchBotReviewThreads', () => {
 
     expect(threads).toHaveLength(3);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: 'sha-1' } });
-    expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
+    expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, isWarning: true, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
     expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)] });
   });
 
@@ -249,6 +249,7 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'pr', body: formatFindingComment(finding('blocker', 'Open again'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pa', body: formatFindingComment(finding('blocker', 'Came back'), TEST_LINKS) }),
         late,
+        makeGraphqlFetchThreadNode({ id: 'pe', body: formatFindingComment(finding('warning', 'Old race', ['pre-existing']), TEST_LINKS) }),
       ]),
     );
     // The round records keep the grade a partial fix left each thread, and only Manki's records count.
@@ -268,11 +269,13 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock, reviews), TEST_BOT, 'owner', 'repo', 1);
 
     // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
-    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true], ['l', false]]);
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true], ['l', false], ['pe', false]]);
     // A blocker thread a partial fix lowered can still be the thread of the round's blocker, and a suggestion or warning
     // thread a round raised to a blocker can too, but no other one.
     expect(threads.filter(t => t.mayCarryBlocker).map(t => t.id)).toEqual(['b', 'f', 'pw', 'pb', 'pf', 'ps', 'pr', 'pa']);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
+    // A warning thread holds an approval, also a late find and a blocker a partial fix lowered, but never a pre-existing defect.
+    expect(threads.flatMap(t => t.isWarning ? [t.id] : [])).toEqual(['w', 'p', 'x', 'h', 'pw', 'l']);
     expect(unclearedThreads(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toEqual([]);
     expect(unclearedThreads(threads, TEST_BOT)).not.toEqual([]);
 
@@ -287,6 +290,34 @@ describe('fetchBotReviewThreads', () => {
     const unreadThreads = await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1);
     expect(unreadThreads.map(t => [t.id, t.isBlocking, t.mayCarryBlocker])).toEqual([['s', true, true], ['l', true, true]]);
     expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
+
+    // A round not posted yet grades the threads too: here it lowers a blocker to a warning and raises a warning to a blocker.
+    // It also backs Manki's resolve of the security warning it found fixed, so that thread holds nothing.
+    const pending = makeRoundContext(4, {
+      judge: { summary: '', threadEvaluations: [partly('b', 'warning'), { threadId: 'x', status: 'addressed', reason: 'r' }] },
+      findings: { count: 1, severityCounts: {}, entries: [{ fingerprint: { file: 'src/a.ts', lineStart: 3, lineEnd: 3, slug: 'x' }, severity: 'blocker', threadId: 'p' }] },
+    });
+    const pendingThreads = () => makeGraphqlFetchResponse([
+      makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
+      makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
+      makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS), isResolved: true, resolvedBy: 'manki-review[bot]' }),
+    ]);
+    const graded = await fetchBotReviewThreads(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, pending);
+    expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true]]);
+    const held = await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending);
+    expect(held.map(t => t.id)).toEqual(['b']);
+    // Without every round record or without the threads, a warning thread could be missed, so the read fails rather than return none.
+    const recordsUnread = threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews);
+    jest.mocked(recordsUnread.paginate).mockRejectedValueOnce(new Error('rate limited'));
+    await expect(fetchHeldWarnings(recordsUnread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending)).rejects.toThrow('Not every round record could be read');
+    await expect(fetchHeldWarnings(threadsOctokit(graphqlMock.mockRejectedValueOnce(new Error('bad gateway')), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined)).rejects.toThrow('bad gateway');
+    // A resolved thread that is not a security one, or an open pre-existing one, holds nothing whatever its grade, so missing records do not matter.
+    const settled = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([
+      makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS), isResolved: true }),
+      makeGraphqlFetchThreadNode({ id: 'pe', body: formatFindingComment(finding('warning', 'Old race', ['pre-existing']), TEST_LINKS) }),
+    ])), reviews);
+    jest.mocked(settled.paginate).mockRejectedValueOnce(new Error('rate limited'));
+    expect(await fetchHeldWarnings(settled, TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending)).toEqual([]);
   });
 
   it('reads what backs a resolved thread: a record that says addressed, a latest reply from a person with write access, or such a person as the resolver', async () => {
@@ -607,6 +638,14 @@ describe('checkAndAutoApprove', () => {
     const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread without the `maintain` role or a higher one.';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
+    const warning = (posted: FindingFingerprintEntry['posted'], tags = ['follow-up'], holds = posted !== 'earlier_thread'): FindingFingerprintEntry =>
+      ({ ...makeFindingFingerprintEntry({ title: 'Retry never stops', file: 'src/lock.ts', posted }), tags, ...(holds && { holds: true as const }) });
+    const held = (entries: FindingFingerprintEntry[]) => roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: entries.length, severityCounts: {}, entries } }));
+    const NO_WARNING_THREAD = 'Manki\'s review of `head-sh` lists 1 warning with no thread, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
+    const WARNING_THREAD = '1 warning thread holds the approval:\n- Lock is never released\n\nApproval follows once each one is fixed, resolved, or answered in its thread by the PR author or someone with the `maintain` role or a higher one with a reason to keep it.';
+    const HELD_FOR_PERSON = 'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.';
+    const DRAFT = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
+    const GONE_WARNING = 'The record of Manki\'s review of `head-sh` names a thread that does not exist for 1 warning, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
 
     it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
       ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
@@ -641,6 +680,15 @@ describe('checkAndAutoApprove', () => {
       ['a record of another commit', roundBody(blockingRound('other-sha')), [fixed()], UNREAD],
       ['the record of an incomplete round', roundBody({ ...blockingRound(HEAD), meta: { ...blockingRound(HEAD).meta, incomplete: true } }), [fixed()], UNREAD],
       ['a round that approved, its thread reopened and resolved again', roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } })), [fixed()], true],
+      ['a round held for a warning with no thread, listed in its body', held([warning('body')]), [fixed()], NO_WARNING_THREAD],
+      ['a round whose blocker thread is resolved, with a warning GitHub refused as a thread', blocked([blocker({ posted: 'thread' }), warning('body')]), [fixed()], NO_WARNING_THREAD],
+      ['a round held for a warning thread, resolved', held([warning('thread')]), [fixed('t1', 'warning', { title: 'Retry never stops' })], true],
+      ['a round held for a warning whose thread is not there, was refused or was deleted by hand', held([warning('thread')]), [fixed('t1', 'blocker')], GONE_WARNING],
+      ['a round held for a warning left to an open thread that is gone', held([{ ...warning('earlier_thread', ['follow-up'], true), threadId: 'gone' }]), [], GONE_WARNING],
+      ['a round held for a warning left to an open thread, resolved', held([{ ...warning('earlier_thread', ['follow-up'], true), threadId: 't1' }]), [fixed('t1', 'warning')], true],
+      ['a round with a pre-existing warning listed in its body', held([warning('body', ['follow-up', 'pre-existing'], false)]), [fixed()], true],
+      ['a round with a warning listed in its body that its record does not mark as holding, as before 7.5', held([warning('body', ['follow-up'], false)]), [fixed()], true],
+      ['a round with a warning left to its answered thread', held([warning('earlier_thread')]), [fixed()], true],
     ])('%s', async (_label, body, threads, outcome) => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       jest.spyOn(core, 'warning').mockImplementation(() => {});
@@ -863,9 +911,27 @@ describe('checkAndAutoApprove', () => {
       ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
         NOT_REVIEWED_YET],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
+      // An open blocking or warning thread declines beside an approval that stands, and neither dismisses that approval.
+      ['an open blocking thread beside an approval that stands', { threads: [thread('t1', 'blocker')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
+        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}`],
+      ['an open warning thread beside an approval that stands', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
+        '1 warning thread holds the approval:\n- Lock is never released\n\nApproval follows once each one is fixed, resolved, or answered in its thread by the PR author or someone with the `maintain` role or a higher one with a reason to keep it.'],
       ['a review that holds its approval for a person', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
         'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.'],
       ['a conflict with the base', { mergeable: false }, '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.'],
+      // Every reason that holds is named at once, blocking threads first, then warning threads, then the other holds.
+      ['an open warning thread beside a review that holds its approval for a person', {
+        threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }],
+      }, `${WARNING_THREAD}\n\n${HELD_FOR_PERSON}`],
+      ['an open warning thread beside a warning the review lists with no thread', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: held([warning('body')]), state: 'COMMENTED', commit_id: HEAD, user }] },
+        `${NO_WARNING_THREAD}\n\n${NEXT_ROUND}\n\n${WARNING_THREAD}`],
+      ['an open warning thread on a head no review covers',
+        { threads: [thread('t1', 'warning', undefined, { commit: 'old-sha' })], existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
+        `${NOT_REVIEWED_YET}\n\n${WARNING_THREAD}`],
+      ['an open blocking thread and an open warning thread on a draft that conflicts', { threads: [thread('t1', 'blocker'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })], draft: true, mergeable: false },
+        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}`],
+      ['an open warning thread on a PR that conflicts', { threads: [thread('t1', 'warning')], mergeable: false },
+        `${WARNING_THREAD}\n\n**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment \`@manki review\`.`],
     // A rest parameter, since jest takes a named one the row lacks for its `done` callback.
     ])('tells a person who asks why there is no approval: %s', async (_label, setup, reply, ...[config]) => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
@@ -1074,6 +1140,120 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE' }),
     );
+  });
+
+  describe('a warning thread', () => {
+    const HEAD = 'head-sha';
+    const user = { login: 'manki-review[bot]', type: 'Bot' };
+    const reply = (login: string, body = 'It is bounded by the caller.', __typename?: string, createdAt?: string) => ({ body, author: { login, ...(__typename && { __typename }) }, ...(createdAt && { createdAt }) });
+    const warning = (id: string, overrides: Parameters<typeof makeGraphqlFetchThreadNode>[0] = {}, tags?: string[]) => makeGraphqlFetchThreadNode({
+      id, url: `https://example.com/${id}`, body: formatFindingComment({ severity: 'warning', title: `Retry ${id}`, file: 'src/a.ts', line: 10, description: 'd', reviewers: [], ...(tags && { tags }) }, TEST_LINKS), ...overrides,
+    });
+    /** Runs the state check after a round on the head that held its approval for warnings, or after `reviews`. */
+    const check = async (threads: ReturnType<typeof makeGraphqlFetchThreadNode>[], role = 'write', unreadRecords = false, reviews?: Array<{ id: number; body: string; state: string; commit_id: string; user: typeof user; submitted_at: string }>) => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const octokit = makeMockOctokit({
+        threads, prHeadSha: HEAD, mergeable: true, role, createReviewFn: createReviewMock,
+        existingReviews: reviews ?? [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'COMMENTED', commit_id: HEAD, user }],
+      });
+      // The round records are the first list the check reads.
+      if (unreadRecords) jest.mocked(octokit.paginate).mockRejectedValueOnce(new Error('rate limited'));
+      const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      return { approved: result.approved, why: result.approved ? undefined : await result.why(), events: createReviewMock.mock.calls.map(([args]) => args.event), body: createReviewMock.mock.calls[0]?.[0].body as string | undefined };
+    };
+
+    it.each<[string, ReturnType<typeof makeGraphqlFetchThreadNode>[], string?]>([
+      ['an open warning thread', [warning('t1')]],
+      ['a warning thread a bot replied in', [warning('t1', { replies: [reply('ci-app', 'Looks fine.', 'Bot')] })]],
+      ['a warning thread only Manki replied in', [warning('t1', { replies: [reply('manki-review[bot]', 'Kept. The retry still loops.')] })]],
+      ['a warning thread a person without the role replied in', [warning('t1', { replies: [reply('bob')] })], 'write'],
+      ['a security warning thread the PR author replied in', [warning('t1', { replies: [reply('author')] }, ['security'])]],
+      ['a security warning thread the PR author resolved without the role', [warning('t1', { isResolved: true, resolvedBy: 'author' }, ['security'])]],
+      ['a second warning thread nobody answered', [warning('t1', { isResolved: true }), warning('t2')]],
+      ['a warning thread the PR author only asked a question in', [warning('t1', { replies: [reply('author', 'Why would the caller pass more than three?  ')] })]],
+      ['a warning thread the PR author only sent a command in', [warning('t1', { replies: [reply('author', '@manki explain why this matters')] })]],
+      ['a warning thread the PR author addressed Manki in mid-sentence', [warning('t1', { replies: [reply('author', 'It is bounded, so (@Manki-review) please drop it.')] })]],
+      ['a warning thread the PR author sent a `/manki` line in', [warning('t1', { replies: [reply('author', 'It is bounded.\n  /manki dismiss')] })]],
+      ['a warning thread the PR author sent a mid-line command in', [warning('t1', { replies: [reply('author', 'ok - /manki explain the retry')] })]],
+      ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
+        body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
+          .replace('**Warning, needs an answer**', '**Warning, not blocking**')
+          .replace('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._', '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._'),
+      })]],
+    ])('holds the approval while it is %s', async (_label, threads, role = 'write') => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      const { approved, why, events } = await check(threads, role);
+      expect(approved).toBe(false);
+      expect(events).toEqual([]);
+      const held = threads.at(-1)!.id;
+      expect(why).toMatch(new RegExp(`^1 warning thread holds the approval:\\n- \\[Retry ${held}\\]\\(https://example\\.com/${held}\\)`));
+      expect(why).toContain('Approval follows once each one is fixed, resolved, or answered in its thread by the PR author or someone with the `maintain` role or a higher one with a reason to keep it.');
+    });
+
+    it.each<[string, ReturnType<typeof makeGraphqlFetchThreadNode>[], string?]>([
+      ['resolved by anyone', [warning('t1', { isResolved: true, resolvedBy: 'author' })]],
+      ['resolved by Manki after a round found it fixed', [warning('t1', { isResolved: true, resolvedBy: 'manki-review[bot]' })]],
+      ['answered by the PR author, whatever Manki replied', [warning('t1', { replies: [reply('author'), reply('manki-review[bot]', 'Kept. The retry still loops.')] })]],
+      ['answered by a person with the role `author_clear_role` allows', [warning('t1', { replies: [reply('maria')] })], 'maintain'],
+      ['a security warning a maintainer resolved', [warning('t1', { isResolved: true, resolvedBy: 'maria' }, ['security'])]],
+      ['the last of several, all answered', [warning('t1', { isResolved: true }), warning('t2', { replies: [reply('author')] })]],
+      ['answered by the PR author after a question and a command', [warning('t1', { replies: [reply('author', 'Why?'), reply('author', '/manki explain'), reply('author')] })]],
+      // Only a command counts as one: a path, a link or a quoted command in a reason does not.
+      ['answered with a reason that names a path', [warning('t1', { replies: [reply('author', 'The caller in src/manki.ts bounds it.')] })]],
+      ['answered with a reason that links the Manki repository', [warning('t1', { replies: [reply('author', 'See https://github.com/manki-review/manki/blob/main/src/recap.ts, the caller bounds it.')] })]],
+      ['answered with a reason that quotes a command as code', [warning('t1', { replies: [reply('author', 'It is bounded, so `@manki dismiss` is not needed.')] })]],
+      // Neither a pre-existing defect nor a suggestion holds, though nobody answered them.
+      ['answered, beside an open pre-existing warning and an open suggestion', [
+        warning('t1', { replies: [reply('author')] }), warning('t2', {}, ['pre-existing']), makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:note:style --> style' }),
+      ]],
+    ])('approves once the warning thread is %s', async (_label, threads, role = 'write') => {
+      const { approved, events, body } = await check(threads, role);
+      expect(approved).toBe(true);
+      expect(events).toEqual(['APPROVE']);
+      expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved, and every warning thread is resolved or answered\.\n/u);
+    });
+
+    it('counts only a reply made after the review that lowered a blocker thread to a warning was posted', async () => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      const lowered = (replies: ReturnType<typeof reply>[]) => makeGraphqlFetchThreadNode({
+        id: 't1', url: 'https://example.com/t1', body: formatFindingComment({ severity: 'blocker', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [] }, TEST_LINKS), replies,
+      });
+      const evaluations = [{ threadId: 't1', status: 'partly_addressed' as const, reason: 'Capped, but the cap is too high.', grade: 'warning' as const }];
+      const round = blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] }, judge: { summary: '', threadEvaluations: evaluations } }, 2);
+      const reviews = (submitted?: string) => [{ id: 7, body: roundBody(round), state: 'COMMENTED', commit_id: HEAD, user, submitted_at: submitted ?? '' }];
+      const posted = '2026-11-12T10:00:00Z';
+      // A reply to the blocker, made before the round lowered it, does not answer the warning.
+      const before = await check([lowered([reply('author', 'It is bounded by the caller.', undefined, '2026-11-12T09:59:00Z')])], 'write', false, reviews(posted));
+      expect([before.approved, before.events]).toEqual([false, []]);
+      expect(before.why).toMatch(/^1 warning thread holds the approval:\n- \[Retry t1\]/);
+      // Without the time the review was posted, no reply counts.
+      const unknown = await check([lowered([reply('author', 'It is bounded by the caller.', undefined, '2026-11-12T10:01:00Z')])], 'write', false, reviews());
+      expect(unknown.approved).toBe(false);
+      // Neither does a reply whose own time is unknown.
+      expect((await check([lowered([reply('author')])], 'write', false, reviews(posted))).approved).toBe(false);
+      const after = await check([lowered([reply('author', 'It is bounded by the caller.', undefined, '2026-11-12T10:01:00Z')])], 'write', false, reviews(posted));
+      expect([after.approved, after.events]).toEqual([true, ['APPROVE']]);
+    });
+
+    it('holds the approval when the round records cannot be read, since the thread then counts as blocking', async () => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const { approved, events } = await check([warning('t1', { replies: [reply('author')] })], 'write', true);
+      expect([approved, events]).toEqual([false, []]);
+    });
+
+    it('names the warning threads that hold beside an open blocking thread', async () => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      const blocker = makeGraphqlFetchThreadNode({
+        id: 'b1', url: 'https://example.com/b1', body: formatFindingComment({ severity: 'blocker', title: 'Lost write', file: 'src/a.ts', line: 10, description: 'd', reviewers: [] }, TEST_LINKS),
+      });
+      const { approved, why } = await check([blocker, warning('t1'), warning('t2', { replies: [reply('author')] })]);
+      expect(approved).toBe(false);
+      expect(why).toContain('[Lost write](https://example.com/b1)');
+      expect(why).toMatch(/\n\n1 warning thread holds the approval:\n- \[Retry t1\]\(https:\/\/example\.com\/t1\)\n/);
+      // With every warning answered, the reply names only what blocks.
+      expect((await check([blocker, warning('t2', { replies: [reply('author')] })])).why).not.toContain('warning thread');
+    });
   });
 
   it('reports the approval as a passing `Manki` check on the head', async () => {
@@ -1718,6 +1898,23 @@ describe('pauseState', () => {
     rounds[1].meta.draft = true;
     rounds[3].meta.draft = true;
     expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toEqual({ capRounds: 8, roundsLeft: 2, capReached: false, paused: false });
+  });
+
+  it('counts a round that warnings held as no approval, whatever hold came first', () => {
+    const rounds = Array.from({ length: 10 }, (_, i) => makeRoundContext(i + 1));
+    const held = (held: NonNullable<RoundContext['approval']>['held'], warningsHeld?: true): RoundContext =>
+      ({ ...makeRoundContext(5, { verdict: 'APPROVE' }), approval: { held, ...(warningsHeld && { warningsHeld }) } });
+    const withRound5 = (round: RoundContext) => rounds.map(r => (r.meta.round === 5 ? round : r));
+    // Warnings held it, alone or behind a config hold, so the count runs on and the cap pauses with no approval to name.
+    for (const round of [held('warnings', true), held('config', true)]) {
+      expect(pauseState({ priorRounds: withRound5(round) }, DEFAULT_CONFIG)).toMatchObject({
+        capRounds: 10, paused: true, reason: expect.stringMatching(/^Manki has reviewed new changes in 10\/10 rounds on this PR\. /),
+      });
+    }
+    // An approval held for anything else, or one recorded without the flag, starts the count again.
+    for (const round of [held('conflict'), held(false), makeRoundContext(5, { verdict: 'APPROVE' })]) {
+      expect(pauseState({ priorRounds: withRound5(round) }, DEFAULT_CONFIG)).toMatchObject({ capRounds: 5, paused: false });
+    }
   });
 
   it('turns automatic review back on for `rounds_after_restart` rounds after a review started by hand while paused', () => {

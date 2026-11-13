@@ -52,6 +52,7 @@ const HELD_TITLES: Record<Exclude<ApprovalHeld, false>, string> = {
   draft: 'Approval held: the PR is a draft',
   config: 'Approval held: a config file did not load',
   unread: 'Approval held: some changed files were not read',
+  warnings: 'Approval held: warnings wait for a fix or an answer',
 };
 
 /** Returns the check report for a round that ended with `outcome`. A held approval reports neutral, whatever the outcome. */

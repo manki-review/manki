@@ -89,7 +89,7 @@ import {
   showSettings,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -830,8 +830,9 @@ async function changesConfig(target: RunTarget, configPath: string, headContent:
 /**
  * Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. With
  * `configBroken`, an unchanged PR is reviewed again, so the full round decides whether the config holds its approval.
+ * So is an approved one while a warning thread holds the approval.
  */
-async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft }: FullReviewOptions, configBroken: boolean): Promise<boolean> {
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft, prAuthorLogin }: FullReviewOptions, configBroken: boolean): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
   // A run queued behind another can find its commit reviewed already. `forceReview` reviews it again, as a box tick asks.
@@ -859,6 +860,11 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       try {
         const approved = standing.verdict === 'APPROVE';
         const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
+        // A warning thread can hold an approval given before warnings held one, or one given before the thread was reopened.
+        if (approved && !held && (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role)).length > 0) {
+          core.info(`A warning thread holds the approval of ${shortSha}, reviewing in full`);
+          return false;
+        }
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
@@ -1631,16 +1637,25 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
   };
 }
 
-/** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
+const WARNINGS_ALSO_HOLD_LINE = 'Warnings also hold the approval. The review names each one and what clears it.';
+
+/** Posts the round's review and dismisses the previous one. Returns the new review's id, whether its approval was held, and whether warnings hold it. */
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean }> {
   const { octokit, bot, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
   const disproved = (result.allJudgedFindings ?? []).flatMap((f): DisprovedFinding[] => {
     const by = f.severity === 'ignore' && disproof(f);
     return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
   });
+  // Read after the round resolved the threads it found fixed, and with its own grades, which can lower a blocker thread to a warning.
+  const openWarnings = result.verdict === 'APPROVE'
+    ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).catch((error: unknown) => {
+      core.warning(`Could not read the warning threads, so the approval is held: ${error instanceof Error ? error.message : error}`);
+      return 'unread' as const;
+    }) : [];
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
+    openWarnings,
     disproved,
     draft: run.options.draft,
     autoApprove: run.config.auto_approve,
@@ -1652,8 +1667,9 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     onPosted: () => { run.progress.reviewPosted = true; },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
-  // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.
-  if (posted.approvalHeld) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, posted.id, 'APPROVED', commitSha);
+  // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed. A warning
+  // also takes back an approval of this commit, as a round run again on it can find one.
+  if (posted.approvalHeld) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, posted.id, 'APPROVED', posted.warningsHeld ? undefined : commitSha);
   return posted;
 }
 
@@ -2026,7 +2042,10 @@ async function runFullReview(
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
-    checkReport = outcomeReport(result.outcome, unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(roundSentence(result))].filter(Boolean).join('\n\n') : roundSummary(result), posted.approvalHeld);
+    // The title names the first hold, so warnings that hold behind another one are named in the summary.
+    const alsoWarnings = posted.warningsHeld && posted.approvalHeld !== 'warnings' ? WARNINGS_ALSO_HOLD_LINE : '';
+    const summary = unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(roundSentence(result))].filter(Boolean).join('\n\n') : roundSummary(result);
+    checkReport = outcomeReport(result.outcome, [summary, alsoWarnings].filter(Boolean).join('\n\n'), posted.approvalHeld);
   } catch (caught) {
     cancelDashboardFlush(progress);
     // A stopped run reports the stop, whatever error it ended on.
