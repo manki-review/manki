@@ -5283,7 +5283,7 @@ describe('postReview non-blocking findings', () => {
     for (const title of ['Still open', 'Fixed since', 'Withdrawn one', 'Agreed then kept', 'No marker', 'Agreed suggestion']) expect(body).not.toContain(title);
   });
 
-  it('notes the related open PRs and issues, most telling first, with their titles neutralized and no model reason, and keeps the approval', async () => {
+  it('notes the open PRs and issues the author can act on, duplicates first, with their titles neutralized and no model reason, and keeps the approval', async () => {
     const { octokit, createReview } = makeOctokit();
     const result: ReviewResult = {
       ...buildResult([]),
@@ -5291,9 +5291,9 @@ describe('postReview non-blocking findings', () => {
         items: [
           { kind: 'pr', number: 21, title: 'Touches [the] parser', excerpt: '', sharedFiles: 1, relation: 'overlapping' },
           { kind: 'issue', number: 42, title: 'Ping @alice, see [docs](https://evil.example)', excerpt: '', relation: 'fixes_issue', reason: 'Resolves it, cc @bob.' },
-          { kind: 'pr', number: 20, title: 'Same change', excerpt: '', sharedFiles: 2, draft: true, relation: 'duplicate', reason: 'Both add the note.' },
+          { kind: 'pr', number: 20, title: 'Same [the] change', excerpt: '', sharedFiles: 2, draft: true, relation: 'duplicate', reason: 'Both add the note.' },
           { kind: 'pr', number: 22, title: 'Unrelated one', excerpt: '', relation: 'unrelated' },
-          { kind: 'issue', number: 44, title: 'Ends in a backslash \\', excerpt: '', relation: 'overlapping' },
+          { kind: 'issue', number: 44, title: 'Ends in a backslash \\', excerpt: '', relation: 'fixes_issue' },
           { kind: 'issue', number: 43, title: 'Never classified', excerpt: '' },
         ],
       },
@@ -5305,18 +5305,17 @@ describe('postReview non-blocking findings', () => {
     expect(review.event).toBe('APPROVE');
     expect(review.comments).toEqual([]);
     expect(review.body).toContain([
-      '**Related work:** open PRs and issues that may cover the same change. None of them blocks.',
+      '**Related work:** open PRs and issues this PR may duplicate or fix. None of them blocks.',
       '',
-      '- Duplicate · [#20 Same change](https://github.com/owner/repo/pull/20) (draft)',
-      '- Fixed here, not linked · [#42 Ping @\u200Balice, see docs](https://github.com/owner/repo/issues/42)',
-      '- Overlaps · [#21 Touches \\[the\\] parser](https://github.com/owner/repo/pull/21)',
-      '- Overlaps · [#44 Ends in a backslash \\\\](https://github.com/owner/repo/issues/44)',
+      '- [#20 Same \\[the\\] change](https://github.com/owner/repo/pull/20) (draft) seems to make the same change. Close one of the two if so.',
+      '- This PR may fix [#42 Ping @\u200Balice, see docs](https://github.com/owner/repo/issues/42). Add `Closes #42` to the description if it does.',
+      '- This PR may fix [#44 Ends in a backslash \\\\](https://github.com/owner/repo/issues/44). Add `Closes #44` to the description if it does.',
     ].join('\n'));
-    expect(review.body).not.toContain('Resolves it');
-    expect(review.body).not.toContain('Unrelated one');
-    expect(review.body).not.toContain('Never classified');
+    for (const text of ['Resolves it', 'Touches', 'Unrelated one', 'Never classified']) expect(review.body).not.toContain(text);
 
-    await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), relatedWork: { items: [result.relatedWork!.items[3]] } }, diff);
+    // With only overlapping, unrelated and unclassified candidates there is nothing to do, so the section is left out.
+    const nothingToDo = result.relatedWork!.items.filter(item => item.relation !== 'duplicate' && item.relation !== 'fixes_issue');
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), relatedWork: { items: nothingToDo } }, diff);
     expect(createReview.mock.calls[1][0].body).not.toContain('Related work');
   });
 
