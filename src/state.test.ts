@@ -1343,7 +1343,9 @@ describe('checkAndAutoApprove', () => {
 
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(result).toBe(true);
+    // A refused approval is held, as in a review round.
+    expect(result).toBe(false);
+    expect(jest.mocked(authModule.reportPrState)).toHaveBeenCalledWith('owner', 'repo', 1, { approval: { commit: 'sha-789', held: true } });
     expect(createReviewMock).toHaveBeenCalledTimes(1);
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE' }),
@@ -1899,7 +1901,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(result).toBe(true);
+    expect(result).toBe(false);
     expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
       issue_number: 1,
       body: expect.stringContaining('repository settings block the approval'),

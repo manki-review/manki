@@ -1023,8 +1023,8 @@ async function handleCheck(
   }
 
   const check = await approveOrSayWhy(octokit, bot, owner, repo, prNumber, config);
-  // A new approval is its own answer.
-  if (check.approved && !check.standing) return;
+  // A new approval is its own answer, and so is a notice the check already posted.
+  if (check.approved ? !check.standing : check.answered) return;
   const reason = check.approved ? 'This PR already has Manki\'s approval.' : await check.why().catch((error: unknown) => {
     core.warning(`Could not tell why the approval did not go through: ${error instanceof Error ? error.message : error}`);
     return 'The approval did not go through. The workflow log has the reason.';

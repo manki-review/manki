@@ -1557,6 +1557,8 @@ describe('handleCheck (via handlePRComment)', () => {
     expect(await check({ approved: true })).toEqual([]);
     const why = '1 thread blocks the approval:\n- Null deref\n\nApproval follows once it is resolved by someone allowed to.';
     expect(await check({ approved: false, why: async () => why })).toEqual([`${why}\n\n<!-- manki -->`]);
+    // A notice the check already posted, such as for an approval GitHub refused, is not posted again.
+    expect(await check({ approved: false, why: async () => 'Settings block the approval.', answered: true })).toHaveLength(1);
     expect((await check({ approved: true, standing: true })).at(-1)).toBe('This PR already has Manki\'s approval.\n\n<!-- manki -->');
     // A reason that cannot be read still gets a reply.
     expect((await check({ approved: false, why: () => Promise.reject(new Error('API 502')) })).at(-1)).toBe('The approval did not go through. The workflow log has the reason.\n\n<!-- manki -->');

@@ -784,8 +784,11 @@ function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string
   return held(botReviews.at(-1)) || botReviews.some(r => r.commit_id === headSha && held(r));
 }
 
-/** What `approveOrSayWhy` decided. `standing` marks an approval that was already there. `why` tells a person why the PR is not approved and what lifts that. */
-type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string> };
+/**
+ * What `approveOrSayWhy` decided. `standing` marks an approval that was already there. `why` tells a person why the PR is
+ * not approved and what lifts that. `answered` marks a reason already posted on the PR.
+ */
+type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true };
 
 /** Post an approval review if all findings are resolved. */
 async function checkAndAutoApprove(
@@ -939,6 +942,8 @@ async function approveOrSayWhy(
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber, pr.head.sha, failedAutoApproveId(comments, bot, pr.head.sha));
 
   core.info('All findings resolved — auto-approving');
+  const refusalNotice = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
+  let refused = false;
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
@@ -980,9 +985,11 @@ async function approveOrSayWhy(
         owner,
         repo,
         issue_number: prNumber,
-        body: withMarkers('All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.', BOT_MARKER),
+        body: withMarkers(refusalNotice, BOT_MARKER),
       });
       core.info('Posted auto-approve permission notice as issue comment');
+      await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
+      refused = true;
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.
@@ -993,7 +1000,8 @@ async function approveOrSayWhy(
   }
 
   await deleteAutoApproveProgressComment(octokit, owner, repo, progressCommentId);
-  return { approved: true };
+  // A refused approval is held, as in a review round, and its notice already answers a person.
+  return refused ? { approved: false, why: async () => refusalNotice, answered: true } : { approved: true };
 }
 
 export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
