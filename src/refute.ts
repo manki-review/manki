@@ -550,8 +550,12 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
     .find(e => e.fingerprint.file === finding.file && Math.abs(e.fingerprint.lineStart - finding.line) <= LINE_TOLERANCE && titlesMatch(e.title ?? '', finding.title));
   const pending = prior && pendingGrade(prior);
   if (!pending || prior.severity !== finding.severity || rank(pending) >= rank(prior.severity)) return finding;
-  const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome !== 'unsettled' || r.premises?.some(p => p.outcome === 'disproved')));
-  if (settled) return finding;
+  // A check that confirmed the defect and disproved a premise the defect rests on contradicts itself, also as a record
+  // stored as `disproved`. It settles a doubt only by confirming every premise or disproving one the grade rests on.
+  const settles = (r: Refutation): boolean => r.defect === 'confirmed'
+    ? r.outcome === 'confirmed' || !!r.premises?.some((p, i) => p.outcome === 'disproved' && prior.doubts?.[i]?.decides === 'grade')
+    : r.outcome !== 'unsettled' || !!r.premises?.some(p => p.outcome === 'disproved');
+  if ([prior.refutation, prior.pairRefutation].some(r => r && settles(r))) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
   const { cell: _cell, ...kept } = finding;
   const cell = isGradeCell(prior.cell) ? prior.cell : undefined;

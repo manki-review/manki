@@ -1346,6 +1346,14 @@ describe('refuteBlockers', () => {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }), diff,
     });
     expect([lowered.severity, lowered.doubts, lowered.cell]).toEqual(['blocker', undefined, { row: 'wrong', column: 'normal' }]);
+    // A check that confirmed the defect and disproved a premise the defect rests on settled nothing, also as a record stored as a disproof.
+    const exists = [{ premise: 'No caller bounds `a`', decides: 'defect' as const }];
+    for (const outcome of ['unsettled', 'disproved']) {
+      const [contradicted] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
+        workspace, priorRounds: rounds({ doubts: exists, refutation: { ...premise('disproved'), outcome, defect: 'confirmed' } }), diff,
+      });
+      expect([outcome, contradicted.gradeIfConfirmed, contradicted.doubts]).toEqual([outcome, 'blocker', exists]);
+    }
     client.calls.splice(1);
 
     // A grade with no doubt behind it, one a check settled, or one the judge changed is no capped grade.
@@ -1354,6 +1362,9 @@ describe('refuteBlockers', () => {
       [{ gradeIfConfirmed: undefined, doubts: undefined }, {}],
       [{ refutation: { ...premise('confirmed'), outcome: 'confirmed' } }, {}],
       [{ pairRefutation: premise('disproved') }, {}],
+      // A disproved premise the grade rests on settles the doubt beside a confirmed defect, and one the defect rests on settles it beside any other answer.
+      [{ refutation: { ...premise('disproved'), defect: 'confirmed' } }, {}],
+      [{ doubts: [{ premise: 'No caller bounds `a`', decides: 'defect' }], refutation: { ...premise('disproved'), defect: 'unsettled' } }, {}],
       // A disproof a security finding outlived settles the doubt too.
       [{ refutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: '' } }, {}],
       [{}, { severity: 'note' }],
