@@ -416,10 +416,11 @@ function isNewChange(change: ReviewedChange, previous: RoundContext | undefined)
 
 /**
  * Whether the PR was approved at or after `round`: by the round itself, or by auto-approve at `lastApprovalAt` or later.
- * An approval held on a conflict is recorded as an approval, so it counts.
+ * An approval held on a conflict, a draft, a config or unread files is recorded as an approval, so it counts. One that
+ * warnings held does not, whatever hold came first, so a loop of warnings still reaches the round cap.
  */
 function approvedSince(round: RoundContext, lastApprovalAt: string | undefined): boolean {
-  return round.verdict === 'APPROVE'
+  return (round.verdict === 'APPROVE' && !round.approval?.warningsHeld)
     || (lastApprovalAt !== undefined && Date.parse(round.meta.timestamp) <= Date.parse(lastApprovalAt));
 }
 

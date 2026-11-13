@@ -1900,6 +1900,23 @@ describe('pauseState', () => {
     expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toEqual({ capRounds: 8, roundsLeft: 2, capReached: false, paused: false });
   });
 
+  it('counts a round that warnings held as no approval, whatever hold came first', () => {
+    const rounds = Array.from({ length: 10 }, (_, i) => makeRoundContext(i + 1));
+    const held = (held: NonNullable<RoundContext['approval']>['held'], warningsHeld?: true): RoundContext =>
+      ({ ...makeRoundContext(5, { verdict: 'APPROVE' }), approval: { held, ...(warningsHeld && { warningsHeld }) } });
+    const withRound5 = (round: RoundContext) => rounds.map(r => (r.meta.round === 5 ? round : r));
+    // Warnings held it, alone or behind a config hold, so the count runs on and the cap pauses with no approval to name.
+    for (const round of [held('warnings', true), held('config', true)]) {
+      expect(pauseState({ priorRounds: withRound5(round) }, DEFAULT_CONFIG)).toMatchObject({
+        capRounds: 10, paused: true, reason: expect.stringMatching(/^Manki has reviewed new changes in 10\/10 rounds on this PR\. /),
+      });
+    }
+    // An approval held for anything else, or one recorded without the flag, starts the count again.
+    for (const round of [held('conflict'), held(false), makeRoundContext(5, { verdict: 'APPROVE' })]) {
+      expect(pauseState({ priorRounds: withRound5(round) }, DEFAULT_CONFIG)).toMatchObject({ capRounds: 5, paused: false });
+    }
+  });
+
   it('turns automatic review back on for `rounds_after_restart` rounds after a review started by hand while paused', () => {
     const byHand = (round: RoundContext, bypassReason: 'manual_review_command' | 'force_review' = 'manual_review_command'): RoundContext => ({
       ...round, meta: { ...round.meta, cap: { priorRoundCount: round.meta.round - 1, maxAutoRounds: 10, skipCap: true, forceReview: bypassReason === 'force_review', bypassReason } },

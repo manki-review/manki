@@ -1935,7 +1935,7 @@ export async function postReview(
           findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => recordPlace(entry, result.findings[i])) },
         }),
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
-        ...(event === 'APPROVE' && { approval: { held: approvalHeld } }),
+        ...(event === 'APPROVE' && { approval: { held: approvalHeld, ...(warningHold && { warningsHeld: true as const }) } }),
       }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };

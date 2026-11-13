@@ -1747,9 +1747,13 @@ describe('postReview body lead', () => {
       return (JSON.parse(extractReviewRecords((mockCreateReview.mock.calls[0][0] as { body: string }).body).records[0]) as RoundContext).approval;
     };
     expect(await approval(ready)).toEqual({ held: false });
-    expect(await approval({ ...ready, findings: [{ ...ready.findings[0], severity: 'warning', tags: ['follow-up'] }] })).toEqual({ held: 'warnings' });
+    const held = { ...ready, findings: [{ ...ready.findings[0], severity: 'warning' as const, tags: ['follow-up'] }] };
+    expect(await approval(held)).toEqual({ held: 'warnings', warningsHeld: true });
     mockGet.mockResolvedValueOnce({ data: { mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
     expect(await approval(ready)).toEqual({ held: 'conflict' });
+    // Warnings behind another hold are recorded too, since `held` names only the first hold.
+    mockGet.mockResolvedValueOnce({ data: { mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
+    expect(await approval(held)).toEqual({ held: 'conflict', warningsHeld: true });
     expect(await approval({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] })).toBeUndefined();
   });
 
