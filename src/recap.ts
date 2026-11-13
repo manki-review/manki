@@ -143,6 +143,11 @@ function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string |
   return answer?.body.split('\n\n<!--')[0].trim();
 }
 
+/** Returns `body` with its code blocks and inline code blanked out, since a command quoted there is text, not a command. */
+function withoutCode(body: string): string {
+  return body.replace(/```[\s\S]*?(?:```|$)|`[^`\n]*`/g, ' ');
+}
+
 /** A mention of Manki, which opens every command to it. */
 const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
 
@@ -1397,4 +1402,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { answersWarning, BOT_MENTION_PATTERN, blockersToRecheck, hasBotMention, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { answersWarning, BOT_MENTION_PATTERN, withoutCode, blockersToRecheck, hasBotMention, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
