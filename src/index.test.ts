@@ -2095,7 +2095,9 @@ describe('runFullReview orchestration', () => {
       expect(options).toEqual(expect.objectContaining({ openWarnings: held === 'warnings' ? 2 : held === 'unread warnings' ? 'unread' : 0 }));
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
-      expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123');
+      // An approval of the same commit stays for every hold but warnings, which a round run again on the commit can find.
+      const keepCommit = held === 'warnings' || held === 'unread warnings' ? undefined : 'abc123';
+      expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', keepCommit);
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
     });
 

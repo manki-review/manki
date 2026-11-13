@@ -1665,8 +1665,9 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     onPosted: () => { run.progress.reviewPosted = true; },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
-  // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.
-  if (posted.approvalHeld) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, posted.id, 'APPROVED', commitSha);
+  // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed. A warning
+  // also takes back an approval of this commit, as a round run again on it can find one.
+  if (posted.approvalHeld) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, posted.id, 'APPROVED', posted.approvalHeld === 'warnings' ? undefined : commitSha);
   return posted;
 }
 
