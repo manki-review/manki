@@ -1384,8 +1384,8 @@ function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly str
 }
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, then its fold. */
-function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false): string {
-  const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
+function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false, noThread = false): string {
+  const lines = [formatFindingHeader(finding, noThread), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(linked(inlineCode(findingLocation(finding)), links.linkTo(finding.file, finding.line)));
   const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links, 'flagged'));
   const block = [...lines, ...formatFindingDescription(finding), ...(fold ? [fold] : [])].join('\n');
@@ -1460,7 +1460,7 @@ function formatUnthreadedWarnings(warnings: Finding[], links: CodeLinks): string
   const clears = warnings.length === 1
     ? 'There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.'
     : 'There is no thread to answer them in, so each one holds the approval until a later review round no longer finds it.';
-  return `**Warnings that could not be posted as threads:**\n\n${warnings.map(f => formatFindingBlock(f, links, true)).join('\n\n')}\n\n${clears}`;
+  return `**Warnings that could not be posted as threads:**\n\n${warnings.map(f => formatFindingBlock(f, links, true, true)).join('\n\n')}\n\n${clears}`;
 }
 
 /**
@@ -2615,10 +2615,11 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 }
 
 /** Returns the line a finding opens with: severity, the reporting tool if any, category and effort. */
-function formatFindingHeader(finding: Finding): string {
+function formatFindingHeader(finding: Finding, noThread = false): string {
   const name = SEVERITY_NAME[finding.severity];
   const severity = `${name[0].toUpperCase()}${name.slice(1)}`;
-  const holds = holdsApproval(finding) && (isSecurityFinding(finding.tags, finding.reviewers) ? 'needs a fix' : 'needs an answer');
+  // A reply clears neither a security warning nor a warning with no thread to reply in.
+  const holds = holdsApproval(finding) && (noThread || isSecurityFinding(finding.tags, finding.reviewers) ? 'needs a fix' : 'needs an answer');
   const label = `**${isBlockingFinding(finding) ? severity : `${severity}, ${holds || 'not blocking'}`}**`;
   // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';

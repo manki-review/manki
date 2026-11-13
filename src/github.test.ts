@@ -1841,7 +1841,7 @@ describe('postReview body lead', () => {
     const unthreaded = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
     expect(nowhere.approvalHeld).toBe('warnings');
     expect(unthreaded.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it. It has no thread and holds until a later review round no longer finds it.');
-    expect(unthreaded).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs an answer**\n**Nowhere**\n');
+    expect(unthreaded).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs a fix**\n**Nowhere**\n');
     expect(unthreaded).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     // Beside warnings with a thread, the line says how many have none, and a security warning with a thread still sets the wording.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' }), warning('Nor here', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 });
@@ -5534,7 +5534,7 @@ describe('postReview non-blocking findings', () => {
     await postReview(unthreading.octokit, 'owner', 'repo', 1, 'sha', refusedLines, diff, lateContext, 1000);
     const updated = unthreading.updateReview.mock.calls[0][0].body as string;
     expect(updated.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it. It has no thread and holds until a later review round no longer finds it.');
-    expect(updated).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs an answer**\n**On old code**\n');
+    expect(updated).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs a fix**\n**On old code**\n');
     expect(updated).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     expect(updated).not.toContain('Blockers that could not be posted as threads');
     const refusedEntries = JSON.parse(extractReviewRecords(updated).records[0]).findings.entries;
