@@ -1364,7 +1364,7 @@ describe('runFullReview end to end', () => {
 
     const late = postedReviews().at(-1)!;
     expect(late.state).toBe('COMMENTED');
-    expect(late.body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\./u);
+    expect(late.body).toMatch(/^\u26A0\uFE0F \*\*1 warning to address\.\*\* Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
     // The approval of the first round is taken back.
     expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'COMMENTED']);
     expect(late.body.replace(/<!--[\s\S]*?-->/g, '')).not.toMatch(/Missed by an earlier review|Sum is never range checked/);
@@ -1381,7 +1381,7 @@ describe('runFullReview end to end', () => {
     expect(mockLLM.asked.judge).toContain('### PRRT_1 — src/math.ts:2\n- **Original concern**: Large inputs overflow silently.');
     const again = postedReviews().at(-1)!;
     expect(again.state).toBe('COMMENTED');
-    expect(again.body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\*/u);
+    expect(again.body).toMatch(/^\u26A0\uFE0F \*\*1 warning to address\.\*\*/u);
     expect(again.body).not.toContain('Missed by an earlier review');
     expect(mockGitHub.threads).toHaveLength(1);
     expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', posted: 'earlier_thread', threadId: 'PRRT_1' })]);

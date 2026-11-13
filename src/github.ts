@@ -9,7 +9,7 @@ import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config
 import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
-import { issueBox } from './issue-box';
+import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -306,19 +306,21 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
       return autoApprove ? `${line} Comment \`@manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
     }
-    const lead = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
+    const lead = `**${countOf(hold.count, 'warning')} to address.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
     // A warning without a thread can only be fixed, and holds until a later round no longer finds it.
     const unthreaded = hold.unthreaded ?? 0;
     const threaded = hold.count - unthreaded;
     const noThread = (n: number) => `${n === 1 ? 'has no thread and holds' : 'have no thread and hold'} until a later review round no longer finds ${n === 1 ? 'it' : 'them'}.`;
     if (threaded === 0) return `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}`;
-    // A reply never clears a security warning, which needs a fix or a resolve by someone allowed to clear it.
+    // Neither a reply nor the issue box clears a security warning, which needs a fix or a resolve by someone allowed to
+    // clear it. The box is named only when every holding warning has a thread to tick it in.
     const security = hold.security ?? 0;
-    const or = security === threaded ? 'or have a maintainer resolve its thread' : 'or dismiss it with a reason in its thread';
-    const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it.' : '';
-    const line = `${lead}, ${or}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
-    const after = security === threaded ? 'a resolve' : security > 0 ? 'a dismissal or a resolve' : 'a dismissal';
-    return autoApprove ? line : `${line} After ${after}, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+    const explain = 'explain in its thread why it needs no fix';
+    const ways = security === threaded ? 'or have a maintainer resolve its thread'
+      : unthreaded > 0 ? `or ${explain}` : `${explain}, or tick \`${ISSUE_BOX_LABEL}\` to track it for later`;
+    const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve its thread.' : '';
+    const line = `${lead}, ${ways}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
+    return autoApprove ? line : `${line} Once every warning is handled, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
   }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
@@ -2280,7 +2282,9 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
   READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
     const unread = hold?.reason === 'unread' && hold.skipped.excluded.length + hold.skipped.binary.length;
     // Another hold has a line of its own or is named here, and the warnings still hold once it lifts.
-    if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
+    // Only when the warnings are all that holds does handling them bring the approval. Another hold says what it needs.
+    const approves = hold?.reason === 'warnings' && hold.count !== undefined && autoApprove ? ' Manki approves once every warning is handled.' : '';
+    if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${approves}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
     if (unread) return `✅ **Approved, but a person must approve:** no model read ${unread} of the changed files.`;
     const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
