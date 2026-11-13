@@ -730,10 +730,14 @@ function personReplies<T extends { author?: { login: string; __typename?: string
   return comments.slice(1).filter(c => !isBotLogin(bot, c.author?.login) && c.author?.__typename !== 'Bot');
 }
 
-/** Whether a person's reply answers a warning: it has text, addresses no command to Manki outside code, and does not end in a question mark. */
+/**
+ * Whether a person's reply answers a warning: it has text, does not end in a question mark, and outside code neither
+ * addresses Manki nor holds a command that `parseCommand` would run.
+ */
 function answersWarning(body: string): boolean {
   const text = body.trim();
-  return !!text && !BOT_COMMAND_PATTERN.test(withoutCode(text).toLowerCase()) && !text.endsWith('?');
+  const lower = withoutCode(text).toLowerCase();
+  return !!text && !BOT_COMMAND_PATTERN.test(lower) && !BOT_PREFIX_PATTERN.test(lower) && !text.endsWith('?');
 }
 
 /** The latest reply in a thread that neither Manki nor another bot wrote. */

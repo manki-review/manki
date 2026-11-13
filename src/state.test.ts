@@ -1146,6 +1146,7 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread the PR author only sent a command in', [warning('t1', { replies: [reply('author', '@manki explain why this matters')] })]],
       ['a warning thread the PR author addressed Manki in mid-sentence', [warning('t1', { replies: [reply('author', 'It is bounded, so (@Manki-review) please drop it.')] })]],
       ['a warning thread the PR author sent a `/manki` line in', [warning('t1', { replies: [reply('author', 'It is bounded.\n  /manki dismiss')] })]],
+      ['a warning thread the PR author sent a mid-line command in', [warning('t1', { replies: [reply('author', 'ok - /manki explain the retry')] })]],
       ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
         body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
           .replace('**Warning, needs an answer**', '**Warning, not blocking**')
