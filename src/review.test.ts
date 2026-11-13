@@ -429,9 +429,9 @@ describe('determineOutcome', () => {
     });
 
 
-    it('ignores prior findings that are not warning or blocker (e.g. note)', () => {
+    it('ignores prior findings that are not warning or blocker (e.g. note), also while their suggestion thread is open', () => {
       const priorNote = makePriorBlocker({ severity: 'note' });
-      const open = [makeOpenThread()];
+      const open = [makeOpenThread({ severity: 'note' })];
       const result = determineOutcome([note], fingerprintEntriesFromLegacy([priorNote]), open);
       expect(result.outcome).toBe('READY');
       expect(result.verdictReason).toBe('only_notes');

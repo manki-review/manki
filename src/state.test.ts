@@ -992,12 +992,13 @@ describe('checkAndAutoApprove', () => {
     }
   });
 
-  it('approves when blocking threads are resolved and only old suggestion and nitpick threads are open', async () => {
+  it('approves when blocking threads are resolved and only suggestion and old nitpick threads are open', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
+    const suggestion = formatFindingComment({ severity: 'note', title: 'Name the retry', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], suggestedFix: 'retryOnce();' }, TEST_LINKS);
     const octokit = makeMockOctokit({
       threads: [
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true }),
-        makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:note:style --> style', isResolved: false }),
+        makeGraphqlFetchThreadNode({ id: 't2', body: suggestion, isResolved: false }),
         makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:nit:naming --> naming', isResolved: false }),
       ],
       createReviewFn: createReviewMock,

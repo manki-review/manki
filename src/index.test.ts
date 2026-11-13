@@ -6181,9 +6181,10 @@ describe('runFullReview orchestration', () => {
   });
 
   it.each([
-    ['fails to resolve', undefined],
-    ['someone else resolved, and that cannot be reopened', 'alice'],
-  ])('keeps a blocker thread that %s open, and requests changes on it instead of approving', async (_name, resolver) => {
+    ['blocker', 'fails to resolve', undefined],
+    ['blocker', 'someone else resolved, and that cannot be reopened', 'alice'],
+    ['note', 'fails to resolve', undefined],
+  ] as const)('keeps a %s thread that %s open, and requests changes on it only when it blocks', async (severity, _name, resolver) => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -6195,7 +6196,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_fail' },
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity, status: 'open' as const, threadId: 'PRRT_fail' },
       ],
       priorRounds: [],
     });
@@ -6219,6 +6220,13 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql).not.toHaveBeenCalledWith(expect.stringContaining('addPullRequestReviewThreadReply'), expect.anything());
     const posts = jest.mocked(ghUtils.postReview).mock.calls;
     expect(posts).toHaveLength(1);
+    // An open suggestion thread never blocks, so the round still approves.
+    if (severity === 'note') {
+      expect(posts[0][7]).toMatchObject({ verdict: 'APPROVE', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
+      expect(posts[0][5]).toMatchObject({ verdict: 'APPROVE', outcome: 'READY' });
+      expect(posts[0][5].verdictTrace).toBeUndefined();
+      return;
+    }
     expect(posts[0][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
     expect(posts[0][5]).toMatchObject({
       verdict: 'REQUEST_CHANGES',

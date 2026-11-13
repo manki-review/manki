@@ -1155,7 +1155,7 @@ function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): strin
   const sev = context.findings.severityCounts;
   const breakdown = SEVERITY_ORDER
     .filter(s => s !== 'ignore' && (sev[s] ?? 0) > 0)
-    .map(s => countOf(sev[s], s))
+    .map(s => countOf(sev[s], SEVERITY_NAME[s]))
     .join(', ');
   const time = Math.round(reviewTimeMs / 1000);
   return `<!-- manki-stats: ${countOf(context.findings.count, 'finding')} (${breakdown || 'none'}), ${countOf(context.diff.lines, 'line')}, ${time}s -->`;
@@ -1195,6 +1195,14 @@ const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
   ignore: '⚪',
 };
 
+/** What a review calls each severity. A note is posted as a suggestion. */
+const SEVERITY_NAME: Record<FindingSeverity, string> = {
+  blocker: 'blocker',
+  warning: 'warning',
+  note: 'suggestion',
+  ignore: 'ignore',
+};
+
 /** Shown under the title of a finding whose `checkStatus` is `unconfirmed`. */
 const UNCONFIRMED_NOTE = '_Manki could not confirm this, so please check it._';
 
@@ -1202,7 +1210,7 @@ function trustNote(finding: Finding): string | undefined {
   return finding.checkStatus === 'unconfirmed' ? UNCONFIRMED_NOTE : undefined;
 }
 
-/** Non-blocking findings posted as line comments per review. The rest go in the body list. A note is never one of them. */
+/** Non-blocking findings above a note posted as line comments per review. The rest go in the body list. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
 /** The most of a blocker's description the round record keeps when the blocker got no thread. */
@@ -1560,7 +1568,7 @@ export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[
   if (capped.size > 0) result.unposted = [...(result.unposted ?? []), ...[...capped].map((f): Finding => ({ ...f, unpostedReason: 'note_cap' }))];
 }
 
-/** Whether the review lists the finding as a note. A security finding below `warning` keeps its thread instead. */
+/** Whether the finding is a note `capNotes` limits, posted as a suggestion. A security finding below `warning` is posted like a warning instead. */
 function isListedNote(finding: Finding): boolean {
   return isNote(finding.severity) && !isSecurityFinding(finding.tags, finding.reviewers);
 }
@@ -1610,21 +1618,22 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
 }
 
 /**
- * Returns the notes of a review as one collapsed section, a fold per note, in the order given. A line under it says
- * how many notes of `unposted` are over the `review.notes` limit.
+ * Returns the notes the body lists as one collapsed section of suggestions, a fold per note, in the order given. A line
+ * under it says how many notes of `unposted` are over the `review.notes` limit.
  */
 function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLinks): string | null {
   const listed = notes.length > 0
-    && `<details>\n<summary><b>${countOf(notes.length, 'note')}</b> · not blocking</summary>\n\n${notes.map(f => formatFindingFold(f, links, true)).join('\n\n')}\n\n</details>`;
+    && `<details>\n<summary><b>${countOf(notes.length, 'suggestion')}</b> · not blocking</summary>\n\n${notes.map(f => formatFindingFold(f, links, true)).join('\n\n')}\n\n</details>`;
   const capped = unposted.filter(f => f.unpostedReason === 'note_cap').length;
-  const unlisted = capped > 0 && `<sub>${capped} ${listed ? 'more ' : ''}${capped === 1 ? 'note is' : 'notes are'} not listed.</sub>`;
+  const unlisted = capped > 0 && `<sub>${capped} ${listed ? 'more ' : ''}${capped === 1 ? 'suggestion is' : 'suggestions are'} not listed.</sub>`;
   return [listed, unlisted].filter(Boolean).join('\n\n') || null;
 }
 
 /**
  * Post the review. Blocking findings become threads. Other findings on a changed line
  * become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE` and most severe
- * first. The rest go in the body. A note never gets a thread: the body lists the notes in one collapsed section.
+ * first. The rest go in the body. Every note `capNotes` kept on a changed line gets a line comment as a suggestion,
+ * unless it is pre-existing or sits on code an earlier round reviewed. The body lists the other notes in one collapsed section.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. One outside the diff files, or tied to no file, gets a file-level comment on the first
@@ -1759,12 +1768,15 @@ export async function postReview(
     }
   }
 
-  const inline = new Set(nonBlocking
-    .filter(f => diff && f.line > 0 && isOnChangedLine(f, diff))
-    .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
-    .slice(0, MAX_NON_BLOCKING_INLINE));
+  const onChangedLine = (f: Finding): boolean => !!diff && f.line > 0 && isOnChangedLine(f, diff);
+  // `capNotes` already capped the notes, so every suggestion that can get a thread gets one.
+  const suggestions = notes.filter(f => onChangedLine(f) && !isPreExisting(f) && f.origin !== 'earlier' && f.origin !== 'reviewed');
+  const inline = new Set([
+    ...nonBlocking.filter(onChangedLine).sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity)).slice(0, MAX_NON_BLOCKING_INLINE),
+    ...suggestions,
+  ]);
   const inlineComments: typeof validComments = [];
-  for (const f of nonBlocking) {
+  for (const f of [...nonBlocking, ...suggestions]) {
     if (inline.has(f)) {
       inlineComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
       threadFindings.push(f);
@@ -1773,6 +1785,7 @@ export async function postReview(
     }
   }
   validComments.push(...inlineComments);
+  const listedNotes = notes.filter(f => !inline.has(f));
 
   // An incomplete round keeps its record for diagnostics. What it shows reads as it does without one.
   const round = context?.meta.incomplete ? undefined : context;
@@ -1800,7 +1813,7 @@ export async function postReview(
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
-    const listed = [...bodyFindings, ...notes, ...(withoutLineThreads ? inline : [])];
+    const listed = [...bodyFindings, ...listedNotes, ...(withoutLineThreads ? inline : [])];
     const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
@@ -1821,7 +1834,7 @@ export async function postReview(
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
-      formatNotesSection(notes, result.unposted ?? [], links),
+      formatNotesSection(listedNotes, result.unposted ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
@@ -1839,7 +1852,7 @@ export async function postReview(
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
   const body = highlightCode(renderBody(), codeTokens);
   const postedComments = [...validComments, ...fileComments].map(highlight);
-  const inBody = new Set([...bodyFindings, ...notes, ...unthreaded]);
+  const inBody = new Set([...bodyFindings, ...listedNotes, ...unthreaded]);
   // The record with each finding's place. A finding in `refused` got no thread from GitHub, so the body carries it.
   const recordFor = (refused: ReadonlySet<Finding> = new Set()): string => {
     const placeOf = (f: Finding): PostedPlace => refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
@@ -2135,11 +2148,11 @@ interface PostedFindings {
   hold?: ApprovalHold;
 }
 
-/** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 notes". */
+/** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 suggestions". */
 function formatSeverityCounts(findings: Array<Pick<FindingFingerprintEntry, 'severity'>>): string {
   const parts = SEVERITY_ORDER.flatMap(s => {
     const n = findings.filter(f => f.severity === s).length;
-    return n > 0 ? [countOf(n, s)] : [];
+    return n > 0 ? [countOf(n, SEVERITY_NAME[s])] : [];
   });
   return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts.join('');
 }
@@ -2518,7 +2531,8 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 
 /** Returns the line a finding opens with: severity, the reporting tool if any, category and effort. */
 function formatFindingHeader(finding: Finding): string {
-  const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
+  const name = SEVERITY_NAME[finding.severity];
+  const severity = `${name[0].toUpperCase()}${name.slice(1)}`;
   const label = `**${isBlockingFinding(finding) ? severity : `${severity}, not blocking`}**`;
   // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';
