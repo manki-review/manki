@@ -17,7 +17,7 @@ import { carryBodyWarnings, ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
-import { SECURITY_TAG } from './types';
+import { SECURITY_TAG, threadWarns } from './types';
 import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome } from './types';
 import { fetchWorkspace, gitEnv, runGit } from './workspace';
 
@@ -381,8 +381,16 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
       openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled', instructions: repoContext,
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
+    // An earlier warning thread holds as in a pull request round, unless this round found it fixed or graded it lower.
+    // No reply is known here, so an open one holds, and so does a resolved security one that no round found fixed.
+    const evaluationOf = (threadId?: string) => result.threadEvaluations?.find(e => e.threadId === threadId);
+    const threadHolds = (followUp?.previousFindings ?? []).some(p => {
+      const evaluation = evaluationOf(p.threadId);
+      const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity });
+      return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || (!!p.isSecurity && !p.fixed));
+    });
     const approvalHeld = brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
-      : result.verdict === 'APPROVE' && result.findings.some(holdsApproval) ? 'warnings' : false;
+      : result.verdict === 'APPROVE' && (threadHolds || result.findings.some(holdsApproval)) ? 'warnings' : false;
     return { result, context, base, head, approvalHeld };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });

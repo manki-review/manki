@@ -6,10 +6,10 @@ import { dirname, join } from 'path';
 import * as core from '@actions/core';
 
 import { formatLockfileChanges } from './lockfile';
-import { overlayConfig, reviewLocal } from './local-review';
+import { EarlierFinding, overlayConfig, reviewLocal } from './local-review';
 import { runReview } from './review';
 import { REACH_DOUBT } from './types';
-import type { Finding, ReviewResult, RoundOutcome } from './types';
+import type { Finding, ReviewResult, RoundOutcome, ThreadEvaluation } from './types';
 
 jest.mock('@actions/core');
 jest.mock('./providers', () => ({
@@ -186,6 +186,25 @@ describe('reviewLocal', () => {
       { key: 'src/b.ts:5:5:Fifth-value-is-wrong', reason: 'hidden_note' },
     ]);
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
+
+    // An earlier warning thread holds an approving round as in a pull request round, until it is found fixed, graded lower
+    // or resolved. A resolved security warning holds until a round finds it fixed.
+    const thread = (overrides: Partial<EarlierFinding>): EarlierFinding => ({ id: 'W1', severity: 'warning', title: 'Retry never stops', file: 'src/b.ts', line: 20, thread: 'open', ...overrides });
+    const heldBy = async (findings: EarlierFinding[], threadEvaluations?: ThreadEvaluation[]) => {
+      jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'], ...(threadEvaluations && { threadEvaluations }) });
+      return (await reviewLocal({ repoRoot: repo, base: 'main', head: fixed, earlier: { head: reviewed, findings }, providerInputs: inputs })).approvalHeld;
+    };
+    expect(await heldBy([thread({})])).toBe('warnings');
+    expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'addressed', reason: 'Bounded now.' }])).toBe(false);
+    expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Smaller.', grade: 'note' }])).toBe(false);
+    expect(await heldBy([thread({ thread: 'resolved' })])).toBe(false);
+    expect(await heldBy([thread({ thread: 'resolved', security: true })])).toBe('warnings');
+    expect(await heldBy([thread({ thread: 'fixed', security: true })])).toBe(false);
+    // Grades are read as a pull request round reads them: a security warning is never graded below its thread, and a blocker grade blocks instead.
+    expect(await heldBy([thread({ security: true })], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Smaller.', grade: 'note' }])).toBe('warnings');
+    expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Worse.', grade: 'blocker' }])).toBe(false);
+    // A warning the earlier round listed only in its review body has no thread, so it holds only if this round finds it again.
+    expect(await heldBy([thread({ thread: undefined })])).toBe(false);
   });
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
