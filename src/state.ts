@@ -726,22 +726,24 @@ async function postStaleApproveSkippedComment(
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
+ * `line` is the notice's text, and `posted` says whether this call posted the notice.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
   autoApprove = true, recordFor?: (reason: string) => string,
-): Promise<ApprovalHeld> {
+): Promise<{ reason: Exclude<ApprovalHeld, false>; line: string; posted: boolean } | false> {
   const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
   core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
   assertWritesAllowed();
+  const line = approvalHoldLine(hold, autoApprove);
+  let posted = false;
   try {
-    const line = approvalHoldLine(hold, autoApprove);
-    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
+    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
-  return hold.reason;
+  return { reason: hold.reason, line, posted };
 }
 
 /**
@@ -941,7 +943,9 @@ async function approveOrSayWhy(
   const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, reason => approvalRecord('held', reason, pr.head.sha));
   if (hold) {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-    return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }, config?.auto_approve));
+    // Reported once, with the notice, as for a refused approval below. A notice this check posted already answers a person.
+    if (hold.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', hold.line, hold.reason));
+    return { approved: false, why: async () => hold.line, ...(hold.posted && { answered: true as const }) };
   }
 
   const comments = await fetchPRComments(octokit, owner, repo, prNumber).catch((error: unknown) => {

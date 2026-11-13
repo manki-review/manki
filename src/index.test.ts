@@ -6984,7 +6984,7 @@ describe('runFullReview orchestration', () => {
 
     it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
       seedPush('APPROVE', REVIEWED_DIFF);
-      jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
+      jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: 'conflict', line: 'conflicts', posted: true });
 
       await callRunFullReview();
 
@@ -7024,7 +7024,7 @@ describe('runFullReview orchestration', () => {
       ['a request for changes', 'REQUEST_CHANGES', false, 'failure', 'Changes requested'],
     ] as const)('reports %s that stands as the PR check and to the coordinator', async (_label, verdict, held, conclusion, title) => {
       seedPush(verdict, REBASED_DIFF);
-      if (held) jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
+      if (held) jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: 'conflict', line: 'conflicts', posted: true });
 
       await callRunFullReview();
 

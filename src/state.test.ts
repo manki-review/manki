@@ -953,20 +953,20 @@ describe('checkAndAutoApprove', () => {
     const createCommentMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({ draft: true, mergeable: true, createCommentFn: createCommentMock });
 
-    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe('draft');
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
       '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.\n\n<!-- manki-approval-held:sha-9 -->',
     ]);
     // With `auto_approve` off the notice promises no approval for marking the PR ready.
     createCommentMock.mockClear();
-    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-8', false, false)).toBe('draft');
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-8', false, false)).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
       '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n<!-- manki-approval-held:sha-8 -->',
     ]);
     expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
     const unreadable = makeMockOctokit({ mergeable: true });
     jest.mocked(unreadable.rest.pulls.get).mockRejectedValue(new Error('API down'));
-    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9', true)).toBe('draft');
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9', true)).toMatchObject({ reason: 'draft' });
     expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
   });
 
@@ -981,24 +981,34 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).not.toHaveBeenCalled();
   });
 
-  it('holds the approval of a PR that conflicts with its base, with one notice per head, and reports each outcome', async () => {
+  it('holds the approval of a PR that conflicts with its base, with one notice and one neutral check per head, and reports each outcome', async () => {
     const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true })];
     const createReviewMock = jest.fn().mockResolvedValue({});
     const createCommentMock = jest.fn().mockResolvedValue({});
-    const notice = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.\n\n<!-- manki-approval-held:sha-456 -->';
+    const checks = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+    const line = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
+    const notice = `${line}\n\n<!-- manki-approval-held:sha-456 -->`;
 
-    const first = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
-    expect(await checkAndAutoApprove(first, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
+    const first = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks });
+    // The notice answers a person who asked, and the check says the approval is held instead of keeping the earlier round's result.
+    expect(await approveOrSayWhy(first, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG)).toMatchObject({ approved: false, answered: true });
+    expect(checks.create.mock.calls).toEqual([[expect.objectContaining({
+      head_sha: 'sha-456', status: 'completed', conclusion: 'neutral', output: { title: 'Approval held: the PR conflicts with its base', summary: line },
+    })]]);
     const [posted] = createCommentMock.mock.calls.map(([c]) => c.body as string);
     expect(posted).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `main`\. Rebase it, and Manki reviews the result\. If the push starts no review, as while automatic review is off or paused, comment `@manki review`\.\n\n<!-- manki-approval-record: .+ -->\n\n<!-- manki-approval-held:sha-456 -->$/);
     expect(extractApprovalRecords(posted).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'conflict', head: 'sha-456', threads: { total: 1, resolved: 1 } })]);
 
+    // A repeat posts nothing, so `@manki check` replies with the line once instead of after a notice saying the same.
     const again = makeMockOctokit({
-      threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock,
+      threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks,
       existingComments: [{ body: notice, user: { login: 'manki-review[bot]' } }],
     });
-    expect(await checkAndAutoApprove(again, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
+    const repeat = await approveOrSayWhy(again, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+    expect(repeat).not.toHaveProperty('answered');
+    expect(await (repeat as { why: () => Promise<string> }).why()).toBe(line);
     expect(createCommentMock).toHaveBeenCalledTimes(1);
+    expect(checks.create).toHaveBeenCalledTimes(1);
     expect(createReviewMock).not.toHaveBeenCalled();
 
     const clean = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock });

@@ -876,7 +876,8 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
+        const hold = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
+        const held = hold && hold.reason;
         // A warning thread can hold an approval given before warnings held one, or one given before the thread was reopened.
         if (approved && !held && (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role)).length > 0) {
           core.info(`A warning thread holds the approval of ${shortSha}, reviewing in full`);
