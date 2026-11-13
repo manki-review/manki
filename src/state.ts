@@ -162,14 +162,15 @@ async function fetchBotReviewThreads(
   });
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records: Awaited<ReturnType<typeof fetchPriorRoundContexts>> = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
-  const grades = recordedThreadGrades(pending ? [...records.priorRounds, pending] : records.priorRounds);
+  const rounds = pending ? [...records.priorRounds, pending] : records.priorRounds;
+  const grades = recordedThreadGrades(rounds);
   // The pending round is not posted yet, so no reply can come after it.
   const postedAt = new Map(records.postedAt);
   if (pending) postedAt.delete(pending.meta.round);
   // Only Manki's own resolve needs a replier to back it. A thread at the comment limit may hide a later reply, so it names none.
   const byManki = (thread: typeof botThreads[number]) => thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login);
   const repliesUnread = (thread: typeof botThreads[number]) => byManki(thread) && thread.comments.nodes.length >= THREAD_COMMENTS_LIMIT;
-  const backing = await resolveBacking(octokit, owner, repo, records.priorRounds, botThreads.map(thread => {
+  const backing = await resolveBacking(octokit, owner, repo, rounds, botThreads.map(thread => {
     const replier = byManki(thread) && !repliesUnread(thread) ? latestPersonReply(bot, thread.comments.nodes)?.author?.login : undefined;
     const resolver = thread.isResolved && !byManki(thread) ? thread.resolvedBy?.login : undefined;
     return { id: thread.id, ...(replier && { latestReplyLogin: replier }), ...(resolver && { resolverLogin: resolver }) };

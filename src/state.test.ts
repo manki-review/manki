@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
@@ -292,15 +292,20 @@ describe('fetchBotReviewThreads', () => {
     expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
 
     // A round not posted yet grades the threads too: here it lowers a blocker to a warning and raises a warning to a blocker.
+    // It also backs Manki's resolve of the security warning it found fixed, so that thread holds nothing.
     const pending = makeRoundContext(4, {
-      judge: { summary: '', threadEvaluations: [partly('b', 'warning')] },
+      judge: { summary: '', threadEvaluations: [partly('b', 'warning'), { threadId: 'x', status: 'addressed', reason: 'r' }] },
       findings: { count: 1, severityCounts: {}, entries: [{ fingerprint: { file: 'src/a.ts', lineStart: 3, lineEnd: 3, slug: 'x' }, severity: 'blocker', threadId: 'p' }] },
     });
-    const graded = await fetchBotReviewThreads(threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([
+    const pendingThreads = () => makeGraphqlFetchResponse([
       makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
       makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
-    ])), reviews), TEST_BOT, 'owner', 'repo', 1, pending);
-    expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning])).toEqual([['b', false, true], ['p', true, false]]);
+      makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS), isResolved: true, resolvedBy: 'manki-review[bot]' }),
+    ]);
+    const graded = await fetchBotReviewThreads(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, pending);
+    expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true]]);
+    const held = await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending);
+    expect(held.map(t => t.id)).toEqual(['b']);
   });
 
   it('reads what backs a resolved thread: a record that says addressed, a latest reply from a person with write access, or such a person as the resolver', async () => {
