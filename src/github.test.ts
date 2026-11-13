@@ -148,6 +148,7 @@ describe('formatFindingComment', () => {
     const capped = step('blocker', 'warning', 'unproven');
     const restored = step('warning', 'blocker', 'refutation');
     const held = { cell: cell('wrong'), gradeIfConfirmed: 'blocker' as const };
+    const harm = { premise: 'The total is what the invoice shows', decides: 'grade' as const, consequence: true as const };
     const paths: Array<[string, Partial<Finding>, boolean]> = [
       ['the judge lowered a finder\'s blocker to a warning, then the rule raised it', { cell: cell('degraded'), gradePath: [step('blocker', 'warning', 'judge'), byTheRule] }, true],
       ['the same, and a check confirmed the defect, whose cell still cannot block', { cell: cell('degraded'), gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('confirmed') }, true],
@@ -167,7 +168,14 @@ describe('formatFindingComment', () => {
       ['the same, where the second check disproved a premise that only decides the grade', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: { ...check('unsettled'), premises: [{ premise: 'A caller passes it', outcome: 'disproved', reason: 'r' }] } }, true],
       // The judge stated `warning` for the case that every doubt holds, or no finder filed a blocker, so the confirmation gives no blocker.
       ['a doubt held a blocker cell at a warning the judge keeps, and a check confirmed it', { cell: cell('wrong'), gradeIfConfirmed: 'warning', gradePath: [byTheRule], refutation: check('confirmed') }, true],
+      // A blocker that rests on its consequence rises only when every check confirms the defect and every premise.
+      ['a doubt held a blocker cell at a warning on its consequence, and the second check left it open', {
+        ...held, doubts: [harm], gradePath: [byTheRule], refutation: { ...check('confirmed'), defect: 'confirmed' }, pairRefutation: { ...check('unsettled'), defect: 'confirmed' },
+      }, true],
       // Without the rule, the confirmation gives each of these its blocker.
+      ['a doubt held a blocker cell at a warning on its consequence, and both checks confirmed the defect and it', {
+        ...held, doubts: [harm], gradePath: [byTheRule], refutation: { ...check('confirmed'), defect: 'confirmed' }, pairRefutation: { ...check('confirmed'), defect: 'confirmed' },
+      }, false],
       ['a doubt held a blocker cell at a warning, and a check confirmed it', { ...held, gradePath: [byTheRule], refutation: check('confirmed') }, false],
       ['a doubt held a finder\'s blocker at a warning, and a check confirmed it', { ...held, gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('unsettled'), pairRefutation: check('confirmed') }, false],
       ['Manki graded it in the `normal` column, not the `rare` one the judge stated, and a check gave it back', { cell: { ...cell('wrong'), judgeColumn: 'rare' }, gradePath: [byTheRule, capped, restored], refutation: check('confirmed') }, false],

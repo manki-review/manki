@@ -2143,6 +2143,10 @@ describe('runJudgeAgent', () => {
       const openEntry = { ...makeFindingFingerprintEntry({ title: open.title, severity: open.severity, file: open.file, lineStart: open.line }), cell: open.cell, doubts: open.doubts, gradeIfConfirmed: open.gradeIfConfirmed, refutation: open.refutation };
       const reopened = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [openEntry] } })]);
       expect(reopened).toContain('"decides": "consequence",\n            "check": "unsettled"');
+      // Only a check that confirms the defect and every premise raises it, so a premise confirmed beside an open defect is shown open.
+      const defectOpen = { ...openEntry, refutation: { ...open.refutation!, outcome: 'confirmed' as const, defect: 'unsettled' as const, premises: open.refutation!.premises!.map(p => ({ ...p, outcome: 'confirmed' as const })) } };
+      const shown = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [defectOpen] } })]);
+      expect(shown.match(/"check": "\w+"/g)).toEqual(['"check": "unsettled"', '"check": "unsettled"']);
 
       // The check of a warning on code the PR did not change waits for the round's end, so a judge call never makes it.
       const old = (title: string, preExisting?: string) => makeFinding({ title, severity: 'warning', file: 'src/lock.ts', line: 30, evidence: { checks: [], proof: ['src/lock.ts:30'] }, preExisting });
@@ -4370,11 +4374,12 @@ describe('mapJudgedToFindings', () => {
       // The `rare` column and a warning cell give no blocker, so the judge's answer changes nothing there.
       ['Rare, warning if confirmed', {}, { row: 'wrong', column: 'rare', ...kept }, ['warning', 'blocker', [doubt, REACH_DOUBT]]],
       ['Degraded, warning if confirmed', {}, { row: 'degraded', ...kept }, ['warning', 'warning', [doubt]]],
-      // A premise about the consequence counts on a blocker cell of a finding no finder filed as a blocker, and holds it down alone too.
+      // A premise about the consequence counts beside another doubt on a blocker cell of a finding no finder filed as a blocker.
       ['Lost data, consequence named', {}, { row: 'severe', ...ifBlocker, doubts: [doubt, harm] }, ['warning', 'blocker', [doubt, harm]]],
-      ['Lost data, only the consequence', {}, { row: 'severe', ...ifBlocker, doubts: [harm] }, ['warning', 'blocker', [harm]]],
       ['Wrong result, consequence named', {}, { row: 'wrong', ...ifBlocker, doubts: [doubt, harm] }, ['warning', 'blocker', [doubt, harm]]],
-      // Anywhere else it is dropped, so the finding is graded as if the judge had not named it.
+      // Anywhere else it is dropped, so the finding is graded as if the judge had not named it. Alone it holds no blocker down.
+      ['Lost data, only the consequence', {}, { row: 'severe', ...ifBlocker, doubts: [harm] }, ['blocker', undefined, undefined]],
+      ['Wrong result, only the consequence', {}, { row: 'wrong', ...ifBlocker, doubts: [harm] }, ['blocker', undefined, undefined]],
       ['Finder blocker, consequence named', { severity: 'blocker' }, { row: 'severe', ...ifBlocker, doubts: [doubt, harm] }, ['warning', 'blocker', [doubt]]],
       ['Finder blocker, only the consequence', { severity: 'blocker' }, { row: 'wrong', ...ifBlocker, doubts: [harm] }, ['blocker', undefined, undefined]],
       ['Marked security, consequence named', {}, { row: 'severe', security: true, ...ifBlocker, doubts: [doubt, harm] }, ['blocker', 'blocker', [doubt]]],
@@ -4386,7 +4391,7 @@ describe('mapJudgedToFindings', () => {
     // The judge's own answer is kept for the record on every finding with a doubt, whether or not it changed the grade.
     expect(lowered.map(f => f.judgeIfConfirmed)).toEqual(stated.map(([, , entry, [, , doubts]]) => (doubts ? entry.gradeIfConfirmed : undefined)));
     expect(lowered.filter(f => f.judgeIfConfirmed === 'blocker').map(f => f.title)).toEqual([
-      'Wrong result, blocker if confirmed', 'Lost data, consequence named', 'Lost data, only the consequence', 'Wrong result, consequence named', 'Finder blocker, consequence named',
+      'Wrong result, blocker if confirmed', 'Lost data, consequence named', 'Wrong result, consequence named', 'Finder blocker, consequence named',
       'Marked security, consequence named', 'Degraded, consequence named',
     ]);
     // The record keeps the cell beside the judge's answer, and only the `rare` column leaves a finding without a `pendingGrade`.

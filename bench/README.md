@@ -73,7 +73,7 @@ The summary counts the blockers of the complete runs by the route each took, aga
 - **filed by a finder and kept**: a finder graded it a blocker, whatever lowered and restored it between.
 - **raised by the judge**: its finders graded it lower, and the cell the judge stated made it a blocker.
 - **raised by a confirmed doubt**: its finders graded it lower, a doubt of the judge held it below blocker, and the refuter's check confirmed the doubt. Only a security finding or one that restates an earlier blocker takes this route.
-- **raised by a confirmed doubt and consequence**: its finders graded it lower, a doubt of the judge held it below blocker, and every check confirmed the defect and every premise, among them the consequence the judge named. A security finding with such a premise counts as raised by a confirmed doubt.
+- **raised by a confirmed doubt and consequence**: its finders graded it lower, a doubt of the judge held it below blocker, and every check confirmed the defect and every premise, among them the consequence the judge named.
 - **claim check**: only the checks of the PR text's claims reported it, whatever happened to its grade afterwards.
 - **verdict reader**: the verdict reader named it.
 - **other**: another step made it a blocker, such as a broken rule under `review.rules: block`.

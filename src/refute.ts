@@ -15,7 +15,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -303,25 +303,20 @@ function needsConsequence(finding: Finding, restates: boolean): boolean {
   return held && finderGrade(finding) !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
-const namesConsequence = (finding: Finding): boolean => !!finding.doubts?.some(d => d.consequence);
+const namesConsequence = (finding: Pick<Finding, 'doubts'>): boolean => !!finding.doubts?.some(d => d.consequence);
 
 /** Whether no confirmation gives `finding` the pending blocker of its cell: it `needsConsequence` and the judge named none. */
 function keepsWarning(finding: Finding, restates: boolean): boolean {
   return needsConsequence(finding, restates) && !namesConsequence(finding);
 }
 
-/**
- * Returns `finding` without its `consequence` premises when it does not `needsConsequence`, so its other premises
- * decide it as they would without one. A finding whose only doubt is about the consequence keeps it, since that doubt
- * is what holds it down.
- */
+/** Returns `finding` without its `consequence` premises when it does not `needsConsequence`, so its other premises decide it as they would without one. */
 function withoutConsequence(finding: Finding, restates: boolean): Finding {
-  const others = finding.doubts?.filter(d => !d.consequence) ?? [];
-  return namesConsequence(finding) && others.length > 0 && !needsConsequence(finding, restates) ? { ...finding, doubts: others } : finding;
+  if (!namesConsequence(finding) || needsConsequence(finding, restates)) return finding;
+  const { doubts, ...rest } = finding;
+  const others = doubts?.filter(d => !d.consequence) ?? [];
+  return { ...rest, ...(others.length > 0 && { doubts: others }) };
 }
-
-/** Whether every check that answered confirmed the defect and each premise, so none left the consequence open or contradicted itself. */
-const confirmsAll = (checks: readonly Refutation[]): boolean => checks.length > 0 && checks.every(r => r.defect === 'confirmed' && r.outcome === 'confirmed');
 
 /**
  * Returns the grade a confirmation gives, while nothing lowered the finding further since the judge: the blocker an
@@ -573,7 +568,10 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   const settles = (r: Refutation): boolean => r.defect === 'confirmed'
     ? r.outcome === 'confirmed' || !!r.premises?.some((p, i) => p.outcome === 'disproved' && prior.doubts?.[i]?.decides === 'grade')
     : r.outcome !== 'unsettled' || !!r.premises?.some(p => p.outcome === 'disproved');
-  if ([prior.refutation, prior.pairRefutation].some(r => r && settles(r))) return finding;
+  const checks = [prior.refutation, prior.pairRefutation].filter((r): r is Refutation => !!r);
+  // A blocker that rests on its consequence rose only when every check `confirmsAll`, so a confirmation short of that settles nothing.
+  const settled = namesConsequence(prior) ? confirmsAll(checks) || checks.some(r => settles(r) && outcomeOf(r) !== 'confirmed') : checks.some(settles);
+  if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
   const { cell: _cell, ...kept } = finding;
   const cell = isGradeCell(prior.cell) ? prior.cell : undefined;

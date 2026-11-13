@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -788,13 +788,17 @@ function cappedGrade(entry: Pick<FindingFingerprintEntry, 'severity' | 'gradeIfC
 
 /**
  * Returns the doubts of an earlier finding for the judge, each with how its check came out. `REACH_DOUBT` on a finding
- * that `isRareClaim` is left out. Its answer changes no cell, so a later judge is not asked to settle it.
+ * that `isRareClaim` is left out. Its answer changes no cell, so a later judge is not asked to settle it. On a finding
+ * with a `consequence` premise a premise shows `confirmed` only when every check `confirmsAll`, as only that raises it.
  */
 function priorDoubts(f: FindingFingerprintEntry): Array<{ premise: string; decides: Doubt['decides'] | 'consequence'; check: string }> | undefined {
+  const checks = [f.refutation, f.pairRefutation].filter((r): r is Refutation => !!r);
+  const open = !!f.doubts?.some(d => d.consequence) && !confirmsAll(checks);
+  const check = (i: number): string => (open && premiseCheck(checks, i) === 'confirmed' ? 'unsettled' : premiseCheck(checks, i));
   const shown = (f.doubts ?? []).flatMap((d, i) => (isRareClaim(f.cell) && d.premise === REACH_DOUBT.premise ? [] : [{
     premise: d.premise.replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, MAX_DOUBT_CHARS),
     decides: d.consequence ? 'consequence' as const : d.decides,
-    check: premiseCheck([f.refutation, f.pairRefutation], i),
+    check: check(i),
   }]));
   return shown.length > 0 ? shown : undefined;
 }
@@ -1753,9 +1757,10 @@ export function mapJudgedToFindings(
  * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell with a doubt is a
  * warning that only a refuter confirming every doubt can raise. It stays a warning then too when the judge stated `warning` as its
  * `gradeIfConfirmed`, which is read for no other finding. A doubt that only decides the cell counts only on a row where
- * `columnDecidesBlock`. A `consequence` premise counts only on a blocker cell that can be held down, of a finding no
- * finder filed as a blocker and with no `warning` the judge stated. A finding that `isRareClaim` gets `REACH_DOUBT`
- * and the grade of the `normal` column as its `gradeIfConfirmed`. So the refuter checks it, and it has no `pendingGrade`: no answer raises it. A tool
+ * `columnDecidesBlock`. A `consequence` premise counts only beside such a doubt on a blocker cell that can be held
+ * down, of a finding no finder filed as a blocker and with no `warning` the judge stated. A finding that `isRareClaim`
+ * gets `REACH_DOUBT` and the grade of the `normal` column as its `gradeIfConfirmed`. So the refuter checks it, and it
+ * has no `pendingGrade`: no answer raises it. A tool
  * alert takes its cell as stated, with no doubts.
  */
 function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
@@ -1769,9 +1774,11 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const stated = cellGrade(row, column);
   if (o.toolSource) return { ...gradeStep(o, stated, 'judge'), cell };
   const checkedRare = isRareClaim(cell);
-  // A finding a finder filed as a blocker, or that gives no held blocker, is graded as if the judge named no consequence.
-  const asksConsequence = stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && finderGrade(o) !== 'blocker';
-  const counted = named.filter(d => (d.consequence ? asksConsequence : d.decides === 'defect' || columnDecidesBlock(row)));
+  const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row)));
+  // A consequence never holds a finding down alone. Beside no other doubt, on a finder's blocker or where no blocker is
+  // held, the finding is graded as if the judge had not named it.
+  const asksConsequence = holding.length > 0 && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && finderGrade(o) !== 'blocker';
+  const counted = named.filter(d => (d.consequence ? asksConsequence : holding.includes(d)));
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
   const doubts = checkedRare ? withReachDoubt(counted) : counted;
   if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };

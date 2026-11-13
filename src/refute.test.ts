@@ -260,7 +260,7 @@ describe('refuteBlockers', () => {
       ['Reach confirmed and disproved', 'warning', 'confirmed', 'unsettled', undefined],
       ['Grade premise confirmed and disproved', 'warning', 'confirmed', 'unsettled', undefined],
       ['Consequence confirmed by both', 'blocker', 'confirmed', 'confirmed', undefined],
-      // The other refuter's confirmation abstains no more where the consequence decides the blocker.
+      // Where the consequence decides the blocker, a check that leaves it open keeps the finding a warning.
       ['Consequence confirmed and left open', 'warning', 'confirmed', 'unsettled', undefined],
     ]);
     expect(result.at(-1)?.pairRefutation?.stepsUsedUp).toBe('yes');
@@ -605,8 +605,8 @@ describe('refuteBlockers', () => {
     expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
 
     // With a premise about the consequence, a finding no finder filed as a blocker rises only when the check confirms
-    // the defect and every premise. A finder's blocker, a security finding and a restatement are checked without that
-    // premise, as if the judge had not named it, unless it is the only doubt that holds the finding down.
+    // the defect and every premise. A finder's blocker and a security finding are checked without that premise, as if
+    // the judge had not named it.
     const harm = { premise: 'The overflowed sum is the total `report` prints', decides: 'grade' as const, consequence: true as const };
     const withHarm = { ...held, doubts: [exists, harm] };
     const harmReplies = {
@@ -617,7 +617,6 @@ describe('refuteBlockers', () => {
       'Consequence confirmed, defect premise disproved': { ...confirmed('src/math.ts:2'), premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }, confirmed('src/api.ts:4')] },
       'Finder blocker with a consequence': { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] },
       'Security with a consequence': { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] },
-      'Only the consequence, finder blocker': { reason: 'It holds.', premises: [{ outcome: 'unsettled', reason: 'No caller prints it.' }] },
     };
     const harmed = [
       finding('Defect and consequence confirmed', withHarm),
@@ -627,7 +626,6 @@ describe('refuteBlockers', () => {
       finding('Consequence confirmed, defect premise disproved', withHarm),
       finding('Finder blocker with a consequence', { ...withHarm, reviewerSeverity: 'blocker' }),
       finding('Security with a consequence', { ...withHarm, tags: ['security'] }),
-      finding('Only the consequence, finder blocker', { ...held, reviewerSeverity: 'blocker', doubts: [harm] }),
     ];
     const harmClient = fakeClient(harmReplies);
     const harmResult = await refuteBlockers(harmClient, harmed, { workspace, diff, doubtBudget: { left: 0 } });
@@ -641,7 +639,6 @@ describe('refuteBlockers', () => {
       ['Consequence confirmed, defect premise disproved', 'warning', 'blocker', 'unsettled', 2, 'confirmed'],
       ['Finder blocker with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
       ['Security with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
-      ['Only the consequence, finder blocker', 'warning', 'blocker', 'unsettled', 1, 'unconfirmed'],
     ]);
     // Each is checked with none of the round's checks of warnings left, since its answer can raise the finding.
     expect(harmClient.calls.map(([title]) => title)).toEqual(harmed.map(f => f.title));
@@ -1413,6 +1410,20 @@ describe('refuteBlockers', () => {
       });
       expect([outcome, contradicted.gradeIfConfirmed, contradicted.doubts]).toEqual([outcome, 'blocker', exists]);
     }
+    // A blocker that rests on its consequence rises only when every check confirms the defect and every premise. So a
+    // check that left the defect open, or a second check that left the consequence open, settled nothing.
+    const harmDoubts = [...exists, { premise: 'The sum is the total `report` prints', decides: 'grade' as const, consequence: true as const }];
+    const answered = (defect: string, consequence: string) => ({
+      outcome: consequence === 'confirmed' ? 'confirmed' : 'unsettled', defect, reason: 'r', files: [], codeDigest: '',
+      premises: [{ premise: exists[0].premise, outcome: 'confirmed', reason: 'r' }, { premise: harmDoubts[1].premise, outcome: consequence, reason: 'r' }],
+    });
+    for (const entry of [{ refutation: answered('unsettled', 'confirmed') }, { refutation: answered('confirmed', 'confirmed'), pairRefutation: answered('confirmed', 'unsettled') }]) {
+      const asked = client.calls.length;
+      const [open] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
+        workspace, priorRounds: rounds({ doubts: harmDoubts, cell: { row: 'wrong', column: 'normal' }, ...entry }), diff,
+      });
+      expect([open.severity, open.gradeIfConfirmed, open.doubts, client.calls.length - asked]).toEqual(['warning', 'blocker', harmDoubts, 1]);
+    }
     client.calls.splice(1);
 
     // A grade with no doubt behind it, one a check settled, or one the judge changed is no capped grade.
@@ -1424,6 +1435,8 @@ describe('refuteBlockers', () => {
       // A disproved premise the grade rests on settles the doubt beside a confirmed defect, and one the defect rests on settles it beside any other answer.
       [{ refutation: { ...premise('disproved'), defect: 'confirmed' } }, {}],
       [{ doubts: [{ premise: 'No caller bounds `a`', decides: 'defect' }], refutation: { ...premise('disproved'), defect: 'unsettled' } }, {}],
+      // A disproved consequence settles whether the finding blocks.
+      [{ doubts: harmDoubts, refutation: answered('confirmed', 'disproved') }, {}],
       // A disproof a security finding outlived settles the doubt too.
       [{ refutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: '' } }, {}],
       [{}, { severity: 'note' }],

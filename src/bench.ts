@@ -1249,7 +1249,7 @@ type BlockerRoute = keyof typeof BLOCKER_ROUTES;
  * and restored it between. Any other blocker is named by the last step that raised it to blocker. A step that gives
  * back the blocker an `unproven` cap lowered is no raise. A raise by `judge` is the judge's cell alone, and a raise by
  * `refutation` is a check that confirmed the doubts holding the finding down, `consequence` when they include a
- * `consequence` premise on a finding that is no security finding. A blocker only claim checks reported is `claim`,
+ * `consequence` premise, which only a finding that needed it keeps. A blocker only claim checks reported is `claim`,
  * whatever grade it was filed at. It is `unknown` without a stored route.
  */
 function blockerRoute(route: GradeRoute | undefined): BlockerRoute {
@@ -1259,7 +1259,7 @@ function blockerRoute(route: GradeRoute | undefined): BlockerRoute {
   if (route.finderGrade === 'blocker') return 'finder';
   const steps = route.gradePath ?? [];
   const raise = steps.filter((step, i) => step.to === 'blocker' && steps[i - 1]?.by !== 'unproven').at(-1);
-  if (raise?.by === 'refutation') return route.doubts?.consequence && !route.security ? 'consequence' : 'doubt';
+  if (raise?.by === 'refutation') return route.doubts?.consequence ? 'consequence' : 'doubt';
   return raise?.by === 'judge' ? 'judge' : 'other';
 }
 
