@@ -1633,7 +1633,7 @@ function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLi
  * Post the review. Blocking findings become threads. Other findings on a changed line
  * become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE` and most severe
  * first. The rest go in the body. Every note `capNotes` kept on a changed line gets a line comment as a suggestion,
- * unless it is pre-existing or sits on code an earlier round reviewed. The body lists the other notes in one collapsed section.
+ * unless it is a tool alert, pre-existing or on code an earlier round reviewed. The body lists the other notes in one collapsed section.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. One outside the diff files, or tied to no file, gets a file-level comment on the first
@@ -1769,8 +1769,8 @@ export async function postReview(
   }
 
   const onChangedLine = (f: Finding): boolean => !!diff && f.line > 0 && isOnChangedLine(f, diff);
-  // `capNotes` already capped the notes, so every suggestion that can get a thread gets one.
-  const suggestions = notes.filter(f => onChangedLine(f) && !isPreExisting(f) && f.origin !== 'earlier' && f.origin !== 'reviewed');
+  // Only the notes `capNotes` caps get a thread. It never caps a tool alert, which stays listed.
+  const suggestions = notes.filter(f => canLeaveOut(f) && onChangedLine(f) && !isPreExisting(f) && f.origin !== 'earlier' && f.origin !== 'reviewed');
   const inline = new Set([
     ...nonBlocking.filter(onChangedLine).sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity)).slice(0, MAX_NON_BLOCKING_INLINE),
     ...suggestions,

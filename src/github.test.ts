@@ -4887,6 +4887,7 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('note', 'Off the diff', 40, { howToFix: 'Run `b` only when `a` holds.', suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] }, checkStatus: 'proven' }),
       nonBlocking('note', 'Reviewed before', 12, { origin: 'reviewed' }),
       nonBlocking('note', 'Listed before', 13, { origin: 'earlier', raisedIn: 1 }),
+      nonBlocking('note', 'Unused import', 14, { toolSource: 'eslint' }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
@@ -4914,15 +4915,15 @@ describe('postReview non-blocking findings', () => {
     ].join('\n'));
     expect(review.body).not.toContain('### Findings');
     expect(review.body).not.toMatch(/<b>(Typo in name|Extract helper|Token compared in variable time)<\/b>/);
-    // A note on code an earlier round reviewed or listed keeps its place in the body.
+    // A note on code an earlier round reviewed or listed keeps its place in the body, and so does a tool alert, which no cap limits.
     expect(review.body).toContain([
       '<details>',
-      '<summary><b>4 suggestions</b> · not blocking</summary>',
+      '<summary><b>5 suggestions</b> · not blocking</summary>',
       '',
       '<details>',
       '<summary>\u2728 <b>Missing file context</b><br><sub><b>Suggestion, not blocking</b></sub></summary>',
     ].join('\n'));
-    expect(review.body).toMatch(/<b>Reviewed before<\/b>[\s\S]*<b>Listed before<\/b>/);
+    expect(review.body).toMatch(/<b>Reviewed before<\/b>[\s\S]*<b>Listed before<\/b>[\s\S]*<b>Unused import<\/b>/);
     // A fold shows the whole description and a preview of the flagged lines, then the fix and the checks under their labels.
     expect(review.body).toContain([
       '<details>',
