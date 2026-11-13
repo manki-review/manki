@@ -1924,7 +1924,8 @@ export async function postReview(
       const { threadId: linked, ...unlinked } = entry;
       const threadId = posted === 'thread' ? undefined : linked ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
       const description = posted === 'body' && f.severity === 'blocker' && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
-      return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(description && { description }) };
+      const holds = posted === 'body' && holdsApproval(f);
+      return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(holds && { holds }), ...(description && { description }) };
     };
     return (context
       ? formatRecordTrailer({

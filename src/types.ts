@@ -2510,6 +2510,8 @@ export interface FindingFingerprintEntry {
    * the same. A warning without a line, or on a line the round could not read, has none.
    */
   citedLine?: CitedLine;
+  /** Set on a warning recorded as `body` that holds the approval, since it has no thread to answer it in. */
+  holds?: true;
   /**
    * Set on a carried warning: the line its `citedLine` is on at the head of the round that carried it, when exactly one
    * place of the file reads like it. `fingerprint` keeps the line of the round that listed the warning.

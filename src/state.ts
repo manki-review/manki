@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, holdsApproval, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
@@ -572,7 +572,7 @@ const NEXT_ROUND_LINE = `The next review round decides. To start one, tick **Rev
  * says the round posted the blocker as a thread and one of the threads posted on `commitSha` matches it. A standing
  * approval posted again on `commitSha` blocks on nothing. Anything else is unknown and holds the approval: a record
  * that cannot be read, a round that blocked without naming a blocker, and a blocker without a live thread. A warning
- * that `holdsApproval` and that the round listed only in its body also holds it.
+ * the record marks with `holds`, which the round listed only in its body, also holds it.
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
@@ -610,7 +610,7 @@ function blockOf(
     return [`The record of Manki's review of ${sha} ${claim} for ${list.length === 1 ? '1 blocker' : `${list.length} blockers`}, so resolving threads cannot lift the block:\n${lines}`];
   };
   const claimed = (b: typeof loose[number]): boolean => !!b.threadId || !!b.posted;
-  const unthreaded = round.findings.entries.filter(e => e.posted === 'body' && holdsApproval(e));
+  const unthreaded = round.findings.entries.filter(e => e.holds);
   const warned = unthreaded.length === 0 ? [] : [
     `Manki's review of ${sha} lists ${unthreaded.length === 1 ? '1 warning' : `${unthreaded.length} warnings`} with no thread, so resolving threads cannot lift its hold on the approval:\n${unthreaded.map(e => `- ${sanitizeMarkdown(e.title ?? 'Untitled warning')}${e.fingerprint.file ? ` (${inline(e.fingerprint.file)})` : ''}`).join('\n')}`,
   ];
