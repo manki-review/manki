@@ -230,10 +230,12 @@ function replyText(value: unknown): string {
 
 /**
  * A disproved premise the defect rests on disproves the finding, unless the check confirmed the `defect` itself. Such a
- * reply contradicts itself, so it settles nothing. Only a confirmation of every premise confirms the finding.
+ * reply contradicts itself, so it settles nothing. A disproved `ruleFact` still disproves, since the answer on the defect
+ * is about the damage, not the rule. Only a confirmation of every premise confirms the finding.
  */
-function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck[], defect: RefutationOutcome): RefutationOutcome {
-  if (checks.some((c, i) => c.outcome === 'disproved' && doubts[i].decides === 'defect')) return defect === 'confirmed' ? 'unsettled' : 'disproved';
+function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck[], defect: RefutationOutcome, ruleFact?: string): RefutationOutcome {
+  const disproving = checks.filter((c, i) => c.outcome === 'disproved' && doubts[i].decides === 'defect');
+  if (disproving.length > 0) return defect === 'confirmed' && disproving.every(c => c.premise !== ruleFact) ? 'unsettled' : 'disproved';
   return checks.every(c => c.outcome === 'confirmed') ? 'confirmed' : 'unsettled';
 }
 
@@ -266,7 +268,7 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
         ...(cited.length > 0 && { proof: cited }), ...(citedRelated.length > 0 && { relatedProof: citedRelated }),
       };
     });
-    outcome = premisesOutcome(finding.doubts, premises, defect);
+    outcome = premisesOutcome(finding.doubts, premises, defect, finding.rule?.unseen);
     // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect.
     const doubts = finding.doubts;
     const disproved = outcome === 'disproved' || defect === 'disproved';
