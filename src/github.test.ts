@@ -1100,6 +1100,13 @@ describe('postReview reviewed-commit footer', () => {
         description: 'Desc.',
         reviewers: [],
         tags: ['follow-up'],
+      }, {
+        severity: 'note',
+        title: 'Name the helper',
+        file: 'src/a`.ts',
+        line: 10,
+        description: 'Clearer.',
+        reviewers: [],
       }],
       highlights: [],
       reviewComplete: true,
@@ -1114,12 +1121,16 @@ describe('postReview reviewed-commit footer', () => {
 
     await postReview(octokit, 'acme', 'widgets', 1, fullSha, result, diff);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
-    // The review GitHub took as a comment has no line comments, so it lists the finding as not posted inline.
-    expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\.\n\n\*\*Summary:\*\*/u);
+    // The review GitHub took as a comment has no line comments, so it names the warning as not posted inline and lists
+    // the suggestion in full with the other suggestions.
+    expect(createReviewMock.mock.calls[0][0].comments).toHaveLength(2);
+    expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning and 1 suggestion, none of which block\.\n\n\*\*Summary:\*\*/u);
     expect(fallbackBody).not.toContain('[Minor]');
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
-    expect(fallbackBody).toContain('**Findings (could not post inline):**\n- \u26A0\uFE0F **Warning, not blocking** **Minor** (`src/a\'.ts:10`)');
-    expect(fallbackBody).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\./u);
+    expect(fallbackBody).toMatch(/\*\*Findings \(could not post inline\):\*\*\n- \u26A0\uFE0F \*\*Warning, not blocking\*\* \*\*Minor\*\* \(`src\/a'\.ts:10`\)\n\n/u);
+    expect(fallbackBody).toContain('<summary><b>1 suggestion</b> · not blocking</summary>');
+    expect(fallbackBody).toContain('**Why:** Clearer.');
+    expect(fallbackBody).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning and 1 suggestion, none of which block\./u);
   });
 
   it('preserves the footer even when the review body exceeds the truncation limit', async () => {
@@ -5370,7 +5381,8 @@ describe('postReview non-blocking findings', () => {
     expect(threaded.createReview.mock.calls[0][0].comments).toHaveLength(1);
     expect(threaded.createReview.mock.calls[0][0].body).toContain(`<summary>What to test</summary>\n\n${guideNote}\n\n1. Load the page twice.`);
     expect(threaded.createReview.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\.(?![\s\S]*Missed by an earlier review)/u);
-    // When GitHub refuses the line comments, the late warning and the suggestion are listed with them, and the record says neither has a thread.
+    // When GitHub refuses the line comments, the late warning is named under them, the suggestion is listed in full with the
+    // other suggestions, and the record says neither has a thread.
     const refusing = makeOctokit({ 'src/a.ts': 'load();\nretry();\nend();\n' });
     refusing.createReview.mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'));
     const suggestion = nonBlocking('note', 'Name the retry', 2);
@@ -5379,7 +5391,9 @@ describe('postReview non-blocking findings', () => {
     const [refused, bare] = refusing.createReview.mock.calls.map(([args]) => args);
     expect(refused.comments).toHaveLength(2);
     expect(bare.comments).toEqual([]);
-    expect(bare.body).toContain('**Inline comments could not be posted:**\n- \u26A0\uFE0F **Warning, not blocking** **On old code**\n- \u2728 **Suggestion, not blocking** **Name the retry**');
+    expect(bare.body).toMatch(/\*\*Inline comments could not be posted:\*\*\n- \u26A0\uFE0F \*\*Warning, not blocking\*\* \*\*On old code\*\*\n\n/u);
+    expect(bare.body).toContain('<summary><b>1 suggestion</b> · not blocking</summary>\n\n<details>\n<summary>\u2728 <b>Name the retry</b>');
+    expect(bare.body).toContain('**Why:** It goes wrong. Second sentence. Third sentence.');
     expect(bare.body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning and 1 suggestion, none of which block\./u);
     expect(JSON.parse(extractReviewRecords(bare.body).records[0]).findings.entries).toEqual([expect.objectContaining({ posted: 'body', citedLine: { hash: expect.any(String), count: 1 } }), expect.objectContaining({ posted: 'body' })]);
     expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed|Found this round/);

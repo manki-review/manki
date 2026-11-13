@@ -1768,9 +1768,13 @@ export async function postReview(
     ...suggestions,
   ]);
   const inlineComments: typeof validComments = [];
+  /** The line comments other than suggestions, which the body names by their headline when GitHub refuses the lines. */
+  const headlined: typeof validComments = [];
   for (const f of [...nonBlocking, ...suggestions]) {
     if (inline.has(f)) {
-      inlineComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      const comment = { path: f.file, line: f.line, side: 'RIGHT' as const, body: formatFindingComment(f, links) };
+      inlineComments.push(comment);
+      if (!suggestions.includes(f)) headlined.push(comment);
       threadFindings.push(f);
     } else {
       bodyFindings.push(f);
@@ -1826,7 +1830,8 @@ export async function postReview(
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
-      formatNotesSection(listedNotes, result.unposted ?? [], links),
+      // Without their threads, the suggestions are listed in full with the other notes.
+      formatNotesSection(withoutLineThreads ? notes : listedNotes, result.unposted ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
@@ -1882,7 +1887,7 @@ export async function postReview(
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), inlineComments.map(highlight));
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), headlined.map(highlight));
   onPosted?.();
   // A blocker whose line comment GitHub refused gets a file-level thread on its file.
   const retried = review.lineComments ? [] : lineBlockers.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
@@ -1937,7 +1942,7 @@ async function submitReview(
   bodyWithoutLineComments: () => string = () => body,
   /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
   recordWithoutLineComments: () => string = () => record,
-  /** The line comments that get no thread when the review posts without them. The caller posts a blocker as a file-level thread instead. */
+  /** The line comments the body names by their headline when the review posts without them. The caller posts a blocker as a file-level thread instead. */
   unthreaded: typeof validComments = validComments,
 ): Promise<{ id: number; body: string; lineComments: boolean }> {
   const event = mapVerdictToEvent(verdict);
