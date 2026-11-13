@@ -1275,6 +1275,30 @@ describe('checkAndAutoApprove', () => {
       expect(await approval()).toBe(line);
     });
 
+    it('shows the kept summary in the refusal notice when repository settings refuse that approval, once per head', async () => {
+      const readyReport = { whatThisDoes: 'Adds a cache. It halves requests.', whatToTest: { steps: ['Load the page twice.'] } };
+      const round = { ...roundThatPosted(HEAD, []), approval: { held: 'warnings' as const, warningsHeld: true as const }, readyReport };
+      const reviews = [{ id: 7, body: roundBody(round), state: 'COMMENTED', commit_id: HEAD, user, submitted_at: '' }];
+      const createReviewFn = jest.fn().mockRejectedValue(new Error(SETTING_REFUSAL));
+      const createCommentFn = jest.fn().mockResolvedValue({});
+      const refuse = (existingComments: Array<{ body: string; user: { login: string } }> = []) => approveOrSayWhy(makeMockOctokit({
+        threads: [warning('t1', { replies: [reply('author')] })], prHeadSha: HEAD, mergeable: true, createReviewFn, createCommentFn, existingReviews: reviews, existingComments,
+      }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      const result = await refuse();
+      const notice = createCommentFn.mock.calls[0][0].body as string;
+      expect(notice.split('\n\n<!-- manki-approval-record: ')[0]).toBe([
+        'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.',
+        '**What this does:** Adds a cache. It halves requests.',
+        '<details>\n<summary>What to test</summary>\n\n_The review model wrote these steps. Check what a step runs before you follow it._\n\n1. Load the page twice.\n\n</details>',
+      ].join('\n\n'));
+      // The notice still ends with its record, and a person who asks gets the short line.
+      expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused' })]);
+      expect(result.approved ? undefined : await result.why()).toBe('All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.');
+      // A repeat on the same head posts nothing new.
+      await refuse([{ body: notice, user: { login: 'manki-review[bot]' } }]);
+      expect(createCommentFn).toHaveBeenCalledTimes(1);
+    });
+
     it('counts only a reply made after the review that lowered a blocker thread to a warning was posted', async () => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
       const lowered = (replies: ReturnType<typeof reply>[]) => makeGraphqlFetchThreadNode({

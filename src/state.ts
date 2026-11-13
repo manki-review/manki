@@ -733,11 +733,12 @@ type HeldApproval = { reason: Exclude<ApprovalHeld, false>; line: string; posted
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
- * With `refused`, it holds because GitHub refused the approval, and does not read the PR.
+ * With `refused`, it holds because GitHub refused the approval, and does not read the PR. Its `summary` follows the
+ * notice's line, since that notice stands in for the approval that would have shown it.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
-  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused' },
+  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused'; summary?: string },
 ): Promise<HeldApproval | false> {
   const hold = refused ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
@@ -749,7 +750,8 @@ async function holdApproval(
   const marker = `${APPROVAL_HELD_MARKER_PREFIX}${headSha}${hold.reason === 'refused' ? ':refused' : ''} -->`;
   let posted = false;
   try {
-    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, marker, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
+    const text = [line, refused?.summary, recordFor?.(hold.reason)].filter(Boolean).join('\n\n');
+    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, marker, text);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
@@ -1011,7 +1013,8 @@ async function approveOrSayWhy(
       core.warning(
         'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.',
       );
-      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused' });
+      const summary = [report?.whatThisDoes, report?.whatToTest].filter(Boolean).join('\n\n');
+      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused', ...(summary && { summary }) });
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.
