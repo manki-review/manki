@@ -122,6 +122,7 @@ export interface ListedFile {
   previous_filename?: string;
   status: string;
   sha?: string | null;
+  deletions?: number;
   patch?: string;
 }
 
@@ -156,18 +157,23 @@ function isWellFormedPatch(patch: string): boolean {
 }
 
 /**
- * Returns a unified diff of `files` in the shape of GitHub's diff of a pull request. GitHub gives no patch for a binary
- * or for a diff too large to show, so such a file gets a header without lines, which `parsePRDiff` lists as unread. A
- * patch whose hunks do not add up is left out the same way.
+ * Returns a unified diff of `files` in the shape of GitHub's diff of a pull request, which leaves out an unchanged file.
+ * GitHub gives no patch for a binary or for a diff too large to show, so such a file gets a header without lines, which
+ * `parsePRDiff` lists as unread. A patch whose hunks do not add up is left out the same way.
  */
 export function listedFilesDiff(files: readonly ListedFile[]): string {
-  return files.map(f => {
-    const changeType = f.status === 'added' ? 'added' : f.status === 'removed' ? 'deleted' : 'modified';
-    const mode = changeType === 'added' ? ['new file mode 100644'] : changeType === 'deleted' ? ['deleted file mode 100644'] : [];
+  return files.filter(f => f.status !== 'unchanged').map(f => {
+    // GitHub's diff of a pull request finds renames but not copies, so a copy is a new file there.
+    const changeType = f.status === 'added' || f.status === 'copied' ? 'added' : f.status === 'removed' ? 'deleted' : 'modified';
+    const patch = f.patch && isWellFormedPatch(f.patch) ? f.patch : undefined;
+    // Without its lines, a removed file counts as deleted only when it had none, as a binary or an empty file. Any other stays unread.
+    const deleted = changeType === 'deleted' && (patch !== undefined || f.deletions === 0);
+    const mode = changeType === 'added' ? ['new file mode 100644'] : deleted ? ['deleted file mode 100644'] : [];
     // The blob id changes with the content, so a changed file without a patch still changes `changeDigest`.
     const index = f.sha && /^[0-9a-f]+$/.test(f.sha) ? [`index 0000000..${f.sha}`] : [];
-    const header = fileHeader(f.previous_filename ?? f.filename, f.filename, changeType, [...mode, ...index]);
-    return f.patch && isWellFormedPatch(f.patch) ? `${header}\n${f.patch}` : header;
+    const oldPath = f.status === 'renamed' ? f.previous_filename ?? f.filename : f.filename;
+    const header = fileHeader(oldPath, f.filename, changeType, [...mode, ...index]);
+    return patch ? `${header}\n${patch}` : header;
   }).join('\n');
 }
 

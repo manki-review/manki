@@ -3829,7 +3829,7 @@ describe('fetchPRDiff', () => {
         { filename: 'src/gone.ts', status: 'removed', sha: 'c3', patch: '@@ -1 +0,0 @@\n-x' },
         { filename: 'src/moved.ts', previous_filename: 'src/old.ts', status: 'renamed', sha: 'd4' },
         { filename: 'logo.png', status: 'modified', sha: 'e5' },
-        { filename: 'old.bin', status: 'removed', sha: 'f6' },
+        { filename: 'old.bin', status: 'removed', sha: 'f6', deletions: 0 },
         { filename: 'db/dump.sql', status: 'modified', sha: '07' },
       ]);
 

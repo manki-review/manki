@@ -589,7 +589,7 @@ describe('listedFilesDiff', () => {
 
   it.each([
     ['an added file', { filename: forged, status: 'added' }, ['diff --git', '+++'], 'added'],
-    ['a removed file', { filename: forged, status: 'removed' }, ['diff --git', '---'], 'deleted'],
+    ['a removed file', { filename: forged, status: 'removed', deletions: 0 }, ['diff --git', '---'], 'deleted'],
     ['a modified file with a patch', { filename: forged, status: 'modified', patch }, ['diff --git', '---', '+++'], 'modified'],
     ['a renamed file', { filename: 'safe.bin', previous_filename: forged, status: 'renamed' }, ['diff --git', '---'], 'renamed'],
   ] as const)('quotes a name with a line break in each header line of %s, so the name adds no line', (_label, file, lines, changeType) => {
@@ -601,6 +601,25 @@ describe('listedFilesDiff', () => {
     expect([...diff.files.map(f => f.changeType), ...(diff.binarySkipped ?? []).map(f => (f.deleted ? 'deleted' : 'unread'))].sort())
       .toEqual([file.status === 'modified' ? changeType : changeType === 'deleted' ? 'deleted' : 'unread', 'modified'].sort());
     expect(diff.files.map(f => f.path)).toContain('src/next.ts');
+  });
+
+  // GitHub's own diff of a PR, which finds renames but not copies and lists no unchanged file, decides each row.
+  it.each([
+    ['a copied file with a patch as a new file, never a rename of its source', { filename: 'b.ts', previous_filename: 'a.ts', status: 'copied', patch }, { files: [['b.ts', 'added', undefined]], skipped: [] }],
+    ['a copied file without a patch as an unread new file', { filename: 'b.bin', previous_filename: 'a.bin', status: 'copied' }, { files: [], skipped: [['b.bin', undefined]] }],
+    ['a removed file without a patch that had no lines as deleted', { filename: 'a.bin', status: 'removed', deletions: 0 }, { files: [], skipped: [['a.bin', true]] }],
+    ['a removed file without a patch that had lines as unread', { filename: 'big.sql', status: 'removed', deletions: 50_000 }, { files: [], skipped: [['big.sql', undefined]] }],
+    ['a removed file whose patch is left out as unread', { filename: 'a.ts', status: 'removed', deletions: 2, patch: '@@ -1,2 +0,0 @@\n-a' }, { files: [], skipped: [['a.ts', undefined]] }],
+    ['an unchanged file not at all', { filename: 'same.ts', status: 'unchanged' }, { files: [], skipped: [] }],
+  ] as const)('writes %s', (_label, file, expected) => {
+    const raw = listedFilesDiff([file]);
+    const diff = parsePRDiff(raw);
+
+    expect({
+      files: diff.files.map(f => [f.path, f.changeType, f.oldPath]),
+      skipped: (diff.binarySkipped ?? []).map(f => [f.path, f.deleted]),
+    }).toEqual(expected);
+    if ('previous_filename' in file) expect(raw).not.toContain(file.previous_filename);
   });
 
   it('escapes the characters git escapes once a name is quoted, and leaves any other name as it is', () => {
