@@ -232,6 +232,7 @@ jest.mock('./github', () => ({
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
+  skippedFiles: jest.requireActual('./github').skippedFiles,
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
   withheldSummary: jest.requireActual('./github').withheldSummary,
@@ -2083,6 +2084,7 @@ describe('runFullReview orchestration', () => {
       ['warnings', 'Approval held: warnings wait for a fix or an answer'],
       ['unread warnings', 'Approval held: warnings wait for a fix or an answer'],
       ['config with warnings', 'Approval held: a config file did not load'],
+      ['refused', 'Approval held: GitHub refused the approval'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       const approvalHeld = held === 'unread warnings' ? 'warnings' : held === 'config with warnings' ? 'config' : held;
       jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld, warningsHeld: held.includes('warnings') });
@@ -2105,6 +2107,9 @@ describe('runFullReview orchestration', () => {
       const keepCommit = held.includes('warnings') ? undefined : 'abc123';
       expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', keepCommit);
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
+      // The outputs match the COMMENT review a held approval posts, and name the first hold.
+      expect(core.setOutput).toHaveBeenCalledWith('verdict', 'COMMENT');
+      expect(core.setOutput).toHaveBeenCalledWith('approval_held', approvalHeld);
     });
 
     it('completes the check as action required for a diff too large to review', async () => {
@@ -2845,6 +2850,7 @@ describe('runFullReview orchestration', () => {
     );
     // Outputs set
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('verdict', 'REQUEST_CHANGES');
+    expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('approval_held', '');
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('findings_count', '1');
     // `severity_counts` uses the new key shape (#593): blocker/warning/suggestion/nitpick.
     const setOutputCalls = jest.mocked(core.setOutput).mock.calls;
@@ -6978,7 +6984,7 @@ describe('runFullReview orchestration', () => {
 
     it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
       seedPush('APPROVE', REVIEWED_DIFF);
-      jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
+      jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: 'conflict', line: 'conflicts', posted: true });
 
       await callRunFullReview();
 
@@ -7018,7 +7024,7 @@ describe('runFullReview orchestration', () => {
       ['a request for changes', 'REQUEST_CHANGES', false, 'failure', 'Changes requested'],
     ] as const)('reports %s that stands as the PR check and to the coordinator', async (_label, verdict, held, conclusion, title) => {
       seedPush(verdict, REBASED_DIFF);
-      if (held) jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
+      if (held) jest.mocked(stateModule.holdApproval).mockResolvedValueOnce({ reason: 'conflict', line: 'conflicts', posted: true });
 
       await callRunFullReview();
 

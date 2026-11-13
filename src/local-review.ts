@@ -8,7 +8,7 @@ import { extractCurrentCodeWindow } from './code-window';
 import { loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
-import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, skippedFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
@@ -392,8 +392,12 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity });
       return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || (!!p.isSecurity && !p.fixed));
     });
-    const approvalHeld = brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
-      : result.verdict === 'APPROVE' && (threadHolds || result.findings.some(holdsApproval)) ? 'warnings' : false;
+    const unread = skippedFiles(excludedFiles, lockfiles, diff);
+    // As in a pull request round, only a round that would approve has its approval held.
+    const approvalHeld = result.verdict !== 'APPROVE' ? false
+      : brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
+      : unread.excluded.length + unread.binary.length > 0 ? 'unread'
+      : threadHolds || result.findings.some(holdsApproval) ? 'warnings' : false;
     return { result, context, base, head, approvalHeld };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });

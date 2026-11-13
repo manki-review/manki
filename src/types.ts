@@ -1818,10 +1818,10 @@ export interface RoundContext {
   leads?: RoundLead[];
   /**
    * Set on a round that approved: whether the approval was held, and why: a conflict with the base, a draft, a config
-   * that failed to load, files the review could not read, or open warning threads. `held` names only the first hold, so
-   * `warningsHeld` says whether warnings held it too.
+   * that failed to load, files the review could not read, open warning threads, or GitHub refusing the approval. `held`
+   * names only the first hold, so `warningsHeld` says whether warnings held it too.
    */
-  approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings'; warningsHeld?: true };
+  approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings' | 'refused'; warningsHeld?: true };
   /**
    * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
    * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.

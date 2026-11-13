@@ -73,6 +73,7 @@ const HELD_TITLES: Record<Exclude<ApprovalHeld, false>, string> = {
   config: 'Approval held: a config file did not load',
   unread: 'Approval held: some changed files were not read',
   warnings: 'Approval held: warnings wait for a fix or an answer',
+  refused: 'Approval held: GitHub refused the approval',
 };
 
 /** Returns the check report for a round that ended with `outcome`. A held approval reports neutral, whatever the outcome. */

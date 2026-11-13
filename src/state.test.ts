@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
@@ -535,8 +535,10 @@ describe('reopenAuthorResolvedThreads', () => {
 });
 
 describe('checkAndAutoApprove', () => {
-  const { dismissPreviousReviews } = jest.requireMock('./github') as {
+  const { dismissPreviousReviews, deleteAutoApproveProgressComment, markProgressCommentFailed } = jest.requireMock('./github') as {
     dismissPreviousReviews: jest.Mock;
+    deleteAutoApproveProgressComment: jest.Mock;
+    markProgressCommentFailed: jest.Mock;
   };
 
   beforeEach(() => {
@@ -550,7 +552,9 @@ describe('checkAndAutoApprove', () => {
     createCommentFn?: jest.Mock;
     checks?: { create: jest.Mock; update: jest.Mock; listForRef?: jest.Mock };
     existingReviews?: Array<{ id?: number; body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
-    existingComments?: Array<{ body?: string; user?: { login?: string } }>;
+    existingComments?: Array<{ id?: number; body?: string; user?: { login?: string } }>;
+    deleteCommentFn?: jest.Mock;
+    updateCommentFn?: jest.Mock;
     /** The PR author's `role_name`. */
     role?: string;
     /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
@@ -580,6 +584,8 @@ describe('checkAndAutoApprove', () => {
         issues: {
           listComments: jest.fn().mockResolvedValue({ data: existingComments }),
           createComment: createCommentFn,
+          deleteComment: overrides.deleteCommentFn ?? jest.fn().mockResolvedValue({}),
+          updateComment: overrides.updateCommentFn ?? jest.fn().mockResolvedValue({}),
         },
         repos: {
           getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.role === 'admin' ? 'admin' : 'write', role_name: overrides.role ?? 'write', user: { type: 'User' } } }),
@@ -588,6 +594,52 @@ describe('checkAndAutoApprove', () => {
         checks: overrides.checks ?? { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) },
       },
     } as unknown as Octokit;
+  }
+
+  /**
+   * Checks the hold `setup` makes a state check find on its head, the same for every hold. The first check posts one
+   * notice and one neutral check titled `title`, and its notice answers a person. A repeat posts neither and replies with
+   * `line`. A failed comment lookup still reports the hold and throws nothing. Returns the notice.
+   */
+  async function expectHeldOncePerHead(
+    setup: Parameters<typeof makeMockOctokit>[0] & { prHeadSha: string; createCommentFn: jest.Mock; checks: { create: jest.Mock; update: jest.Mock } },
+    reason: string, title: string, line: string, marker: string,
+  ): Promise<string> {
+    const { prHeadSha: head, createCommentFn: createComment, checks } = setup;
+    const check = (existing: string[] = [], lookupFails = false) => {
+      const octokit = makeMockOctokit({ ...setup, existingComments: existing.map(body => ({ body, user: { login: 'manki-review[bot]' } })) });
+      if (lookupFails) jest.mocked(octokit.rest.issues.listComments).mockRejectedValue(new Error('API down'));
+      return approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+    };
+    const reportsHeld = () => expect(jest.mocked(authModule.reportPrState)).toHaveBeenLastCalledWith('owner', 'repo', 1, { approval: { commit: head, held: true } });
+    const repliesWithLine = async (result: Awaited<ReturnType<typeof check>>) => {
+      expect(result.approved).toBe(false);
+      expect(result).not.toHaveProperty('answered');
+      expect(await (result as { why: () => Promise<string> }).why()).toBe(line);
+    };
+
+    expect(await check()).toMatchObject({ approved: false, answered: true });
+    const [posted] = createComment.mock.calls.map(([c]) => c.body as string);
+    expect(posted.startsWith(`${line}\n\n<!-- manki-approval-record: `)).toBe(true);
+    expect(posted.endsWith(` -->\n\n${marker}`)).toBe(true);
+    expect(extractApprovalRecords(posted).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason, head, threads: { total: 1, resolved: 1 } })]);
+    // The check says the approval is held instead of keeping the earlier round's result.
+    expect(checks.create.mock.calls).toEqual([[expect.objectContaining({
+      name: 'Manki', head_sha: head, status: 'completed', conclusion: 'neutral', output: { title, summary: line },
+    })]]);
+    reportsHeld();
+
+    await repliesWithLine(await check([posted]));
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(checks.create).toHaveBeenCalledTimes(1);
+    reportsHeld();
+
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    await repliesWithLine(await check([], true));
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(checks.create).toHaveBeenCalledTimes(1);
+    reportsHeld();
+    return posted;
   }
 
   it('approves when all threads including suggestions are resolved', async () => {
@@ -949,20 +1001,20 @@ describe('checkAndAutoApprove', () => {
     const createCommentMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({ draft: true, mergeable: true, createCommentFn: createCommentMock });
 
-    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe('draft');
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
       '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.\n\n<!-- manki-approval-held:sha-9 -->',
     ]);
     // With `auto_approve` off the notice promises no approval for marking the PR ready.
     createCommentMock.mockClear();
-    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-8', false, false)).toBe('draft');
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-8', false, false)).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
       '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n<!-- manki-approval-held:sha-8 -->',
     ]);
     expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
     const unreadable = makeMockOctokit({ mergeable: true });
     jest.mocked(unreadable.rest.pulls.get).mockRejectedValue(new Error('API down'));
-    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9', true)).toBe('draft');
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9', true)).toMatchObject({ reason: 'draft' });
     expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
   });
 
@@ -977,34 +1029,24 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).not.toHaveBeenCalled();
   });
 
-  it('holds the approval of a PR that conflicts with its base, with one notice per head, and reports each outcome', async () => {
+  it('holds the approval of a PR that conflicts with its base, with one notice and one neutral check per head, and reports each outcome', async () => {
     const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true })];
     const createReviewMock = jest.fn().mockResolvedValue({});
     const createCommentMock = jest.fn().mockResolvedValue({});
-    const notice = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.\n\n<!-- manki-approval-held:sha-456 -->';
+    const checks = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+    const line = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
-    const first = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
-    expect(await checkAndAutoApprove(first, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
-    const [posted] = createCommentMock.mock.calls.map(([c]) => c.body as string);
-    expect(posted).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `main`\. Rebase it, and Manki reviews the result\. If the push starts no review, as while automatic review is off or paused, comment `@manki review`\.\n\n<!-- manki-approval-record: .+ -->\n\n<!-- manki-approval-held:sha-456 -->$/);
-    expect(extractApprovalRecords(posted).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'conflict', head: 'sha-456', threads: { total: 1, resolved: 1 } })]);
-
-    const again = makeMockOctokit({
-      threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock,
-      existingComments: [{ body: notice, user: { login: 'manki-review[bot]' } }],
-    });
-    expect(await checkAndAutoApprove(again, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
-    expect(createCommentMock).toHaveBeenCalledTimes(1);
+    await expectHeldOncePerHead(
+      { threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks },
+      'conflict', 'Approval held: the PR conflicts with its base', line, '<!-- manki-approval-held:sha-456 -->',
+    );
     expect(createReviewMock).not.toHaveBeenCalled();
 
+    jest.mocked(authModule.reportPrState).mockClear();
     const clean = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
     expect(await checkAndAutoApprove(clean, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }));
-    expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([
-      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: true } }],
-      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: true } }],
-      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: false }, pause: null }],
-    ]);
+    expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: { commit: 'sha-456', held: false }, pause: null }]]);
   });
 
   it.each<[string, string, string, AuthorClearRole | 'unreadable' | undefined, boolean, boolean]>([
@@ -1343,7 +1385,9 @@ describe('checkAndAutoApprove', () => {
 
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(result).toBe(true);
+    // A refused approval is held, as in a review round.
+    expect(result).toBe(false);
+    expect(jest.mocked(authModule.reportPrState)).toHaveBeenCalledWith('owner', 'repo', 1, { approval: { commit: 'sha-789', held: true } });
     expect(createReviewMock).toHaveBeenCalledTimes(1);
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE' }),
@@ -1354,7 +1398,63 @@ describe('checkAndAutoApprove', () => {
       issue_number: 1,
       body: expect.stringContaining('repository settings block the approval'),
     }));
+    // The notice records the hold, as the notice of a draft or a conflict does.
+    const notice = createCommentMock.mock.calls[0][0].body as string;
+    expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused', head: 'sha-789' })]);
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
+  });
+
+  it('posts the refusal notice and a neutral check once per head, and a later verdict or approval retires the notice', async () => {
+    const refusal = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
+    const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true })];
+    const createReviewMock = jest.fn().mockRejectedValue(new Error(SETTING_REFUSAL));
+    const createCommentMock = jest.fn().mockResolvedValue({});
+    const checks = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+    const heldCheck = (head: string) => expect.objectContaining({
+      name: 'Manki', head_sha: head, status: 'completed', conclusion: 'neutral', output: { title: 'Approval held: GitHub refused the approval', summary: refusal },
+    });
+    const posted = await expectHeldOncePerHead(
+      { threads: resolved, prHeadSha: 'sha-789', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks },
+      'refused', 'Approval held: GitHub refused the approval', refusal, '<!-- manki-approval-held:sha-789:refused -->',
+    );
+    // A failed notice still deletes the progress comment, so nothing marks the check failed.
+    expect(deleteAutoApproveProgressComment).toHaveBeenCalledTimes(3);
+    expect(markProgressCommentFailed).not.toHaveBeenCalled();
+
+    // A new head gets its own notice, and the draft or conflict notice of that head does not stand in for it.
+    await approveOrSayWhy(makeMockOctokit({
+      threads: resolved, prHeadSha: 'sha-790', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks,
+      existingComments: [posted, '**Approval held:** this PR is a draft.\n\n<!-- manki-approval-held:sha-790 -->'].map(body => ({ body, user: { login: 'manki-review[bot]' } })),
+    }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+    expect(createCommentMock).toHaveBeenCalledTimes(2);
+    expect(createCommentMock.mock.calls[1][0].body).toContain('<!-- manki-approval-held:sha-790:refused -->');
+    expect(checks.create.mock.calls).toEqual([[heldCheck('sha-789')], [heldCheck('sha-790')]]);
+
+    const deleteComment = jest.fn().mockResolvedValue({});
+    const listed = { paginate: jest.fn(paginateSinglePage), rest: { issues: {
+      listComments: jest.fn().mockResolvedValue({ data: [{ id: 11, body: posted, user: { login: 'manki-review[bot]' }, updated_at: '2025-01-01T00:00:00Z' }] }),
+      deleteComment,
+    } } } as unknown as Octokit;
+    await retireStaleNotices(listed, TEST_BOT, 'owner', 'repo', 1, 'sha-791');
+    expect(deleteComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 11 });
+
+    // Once the setting allows it, the approval of the head retires the notice too. It changes no other comment: not a
+    // failed review that holds the PR's settings block, nor the token service's conflict note.
+    const deleteOnApproval = jest.fn().mockResolvedValue({});
+    const updateOnApproval = jest.fn().mockResolvedValue({});
+    const failedReview = '🔴 **Review failed** boom\n\n<!-- manki-bot -->\n\n---\nNot reviewed yet · head `sha-789` · failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->';
+    const conflictNote = 'This PR conflicts with `main`. Rebase it, and Manki reviews it then.\n\n<!-- manki-conflict-note -->';
+    const approved = await approveOrSayWhy(makeMockOctokit({
+      threads: resolved, prHeadSha: 'sha-789', mergeable: true, deleteCommentFn: deleteOnApproval, updateCommentFn: updateOnApproval,
+      existingComments: [
+        { id: 12, body: posted, user: { login: 'manki-review[bot]' } },
+        { id: 13, body: failedReview, user: { login: 'manki-review[bot]' } },
+        { id: 14, body: conflictNote, user: { login: 'manki-review[bot]' } },
+      ],
+    }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+    expect(approved).toEqual({ approved: true });
+    expect(deleteOnApproval.mock.calls).toEqual([[{ owner: 'owner', repo: 'repo', comment_id: 12 }]]);
+    expect(updateOnApproval).not.toHaveBeenCalled();
   });
 
   it('approve review body is non-empty so it does not register as a placeholder', async () => {
@@ -1875,31 +1975,33 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(ghMock.deleteAutoApproveProgressComment).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['the issue-comment fallback also fails', SETTING_REFUSAL, 'comment also forbidden'],
-    ['GitHub refuses it for a reason other than the repo setting', 'Review cannot be submitted', 'Review cannot be submitted'],
-  ])('transitions the marker to a failure state when APPROVE fails and %s', async (_label, refusal, reason) => {
-    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error(refusal));
-    const createCommentMock = jest.fn().mockRejectedValueOnce(new Error('comment also forbidden'));
+  it('transitions the marker to a failure state when GitHub refuses the approval for a reason other than the repo setting', async () => {
+    const reason = 'Review cannot be submitted';
+    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error(reason));
+    const createCommentMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
     await expect(checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).rejects.toThrow(reason);
     expect(ghMock.markProgressCommentFailed).toHaveBeenCalledWith(
       octokit, 'owner', 'repo', 7777, 'Auto-approve', reason, undefined, [ghActualMarker('sha-x')],
     );
-    expect(createCommentMock).toHaveBeenCalledTimes(refusal === SETTING_REFUSAL ? 1 : 0);
+    expect(createCommentMock).not.toHaveBeenCalled();
     expect(ghMock.deleteAutoApproveProgressComment).not.toHaveBeenCalled();
     expect(ghMock.dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
-  it('deletes the progress comment and keeps the settings notice when repository settings refuse the approval', async () => {
+  it.each([
+    ['is posted', () => jest.fn().mockResolvedValueOnce({})],
+    ['cannot be posted', () => jest.fn().mockRejectedValueOnce(new Error('comment also forbidden'))],
+  ])('deletes the progress comment and holds when repository settings refuse the approval and the notice %s', async (_label, createComment) => {
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
     const createReviewMock = jest.fn().mockRejectedValueOnce(new Error(SETTING_REFUSAL));
-    const createCommentMock = jest.fn().mockResolvedValueOnce({});
+    const createCommentMock = createComment();
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(result).toBe(true);
+    expect(result).toBe(false);
     expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
       issue_number: 1,
       body: expect.stringContaining('repository settings block the approval'),

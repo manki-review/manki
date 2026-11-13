@@ -88,7 +88,7 @@ npx github:manki-review/manki#v7 review main..topic   # a range
 npx github:manki-review/manki#v7 review --json --record round.json
 ```
 
-The findings print as Markdown, or as JSON with `--json`. `--record` writes the round record a pull request round would post. The exit code is 0 when a pull request round would approve, 1 when something blocks, a warning would hold the approval (an earlier round's warning thread that is still open included), the base config did not load or the change breaks it, and 2 when the review is incomplete or failed. Run `manki review --help` for every option.
+The findings print as Markdown, or as JSON with `--json`. The JSON has `approvalHeld` next to `verdict`: the reason a pull request round would hold its approval and post a comment instead, such as `warnings`, `unread` or `config`, or `false` when nothing holds. As in the action's output, `verdict` is `APPROVE` only when nothing holds, `REQUEST_CHANGES` when something blocks, and `COMMENT` otherwise. `--record` writes the round record a pull request round would post. The exit code is 0 when a pull request round would approve, 1 when something blocks, a warning would hold the approval (an earlier round's warning thread that is still open included), a changed file no model reads would hold it, the base config did not load or the change breaks it, and 2 when the review is incomplete or failed. Run `manki review --help` for every option.
 
 ## Configure
 

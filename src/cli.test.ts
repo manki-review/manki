@@ -67,8 +67,11 @@ describe('formatReviewJson', () => {
     const json = formatReviewJson(local);
     expect(json).not.toMatch(/(?![\n])\p{Cc}/u);
     expect(JSON.parse(json)).toEqual({
-      outcome: 'ADDRESS_FIRST', verdict: 'REQUEST_CHANGES', summary: 'Summary of the round', base: local.base, head: local.head, findings: [finding, steered],
+      outcome: 'ADDRESS_FIRST', verdict: 'REQUEST_CHANGES', approvalHeld: false, summary: 'Summary of the round', base: local.base, head: local.head, findings: [finding, steered],
     });
+    // A held round reads as a comment, as the action's `verdict` output does, and names the hold.
+    expect(JSON.parse(formatReviewJson(review('READY', [], 'warnings')))).toMatchObject({ outcome: 'READY', verdict: 'COMMENT', approvalHeld: 'warnings' });
+    expect(JSON.parse(formatReviewJson(review('READY')))).toMatchObject({ verdict: 'APPROVE', approvalHeld: false });
   });
 });
 

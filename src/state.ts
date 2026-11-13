@@ -416,7 +416,7 @@ function isNewChange(change: ReviewedChange, previous: RoundContext | undefined)
 
 /**
  * Whether the PR was approved at or after `round`: by the round itself, or by auto-approve at `lastApprovalAt` or later.
- * An approval held on a conflict, a draft, a config or unread files is recorded as an approval, so it counts. One that
+ * An approval held on a conflict, a draft, a config, unread files or a refusal by GitHub is recorded as an approval, so it counts. One that
  * warnings held does not, whatever hold came first, so a loop of warnings still reaches the round cap.
  */
 function approvedSince(round: RoundContext, lastApprovalAt: string | undefined): boolean {
@@ -677,18 +677,19 @@ function warningThreadsLine(held: ReviewThread[], clearRole: AuthorClearRole | u
   return `${held.length === 1 ? '1 warning thread holds' : `${held.length} warning threads hold`} the approval:\n${list}\n\nApproval follows once each one is fixed, resolved, or answered in its thread by ${who} with a reason to keep it.`;
 }
 
-/** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
+/** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. Returns whether it posted. */
 async function postNoticeOnce(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, marker: string, text: string,
-): Promise<void> {
+): Promise<boolean> {
   const existing = await octokit.paginate(octokit.rest.issues.listComments, {
     owner, repo, issue_number: prNumber, per_page: 100,
   });
   if (existing.some(c => isBotLogin(bot, c.user?.login) && c.body?.includes(marker))) {
     core.info(`Notice ${marker} already present, skipping duplicate`);
-    return;
+    return false;
   }
   await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, marker) });
+  return true;
 }
 
 /**
@@ -721,26 +722,37 @@ async function postStaleApproveSkippedComment(
   }
 }
 
+/** The notice of an approval GitHub refused because of the repository setting. */
+const REFUSED_LINE = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
+
+/** A held approval: the first reason, the notice's text, and whether this call posted the notice. */
+type HeldApproval = { reason: Exclude<ApprovalHeld, false>; line: string; posted: boolean };
+
 /**
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
+ * With `refused`, it holds because GitHub refused the approval, and does not read the PR.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
-  autoApprove = true, recordFor?: (reason: string) => string,
-): Promise<ApprovalHeld> {
-  const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
+  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused' },
+): Promise<HeldApproval | false> {
+  const hold = refused ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
-  core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
+  const why = hold.reason === 'refused' ? 'GitHub refused the approval' : hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft';
+  core.info(`${why}, so it is not approved`);
   assertWritesAllowed();
+  const line = hold.reason === 'refused' ? REFUSED_LINE : approvalHoldLine(hold, autoApprove);
+  // A refusal has its own marker, so a draft or conflict notice of the head does not stand in for it.
+  const marker = `${APPROVAL_HELD_MARKER_PREFIX}${headSha}${hold.reason === 'refused' ? ':refused' : ''} -->`;
+  let posted = false;
   try {
-    const line = approvalHoldLine(hold, autoApprove);
-    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
+    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, marker, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
-  return hold.reason;
+  return { reason: hold.reason, line, posted };
 }
 
 /**
@@ -748,8 +760,14 @@ async function holdApproval(
  * note. Call it once a review posts its verdict on `headSha`.
  * Marks every older failed or incomplete review progress comment as superseded by that verdict, whatever commit it was for.
  * With `pauseLifted`, when that round lifted the pause, each pause notice that lost its settings block is marked as resumed.
+ * With `approvalOnly`, for an auto-approval, it deletes only the withheld and approval-held notices and leaves every other
+ * comment as it is, the conflict note included. An auto-approval posts no review round, and it can approve while GitHub
+ * has not said whether the PR conflicts.
  */
-async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLifted = false): Promise<void> {
+async function retireStaleNotices(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
+  { pauseLifted = false, approvalOnly = false } = {},
+): Promise<void> {
   let comments: Awaited<ReturnType<typeof fetchPRComments>>;
   try {
     comments = await fetchPRComments(octokit, owner, repo, prNumber);
@@ -761,8 +779,10 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
   for (const c of comments) {
     if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
     try {
-      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX) || c.body.includes(CONFLICT_NOTE_MARKER)) {
+      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX) || (!approvalOnly && c.body.includes(CONFLICT_NOTE_MARKER))) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+      } else if (approvalOnly) {
+        continue;
       } else if (isFailedProgress(c.body)) {
         await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
       } else if (pauseLifted && c.body.includes(PAUSE_NOTICE_MARKER) && !c.body.includes(SETTINGS_MARKER)) {
@@ -784,8 +804,11 @@ function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string
   return held(botReviews.at(-1)) || botReviews.some(r => r.commit_id === headSha && held(r));
 }
 
-/** What `approveOrSayWhy` decided. `standing` marks an approval that was already there. `why` tells a person why the PR is not approved and what lifts that. */
-type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string> };
+/**
+ * What `approveOrSayWhy` decided. `standing` marks an approval that was already there. `why` tells a person why the PR is
+ * not approved and what lifts that. `answered` marks a reason already posted on the PR.
+ */
+type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true };
 
 /** Post an approval review if all findings are resolved. */
 async function checkAndAutoApprove(
@@ -926,11 +949,18 @@ async function approveOrSayWhy(
     return withheld(why);
   }
 
-  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, reason => approvalRecord('held', reason, pr.head.sha));
-  if (hold) {
+  const recordFor = (cause: string) => approvalRecord('held', cause, pr.head.sha);
+  /**
+   * Reports the held approval, and the check once, with the notice. A later round reports its own check and deletes the
+   * notice, so a hold after it reports again. A notice this check posted already answers a person.
+   */
+  const heldBy = async (held: HeldApproval): Promise<ApprovalCheck> => {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-    return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }, config?.auto_approve));
-  }
+    if (held.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', held.line, held.reason));
+    return { approved: false, why: async () => held.line, ...(held.posted && { answered: true as const }) };
+  };
+  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor);
+  if (hold) return heldBy(hold);
 
   const comments = await fetchPRComments(octokit, owner, repo, prNumber).catch((error: unknown) => {
     core.warning(`Failed to look up an earlier failed auto-approve, posting a new comment: ${error instanceof Error ? error.message : error}`);
@@ -939,6 +969,7 @@ async function approveOrSayWhy(
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber, pr.head.sha, failedAutoApproveId(comments, bot, pr.head.sha));
 
   core.info('All findings resolved — auto-approving');
+  let refusal: HeldApproval | false = false;
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
@@ -967,6 +998,7 @@ async function approveOrSayWhy(
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, bot, owner, repo, prNumber);
       await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', cleared));
+      await retireStaleNotices(octokit, bot, owner, repo, prNumber, pr.head.sha, { approvalOnly: true });
     } catch (error) {
       if (!isApprovalSettingRefusal(error)) throw error;
       // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder
@@ -976,13 +1008,7 @@ async function approveOrSayWhy(
       core.warning(
         'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.',
       );
-      await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: prNumber,
-        body: withMarkers('All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.', BOT_MARKER),
-      });
-      core.info('Posted auto-approve permission notice as issue comment');
+      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused' });
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.
@@ -993,7 +1019,8 @@ async function approveOrSayWhy(
   }
 
   await deleteAutoApproveProgressComment(octokit, owner, repo, progressCommentId);
-  return { approved: true };
+  // A refused approval is held, as in a review round.
+  return refusal ? heldBy(refusal) : { approved: true };
 }
 
 export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

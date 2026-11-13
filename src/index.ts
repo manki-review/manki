@@ -89,6 +89,7 @@ import {
   retireSettingsBlocks,
   setSettingsBlock,
   showSettings,
+  skippedFiles,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
@@ -875,7 +876,8 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
+        const hold = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft, config.auto_approve);
+        const held = hold && hold.reason;
         // A warning thread can hold an approval given before warnings held one, or one given before the thread was reopened.
         if (approved && !held && (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role)).length > 0) {
           core.info(`A warning thread holds the approval of ${shortSha}, reviewing in full`);
@@ -1679,7 +1681,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     memorySkip: run.memorySkip?.message,
     restart,
     ...(unreadRecords && { unreadRecords }),
-    skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
+    skipped: skippedFiles(run.excludedFiles, run.lockfiles, diff),
     onPosted: () => { run.progress.reviewPosted = true; },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
@@ -1795,13 +1797,16 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   await updateProgressComment(octokit, owner, repo, commentId, completeDashboard, metadata, progressSettings(run, run.progress, 'up to date', { reviewed: true }));
 }
 
-function setReviewOutputs(reviewId: number, context: RoundContext, result: ReviewResult): void {
+function setReviewOutputs({ id, approvalHeld }: { id: number; approvalHeld: ApprovalHeld }, context: RoundContext, result: ReviewResult): void {
   const flatAliases = roundContextToFlatAliases(context);
   const severityMap = context.findings.severityCounts;
+  // A held approval posts a COMMENT review, so the output matches the review a later step can see on the PR.
+  const verdict = approvalHeld ? 'COMMENT' : flatAliases.verdict;
   // A later step can post or log an output, so none may carry a secret.
   const setOutput = (name: string, value: string): void => core.setOutput(name, redactSecrets(value));
-  setOutput('review_id', reviewId.toString());
-  setOutput('verdict', flatAliases.verdict);
+  setOutput('review_id', id.toString());
+  setOutput('verdict', verdict);
+  setOutput('approval_held', approvalHeld || '');
   setOutput('findings_count', flatAliases.findingsKept.toString());
   setOutput('findings_json', JSON.stringify(redactSecretsDeep(result.findings)));
 
@@ -1811,7 +1816,7 @@ function setReviewOutputs(reviewId: number, context: RoundContext, result: Revie
 
   setOutput('judge_model', flatAliases.judgeModel);
 
-  core.info(`Review complete: ${result.verdict} with ${flatAliases.findingsKept} findings`);
+  core.info(`Review complete: ${verdict} with ${flatAliases.findingsKept} findings`);
   core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.note} note`);
 }
 
@@ -2065,8 +2070,8 @@ async function runFullReview(
     await replyPartlyFixedThreads(run, result);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs);
-    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
-    setReviewOutputs(posted.id, context, result);
+    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, { pauseLifted: !pauseAfter.paused });
+    setReviewOutputs(posted, context, result);
     // The title names the first hold, so warnings that hold behind another one are named in the summary.
     const alsoWarnings = posted.warningsHeld && posted.approvalHeld !== 'warnings' ? WARNINGS_ALSO_HOLD_LINE : '';
     const summary = unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(roundSentence(result))].filter(Boolean).join('\n\n') : roundSummary(result);

@@ -47,7 +47,9 @@ outputs:
   review_id:
     description: 'The GitHub review ID that was posted'
   verdict:
-    description: 'Review verdict: APPROVE, COMMENT, or REQUEST_CHANGES'
+    description: 'Review verdict: APPROVE only when Manki approved the PR, REQUEST_CHANGES when the round found a blocker, otherwise COMMENT. A held approval is COMMENT.'
+  approval_held:
+    description: 'Why a round that would approve posted COMMENT instead: conflict, draft, config, unread, warnings, or refused (GitHub refused the approval). Empty when the approval is not held.'
   findings_count:
     description: 'Total number of findings'
   findings_json:
