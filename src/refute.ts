@@ -172,7 +172,8 @@ function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutat
  * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
  * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
  * covers the PR's files only and the related repo can have changed, when it is a disproof that no longer cites the
- * finding's code, or when it ended unsettled on its step budget, since it may only have run out of steps.
+ * finding's code or that confirmed the defect, which contradicts itself, or when it ended unsettled on its step budget,
+ * since it may only have run out of steps.
  */
 function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);
@@ -184,7 +185,8 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
       && codeDigest(workspace, refutation.files) === refutation.codeDigest)?.refutation;
     if (!refutation) continue;
-    const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes' && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff));
+    const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes'
+      && (outcomeOf(refutation) !== 'disproved' || (refutation.defect !== 'confirmed' && citesFindingCode(finding.file, refutation.proof ?? [], diff)));
     return reusable ? refutation : undefined;
   }
   return undefined;
@@ -226,9 +228,12 @@ function replyText(value: unknown): string {
   return typeof value === 'string' ? safeTruncate(value.trim(), MAX_REASON_CHARS) : '';
 }
 
-/** A disproved premise the defect rests on disproves the finding. Only a confirmation of every premise confirms it. */
-function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck[]): RefutationOutcome {
-  if (checks.some((c, i) => c.outcome === 'disproved' && doubts[i].decides === 'defect')) return 'disproved';
+/**
+ * A disproved premise the defect rests on disproves the finding, unless the check confirmed the `defect` itself. Such a
+ * reply contradicts itself, so it settles nothing. Only a confirmation of every premise confirms the finding.
+ */
+function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck[], defect: RefutationOutcome): RefutationOutcome {
+  if (checks.some((c, i) => c.outcome === 'disproved' && doubts[i].decides === 'defect')) return defect === 'confirmed' ? 'unsettled' : 'disproved';
   return checks.every(c => c.outcome === 'confirmed') ? 'confirmed' : 'unsettled';
 }
 
@@ -261,7 +266,7 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
         ...(cited.length > 0 && { proof: cited }), ...(citedRelated.length > 0 && { relatedProof: citedRelated }),
       };
     });
-    outcome = premisesOutcome(finding.doubts, premises);
+    outcome = premisesOutcome(finding.doubts, premises, defect);
     // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect.
     const doubts = finding.doubts;
     const disproved = outcome === 'disproved' || defect === 'disproved';

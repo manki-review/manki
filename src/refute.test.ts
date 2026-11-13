@@ -437,6 +437,8 @@ describe('refuteBlockers', () => {
       'Lowering premise holds': { reason: 'Only tests call it.', premises: [{ outcome: 'disproved', reason: 'Only tests call it.', proof: ['src/math.ts:1'] }] },
       'Blocker defect disproved': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] }] },
       'Disproved beside a confirmed premise': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }, confirmed('src/api.ts:4')] },
+      'Defect confirmed beside a disproved premise': { ...confirmed('src/math.ts:2'), premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] },
+      'Defect and premise disproved': { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'], premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] },
       'Premises not answered': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Rare claim not answered': { outcome: 'confirmed', reason: 'A handler passes it.', proof: ['src/api.ts:4'] },
       'Rare claim not among the premises': { reason: 'Both hold.', premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
@@ -461,6 +463,9 @@ describe('refuteBlockers', () => {
       finding('Lowering premise holds', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [reached] }),
       finding('Blocker defect disproved', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Disproved beside a confirmed premise', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists, reached] }),
+      // A check that confirms the defect and disproves a premise it rests on contradicts itself, so it settles nothing.
+      finding('Defect confirmed beside a disproved premise', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists] }),
+      finding('Defect and premise disproved', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Premises not answered', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Doubt confirmed in the normal column', { ...held, reviewerSeverity: 'blocker', ...byJudge('blocker') }),
       finding('Rare claim not answered', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [reached] }),
@@ -497,6 +502,8 @@ describe('refuteBlockers', () => {
       // A disproof never lowers a blocker.
       ['Blocker defect disproved', 'blocker', 'disproved', ['disproved']],
       ['Disproved beside a confirmed premise', 'ignore', 'disproved', ['disproved', 'confirmed']],
+      ['Defect confirmed beside a disproved premise', 'warning', 'unsettled', ['disproved']],
+      ['Defect and premise disproved', 'ignore', 'disproved', ['disproved']],
       // A reply that skips the premises is asked once more, then leaves the grade to the judge.
       ['Premises not answered', 'blocker', undefined, undefined],
       ['Doubt confirmed in the normal column', 'blocker', 'confirmed', ['confirmed']],
@@ -527,7 +534,7 @@ describe('refuteBlockers', () => {
       ...raised.slice(1).map(title => [title, normal, 'confirmed']),
     ]);
     // Only a finding the check drops or raises has a `refutation` step, and a confirmed reach leaves the finding as the judge graded it.
-    expect(result.filter(f => f.gradePath?.some(step => step.by === 'refutation')).map(f => f.title)).toEqual(['Defect disproved', 'Disproved beside a confirmed premise', ...raised]);
+    expect(result.filter(f => f.gradePath?.some(step => step.by === 'refutation')).map(f => f.title)).toEqual(['Defect disproved', 'Disproved beside a confirmed premise', 'Defect and premise disproved', ...raised]);
     expect([result[0].gradePath, result[0].gradeIfConfirmed, result[0].doubts, result[0].evidence?.proof]).toEqual([undefined, 'blocker', [exists, REACH_DOUBT], findings[0].evidence?.proof]);
     const keptWarning = result.find(f => f.title === 'Doubt confirmed where the judge keeps a warning')!;
     expect([keptWarning.gradePath, keptWarning.gradeIfConfirmed, checkStatus(keptWarning)]).toEqual([undefined, 'warning', 'confirmed']);
@@ -644,8 +651,10 @@ describe('refuteBlockers', () => {
     expect([alone[2].cell, alone[2].evidence?.proof]).toEqual([rare, ['src/math.ts:2']]);
 
     const doubted = (title: string) => finding(title, { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists] });
+    const contradicts = { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }] };
     const first = fakeClient({
       'Both say no defect': noDefect(open), 'Split on the defect': noDefect(open), 'Premise confirmed beside': noDefect(open, open), 'Split with the reach confirmed': noDefect(holds),
+      ...Object.fromEntries(['Contradiction beside a disproof', 'Contradiction beside an open check'].map(title => [title, contradicts])),
     });
     const pair = fakeClient({
       'Both say no defect': noDefect(open),
@@ -653,11 +662,14 @@ describe('refuteBlockers', () => {
       // The second refuter confirms the premise the defect rests on and cannot tell about the reach, so its own outcome is unsettled.
       'Premise confirmed beside': { reason: 'No caller bounds it.', premises: [{ outcome: 'confirmed', reason: 'No caller bounds it.', proof: ['src/api.ts:4'] }, open] },
       'Split with the reach confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [holds] },
+      'Contradiction beside a disproof': noDefect(open),
+      'Contradiction beside an open check': { outcome: 'unsettled', reason: 'Could not tell.', premises: [open] },
     });
     const paired = await refuteBlockers(first, [
       doubted('Both say no defect'), doubted('Split on the defect'),
       finding('Premise confirmed beside', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: [exists, reached] }),
       finding('Split with the reach confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
+      doubted('Contradiction beside a disproof'), doubted('Contradiction beside an open check'),
     ], { workspace, diff, pair });
 
     expect(paired.map(columns)).toEqual([
@@ -668,10 +680,15 @@ describe('refuteBlockers', () => {
       ['Premise confirmed beside', 'warning', 'unsettled', 'disproved', 'unsettled', false, 'unconfirmed'],
       // Both refuters confirm the reach, and the finding still does not rise while one of them says the defect does not exist.
       ['Split with the reach confirmed', 'warning', 'confirmed', 'disproved', 'confirmed', false, 'unconfirmed'],
+      // A check that confirms the defect and disproves a premise it rests on settles nothing and still backs the finding, so no disproof beside it drops it.
+      ['Contradiction beside a disproof', 'warning', 'unsettled', 'confirmed', 'disproved', false, 'unconfirmed'],
+      ['Contradiction beside an open check', 'warning', 'unsettled', 'confirmed', 'unsettled', false, 'confirmed'],
     ]);
-    expect(paired.map(f => [f.pairRefutation?.outcome, f.cell?.column])).toEqual([['unsettled', undefined], ['unsettled', undefined], ['unsettled', 'normal'], ['confirmed', 'rare']]);
+    expect(paired.map(f => [f.pairRefutation?.outcome, f.cell?.column])).toEqual([
+      ['unsettled', undefined], ['unsettled', undefined], ['unsettled', 'normal'], ['confirmed', 'rare'], ['unsettled', undefined], ['unsettled', undefined],
+    ]);
     // The check that confirmed the defect keeps a split warning posted.
-    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check', undefined]);
+    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check', undefined, undefined, undefined]);
   });
 
   it('checks every finding a doubt holds below its conditional grade, and at most eight warnings nothing proves yet', async () => {
@@ -1277,6 +1294,9 @@ describe('refuteBlockers', () => {
     const { defect: _defect, ...unasked } = doubted.refutation!;
     const [reasked] = await refuteRound(confirming, [old()], { ...onUnchanged, priorRounds: roundsWith(unasked) });
     expect([confirming.calls.length, reasked.refutation?.defect, checkStatus(reasked)]).toEqual([2, 'confirmed', 'confirmed']);
+    // A stored disproof that confirmed the defect contradicts itself, so the finding is asked again.
+    const [contradicted] = await refuteRound(confirming, [old()], { ...onUnchanged, priorRounds: roundsWith({ ...doubted.refutation, outcome: 'disproved' }) });
+    expect([confirming.calls.length, outcomeOf(contradicted.refutation!), checkStatus(contradicted)]).toEqual([3, 'confirmed', 'confirmed']);
 
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
