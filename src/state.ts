@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
-import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
+import { newestCheckPassed, outcomeReport, reportCheck } from './check-run';
 import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
@@ -902,6 +902,10 @@ async function approveOrSayWhy(
 
   if (latestBotReview?.state === 'APPROVED') {
     core.info('Already approved — skipping duplicate approval');
+    // A check left in progress or stale on the head would hide the approval, and a passing one needs no other.
+    if (!await newestCheckPassed(octokit, owner, repo, pr.head.sha)) {
+      await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', 'Manki\'s approval of this commit stands.'));
+    }
     return { approved: true, standing: true };
   }
 
@@ -958,7 +962,7 @@ async function approveOrSayWhy(
       // An approval ends the pause, so the coordinator again starts push reviews.
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, bot, owner, repo, prNumber);
-      await completeReviewCheck(await startReviewCheck(octokit, owner, repo, pr.head.sha), outcomeReport('READY', cleared));
+      await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', cleared));
     } catch (error) {
       if (!isApprovalSettingRefusal(error)) throw error;
       // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder

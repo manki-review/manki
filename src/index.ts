@@ -11,7 +11,7 @@ import { BENCH_COMMAND, runBenchCommand } from './bench';
 import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
-import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
+import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
@@ -879,7 +879,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
         await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
           head: commitSha, draft: !!draft, status: 'up to date', text: summary, lastReviewed: standing.commitSha,
         });
-        await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
+        await reportCheck(octokit, owner, repo, commitSha, outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
         return true;
       } catch (error) {
         core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
