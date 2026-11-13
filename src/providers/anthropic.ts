@@ -152,16 +152,21 @@ export function extractAnthropicCLIUsage(resultEvent: unknown): LLMUsage {
   return readAnthropicUsage(usage as Record<string, unknown>);
 }
 
-/** Maps an Anthropic `usage` block to `LLMUsage`. Input counts cache writes and reads, which `input_tokens` leaves out. */
+/**
+ * Maps an Anthropic `usage` block to `LLMUsage`. Input counts cache writes and reads, which `input_tokens` leaves out.
+ * `cacheWrite1hTokens` is set only when the block splits its cache writes in `cache_creation`.
+ */
 function readAnthropicUsage(u: Record<string, unknown>): LLMUsage {
   const cacheReadTokens = readCount(u.cache_read_input_tokens);
   const cacheWriteTokens = readCount(u.cache_creation_input_tokens);
+  const split = u.cache_creation && typeof u.cache_creation === 'object' ? u.cache_creation as Record<string, unknown> : undefined;
   return {
     inputTokens: readCount(u.input_tokens) + cacheWriteTokens + cacheReadTokens,
     outputTokens: readCount(u.output_tokens),
     cacheReadTokens,
     cacheWriteTokens,
     reasoningTokens: 0,
+    ...(split && { cacheWrite1hTokens: Math.min(readCount(split.ephemeral_1h_input_tokens), cacheWriteTokens) }),
   };
 }
 
@@ -405,6 +410,11 @@ export class AnthropicClient implements LLMClient {
         ...(oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
         // The CLI defaults to the model's own limit, which lets a runaway reply run for many minutes.
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(THINKING_MAX_TOKENS),
+        // On a subscription the CLI defaults to a 1-hour cache, whose writes cost more. The requests of one call are
+        // minutes apart at most, and a later call shares no more than its system prompt with an earlier one.
+        CLAUDE_CODE_PROMPT_CACHE_TTL: '5m',
+        // A call without tools is one request, so nothing would read what it caches.
+        ...(!options?.repoTools && { DISABLE_PROMPT_CACHING: '1' }),
       }, 'CLAUDE_CODE_OAUTH_TOKEN'),
       input: userMessage,
       hardTimeoutMs: options?.timeoutMs,

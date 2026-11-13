@@ -9,6 +9,8 @@ export interface LLMUsage {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   reasoningTokens: number;
+  /** The part of `cacheWriteTokens` cached for an hour rather than five minutes. Unset when no call reported the split. */
+  cacheWrite1hTokens?: number;
 }
 
 export interface LLMResponse {
@@ -67,12 +69,14 @@ export const ZERO_USAGE: LLMUsage = Object.freeze({
 });
 
 export function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
+  const reported = a.cacheWrite1hTokens !== undefined || b.cacheWrite1hTokens !== undefined;
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
     reasoningTokens: a.reasoningTokens + b.reasoningTokens,
+    ...(reported && { cacheWrite1hTokens: (a.cacheWrite1hTokens ?? 0) + (b.cacheWrite1hTokens ?? 0) }),
   };
 }
 

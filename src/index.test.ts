@@ -3036,7 +3036,7 @@ describe('runFullReview orchestration', () => {
     });
     const llmCalls = [
       call('planner', 'claude-haiku-5-5', 30, 5, 0.001),
-      call('reviewer', 'claude-sonnet-5-5', 100, 20, 0.002, { agent: 'security', cacheReadTokens: 5, cacheWriteTokens: 7 }),
+      call('reviewer', 'claude-sonnet-5-5', 100, 20, 0.002, { agent: 'security', cacheReadTokens: 5, cacheWriteTokens: 7, cacheWrite1hTokens: 4 }),
       call('reviewer', undefined, 0, 0, null, { agent: 'general', failed: true, error: 'CLI timed out' }),
       call('reviewer', 'gpt-5', 80, 10, null, { agent: 'general', attempt: 2, fallback: true }),
       call('judge', 'claude-opus-5-5', 200, 50, 0.004, { reasoningTokens: 25 }),
@@ -3076,9 +3076,11 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.usage.estimatedCostUsd).toBeCloseTo(0.007);
     expect(ctx!.usage.perStage).toEqual({
       planner: expect.objectContaining({ calls: 1, inputTokens: 30, outputTokens: 5, estimatedCostUsd: 0.001 }),
-      reviewer: expect.objectContaining({ calls: 3, failedCalls: 1, unpricedCalls: 1, inputTokens: 180, outputTokens: 30, cacheWriteTokens: 7 }),
+      reviewer: expect.objectContaining({ calls: 3, failedCalls: 1, unpricedCalls: 1, inputTokens: 180, outputTokens: 30, cacheWriteTokens: 7, cacheWrite1hTokens: 4 }),
       judge: expect.objectContaining({ calls: 1, inputTokens: 200, reasoningTokens: 25, estimatedCostUsd: 0.004 }),
     });
+    // Only a stage with a call that reported the split of its cache writes keeps one.
+    expect(ctx!.usage.perStage!.judge).not.toHaveProperty('cacheWrite1hTokens');
     expect(Object.keys(ctx!.usage.perModel!)).toEqual(['claude-haiku-5-5', 'claude-sonnet-5-5', 'gpt-5', 'claude-opus-5-5']);
     expect(ctx!.usage.perModel!['gpt-5']).toMatchObject({ calls: 1, unpricedCalls: 1, estimatedCostUsd: 0 });
 

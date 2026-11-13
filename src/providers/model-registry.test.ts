@@ -96,6 +96,8 @@ describe('estimateCostUsd', () => {
   it('prices uncached input, cache reads, cache writes and output separately', () => {
     expect(estimateCostUsd('claude-sonnet-5-5', usage(1_000_000, 1_000_000))).toBeCloseTo(12);
     expect(estimateCostUsd('claude-opus-5-5', usage(1_000_000, 0, 500_000, 250_000))).toBeCloseTo(0.25 * 4 + 0.5 * 0.2 + 0.25 * 5);
+    // A 1-hour cache write costs twice the input price, the rest of the writes the five-minute price.
+    expect(estimateCostUsd('claude-opus-5-5', { ...usage(1_000_000, 0, 500_000, 250_000), cacheWrite1hTokens: 100_000 })).toBeCloseTo(0.25 * 4 + 0.5 * 0.2 + 0.15 * 5 + 0.1 * 8);
   });
 
   it('uses the long-prompt price above 100,000 input tokens, and the price of a dated id', () => {

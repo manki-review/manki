@@ -61,6 +61,14 @@ describe('addUsage', () => {
     expect(addUsage(a, b)).toEqual({ inputTokens: 13, outputTokens: 12, cacheReadTokens: 2, cacheWriteTokens: 0, reasoningTokens: 5 });
   });
 
+  it('sums the 1-hour cache writes when either operand reports them, and leaves them out otherwise', () => {
+    const a = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 6, reasoningTokens: 0, cacheWrite1hTokens: 4 };
+    expect(addUsage(a, { ...a, cacheWrite1hTokens: 1 }).cacheWrite1hTokens).toBe(5);
+    expect(addUsage(ZERO_USAGE, a).cacheWrite1hTokens).toBe(4);
+    expect(addUsage(a, ZERO_USAGE).cacheWrite1hTokens).toBe(4);
+    expect(addUsage(ZERO_USAGE, ZERO_USAGE)).not.toHaveProperty('cacheWrite1hTokens');
+  });
+
   it('returns a copy equal to the non-zero operand when adding ZERO_USAGE', () => {
     const a = { inputTokens: 8, outputTokens: 3, cacheReadTokens: 1, cacheWriteTokens: 0, reasoningTokens: 2 };
     expect(addUsage(a, ZERO_USAGE)).toEqual(a);

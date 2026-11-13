@@ -107,6 +107,9 @@ const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   'gemini-3.5-flash-lite': { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0 },
 };
 
+/** Anthropic charges a 1-hour cache write at twice the input price. */
+const ONE_HOUR_WRITE_RATE = 2;
+
 /**
  * Returns an estimate of a call's cost in USD at public API prices, or `null` for a model without a
  * known price. Subscription use is not billed per token, so this is what the same calls would cost on the API.
@@ -116,9 +119,11 @@ export function estimateCostUsd(model: string, usage: LLMUsage): number | null {
   if (!price) return null;
   const long = price.longPrompt && usage.inputTokens > price.longPrompt.aboveTokens ? price.longPrompt : undefined;
   const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
+  const oneHourWrites = usage.cacheWrite1hTokens ?? 0;
   const cost = uncached * (long?.input ?? price.input)
     + usage.cacheReadTokens * (long?.cacheRead ?? price.cacheRead)
-    + usage.cacheWriteTokens * price.cacheWrite
+    + (usage.cacheWriteTokens - oneHourWrites) * price.cacheWrite
+    + oneHourWrites * price.input * ONE_HOUR_WRITE_RATE
     + usage.outputTokens * (long?.output ?? price.output);
   return cost / 1_000_000;
 }

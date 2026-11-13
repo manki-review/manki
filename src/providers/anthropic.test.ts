@@ -477,6 +477,8 @@ describe('sendViaOAuth — error paths', () => {
     const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
     expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
     expect(spawnOpts.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('32768');
+    // A call without tools is one request, so it caches nothing.
+    expect([spawnOpts.env.CLAUDE_CODE_PROMPT_CACHE_TTL, spawnOpts.env.DISABLE_PROMPT_CACHING]).toEqual(['5m', '1']);
     expect(spawnOpts.env.PATH).toBe(process.env.PATH);
     for (const name of ['GITHUB_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'INPUT_GITHUB_TOKEN']) {
       expect(spawnOpts.env).not.toHaveProperty(name);
@@ -545,6 +547,10 @@ describe('sendViaOAuth — error paths', () => {
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     const valueOf = (flag: string) => spawnArgs[spawnArgs.indexOf(flag) + 1];
+    // A call with tools makes several requests, which read back what the earlier ones cached.
+    const { env } = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
+    expect(env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('5m');
+    expect(env).not.toHaveProperty('DISABLE_PROMPT_CACHING');
     expect(spawnArgs).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config']));
     expect([valueOf('--permission-mode'), valueOf('--tools'), valueOf('--add-dir'), valueOf('--allowedTools'), valueOf('--max-turns')])
       .toEqual(['dontAsk', 'Read,Grep,Glob', '/work/repo', 'mcp__manki__git_history,mcp__manki__ast_grep,mcp__manki__repo_info,mcp__manki__read_file,mcp__manki__grep,mcp__manki__glob', '20']);
@@ -1730,6 +1736,17 @@ describe('extractAnthropicCLIUsage', () => {
         },
       }),
     ).toEqual({ inputTokens: 2202, outputTokens: 56, cacheReadTokens: 999, cacheWriteTokens: 1200, reasoningTokens: 0 });
+  });
+
+  it('keeps the 1-hour part of the cache writes only when the usage splits them', () => {
+    const usage = { input_tokens: 3, output_tokens: 56, cache_creation_input_tokens: 1200, cache_read_input_tokens: 999 };
+    const split = (oneHour: unknown) => extractAnthropicCLIUsage({ usage: { ...usage, cache_creation: { ephemeral_1h_input_tokens: oneHour, ephemeral_5m_input_tokens: 200 } } });
+    expect(split(1000)).toEqual({ inputTokens: 2202, outputTokens: 56, cacheReadTokens: 999, cacheWriteTokens: 1200, reasoningTokens: 0, cacheWrite1hTokens: 1000 });
+    expect(split(0).cacheWrite1hTokens).toBe(0);
+    // More 1-hour writes than writes in all is no count to trust, so it is cut to the writes.
+    expect(split(5000).cacheWrite1hTokens).toBe(1200);
+    expect(extractAnthropicCLIUsage({ usage })).not.toHaveProperty('cacheWrite1hTokens');
+    expect(extractAnthropicCLIUsage({ usage: { ...usage, cache_creation: null } })).not.toHaveProperty('cacheWrite1hTokens');
   });
 
   it('coerces string-valued counters to integers', () => {
