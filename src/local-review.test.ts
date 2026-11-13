@@ -320,6 +320,14 @@ describe('reviewLocal', () => {
     // The patch is applied in a scratch index, so the checkout and its index stay as they were.
     expect(git(repo, 'status', '--porcelain')).toBe('');
 
+    // A warning holds the approval as its thread would in a pull request round, unless it is a pre-existing defect.
+    const approving = (findings: Finding[]): ReviewResult & { outcome: RoundOutcome } => ({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings, highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    const warning: Finding = { ...finding, severity: 'warning', tags: ['follow-up'] };
+    jest.mocked(runReview).mockResolvedValueOnce(approving([warning]));
+    expect((await patched('exclude_paths: ["vendor/**"]\n')).approvalHeld).toBe('warnings');
+    jest.mocked(runReview).mockResolvedValueOnce(approving([{ ...warning, tags: ['follow-up', 'pre-existing'] }]));
+    expect((await patched('exclude_paths: ["vendor/**"]\n')).approvalHeld).toBe(false);
+
     // A patch that does not apply cannot show what config it leaves, so it is refused without tools too.
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'main', patch: git(repo, 'diff', 'feature~1', 'feature'), providerInputs: noTools }))
       .rejects.toThrow('The patch does not apply to');

@@ -1100,14 +1100,15 @@ describe('postReview reviewed-commit footer', () => {
       verdict: 'APPROVE',
       outcome: 'READY',
       summary: 'All good.',
+      // A security note gets a line comment, and holds no approval as a warning would.
       findings: [{
-        severity: 'warning',
+        severity: 'note',
         title: 'Minor',
         file: 'src/a`.ts',
         line: 10,
         description: 'Desc.',
         reviewers: [],
-        tags: ['follow-up'],
+        tags: ['security'],
       }, {
         severity: 'note',
         title: 'Name the helper',
@@ -1129,16 +1130,16 @@ describe('postReview reviewed-commit footer', () => {
 
     await postReview(octokit, 'acme', 'widgets', 1, fullSha, result, diff);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
-    // The review GitHub took as a comment has no line comments, so it names the warning as not posted inline and lists
-    // the suggestion in full with the other suggestions.
+    // The review GitHub took as a comment has no line comments, so it names the security suggestion as not posted inline
+    // and lists the other suggestion in full with the other suggestions.
     expect(createReviewMock.mock.calls[0][0].comments).toHaveLength(2);
-    expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning and 1 suggestion, none of which block\.\n\n\*\*Summary:\*\*/u);
+    expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 2 suggestions, none of which block\.\n\n\*\*Summary:\*\*/u);
     expect(fallbackBody).not.toContain('[Minor]');
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
-    expect(fallbackBody).toMatch(/\*\*Findings \(could not post inline\):\*\*\n- \u26A0\uFE0F \*\*Warning, not blocking\*\* \*\*Minor\*\* \(`src\/a'\.ts:10`\)\n\n/u);
+    expect(fallbackBody).toMatch(/\*\*Findings \(could not post inline\):\*\*\n- \u2728 \*\*Suggestion, not blocking\*\* \*\*Minor\*\* \(`src\/a'\.ts:10`\)\n\n/u);
     expect(fallbackBody).toContain('<summary><b>1 suggestion</b> · not blocking</summary>');
     expect(fallbackBody).toContain('**Why:** Clearer.');
-    expect(fallbackBody).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning and 1 suggestion, none of which block\./u);
+    expect(fallbackBody).toMatch(/^\u2705 \*\*Approved\.\*\* 2 suggestions, none of which block\./u);
   });
 
   it('preserves the footer even when the review body exceeds the truncation limit', async () => {
@@ -1670,11 +1671,11 @@ describe('postReview body lead', () => {
 
   it('opens a READY review with the verdict line, then what the change does and how to test it', async () => {
     const { body, event, approvalHeld } = await postedBody({ ...ready, findings: [{ ...ready.findings[0], severity: 'warning', tags: ['follow-up'] }] });
-    expect(event).toBe('APPROVE');
-    expect(approvalHeld).toBe(false);
+    // A warning thread holds the approval, and the verdict line says what lifts the hold.
+    expect([event, approvalHeld]).toEqual(['COMMENT', 'warnings']);
     // The verdict counts what this round posted as threads. Each thread sits under the review, so the body does not list them.
     expect(lead(body)).toBe([
-      '\u2705 **Approved.** 1 warning, which doesn\'t block.',
+      '\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.',
       '',
       '**What this does:** Adds a cache in front of the API. x',
       '',
@@ -1744,6 +1745,7 @@ describe('postReview body lead', () => {
       return (JSON.parse(extractReviewRecords((mockCreateReview.mock.calls[0][0] as { body: string }).body).records[0]) as RoundContext).approval;
     };
     expect(await approval(ready)).toEqual({ held: false });
+    expect(await approval({ ...ready, findings: [{ ...ready.findings[0], severity: 'warning', tags: ['follow-up'] }] })).toEqual({ held: 'warnings' });
     mockGet.mockResolvedValueOnce({ data: { mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
     expect(await approval(ready)).toEqual({ held: 'conflict' });
     expect(await approval({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] })).toBeUndefined();
@@ -1762,6 +1764,29 @@ describe('postReview body lead', () => {
     // A branch name is text from the repository, so it is shown without a marker or a tag of its own.
     mockGet.mockResolvedValueOnce({ data: { ...state, base: { ref: 'rel/<!--x-->`<b>y' } } });
     expect((await postedBody(ready)).body).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `rel\/'y`\. Rebase it/);
+  });
+
+  it('holds the approval of a READY round as a COMMENT while a warning on this PR\'s code has a thread, without reading the PR', async () => {
+    const warning = (title: string, line: number, extra: Partial<Finding> = {}): Finding =>
+      ({ severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: [], tags: ['follow-up'], ...extra });
+    mockGet.mockClear();
+    // Each new warning thread counts, and so does each earlier warning thread that still holds.
+    const held = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Retry never stops', 3), warning('Missed before', 9, { origin: 'reviewed' })] }, diff, undefined, undefined, { openWarnings: 1 });
+    const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    expect([event, held.approvalHeld]).toEqual(['COMMENT', 'warnings']);
+    expect(body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 3 warnings.** Fix each one, or dismiss it with a reason in its thread.');
+    expect(body).not.toContain('<!-- manki-held-for-person -->');
+    expect(mockGet).not.toHaveBeenCalled();
+    // An earlier warning thread alone holds too.
+    expect((await postedBody(ready, [], undefined)).event).toBe('APPROVE');
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 1 });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
+    // A pre-existing warning and one an earlier review body listed have no thread here, so neither holds, and a suggestion never does.
+    const { event: approved, approvalHeld } = await postedBody({ ...ready, findings: [warning('Old bug', 3, { tags: ['follow-up', 'pre-existing'] }), warning('Listed before', 5, { origin: 'earlier' }), ...ready.findings] });
+    expect([approved, approvalHeld]).toEqual(['APPROVE', false]);
+    // A blocker still requests changes.
+    const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: 1 });
+    expect([mockCreateReview.mock.calls.at(-1)![0].event, blocked.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
   });
 
   it('holds the approval of a draft as a COMMENT when the PR cannot be read, and approves another PR then', async () => {
@@ -2039,7 +2064,7 @@ describe('postReview body lead', () => {
     const disproved = await postedBody(round({ allJudgedFindings: [droppedBy('refutation')] }));
     expect(lead(disproved.body)).toBe(`\u2705 **Approved.**\n\n${about}`);
     const listed = await postedBody(round({ allJudgedFindings: [kept, droppedBy('refutation')], findings: [kept] }));
-    expect(lead(listed.body)).toBe(`\u2705 **Approved.** 1 warning, which doesn't block.\n\n**Summary:** ${summary}\n\n${about}`);
+    expect(lead(listed.body)).toBe(`\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.\n\n**Summary:** ${summary}\n\n${about}`);
 
     // A blocking round still says what blocks: the top blocker's description, or the earlier threads still open.
     const blocking = round({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', allJudgedFindings: [kept] });
@@ -4244,7 +4269,7 @@ describe('postReview fallback paths', () => {
     };
 
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    expect(reviewId).toEqual({ id: 2, approvalHeld: false });
+    expect(reviewId).toEqual({ id: 2, approvalHeld: 'warnings' });
     expect(createReviewMock).toHaveBeenCalledTimes(2);
     // Second call should have empty comments
     expect(createReviewMock.mock.calls[1][0].comments).toEqual([]);
@@ -5400,7 +5425,8 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('warning', 'Old lock order', 91, { origin: 'reviewed', tags: ['pre-existing'] }),
     ]), outcome: 'READY' }, diff);
     const counted = counting.createReview.mock.calls[0][0].body as string;
-    expect(counted).toMatch(/^\u2705 \*\*Approved\.\*\* 4 warnings, none of which block\./u);
+    // Only the late warning in its thread holds the approval. The listed and pre-existing ones have no thread.
+    expect(counted).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\./u);
     expect(counted).toContain('### Missed by an earlier review · 1 warning\n\nIt sits on lines an earlier round already reviewed, so it doesn\'t block this PR.');
     expect(counted).toContain('### Pre-existing · 2 warnings\n\nThese sit on code this PR did not change, so none of them block. A blocker among them is listed as a warning.');
     // With every late warning in a thread, the body has no section for them.
@@ -5409,9 +5435,8 @@ describe('postReview non-blocking findings', () => {
     await postReview(threaded.octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([late[0]]), outcome: 'READY', verdictReport }, quoting);
     expect(threaded.createReview.mock.calls[0][0].comments).toHaveLength(1);
     expect(threaded.createReview.mock.calls[0][0].body).toContain(`<summary>What to test</summary>\n\n${guideNote}\n\n1. Load the page twice.`);
-    expect(threaded.createReview.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\.(?![\s\S]*Missed by an earlier review)/u);
-    // When GitHub refuses the line comments, the late warning is named under them, the suggestion is listed in full with the
-    // other suggestions, and the record says neither has a thread.
+    expect(threaded.createReview.mock.calls[0][0].body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\.(?![\s\S]*Missed by an earlier review)/u);
+    // When GitHub refuses the line comments, the late warning is listed with them, and the record says it has no thread.
     const refusing = makeOctokit({ 'src/a.ts': 'load();\nretry();\nend();\n' });
     refusing.createReview.mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'));
     const suggestion = nonBlocking('note', 'Name the retry', 2);
@@ -5423,7 +5448,7 @@ describe('postReview non-blocking findings', () => {
     expect(bare.body).toMatch(/\*\*Inline comments could not be posted:\*\*\n- \u26A0\uFE0F \*\*Warning, not blocking\*\* \*\*On old code\*\*\n\n/u);
     expect(bare.body).toContain('<summary><b>1 suggestion</b> · not blocking</summary>\n\n<details>\n<summary>\u2728 <b>Name the retry</b>');
     expect(bare.body).toContain('**Why:** It goes wrong. Second sentence. Third sentence.');
-    expect(bare.body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning and 1 suggestion, none of which block\./u);
+    expect(bare.body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\./u);
     expect(JSON.parse(extractReviewRecords(bare.body).records[0]).findings.entries).toEqual([expect.objectContaining({ posted: 'body', citedLine: { hash: expect.any(String), count: 1 } }), expect.objectContaining({ posted: 'body' })]);
     expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed|Found this round/);
     // From the second round, the findings new to this round are "Found this round". A restatement of a finding an earlier

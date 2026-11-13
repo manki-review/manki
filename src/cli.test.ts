@@ -54,8 +54,9 @@ describe('exitCodeOf', () => {
     expect(exitCodeOf(review(outcome))).toBe(code);
   });
 
-  it('exits 1 for a ready review whose config did not load, since a pull request round holds its approval', () => {
+  it('exits 1 for a ready review whose config did not load or that leaves a warning open, since a pull request round holds its approval', () => {
     expect(exitCodeOf(review('READY', [], 'config'))).toBe(1);
+    expect(exitCodeOf(review('READY', [], 'warnings'))).toBe(1);
   });
 });
 
@@ -97,6 +98,7 @@ describe('formatReviewText', () => {
   it('shows only the outcome and summary when nothing was found, and a held approval as the round would', () => {
     expect(formatReviewText(review('READY'))).toBe('## Approved: aaaaaaa..bbbbbbb\n\nSummary of the round\n');
     expect(formatReviewText(review('READY', [], 'config'))).toMatch(/^## Approval held: a config file did not load: /);
+    expect(formatReviewText(review('READY', [], 'warnings'))).toMatch(/^## Approval held: warnings wait for an answer: /);
     // The judge's summary is left out when the refuter disproved the round's only finding.
     const clean = review('READY');
     const disproved = { ...clean, result: { ...clean.result, allJudgedFindings: [{ ...finding, title: 'Never reset', severity: 'ignore' as const, gradePath: [{ from: 'blocker' as const, to: 'ignore' as const, by: 'refutation' as const }] }] } };

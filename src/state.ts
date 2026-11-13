@@ -8,10 +8,10 @@ import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_AP
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { fetchPriorRoundContexts, fetchRecapState, isLogin, isOverrideCandidate, latestPersonReply, parseContextBlocks, personReplies, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { formatApprovalRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
-import { ApprovalRecord, AuthorClearRole, gradedAbove, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
+import { ApprovalRecord, AuthorClearRole, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
 import { COMMENT_MARKER as BOT_MARKER, ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -75,6 +75,10 @@ interface ReviewThread {
   isBlocking: boolean;
   /** Whether the thread may carry a blocker: it is or was graded one, or a record that may have raised it is unread. */
   mayCarryBlocker?: boolean;
+  /** Whether the thread is a warning that is no pre-existing defect, so it holds an approval until it is answered. */
+  isWarning?: true;
+  /** Who replied in a warning thread with any text, other than Manki and other bots. */
+  replierLogins?: string[];
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
@@ -98,7 +102,7 @@ const THREAD_COMMENTS_LIMIT = 100;
 
 /**
  * Fetch all review threads `bot` started on a PR using GraphQL.
- * Returns threads with their resolution state and severity.
+ * Returns threads with their resolution state and severity. `pending` is a round not posted yet, whose grades count too.
  */
 async function fetchBotReviewThreads(
   octokit: Octokit,
@@ -106,6 +110,7 @@ async function fetchBotReviewThreads(
   owner: string,
   repo: string,
   prNumber: number,
+  pending?: RoundContext,
 ): Promise<ReviewThread[]> {
   const threads = await fetchReviewThreadNodes<{
     id: string;
@@ -155,7 +160,7 @@ async function fetchBotReviewThreads(
   });
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
-  const grades = recordedThreadGrades(records.priorRounds);
+  const grades = recordedThreadGrades(pending ? [...records.priorRounds, pending] : records.priorRounds);
   // Only Manki's own resolve needs a replier to back it. A thread at the comment limit may hide a later reply, so it names none.
   const byManki = (thread: typeof botThreads[number]) => thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login);
   const repliesUnread = (thread: typeof botThreads[number]) => byManki(thread) && thread.comments.nodes.length >= THREAD_COMMENTS_LIMIT;
@@ -178,6 +183,8 @@ async function fetchBotReviewThreads(
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const markerSlug = threadMarkerSlug(body);
       const data = parseFindingData(body);
+      const isWarning = !isBlocking && threadWarns({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity }) && !data?.tags?.includes(PRE_EXISTING_TAG);
+      const replierLogins = isWarning ? [...new Set(personReplies(bot, thread.comments.nodes).flatMap(c => c.author && c.body.trim() ? [c.author.login] : []))] : [];
       const findingTitle = data?.title?.trim() || (markerSlug?.replace(/-/g, ' ') ?? 'Unknown');
       const commit = thread.comments.nodes[0]?.originalCommit?.oid;
       const place = thread.path && markerSlug
@@ -201,6 +208,8 @@ async function fetchBotReviewThreads(
         ...(repliesUnread(thread) && { repliesUnread: true }),
         isBlocking,
         ...(mayCarryBlocker && { mayCarryBlocker }),
+        ...(isWarning && { isWarning: true as const }),
+        ...(replierLogins.length > 0 && { replierLogins }),
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
         findingTitle,
@@ -319,11 +328,44 @@ function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLog
   return threads.filter(t => (t.isBlocking || named.has(t.id)) && !settledBy(t, bot, prAuthorLogin, prAuthorRole));
 }
 
+/**
+ * Returns the warning threads that hold an approval. A thread stops holding once it is resolved, or once the PR author
+ * or a person with `clearRole` replied in it with any text, whether or not Manki agreed. A security thread clears only
+ * as a blocking one does, by `settledBy`.
+ */
+async function heldWarnings(
+  octokit: Octokit, owner: string, repo: string, threads: ReviewThread[], bot: BotIdentity,
+  prAuthorLogin: string | undefined, prAuthorRole: AuthorClearRole | undefined, clearRole: AuthorClearRole | undefined,
+): Promise<ReviewThread[]> {
+  const answered = async (t: ReviewThread): Promise<boolean> => {
+    for (const login of t.replierLogins ?? []) {
+      if (isLogin(login, prAuthorLogin) || await authorClearRole(octokit, owner, repo, login, clearRole)) return true;
+    }
+    return false;
+  };
+  const held: ReviewThread[] = [];
+  for (const t of threads.filter(t => t.isWarning)) {
+    const cleared = t.isSecurity ? !!settledBy(t, bot, prAuthorLogin, prAuthorRole) : t.isResolved || await answered(t);
+    if (!cleared) held.push(t);
+  }
+  return held;
+}
+
 /** Returns the PR author's role when `clearRole` allows it and a thread the author resolved needs it, as `securityOverrideOf` reads it. */
 async function overrideRole(
   octokit: Octokit, owner: string, repo: string, threads: ReviewThread[], prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined,
 ): Promise<AuthorClearRole | undefined> {
   return prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin)) ? await authorClearRole(octokit, owner, repo, prAuthorLogin, clearRole) : undefined;
+}
+
+/** Reads the PR's threads with the grades of `pending`, a round not posted yet, and returns the warning threads that hold an approval. */
+async function fetchHeldWarnings(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+  prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined, pending?: RoundContext,
+): Promise<ReviewThread[]> {
+  const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, pending);
+  const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
+  return heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole);
 }
 
 /** The change a round reviews: its commit, and the `changeDigest` of its diff when known. */
@@ -577,6 +619,13 @@ function threadLink(t: ReviewThread): string {
   return t.threadUrl ? `[${title}](${t.threadUrl})` : title;
 }
 
+/** Lists the warning threads `held` that hold an approval, for a person who asks why there is none, and says what clears each. */
+function warningThreadsLine(held: ReviewThread[], clearRole: AuthorClearRole | undefined): string {
+  const list = held.map(t => `- ${threadLink(t)}${t.isSecurity ? ' (a security finding, which needs a fix or a maintainer to resolve it)' : ''}`).join('\n');
+  const who = `the PR author${clearRole ? ` or someone with ${rolePhrase(clearRole, true)}` : ''}`;
+  return `${held.length === 1 ? '1 warning thread holds' : `${held.length} warning threads hold`} the approval:\n${list}\n\nApproval follows once each one is fixed, resolved, or answered in its thread by ${who} with a reason to keep it.`;
+}
+
 /** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
 async function postNoticeOnce(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, marker: string, text: string,
@@ -789,6 +838,11 @@ async function approveOrSayWhy(
     core.info('A thread the covering review blocks on is not resolved — skipping auto-approve');
     return withheld(blockingThreadsLine(open, block.named, bot, config?.author_clear_role));
   }
+  const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, config?.author_clear_role);
+  if (warnings.length > 0) {
+    core.info('A warning thread is neither resolved nor answered — skipping auto-approve');
+    return withheld(warningThreadsLine(warnings, config?.author_clear_role));
+  }
 
   const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, reason => approvalRecord('held', reason, pr.head.sha));
   if (hold) {
@@ -803,9 +857,10 @@ async function approveOrSayWhy(
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
   const overrideLine = formatSecurityOverrides(overrides);
+  const cleared = threads.some(t => t.isWarning) ? 'All blocking threads are resolved, and every warning thread is resolved or answered.' : 'All blocking threads are resolved.';
   const reason = overrides.length > 0 ? `all blocking threads are resolved, ${overrides.length} by a security override` : 'all blocking threads are resolved';
   const body = withMarkers(
-    `${APPROVED_LINE} All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER, AUTO_APPROVE_MARKER, approvalRecord('approved', reason, pr.head.sha),
+    `${APPROVED_LINE} ${cleared}${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER, AUTO_APPROVE_MARKER, approvalRecord('approved', reason, pr.head.sha),
   );
 
   try {
@@ -825,7 +880,7 @@ async function approveOrSayWhy(
       // An approval ends the pause, so the coordinator again starts push reviews.
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, bot, owner, repo, prNumber);
-      await completeReviewCheck(await startReviewCheck(octokit, owner, repo, pr.head.sha), outcomeReport('READY', 'All blocking threads are resolved.'));
+      await completeReviewCheck(await startReviewCheck(octokit, owner, repo, pr.head.sha), outcomeReport('READY', cleared));
     } catch (error) {
       if (!isApprovalSettingRefusal(error)) throw error;
       // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder
@@ -855,4 +910,4 @@ async function approveOrSayWhy(
   return { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

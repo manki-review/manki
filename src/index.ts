@@ -89,7 +89,7 @@ import {
   showSettings,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1639,8 +1639,12 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     const by = f.severity === 'ignore' && disproof(f);
     return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
   });
+  // Read after the round resolved the threads it found fixed, and with its own grades, which can lower a blocker thread to a warning.
+  const openWarnings = result.verdict === 'APPROVE'
+    ? (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context)).length : 0;
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
+    openWarnings,
     disproved,
     draft: run.options.draft,
     autoApprove: run.config.auto_approve,

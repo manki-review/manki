@@ -8,7 +8,7 @@ import { extractCurrentCodeWindow } from './code-window';
 import { loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
-import { ApprovalHeld, brokenConfig, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
@@ -381,7 +381,9 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
       openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled', instructions: repoContext,
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
-    return { result, context, base, head, approvalHeld: brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config' : false };
+    const approvalHeld = brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
+      : result.verdict === 'APPROVE' && result.findings.some(holdsApproval) ? 'warnings' : false;
+    return { result, context, base, head, approvalHeld };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   }

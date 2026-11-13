@@ -1619,6 +1619,12 @@ export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; recorde
   return t.recordedGrade && !t.isSecurity ? false : t.severity === 'blocker' || t.severity === 'unknown';
 }
 
+/** Whether an open thread that does not block is a warning, read the way `threadBlocks` reads its grade. */
+export function threadWarns(t: Parameters<typeof threadBlocks>[0]): boolean {
+  if (threadBlocks(t)) return false;
+  return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity));
+}
+
 
 export interface ReviewStats {
   model: string;
@@ -1812,9 +1818,9 @@ export interface RoundContext {
   leads?: RoundLead[];
   /**
    * Set on a round that approved: whether the approval was held, and why: a conflict with the base, a draft, a config
-   * that failed to load, or files the review could not read.
+   * that failed to load, files the review could not read, or open warning threads.
    */
-  approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' };
+  approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings' };
   /**
    * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
    * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.

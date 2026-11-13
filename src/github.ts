@@ -181,7 +181,7 @@ const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
-export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread';
+export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings';
 
 /** The changed files no model reads: those `exclude_paths` drops, and those with no code to read, such as binaries. */
 export interface SkippedFiles {
@@ -193,10 +193,10 @@ export interface SkippedFiles {
 export type ConfigHold = 'base' | 'head';
 
 /**
- * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, or no
- * model read some of its files.
+ * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
+ * model read some of its files, or `count` warning threads wait for an answer.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count: number };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -253,6 +253,7 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`;
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
+  if (hold.reason === 'warnings') return `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}, or dismiss it with a reason in its thread.`;
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
 
@@ -1217,6 +1218,14 @@ function isPreExisting(finding: Finding): boolean {
   return !!finding.tags?.includes(PRE_EXISTING_TAG);
 }
 
+/**
+ * Whether a warning of this round holds an approval until its thread is answered. A pre-existing defect never does, and
+ * neither does a warning an answered thread or an earlier review body already carries.
+ */
+export function holdsApproval(finding: Finding): boolean {
+  return finding.severity === 'warning' && !isPreExisting(finding) && finding.origin !== 'earlier' && !finding.answeredIn;
+}
+
 /** Whether a finding is posted as a thread. A pre-existing one is only when it still blocks, as a security finding does. */
 function isBlockingFinding(finding: Finding): boolean {
   if (isPreExisting(finding)) return finding.severity === 'blocker';
@@ -1650,8 +1659,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [] }: {
+  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = 0 }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
+    /** How many earlier warning threads still hold the approval. */
+    openWarnings?: number;
     /** The `auto_approve` setting, which decides what the line for a held draft tells the reader to do. */
     autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
@@ -1788,12 +1799,14 @@ export async function postReview(
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
-  const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
+  const warnings = openWarnings + threadFindings.filter(holdsApproval).length;
+  const warningHold: ApprovalHold | undefined = warnings > 0 ? { reason: 'warnings', count: warnings } : undefined;
+  const hold = event === 'APPROVE' ? standingHold ?? warningHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
-  // An approval held for unread files says so in its verdict line, so only the other holds get a line of their own.
-  const heldLine = lineHold && lineHold.reason !== 'unread' && approvalHoldLine(lineHold, autoApprove);
+  // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
+  const heldLine = lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && approvalHoldLine(lineHold, autoApprove);
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
 
@@ -1878,7 +1891,8 @@ export async function postReview(
   if (approvalHeld) {
     const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
       : hold?.reason === 'config' ? (hold.file === 'base' ? 'The base branch config did not load' : 'The PR\'s own config does not load')
-      : hold?.reason === 'unread' ? 'No model read some of the changed files' : 'The PR is a draft';
+      : hold?.reason === 'unread' ? 'No model read some of the changed files'
+      : hold?.reason === 'warnings' ? 'Open warning threads wait for an answer' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
@@ -2115,6 +2129,7 @@ const APPROVED_LINE = '✅ **Approved.**';
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
   READY: (_result, _blockers, { threads, listed, carried, hold }) => {
     if (hold?.reason === 'unread') return `✅ **Approved, but a person must approve:** no model read ${hold.skipped.excluded.length + hold.skipped.binary.length} of the changed files.`;
+    if (hold?.reason === 'warnings') return `⚠️ ${approvalHoldLine(hold)}`;
     const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
     return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;

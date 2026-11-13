@@ -708,7 +708,8 @@ describe('runFullReview end to end', () => {
       await reviewRound();
 
       expect(mockLLM.calls.filter(stage => stage === 'refute')).toHaveLength(2);
-      expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
+      // The warning it ends as holds the approval until its thread is answered.
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
       const [comment] = mockGitHub.threads.map(t => t.comments[0].body);
       expect(comment).toContain('**Warning, not blocking**');
       expect(comment).toContain('a second check on another model agreed, so this does not block. Please check it yourself. Both inputs are bounded at src/api.ts:3.');
@@ -733,7 +734,7 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.calls).toContain('judge');
       expect(mockLLM.calls).not.toContain('refute');
       const again = postedReviews().at(-1)!;
-      expect(again.state).toBe('APPROVED');
+      expect(again.state).toBe('COMMENTED');
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', threadId: 'PRRT_1' })]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -1317,7 +1318,7 @@ describe('runFullReview end to end', () => {
     expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in f1f1f1f\./);
   });
 
-  it('posts a warning on code an earlier round reviewed in a thread that does not block, and the next round leaves it there', async () => {
+  it('posts a warning on code an earlier round reviewed in a thread that holds the approval, the next round leaves it there, and the PR author\'s answer lifts the hold', async () => {
     await reviewRound();
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
 
@@ -1336,25 +1337,34 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     const late = postedReviews().at(-1)!;
-    expect(late.state).toBe('APPROVED');
-    expect(late.body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\./u);
+    expect(late.state).toBe('COMMENTED');
+    expect(late.body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\./u);
+    // The approval of the first round is taken back.
+    expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'COMMENTED']);
     expect(late.body.replace(/<!--[\s\S]*?-->/g, '')).not.toMatch(/Missed by an earlier review|Sum is never range checked/);
     expect(mockGitHub.threads.map(t => [t.path, t.line, t.isResolved])).toEqual([['src/math.ts', 2, false]]);
     expect(mockGitHub.threads[0].comments[0].body).toContain(`**Sum is never range checked**\n\n${missedNote}\n\n`);
     expect(mockGitHub.roundContext(late).meta.outcome).toBe('READY');
     expect(mockGitHub.roundContext(late).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', origin: 'reviewed', posted: 'thread' })]);
 
-    // The next round names it again. It stays in its thread, and the PR stays approved.
+    // The next round names it again. It stays in its thread, which still holds the approval.
     mockLLM.replies.judge = JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', reasoning: 'Only very large sums are off.', sameAs: 'P1' }] });
     await forcedRound();
 
     // The judge reads the thread's finding without the sentence.
     expect(mockLLM.asked.judge).toContain('### PRRT_1 — src/math.ts:2\n- **Original concern**: Large inputs overflow silently.');
     const again = postedReviews().at(-1)!;
-    expect(again.state).toBe('APPROVED');
+    expect(again.state).toBe('COMMENTED');
+    expect(again.body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\*/u);
     expect(again.body).not.toContain('Missed by an earlier review');
     expect(mockGitHub.threads).toHaveLength(1);
     expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', posted: 'earlier_thread', threadId: 'PRRT_1' })]);
+
+    // The PR author answers with a reason. Manki keeps the finding, and the approval follows without a new round.
+    await replyInThread(mockGitHub.threads[0], 'Sums stay far below the limit here.', 'Kept. Nothing bounds `b` before `src/math.ts:3` returns the sum.');
+    expect(mockGitHub.threads[0].comments.at(-1)?.body).toMatch(/^Kept\./);
+    expect(mockGitHub.threads[0].isResolved).toBe(false);
+    expect(postedReviews().at(-1)!.state).toBe('APPROVED');
   });
 
   // A finding below `warning` gets a thread only when it is a security finding.
