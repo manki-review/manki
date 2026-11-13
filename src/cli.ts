@@ -84,7 +84,8 @@ export function exitCodeOf({ result, approvalHeld }: LocalReview): number {
  * DEL and the C1 control characters raw, so they are escaped too and never reach a terminal as escapes.
  */
 export function formatReviewJson({ result, base, head, approvalHeld }: LocalReview): string {
-  const json = JSON.stringify({ outcome: result.outcome, verdict: result.verdict, approvalHeld, summary: roundSummary(result), base, head, findings: result.findings }, null, 2);
+  // As the action's `verdict` output: a held approval is a comment.
+  const json = JSON.stringify({ outcome: result.outcome, verdict: approvalHeld ? 'COMMENT' : result.verdict, approvalHeld, summary: roundSummary(result), base, head, findings: result.findings }, null, 2);
   return `${json.replace(/(?![\n])\p{Cc}/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`;
 }
 
