@@ -1324,7 +1324,7 @@ describe('runFullReview end to end', () => {
 
     // A push that changes only the README, so the lines in `src/math.ts` are the ones round 1 reviewed. The new line
     // quotes the sentence Manki puts in the thread, so `_An` and `PR._` are identifiers of the diff.
-    const missedNote = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+    const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
     const readme = `diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+A late warning says: ${missedNote}\n`;
     mockGitHub.headSha = 'b2'.repeat(20);
     mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;

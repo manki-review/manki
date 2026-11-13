@@ -2531,7 +2531,7 @@ describe('parseFindingFromComment', () => {
     // The sentence on a warning an earlier round missed is not part of the description either, alone or after the other one.
     for (const checkStatus of [undefined, 'unconfirmed' as const]) {
       const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], origin: 'reviewed', tags: ['follow-up'], checkStatus }, TEST_LINKS);
-      expect(late).toContain('_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._');
+      expect(late).toContain('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._');
       expect(parseFindingFromComment(late)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     }
     // The issue box, and the link that replaces it once ticked, are not part of the description.

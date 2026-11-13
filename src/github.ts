@@ -1203,7 +1203,7 @@ function trustNote(finding: Finding): string | undefined {
   return finding.checkStatus === 'unconfirmed' ? UNCONFIRMED_NOTE : undefined;
 }
 
-/** Non-blocking findings above a note posted as line comments per review. The rest go in the body list. */
+/** Security findings below a warning posted as line comments per review. The rest go in the body list. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
 /** The most of a blocker's description the round record keeps when the blocker got no thread. */
@@ -1214,16 +1214,16 @@ function isFollowUp(finding: Finding): boolean {
   return !!finding.tags?.includes(FOLLOW_UP_TAG);
 }
 
-function isPreExisting(finding: Finding): boolean {
+function isPreExisting(finding: Pick<Finding, 'tags'>): boolean {
   return !!finding.tags?.includes(PRE_EXISTING_TAG);
 }
 
 /**
- * Whether a warning of this round holds an approval until its thread is answered. A pre-existing defect never does, and
- * neither does a warning an answered thread or an earlier review body already carries.
+ * Whether a warning holds an approval until it is fixed or answered. It takes a finding or a round record entry. A
+ * pre-existing defect never holds, and neither does a warning that goes into its answered thread.
  */
-export function holdsApproval(finding: Finding): boolean {
-  return finding.severity === 'warning' && !isPreExisting(finding) && finding.origin !== 'earlier' && !finding.answeredIn;
+export function holdsApproval(finding: { severity: FindingSeverity | 'unknown'; tags?: string[]; answeredIn?: Finding['answeredIn'] }): boolean {
+  return finding.severity === 'warning' && !isPreExisting(finding) && !finding.answeredIn;
 }
 
 /** Whether a finding is posted as a thread. A pre-existing one is only when it still blocks, as a security finding does. */
@@ -1384,8 +1384,8 @@ function inlineHtml(markdown: string): string {
 /** Heads the findings on code an earlier round already reviewed. */
 const MISSED_EARLIER = 'Missed by an earlier review';
 
-/** Shown under the title of a thread for a finding on such code that does not block. */
-const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+/** Shown under the title of a thread for a warning on such code. */
+const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
 
 /** Lines shown on each side of the flagged line in a finding's code preview. */
 const PREVIEW_CONTEXT = 2;
@@ -1427,6 +1427,15 @@ function formatCarriedWarnings(carried: FindingFingerprintEntry[]): string | nul
   return formatFindingSection(`Earlier warnings, code unchanged · ${formatSeverityCounts(carried)}`, lines.length > 0 ? [lines.join('\n')] : [], carried.length === 1
     ? 'An earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.'
     : 'An earlier round listed these, and this round did not raise them again. The line each points at still reads the same, so they stay listed. None of them blocks.', '###');
+}
+
+/** Returns the section for the holding warnings that got no thread, which says what clears them, or null when there are none. */
+function formatUnthreadedWarnings(warnings: Finding[], links: CodeLinks): string | null {
+  if (warnings.length === 0) return null;
+  const clears = warnings.length === 1
+    ? 'There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.'
+    : 'There is no thread to answer them in, so each one holds the approval until a later review round no longer finds it.';
+  return `**Warnings that could not be posted as threads:**\n\n${warnings.map(f => formatFindingBlock(f, links, true)).join('\n\n')}\n\n${clears}`;
 }
 
 /**
@@ -1630,17 +1639,17 @@ function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLi
 }
 
 /**
- * Post the review. Blocking findings become threads. Other findings on a changed line
- * become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE` and most severe
- * first. The rest go in the body. Every note `capNotes` kept on a changed line gets a line comment as a suggestion,
+ * Post the review. Blocking findings and the warnings that `holdsApproval` become threads. Security findings below a
+ * warning on a changed line become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE`. The rest go
+ * in the body. Every note `capNotes` kept on a changed line gets a line comment as a suggestion,
  * unless it is a tool alert, pre-existing or on code an earlier round reviewed. The body lists the other notes in one collapsed section.
  *
- * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
+ * A blocking finding or a holding warning on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. One outside the diff files, or tied to no file, gets a file-level comment on the first
  * diff file, which says where the finding is. A finding that one of the open `existingThreads` already carries
  * is not posted again. A blocker whose `threadId` names one of them is listed in the body under
- * a link to that thread. Three kinds of finding that do not block stay in the body: a pre-existing one,
- * one that restates a finding an earlier round listed in its body, and a security note on code an
+ * a link to that thread. Three kinds of finding that neither block nor hold stay in the body: a pre-existing one,
+ * a security note that restates a finding an earlier round listed in its body, and a security note on code an
  * earlier round reviewed.
  *
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
@@ -1688,14 +1697,16 @@ export async function postReview(
   const stillOpen: string[] = [];
   /** The findings posted as threads this round, counted in the verdict line. */
   const threadFindings: Finding[] = [];
-  /** The blockers posted as line comments, which get a file-level thread when GitHub refuses the lines. */
-  const lineBlockers: Array<{ path: string; finding: Finding }> = [];
+  /** The blockers and holding warnings posted as line comments, which get a file-level thread when GitHub refuses the lines. */
+  const lineThreads: Array<{ path: string; finding: Finding }> = [];
   /** The blockers in no changed file, whose threads are on `anchor`. */
   const detached: Finding[] = [];
+  /** The holding warnings in no changed file, whose threads are on `anchor`. */
+  const detachedWarnings: Finding[] = [];
   /** The findings listed as folds in the review body, under one section per origin. */
   const bodyFindings: Finding[] = [];
   const notes: Finding[] = [];
-  /** The blockers the body shows because no thread can hold them. */
+  /** The blockers and holding warnings the body shows because no thread can hold them. */
   const unthreaded: Finding[] = [];
   /** The findings left to an open thread that matches them, with that thread's ID, which the record keeps. */
   const leftTo = new Map<Finding, string>();
@@ -1713,6 +1724,34 @@ export async function postReview(
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
   const links: CodeLinks = { linkTo, files, changed, related: relatedCommits(result.relatedRepos) };
 
+  /**
+   * Posts a blocker or a holding warning as a thread of its own: a line comment on a changed line, a file-level comment
+   * elsewhere in its file, or a file-level comment on `anchor` when its file is not changed. `matched` is its `openThreadFor`.
+   */
+  const postThread = (f: Finding, matched: string | undefined): void => {
+    const blocking = isBlockingFinding(f);
+    const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
+    const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
+    if (elsewhere && !anchor) {
+      if (blocking) (f.file && f.line > 0 ? invalidComments : generalFindings).push(formatFindingBlock(f, links, true));
+      unthreaded.push(f);
+      return;
+    }
+
+    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      lineThreads.push({ path: f.file, finding: f });
+      threadFindings.push(f);
+    } else if (matched) {
+      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
+      leftTo.set(f, matched);
+    } else {
+      fileComments.push({ path: elsewhere ? anchor! : f.file, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f });
+      threadFindings.push(f);
+      if (elsewhere) (blocking ? detached : detachedWarnings).push(f);
+    }
+  };
+
   for (const f of result.findings) {
     const matched = openThreadFor(f, existingThreads);
     if (!isBlockingFinding(f)) {
@@ -1722,6 +1761,8 @@ export async function postReview(
         if (matched) leftTo.set(f, matched);
       } else if (isListedNote(f)) {
         notes.push(f);
+      } else if (holdsApproval(f)) {
+        postThread(f, matched);
       } else if (isPreExisting(f) || f.origin === 'earlier' || (f.origin === 'reviewed' && isNote(f.severity))) {
         // On code an earlier round reviewed, only a warning gets a thread. A security note there stays listed.
         bodyFindings.push(f);
@@ -1743,27 +1784,7 @@ export async function postReview(
       }
       continue;
     }
-
-    const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
-    const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
-    if (elsewhere && !anchor) {
-      (f.file && f.line > 0 ? invalidComments : generalFindings).push(formatFindingBlock(f, links, true));
-      unthreaded.push(f);
-      continue;
-    }
-
-    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
-      lineBlockers.push({ path: f.file, finding: f });
-      threadFindings.push(f);
-    } else if (matched) {
-      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
-      leftTo.set(f, matched);
-    } else {
-      fileComments.push({ path: elsewhere ? anchor! : f.file, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f });
-      threadFindings.push(f);
-      if (elsewhere) detached.push(f);
-    }
+    postThread(f, matched);
   }
 
   const onChangedLine = (f: Finding): boolean => !!diff && f.line > 0 && isOnChangedLine(f, diff);
@@ -1799,7 +1820,7 @@ export async function postReview(
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
-  const warnings = openWarnings + threadFindings.filter(holdsApproval).length;
+  const warnings = openWarnings + [...threadFindings, ...unthreaded].filter(holdsApproval).length;
   const warningHold: ApprovalHold | undefined = warnings > 0 ? { reason: 'warnings', count: warnings } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? warningHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
@@ -1809,6 +1830,9 @@ export async function postReview(
   const heldLine = lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && approvalHoldLine(lineHold, autoApprove);
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
+  const unthreadedWarnings = unthreaded.filter(f => !isBlockingFinding(f));
+  const onAnchor = (noun: string, list: Finding[]): string | false => list.length > 0
+    && `**${noun} not on a changed file:**\n\n${list.map(formatTraceEntry).join('\n')}\n\nComments are only possible on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`;
 
   /**
    * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
@@ -1817,7 +1841,7 @@ export async function postReview(
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
-    const listed = [...bodyFindings, ...listedNotes, ...(withoutLineThreads ? inline : [])];
+    const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
     const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
@@ -1833,9 +1857,11 @@ export async function postReview(
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
-      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\nComments are only possible on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`,
+      onAnchor('Blockers', detached),
+      onAnchor('Warnings', detachedWarnings),
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
+      formatUnthreadedWarnings(unthreadedWarnings, links),
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
       // Without their threads, the suggestions are listed in full with the other notes.
@@ -1900,17 +1926,20 @@ export async function postReview(
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), headlined.map(highlight));
   onPosted?.();
-  // A blocker whose line comment GitHub refused gets a file-level thread on its file.
-  const retried = review.lineComments ? [] : lineBlockers.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
+  // A blocker or a holding warning whose line comment GitHub refused gets a file-level thread on its file.
+  const retried = review.lineComments ? [] : lineThreads.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, [...fileComments, ...retried].map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
+    const refusedBlockers = refused.filter(isBlockingFinding);
+    const blockerSection = refusedBlockers.length > 0 ? `\n\n**Blockers that could not be posted as threads:**\n\n${refusedBlockers.map(f => formatFindingBlock(f, links, true)).join('\n\n')}` : '';
+    const warningSection = formatUnthreadedWarnings(refused.filter(f => !isBlockingFinding(f)), links);
+    const section = highlightCode(`${blockerSection}${warningSection ? `\n\n${warningSection}` : ''}`, codeTokens);
     const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]));
-    // Truncate the existing body, never the blocking findings appended to it or the round record.
+    // Truncate the existing body, never the findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
-      throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
+      throw new Error(`Could not post findings as threads or fit them in review #${review.id}: ${titles}`);
     }
     try {
       await octokit.rest.pulls.updateReview({
@@ -1921,7 +1950,7 @@ export async function postReview(
         body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${refusedRecord}`, reviewedCommitFooter),
       });
     } catch (error) {
-      throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
+      throw new Error(`Could not post findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
   return { id: review.id, approvalHeld };
@@ -3049,7 +3078,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
-  if (finding.origin === 'reviewed' && !isBlockingFinding(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
+  if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
   // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];

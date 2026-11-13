@@ -621,6 +621,10 @@ describe('checkAndAutoApprove', () => {
     const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread without the `maintain` role or a higher one.';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
+    const warning = (posted: FindingFingerprintEntry['posted'], tags = ['follow-up']): FindingFingerprintEntry =>
+      ({ ...makeFindingFingerprintEntry({ title: 'Retry never stops', file: 'src/lock.ts', posted }), tags });
+    const held = (entries: FindingFingerprintEntry[]) => roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: entries.length, severityCounts: {}, entries } }));
+    const NO_WARNING_THREAD = 'Manki\'s review of `head-sh` lists 1 warning with no thread, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
 
     it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
       ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
@@ -655,6 +659,11 @@ describe('checkAndAutoApprove', () => {
       ['a record of another commit', roundBody(blockingRound('other-sha')), [fixed()], UNREAD],
       ['the record of an incomplete round', roundBody({ ...blockingRound(HEAD), meta: { ...blockingRound(HEAD).meta, incomplete: true } }), [fixed()], UNREAD],
       ['a round that approved, its thread reopened and resolved again', roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } })), [fixed()], true],
+      ['a round held for a warning with no thread, listed in its body', held([warning('body')]), [fixed()], NO_WARNING_THREAD],
+      ['a round whose blocker thread is resolved, with a warning GitHub refused as a thread', blocked([blocker({ posted: 'thread' }), warning('body')]), [fixed()], NO_WARNING_THREAD],
+      ['a round held for a warning thread, resolved', held([warning('thread')]), [fixed('t1', 'warning', { title: 'Retry never stops' })], true],
+      ['a round with a pre-existing warning listed in its body', held([warning('body', ['follow-up', 'pre-existing'])]), [fixed()], true],
+      ['a round with a warning left to its answered thread', held([warning('earlier_thread')]), [fixed()], true],
     ])('%s', async (_label, body, threads, outcome) => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       jest.spyOn(core, 'warning').mockImplementation(() => {});
