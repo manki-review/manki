@@ -997,6 +997,8 @@ async function approveOrSayWhy(
         octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${pr.head.sha}:refused -->`, `${refusalNotice}\n\n${approvalRecord('held', 'refused', pr.head.sha)}`,
       );
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
+      // Reported once, with the notice. A later round reports its own check and deletes the notice, so a refusal after it reports again.
+      if (refusalPosted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', refusalNotice, 'refused'));
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.
