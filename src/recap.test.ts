@@ -2534,17 +2534,18 @@ describe('parseFindingFromComment', () => {
       expect(late).toContain('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._');
       expect(parseFindingFromComment(late)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
       // A thread posted while warnings did not hold reads the same with its old header and note.
-      expect(late).toMatch(/^\u26A0\uFE0F \*\*Warning: fix, explain or track\*\*\n/u);
-      const old = late.replace('**Warning: fix, explain or track**', '**Warning, not blocking**')
+      expect(late).toMatch(/^\u26A0\uFE0F \*\*Warning\*\*\n/u);
+      const old = late.replace('**Warning**', '**Warning, not blocking**')
         .replace('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._', '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._');
       expect(old).toContain('**Warning, not blocking**\n\n**Extract helper**\n\n');
       expect(parseFindingFromComment(old)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
       expect(threadSeverity(old)).toBe('warning');
-      // So does a thread posted while warnings held, before the label and the note took their current wording.
-      const answerable = late.replace('**Warning: fix, explain or track**', '**Warning, needs an answer**')
-        .replace('so it still holds the approval._', 'so it still needs a fix or an answer._');
-      expect(answerable).toContain('**Warning, needs an answer**\n\n**Extract helper**\n\n');
-      expect(parseFindingFromComment(answerable)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+      // So do threads posted while warnings held, with the labels and the note of earlier wordings.
+      for (const label of ['**Warning, needs an answer**', '**Warning: fix, explain or track**']) {
+        const earlier = late.replace('**Warning**', label).replace('so it still holds the approval._', 'so it still needs a fix or an answer._');
+        expect(earlier).toContain(`${label}\n\n**Extract helper**\n\n`);
+        expect(parseFindingFromComment(earlier)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+      }
       // A security warning has its own header and note, which are not part of the description either.
       const security = formatFindingComment({ severity: 'warning', title: 'Token in log', file: 'src/a.ts', line: 2, description: 'The token is logged.', reviewers: [], origin: 'reviewed', tags: ['follow-up', 'security'], checkStatus }, TEST_LINKS);
       expect(security).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
@@ -2555,6 +2556,8 @@ describe('parseFindingFromComment', () => {
     const filed = body.replace(/- \[ \] Create an issue for this[^\n]*/, 'Issue #12 created by @bob');
     expect(parseFindingFromComment(filed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
+    // The plain label with a tool name is read as a header above the title, never as a one-line title.
+    expect(toolBody.split('\n')[0]).toBe('\u26A0\uFE0F **Warning** (CodeQL (1.2)) · Security · Quick fix');
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
     // A tool name cannot pass as the end of a title line, and a line of the description cannot pass as the fix label.
     const oddTool = formatFindingComment({ severity: 'warning', title: 'Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2):: beta' }, TEST_LINKS);

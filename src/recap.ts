@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { ANSWERABLE_LABEL, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -256,11 +256,10 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
  * A comment with finding data is matched from its top first, so text of the finding further down cannot pass as the title line.
  */
 function matchTitleLine(body: string): RegExpMatchArray | null {
-  // Threads posted before the current label wording still say "needs an answer".
-  const tail = `(?:, not blocking|, needs an answer|, needs a fix|${ANSWERABLE_LABEL})`;
+  // Threads posted with an earlier label wording still say "needs an answer" or "fix, explain or track".
   const atTop = ownMarker(body, FINDING_DATA_OPENER) !== undefined
-    ? body.match(new RegExp(`^\\S+ \\*\\*\\w+${tail}?(?::\\*\\*|\\*\\* \\(.*?\\):) (.+?)[ \\t]*(?:\\n|$)`))
-      ?? body.match(new RegExp(`^\\S+ \\*\\*\\w+${tail}?\\*\\*[^\\n]*\\n\\n\\*\\*(.+)\\*\\*[ \\t]*(?:\\n|$)`))
+    ? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix|: fix, explain or track)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
+      ?? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix|: fix, explain or track)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
     : null;
   return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }

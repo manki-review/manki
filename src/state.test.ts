@@ -1221,7 +1221,7 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread the PR author sent a mid-line command in', [warning('t1', { replies: [reply('author', 'ok - /manki explain the retry')] })]],
       ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
         body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
-          .replace('**Warning: fix, explain or track**', '**Warning, not blocking**')
+          .replace('**Warning**', '**Warning, not blocking**')
           .replace('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._', '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._'),
       })]],
     ])('holds the approval while it is %s', async (_label, threads, role = 'write') => {
