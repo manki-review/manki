@@ -319,6 +319,13 @@ function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLog
   return threads.filter(t => (t.isBlocking || named.has(t.id)) && !settledBy(t, bot, prAuthorLogin, prAuthorRole));
 }
 
+/** Returns the PR author's role when `clearRole` allows it and a thread the author resolved needs it, as `securityOverrideOf` reads it. */
+async function overrideRole(
+  octokit: Octokit, owner: string, repo: string, threads: ReviewThread[], prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined,
+): Promise<AuthorClearRole | undefined> {
+  return prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin)) ? await authorClearRole(octokit, owner, repo, prAuthorLogin, clearRole) : undefined;
+}
+
 /** The change a round reviews: its commit, and the `changeDigest` of its diff when known. */
 interface ReviewedChange {
   commitSha: string;
@@ -553,16 +560,21 @@ function rolePhrase(role: AuthorClearRole, orHigher = false): string {
  */
 function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, bot: BotIdentity, clearRole: AuthorClearRole | undefined, instead?: string): string {
   const list = open.map(t => {
-    const title = sanitizeMarkdown(t.findingTitle);
     const unbacked = t.repliesUnread ? 'the thread has too many comments for Manki to read its latest reply, so someone other than the PR author with write access has to reopen it and resolve it' : 'the latest reply is not from a maintainer other than the PR author';
     const note = isBotLogin(bot, t.resolvedByLogin) ? ` (Manki resolved it, but no review record confirms a fix, and ${unbacked})`
       : t.isResolved ? ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, who may not clear it)`
       : !t.isBlocking && named.has(t.id) ? ' (Manki\'s latest review blocks on this thread)' : '';
-    return `- ${t.threadUrl ? `[${title}](${t.threadUrl})` : title}${note}`;
+    return `- ${threadLink(t)}${note}`;
   }).join('\n');
   const one = open.length === 1;
   const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. The PR author may not clear a blocking thread${clearRole ? ` without ${rolePhrase(clearRole, true)}` : ''}.`;
   return `${one ? '1 thread blocks' : `${open.length} threads block`} the approval:\n${list}\n\n${instead ?? lifts}`;
+}
+
+/** Returns the title of thread `t`, linked to the thread when its URL is known. */
+function threadLink(t: ReviewThread): string {
+  const title = sanitizeMarkdown(t.findingTitle);
+  return t.threadUrl ? `[${title}](${t.threadUrl})` : title;
 }
 
 /** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
@@ -709,8 +721,7 @@ async function approveOrSayWhy(
   }
 
   const prAuthorLogin = pr.user?.login;
-  const prAuthorRole = prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin))
-    ? await authorClearRole(octokit, owner, repo, prAuthorLogin, config?.author_clear_role) : undefined;
+  const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, config?.author_clear_role);
   const overrides = threads.flatMap(t => {
     const o = securityOverrideOf(t, prAuthorLogin, prAuthorRole);
     return o ? [{ ...o, thread: t.id, title: t.findingTitle, threadUrl: t.threadUrl }] : [];

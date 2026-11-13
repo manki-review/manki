@@ -707,9 +707,14 @@ interface ThreadFacts extends OverrideCandidate {
   writerResolverLogin?: string;
 }
 
-/** The latest reply in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
+/** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
+function personReplies<T extends { author?: { login: string; __typename?: string } | null }>(bot: BotIdentity, comments: T[]): T[] {
+  return comments.slice(1).filter(c => !isBotLogin(bot, c.author?.login) && c.author?.__typename !== 'Bot');
+}
+
+/** The latest reply in a thread that neither Manki nor another bot wrote. */
 function latestPersonReply<T extends { author?: { login: string; __typename?: string } | null }>(bot: BotIdentity, comments: T[]): T | undefined {
-  return comments.slice(1).filter(c => !isBotLogin(bot, c.author?.login) && c.author?.__typename !== 'Bot').at(-1);
+  return personReplies(bot, comments).at(-1);
 }
 
 /**
