@@ -3814,9 +3814,9 @@ describe('fetchPRDiff', () => {
     const refusal = Object.assign(new Error('Sorry, the diff exceeded the maximum number of files (300).'), {
       status: 422, response: { data: { errors: [{ resource: 'PullRequest', field: 'diff', code: 'too_large' }] } },
     });
-    function makeOctokit(files: object[], changedFiles = files.length) {
+    function makeOctokit(files: object[], changedFiles = files.length, error: Error = refusal) {
       const get = jest.fn(async ({ mediaType }: { mediaType?: unknown }) => {
-        if (mediaType) throw refusal;
+        if (mediaType) throw error;
         return { data: { changed_files: changedFiles } };
       });
       return { paginate: jest.fn().mockResolvedValue(files), rest: { pulls: { get, listFiles: jest.fn() } } } as unknown as Parameters<typeof fetchPRDiff>[0];
@@ -3852,6 +3852,13 @@ describe('fetchPRDiff', () => {
       // A file without a patch changes the diff's header when its content changes.
       const changed = parsePRDiff(await fetchPRDiff(makeOctokit([{ filename: 'logo.png', status: 'modified', sha: 'e6' }]), 'owner', 'repo', 1));
       expect(changed.binarySkipped?.[0].header).not.toBe(diff.binarySkipped?.[1].header);
+    });
+
+    it('builds the diff from the listed files when GitHub took too long to generate it', async () => {
+      const timeout = Object.assign(new Error('Server Error: Sorry, this diff is taking too long to generate.'), { status: 422 });
+      const octokit = makeOctokit([{ filename: 'src/a.ts', status: 'added', patch: '@@ -0,0 +1 @@\n+a' }], 1, timeout);
+
+      expect(parsePRDiff(await fetchPRDiff(octokit, 'owner', 'repo', 1)).files.map(f => f.path)).toEqual(['src/a.ts']);
     });
 
     it('throws `TooManyFilesError` when GitHub lists fewer files than the PR changes', async () => {

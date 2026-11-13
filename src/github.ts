@@ -160,11 +160,14 @@ export class TooManyFilesError extends Error {
   }
 }
 
-/** Whether GitHub refused a diff for its size, as it does for a PR with more than 300 files. */
-function isDiffTooLarge(error: unknown): boolean {
+/**
+ * Whether GitHub refused a diff for its size, as it does for a PR with more than 300 files, or because the diff took
+ * too long to generate.
+ */
+function isDiffRefused(error: unknown): boolean {
   const errors = (error as { response?: { data?: { errors?: unknown } } } | undefined)?.response?.data?.errors;
   return (Array.isArray(errors) && errors.some(e => (e as { code?: unknown } | null)?.code === 'too_large'))
-    || /diff exceeded the maximum/i.test(error instanceof Error ? error.message : String(error));
+    || /diff exceeded the maximum|diff is taking too long to generate/i.test(error instanceof Error ? error.message : String(error));
 }
 
 /**
@@ -181,8 +184,8 @@ export async function fetchPRDiff(octokit: Octokit, owner: string, repo: string,
     });
     return data as unknown as string;
   } catch (error) {
-    if (!isDiffTooLarge(error)) throw error;
-    core.info(`GitHub refused the diff of PR #${prNumber} as too large, reading its listed files instead`);
+    if (!isDiffRefused(error)) throw error;
+    core.info(`GitHub refused the diff of PR #${prNumber}, reading its listed files instead`);
   }
   const [files, { data: pr }] = await Promise.all([
     octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: prNumber, per_page: 100 }),
