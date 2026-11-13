@@ -673,14 +673,9 @@ async function handleExplain(
   prNumber: number,
   topic: string,
 ): Promise<void> {
-  const { data: diff } = await octokit.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: prNumber,
-    mediaType: { format: 'diff' },
-  });
+  const diff = await fetchPRDiff(octokit, owner, repo, prNumber);
 
-  const safeDiff = (diff as unknown as string).replace(/```/g, '` ` `');
+  const safeDiff = diff.replace(/```/g, '` ` `');
   const response = await askWithRecord(
     client,
     'explain',

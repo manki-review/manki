@@ -505,6 +505,8 @@ describe('handlePRComment', () => {
     const client = createMockClient();
     await handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
+    // The diff is read the way a review reads it, so a PR GitHub refuses the diff of is read from its listed files.
+    expect(ghUtils.fetchPRDiff).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1);
     expect(client.sendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('the changes'),

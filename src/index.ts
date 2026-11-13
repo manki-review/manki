@@ -55,6 +55,7 @@ import {
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
+  TooManyFilesError,
   postProgressComment,
   updateProgressComment,
   updateProgressDashboard,
@@ -1874,7 +1875,17 @@ async function runFullReview(
     }
     const { clients, models } = built;
 
-    const { fullDiff, diff, excludedFiles, rawDiff } = await collectDiff(target, config);
+    const shortSha = commitSha.slice(0, 7);
+    let collected: Awaited<ReturnType<typeof collectDiff>>;
+    try {
+      collected = await collectDiff(target, config);
+    } catch (error) {
+      if (!(error instanceof TooManyFilesError)) throw error;
+      core.warning(`Diff too large (${error.message})`);
+      checkReport = await postTooBigNotice(target, progress, `**Too big to review** at \`${shortSha}\`: this PR changes ${error.changedFiles} files, and GitHub lists only ${error.listedFiles} of them, so Manki cannot read it. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
+      return;
+    }
+    const { fullDiff, diff, excludedFiles, rawDiff } = collected;
     const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
@@ -1887,7 +1898,6 @@ async function runFullReview(
     });
 
     const autoLimit = Math.min(config.auto_review_max_lines ?? config.max_diff_lines, config.max_diff_lines);
-    const shortSha = commitSha.slice(0, 7);
     // The prompts show a long removed or unchanged line shortened, so the gate counts it the same way.
     const charCount = rebuildRawDiff({ ...diff, files: diff.files.map(shortenLongLines) }).length;
     if (charCount > MAX_REVIEW_CHARS) {

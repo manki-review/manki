@@ -103,6 +103,30 @@ export function rebuildRawDiff(diff: ParsedDiff): string {
   }).join('\n');
 }
 
+/** A changed file as GitHub lists it for a pull request. */
+export interface ListedFile {
+  filename: string;
+  previous_filename?: string;
+  status: string;
+  sha?: string | null;
+  patch?: string;
+}
+
+/**
+ * Returns a unified diff of `files` in the shape of GitHub's diff of a pull request. GitHub gives no patch for a binary
+ * or for a diff too large to show, so such a file gets a header without lines, which `parsePRDiff` lists as unread.
+ */
+export function listedFilesDiff(files: readonly ListedFile[]): string {
+  return files.map(f => {
+    const changeType = f.status === 'added' ? 'added' : f.status === 'removed' ? 'deleted' : 'modified';
+    const mode = changeType === 'added' ? ['new file mode 100644'] : changeType === 'deleted' ? ['deleted file mode 100644'] : [];
+    // The blob id changes with the content, so a changed file without a patch still changes `changeDigest`.
+    const index = f.sha ? [`index 0000000..${f.sha}`] : [];
+    const header = fileHeader(f.previous_filename ?? f.filename, f.filename, changeType, [...mode, ...index]);
+    return f.patch ? `${header}\n${f.patch}` : header;
+  }).join('\n');
+}
+
 /**
  * Drops files matching `excludePaths` from a parsed diff and recomputes its totals.
  */

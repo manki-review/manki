@@ -139,6 +139,7 @@ jest.mock('./diff', () => {
     compareChanges: jest.requireActual('./diff').compareChanges,
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
+    listedFilesDiff: jest.requireActual('./diff').listedFilesDiff,
     shortenLongLines: jest.requireActual('./diff').shortenLongLines,
     onlyCommitChanging: jest.requireActual('./diff').onlyCommitChanging,
   };
@@ -221,6 +222,7 @@ jest.mock('./github', () => ({
   fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
   assertHeadUnchanged: jest.requireActual('./github').assertHeadUnchanged,
   SupersededError: jest.requireActual('./github').SupersededError,
+  TooManyFilesError: jest.requireActual('./github').TooManyFilesError,
   formatUnreviewedNotice: jest.requireActual('./github').formatUnreviewedNotice,
   postProgressComment: jest.fn().mockResolvedValue(1),
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
@@ -2614,6 +2616,63 @@ describe('runFullReview orchestration', () => {
     expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 71, body: expect.stringContaining('9000 reviewable lines') }));
     expect(jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls.filter(([c]) => (c as { body: string }).body.includes('**Too big'))).toEqual([]);
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
+  });
+
+  describe('a PR whose diff GitHub refuses as too large', () => {
+    const refusal = Object.assign(new Error('Sorry, the diff exceeded the maximum number of files (300).'), {
+      status: 422, response: { data: { errors: [{ resource: 'PullRequest', field: 'diff', code: 'too_large' }] } },
+    });
+    const addedLines = (count: number) => `@@ -0,0 +1,${count} @@\n${Array.from({ length: count }, (_, i) => `+line ${i}`).join('\n')}`;
+    const notices = () => jest.mocked(mockOctokitInstance.rest.issues.updateComment).mock.calls.map(([c]) => (c as { body: string }).body).filter(b => b.includes('**Too big'));
+
+    /** Reads the diff through the real `fetchPRDiff`, which GitHub refuses, so it reads `files` instead. */
+    function listFiles(files: object[], changedFiles = files.length): void {
+      const get = jest.fn(async ({ mediaType }: { mediaType?: unknown }) => {
+        if (mediaType) throw refusal;
+        return { data: { changed_files: changedFiles } };
+      });
+      const octokit = { paginate: jest.fn().mockResolvedValue(files), rest: { pulls: { get, listFiles: jest.fn() } } } as unknown as Parameters<typeof ghUtils.fetchPRDiff>[0];
+      jest.mocked(ghUtils.fetchPRDiff).mockImplementation((_octokit, owner, repo, prNumber) => jest.requireActual<typeof ghUtils>('./github').fetchPRDiff(octokit, owner, repo, prNumber));
+      const actual = jest.requireActual<typeof diffModule>('./diff');
+      jest.mocked(diffModule.parsePRDiff).mockImplementation(actual.parsePRDiff);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockImplementation(actual.filterFilesWithAttribution);
+    }
+
+    it('posts the too-big notice when the listed files are over the limits', async () => {
+      listFiles([{ filename: 'src/app.ts', status: 'added', patch: addedLines(15_001) }]);
+
+      await callRunFullReview();
+
+      expect(notices()).toEqual([expect.stringMatching(/^\*\*Too big to review\*\* at `abc123`: this PR has 15001 reviewable lines, above the limit of 15000/)]);
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
+      expect(ghUtils.markProgressCommentFailed).not.toHaveBeenCalled();
+      expect(core.setFailed).not.toHaveBeenCalled();
+    });
+
+    it('posts the too-big notice when GitHub lists fewer files than the PR changes', async () => {
+      listFiles([{ filename: 'src/app.ts', status: 'added', patch: addedLines(1) }], 3001);
+
+      await callRunFullReview();
+
+      expect(notices()).toEqual([expect.stringMatching(/^\*\*Too big to review\*\* at `abc123`: this PR changes 3001 files, and GitHub lists only 1 of them, so Manki cannot read it\. Split it into smaller PRs to get a review\.\n/)]);
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
+      expect(ghUtils.markProgressCommentFailed).not.toHaveBeenCalled();
+      expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'action_required', output: expect.objectContaining({ title: 'Not reviewed' }) }));
+    });
+
+    it('reviews the listed patches under the limits, and holds the approval for a file listed without a patch', async () => {
+      listFiles([
+        { filename: 'src/app.ts', status: 'modified', sha: 'a1', patch: '@@ -1,1 +1,1 @@\n-old\n+new' },
+        { filename: 'db/dump.sql', status: 'modified', sha: 'b2' },
+      ]);
+
+      await callRunFullReview();
+
+      const { diff, rawDiff } = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+      expect([diff.files.map(f => f.path), rawDiff]).toEqual([['src/app.ts'], expect.stringContaining('-old\n+new')]);
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.skipped).toEqual({ excluded: [], binary: [expect.objectContaining({ path: 'db/dump.sql' })] });
+      expect(notices()).toEqual([]);
+    });
   });
 
   it('takes the size limits from the base branch, not from the PR', async () => {

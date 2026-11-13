@@ -8,7 +8,7 @@ import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
 import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
-import { isLineInDiff } from './diff';
+import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -152,17 +152,44 @@ const HTML_TAGS = 'a|abbr|address|article|aside|audio|b|base|bdi|bdo|blockquote|
 const HTML_TAG_REGEX = new RegExp(`<\\/?(${HTML_TAGS})(?:\\s[^>]*)?\\s*\\/?>`, 'gi');
 const HTML_UNCLOSED_TAG_REGEX = new RegExp(`<\\/?(${HTML_TAGS})(?:\\s[^>]*)?$`, 'gim');
 
+/** Thrown when a PR changes more files than GitHub lists, so its diff cannot be read whole. */
+export class TooManyFilesError extends Error {
+  constructor(readonly changedFiles: number, readonly listedFiles: number) {
+    super(`The PR changes ${changedFiles} files, and GitHub lists only ${listedFiles} of them`);
+    this.name = 'TooManyFilesError';
+  }
+}
+
+/** Whether GitHub refused a diff for its size, as it does for a PR with more than 300 files. */
+function isDiffTooLarge(error: unknown): boolean {
+  const errors = (error as { response?: { data?: { errors?: unknown } } } | undefined)?.response?.data?.errors;
+  return (Array.isArray(errors) && errors.some(e => (e as { code?: unknown } | null)?.code === 'too_large'))
+    || /diff exceeded the maximum/i.test(error instanceof Error ? error.message : String(error));
+}
+
 /**
- * Fetch the raw diff for a PR.
+ * Fetches the raw diff of a PR. GitHub refuses the diff of a large PR, so that diff is built from the PR's listed files
+ * instead. Throws `TooManyFilesError` when GitHub does not list them all.
  */
 export async function fetchPRDiff(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<string> {
-  const { data } = await octokit.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: prNumber,
-    mediaType: { format: 'diff' },
-  });
-  return data as unknown as string;
+  try {
+    const { data } = await octokit.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: prNumber,
+      mediaType: { format: 'diff' },
+    });
+    return data as unknown as string;
+  } catch (error) {
+    if (!isDiffTooLarge(error)) throw error;
+    core.info(`GitHub refused the diff of PR #${prNumber} as too large, reading its listed files instead`);
+  }
+  const [files, { data: pr }] = await Promise.all([
+    octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: prNumber, per_page: 100 }),
+    octokit.rest.pulls.get({ owner, repo, pull_number: prNumber }),
+  ]);
+  if (pr.changed_files > files.length) throw new TooManyFilesError(pr.changed_files, files.length);
+  return listedFilesDiff(files);
 }
 
 /** Returns the PR's current head SHA, or `undefined` when the lookup fails or returns none. */
@@ -296,7 +323,7 @@ export function formatUnreviewedNotice(shortSha: string, skipped: SkippedFiles, 
 }
 
 const SKIPPED_REASON: Record<NonNullable<BinaryFile['kind']> | 'binary', string> = {
-  binary: 'no lines to read, such as a binary, a rename, a mode change or an empty file',
+  binary: 'no lines to read, such as a binary, a rename, a mode change, an empty file or a diff too large for GitHub to show',
   lfs: 'a Git LFS pointer, so only its hash changed and no model read the content',
   submodule: 'a submodule bump, so only its commit changed and no model read the code',
 };

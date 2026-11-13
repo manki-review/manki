@@ -1,12 +1,13 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { makeFindingFingerprintEntry, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
+import { parsePRDiff } from './diff';
 import { extractReviewRecords, hasOwnMarker } from './review-record';
 import { withoutFences } from './issue-box';
 import { isSecurityThread, parseFindingData, parseFindingFromComment, threadMarkerSlug, threadSeverity, type PreviousFinding } from './recap';
@@ -1976,7 +1977,7 @@ describe('postReview body lead', () => {
     expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
     // The verdict line says the approval is held, and the unread files get their own section.
     expect(body).toMatch(/^\u2705 \*\*Approved, but a person must approve:\*\* no model read 3 of the changed files\.\n\n\*\*What this does:\*\*/u);
-    expect(body).toContain('---\n\n### Not read by any model · 3 files\n\nA person needs to look at these before the PR merges.\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change or an empty file\n- `vendor/lib`: a submodule bump');
+    expect(body).toContain('---\n\n### Not read by any model · 3 files\n\nA person needs to look at these before the PR merges.\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change, an empty file or a diff too large for GitHub to show\n- `vendor/lib`: a submodule bump');
     expect(body).toContain(approved.body.split('\n\n').find(p => p.startsWith('**What this does:**'))!);
     expect(body).not.toContain('**Approval held:**');
     expect(body).toContain('<!-- manki-held-for-person -->');
@@ -3806,6 +3807,67 @@ describe('fetchPRDiff', () => {
       repo: 'repo',
       pull_number: 1,
       mediaType: { format: 'diff' },
+    });
+  });
+
+  describe('when GitHub refuses the diff as too large', () => {
+    const refusal = Object.assign(new Error('Sorry, the diff exceeded the maximum number of files (300).'), {
+      status: 422, response: { data: { errors: [{ resource: 'PullRequest', field: 'diff', code: 'too_large' }] } },
+    });
+    function makeOctokit(files: object[], changedFiles = files.length) {
+      const get = jest.fn(async ({ mediaType }: { mediaType?: unknown }) => {
+        if (mediaType) throw refusal;
+        return { data: { changed_files: changedFiles } };
+      });
+      return { paginate: jest.fn().mockResolvedValue(files), rest: { pulls: { get, listFiles: jest.fn() } } } as unknown as Parameters<typeof fetchPRDiff>[0];
+    }
+
+    it('builds the diff from the listed files, and leaves a file without a patch unread', async () => {
+      const octokit = makeOctokit([
+        { filename: 'src/a.ts', status: 'modified', sha: 'a1', patch: '@@ -1,2 +1,2 @@\n context\n-old\n+new' },
+        { filename: 'src/new.ts', status: 'added', sha: 'b2', patch: '@@ -0,0 +1,2 @@\n+one\n+two\n\\ No newline at end of file' },
+        { filename: 'src/gone.ts', status: 'removed', sha: 'c3', patch: '@@ -1 +0,0 @@\n-x' },
+        { filename: 'src/moved.ts', previous_filename: 'src/old.ts', status: 'renamed', sha: 'd4' },
+        { filename: 'logo.png', status: 'modified', sha: 'e5' },
+        { filename: 'old.bin', status: 'removed', sha: 'f6' },
+        { filename: 'db/dump.sql', status: 'modified', sha: '07' },
+      ]);
+
+      const diff = parsePRDiff(await fetchPRDiff(octokit, 'owner', 'repo', 1));
+
+      expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.pulls.listFiles, { owner: 'owner', repo: 'repo', pull_number: 1, per_page: 100 });
+      expect(diff.files.map(({ path, oldPath, changeType, additions, deletions }) => ({ path, oldPath, changeType, additions, deletions }))).toEqual([
+        { path: 'src/a.ts', oldPath: undefined, changeType: 'modified', additions: 1, deletions: 1 },
+        { path: 'src/new.ts', oldPath: undefined, changeType: 'added', additions: 2, deletions: 0 },
+        { path: 'src/gone.ts', oldPath: 'src/gone.ts', changeType: 'deleted', additions: 0, deletions: 1 },
+      ]);
+      expect([diff.totalAdditions, diff.totalDeletions]).toEqual([3, 2]);
+      expect(diff.files[1].hunks[0].content).toBe('+one\n+two\n\\ No newline at end of file');
+      expect(diff.binarySkipped?.map(({ path, deleted }) => ({ path, deleted }))).toEqual([
+        { path: 'src/moved.ts', deleted: undefined },
+        { path: 'logo.png', deleted: undefined },
+        { path: 'old.bin', deleted: true },
+        { path: 'db/dump.sql', deleted: undefined },
+      ]);
+      // A file without a patch changes the diff's header when its content changes.
+      const changed = parsePRDiff(await fetchPRDiff(makeOctokit([{ filename: 'logo.png', status: 'modified', sha: 'e6' }]), 'owner', 'repo', 1));
+      expect(changed.binarySkipped?.[0].header).not.toBe(diff.binarySkipped?.[1].header);
+    });
+
+    it('throws `TooManyFilesError` when GitHub lists fewer files than the PR changes', async () => {
+      const octokit = makeOctokit([{ filename: 'src/a.ts', status: 'added', patch: '@@ -0,0 +1 @@\n+a' }], 3001);
+
+      await expect(fetchPRDiff(octokit, 'owner', 'repo', 1)).rejects.toEqual(new TooManyFilesError(3001, 1));
+    });
+
+    it('passes on any other error', async () => {
+      const octokit = {
+        paginate: jest.fn(),
+        rest: { pulls: { get: jest.fn().mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 })), listFiles: jest.fn() } },
+      } as unknown as Parameters<typeof fetchPRDiff>[0];
+
+      await expect(fetchPRDiff(octokit, 'owner', 'repo', 1)).rejects.toThrow('Not Found');
+      expect(octokit.paginate).not.toHaveBeenCalled();
     });
   });
 });
