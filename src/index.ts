@@ -917,7 +917,7 @@ async function loadRecap(
   return recap;
 }
 
-/** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
+/** Reads the PR's diff and splits it into the files the review reads and the files `exclude_paths` leaves out. */
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
   return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths);
