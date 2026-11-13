@@ -67,8 +67,10 @@ describe('formatReviewJson', () => {
     const json = formatReviewJson(local);
     expect(json).not.toMatch(/(?![\n])\p{Cc}/u);
     expect(JSON.parse(json)).toEqual({
-      outcome: 'ADDRESS_FIRST', verdict: 'REQUEST_CHANGES', summary: 'Summary of the round', base: local.base, head: local.head, findings: [finding, steered],
+      outcome: 'ADDRESS_FIRST', verdict: 'REQUEST_CHANGES', approvalHeld: false, summary: 'Summary of the round', base: local.base, head: local.head, findings: [finding, steered],
     });
+    // A ready round names what would hold its approval in a pull request round.
+    expect(JSON.parse(formatReviewJson(review('READY', [], 'warnings')))).toMatchObject({ verdict: 'APPROVE', approvalHeld: 'warnings' });
   });
 });
 
