@@ -141,6 +141,14 @@ function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string |
   return answer?.body.split('\n\n<!--')[0].trim();
 }
 
+/** A mention of Manki, which opens every command to it. */
+const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
+
+/** Whether `body` mentions Manki anywhere, in any case. */
+function hasBotMention(body: string): boolean {
+  return BOT_MENTION_PATTERN.test(body.toLowerCase());
+}
+
 /** A reply that opens with a `dismiss` command. */
 const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
 
@@ -1376,4 +1384,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { blockersToRecheck, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_MENTION_PATTERN, blockersToRecheck, hasBotMention, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
