@@ -1840,9 +1840,16 @@ describe('postReview body lead', () => {
     const nowhere = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 });
     const unthreaded = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
     expect(nowhere.approvalHeld).toBe('warnings');
-    expect(unthreaded.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
+    expect(unthreaded.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it. It has no thread and holds until a later review round no longer finds it.');
     expect(unthreaded).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs an answer**\n**Nowhere**\n');
     expect(unthreaded).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
+    // Beside warnings with a thread, the line says how many have none, and a security warning with a thread still sets the wording.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' }), warning('Nor here', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one. They have no thread and hold until a later review round no longer finds them.');
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 }, undefined, undefined, { openWarnings: [{}] });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one, or dismiss it with a reason in its thread. 1 of them has no thread and holds until a later review round no longer finds it.');
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 }, undefined, undefined, { openWarnings: [{ isSecurity: true }], autoApprove: false });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one, or have a maintainer resolve its thread. 1 of them has no thread and holds until a later review round no longer finds it. After a resolve, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A blocker still requests changes.
     const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: [{}] });
     expect([mockCreateReview.mock.calls.at(-1)![0].event, blocked.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
@@ -5526,7 +5533,7 @@ describe('postReview non-blocking findings', () => {
     unthreading.createReviewComment.mockRejectedValue(new Error('Validation Failed'));
     await postReview(unthreading.octokit, 'owner', 'repo', 1, 'sha', refusedLines, diff, lateContext, 1000);
     const updated = unthreading.updateReview.mock.calls[0][0].body as string;
-    expect(updated).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\*/u);
+    expect(updated.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it. It has no thread and holds until a later review round no longer finds it.');
     expect(updated).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs an answer**\n**On old code**\n');
     expect(updated).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     expect(updated).not.toContain('Blockers that could not be posted as threads');

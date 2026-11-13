@@ -194,10 +194,10 @@ export type ConfigHold = 'base' | 'head';
 
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
- * model read some of its files, or `count` warning threads wait for an answer, `security` of them security warnings.
- * Without `count` the warning threads could not be read.
+ * model read some of its files, or `count` warnings wait for a fix or an answer. Of those, `unthreaded` have no thread
+ * and `security` are security warnings with a thread. Without `count` the warning threads could not be read.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number; security?: number };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number; security?: number; unthreaded?: number };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -262,12 +262,18 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
       return autoApprove ? `${line} Comment \`@manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
     }
+    const lead = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
+    // A warning without a thread can only be fixed, and holds until a later round no longer finds it.
+    const unthreaded = hold.unthreaded ?? 0;
+    const threaded = hold.count - unthreaded;
+    const noThread = (n: number) => `${n === 1 ? 'has no thread and holds' : 'have no thread and hold'} until a later review round no longer finds ${n === 1 ? 'it' : 'them'}.`;
+    if (threaded === 0) return `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}`;
     // A reply never clears a security warning, which needs a fix or a resolve by someone allowed to clear it.
     const security = hold.security ?? 0;
-    const or = security === hold.count ? 'or have a maintainer resolve its thread' : 'or dismiss it with a reason in its thread';
-    const mixed = security > 0 && security < hold.count ? ' A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it.' : '';
-    const line = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}, ${or}.${mixed}`;
-    const after = security === hold.count ? 'a resolve' : security > 0 ? 'a dismissal or a resolve' : 'a dismissal';
+    const or = security === threaded ? 'or have a maintainer resolve its thread' : 'or dismiss it with a reason in its thread';
+    const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve it, and a reply does not dismiss it.' : '';
+    const line = `${lead}, ${or}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
+    const after = security === threaded ? 'a resolve' : security > 0 ? 'a dismissal or a resolve' : 'a dismissal';
     return autoApprove ? line : `${line} After ${after}, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
   }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
@@ -1839,10 +1845,12 @@ export async function postReview(
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
-  const holding = [...threadFindings, ...unthreaded].filter(holdsApproval);
-  const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length;
+  const holding = threadFindings.filter(holdsApproval);
+  const holdingUnthreaded = unthreaded.filter(holdsApproval).length;
+  const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length + holdingUnthreaded;
   const security = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity).length + holding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length;
-  const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' } : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }) } : undefined;
+  const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' }
+    : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }) } : undefined;
   // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
@@ -1958,6 +1966,16 @@ export async function postReview(
     const warningSection = formatUnthreadedWarnings(refused.filter(f => !isBlockingFinding(f)), links);
     const section = highlightCode(`${blockerSection}${warningSection ? `\n\n${warningSection}` : ''}`, codeTokens);
     const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]));
+    // The verdict line counted each refused warning as one with a thread, so it is restated with them among those without one.
+    const refusedHolding = refused.filter(holdsApproval);
+    const holdLine = (h: ApprovalHold): string => highlightCode(approvalHoldLine(h, autoApprove), codeTokens);
+    const postedBody = warningHold?.count && refusedHolding.length > 0
+      ? review.body.replace(holdLine(warningHold), () => holdLine({
+        ...warningHold,
+        unthreaded: (warningHold.unthreaded ?? 0) + refusedHolding.length,
+        security: (warningHold.security ?? 0) - refusedHolding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length,
+      }))
+      : review.body;
     // Truncate the existing body, never the findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
@@ -1969,7 +1987,7 @@ export async function postReview(
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${refusedRecord}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${truncateBody(postedBody, room)}${section}${refusedRecord}`, reviewedCommitFooter),
       });
     } catch (error) {
       throw new Error(`Could not post findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
