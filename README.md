@@ -21,7 +21,7 @@ Manki sizes each review to the nature of the change, and you decide who reviews 
 
 - **Multi-stage pipeline**: a planner triages the change, finders review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings by severity
 - **You decide who reviews what**: a review group lists the readers for a kind of change, each with its own model, effort and focus, and you route changes to groups by path or by the planner's triage. By default a change that could reach a user gets a second finder on another model with the same checklist, so the two models miss different things
-- **Smart verdicts**: blocks PRs on real issues, approves over optional suggestions, and auto-approves when all blocking threads resolve
+- **Smart verdicts**: blocks PRs on real issues, holds the approval while a warning waits for a fix or an answer, approves over optional suggestions, and auto-approves once the last blocking or warning thread clears
 - **Multi-provider**: Anthropic, OpenAI, and Gemini, mix-and-match per stage and per reader via `.manki.yml`
 - **Self-learning memory**: `/manki remember` teaches conventions, `/manki dismiss` suppresses false positives, patterns stick across PRs
 - **Conversational**: reply to any review comment to discuss, or use `@manki explain`/`forget` inline
@@ -37,7 +37,7 @@ Full setup guide with troubleshooting: **[Getting started](docs/getting-started.
 
 ## How it works
 
-Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, the finders of its review group review it in parallel (one or two by default), dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. When nothing blocks, a verdict reader reads the whole diff cold before Manki approves. Results land as inline comments plus a summary and verdict. A finding shows what goes wrong, with everything else in one collapsed section: how to fix it, why it matters, and how it was checked. Its summary names those parts, counts the places read and, for a blocker or a warning, says how it was checked: proven from the cited lines, confirmed with tools or not confirmed. Inside, up to three places show as GitHub code previews, each under the sentence its check gives, and the rest are linked. A finding that cites nothing says so. When all blocking threads resolve, manki approves.
+Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, the finders of its review group review it in parallel (one or two by default), dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. When nothing blocks, a verdict reader reads the whole diff cold before Manki approves. Results land as inline comments plus a summary and verdict. A finding shows what goes wrong, with everything else in one collapsed section: how to fix it, why it matters, and how it was checked. Its summary names those parts, counts the places read and, for a blocker or a warning, says how it was checked: proven from the cited lines, confirmed with tools or not confirmed. Inside, up to three places show as GitHub code previews, each under the sentence its check gives, and the rest are linked. A finding that cites nothing says so. A blocker requests changes. A warning holds the approval until it is fixed, or until the PR author or a maintainer dismisses it with a reason in its thread. When all blocking threads resolve and every warning thread is answered, manki approves.
 
 <p align="center">
   <img src="assets/pipeline.svg" alt="Manki review pipeline: Planner → Finders → Dedup → Judge → Verdict reader → Review posted" />
@@ -88,7 +88,7 @@ npx github:manki-review/manki#v7 review main..topic   # a range
 npx github:manki-review/manki#v7 review --json --record round.json
 ```
 
-The findings print as Markdown, or as JSON with `--json`. `--record` writes the round record a pull request round would post. The exit code is 0 when a pull request round would approve, 1 when something blocks, the base config did not load or the change breaks it, and 2 when the review is incomplete or failed. Run `manki review --help` for every option.
+The findings print as Markdown, or as JSON with `--json`. `--record` writes the round record a pull request round would post. The exit code is 0 when a pull request round would approve, 1 when something blocks, a warning would hold the approval, the base config did not load or the change breaks it, and 2 when the review is incomplete or failed. Run `manki review --help` for every option.
 
 ## Configure
 
