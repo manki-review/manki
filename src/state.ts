@@ -820,12 +820,15 @@ async function approveOrSayWhy(
   if (uncleared().length > 0) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
     // Only the reply reads the covering review here, to list every thread that blocks and to say when resolving them is not enough.
+    // It names the warning threads that hold too, so clearing the blockers is not the first a person hears of them.
     return withheld(async () => {
+      const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, config?.author_clear_role);
+      const withWarnings = (line: string) => warnings.length > 0 ? `${line}\n\n${warningThreadsLine(warnings, config?.author_clear_role)}` : line;
       const reviews = await listReviews();
       const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
-      if (!covered) return blockingThreadsLine(uncleared(), new Set(), bot, config?.author_clear_role, unreviewedLine(pr.head.sha, config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config)));
+      if (!covered) return withWarnings(blockingThreadsLine(uncleared(), new Set(), bot, config?.author_clear_role, unreviewedLine(pr.head.sha, config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config))));
       const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
-      return blockingThreadsLine(uncleared(block.named), block.named, bot, config?.author_clear_role, block.held && `${block.held}\n\n${NEXT_ROUND_LINE}`);
+      return withWarnings(blockingThreadsLine(uncleared(block.named), block.named, bot, config?.author_clear_role, block.held && `${block.held}\n\n${NEXT_ROUND_LINE}`));
     });
   }
 

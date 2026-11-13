@@ -1220,6 +1220,19 @@ describe('checkAndAutoApprove', () => {
       const { approved, events } = await check([warning('t1', { replies: [reply('author')] })], 'write', true);
       expect([approved, events]).toEqual([false, []]);
     });
+
+    it('names the warning threads that hold beside an open blocking thread', async () => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      const blocker = makeGraphqlFetchThreadNode({
+        id: 'b1', url: 'https://example.com/b1', body: formatFindingComment({ severity: 'blocker', title: 'Lost write', file: 'src/a.ts', line: 10, description: 'd', reviewers: [] }, TEST_LINKS),
+      });
+      const { approved, why } = await check([blocker, warning('t1'), warning('t2', { replies: [reply('author')] })]);
+      expect(approved).toBe(false);
+      expect(why).toContain('[Lost write](https://example.com/b1)');
+      expect(why).toMatch(/\n\n1 warning thread holds the approval:\n- \[Retry t1\]\(https:\/\/example\.com\/t1\)\n/);
+      // With every warning answered, the reply names only what blocks.
+      expect((await check([blocker, warning('t2', { replies: [reply('author')] })])).why).not.toContain('warning thread');
+    });
   });
 
   it('reports the approval as a passing `Manki` check on the head', async () => {
