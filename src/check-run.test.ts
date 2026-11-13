@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 
 import { RunCancelledError, stopWritesOn } from './abort';
-import { completeReviewCheck, ReviewCheck, startReviewCheck } from './check-run';
+import { completeReviewCheck, offerQueuedCheck, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
 
 describe('completeReviewCheck', () => {
   afterEach(() => {
@@ -60,5 +60,32 @@ describe('startReviewCheck', () => {
     }
     expect(checks.create).not.toHaveBeenCalled();
     expect(checks.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('reportCheck', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    ['the update of the queued check', 1, 0],
+    ['the create that replaces it', 1, 1],
+  ])('writes nothing more once the run is cancelled during %s', async (_name, updates, creates) => {
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    let release = () => {};
+    const cancel = (result: () => unknown) => async () => {
+      release = stopWritesOn(AbortSignal.abort(new RunCancelledError('SIGTERM'))).release;
+      return result();
+    };
+    const update = jest.fn().mockImplementation(creates ? () => Promise.reject(new Error('Not Found')) : cancel(() => { throw new Error('Not Found'); }));
+    const create = jest.fn().mockImplementation(cancel(() => ({ data: { id: 901 } })));
+    const octokit = { rest: { checks: { create, update } } } as unknown as Parameters<typeof reportCheck>[0];
+    offerQueuedCheck(octokit, { id: 77, headSha: 'abc123' });
+    try {
+      await expect(reportCheck(octokit, 'o', 'r', 'abc123', { conclusion: 'success', title: 'Approved', summary: '' })).rejects.toBeInstanceOf(RunCancelledError);
+    } finally {
+      release();
+    }
+    expect(update).toHaveBeenCalledTimes(updates);
+    expect(create).toHaveBeenCalledTimes(creates);
   });
 });

@@ -1282,28 +1282,30 @@ describe('checkAndAutoApprove', () => {
   });
 
   const checkRun = (id: number, status: string, conclusion: string | null, slug = 'manki-review') => ({ id, status, conclusion, app: { slug } });
-  const standingApproval = (runs: ReturnType<typeof checkRun>[] | null) => {
+  const standingApproval = (runs: ReturnType<typeof checkRun>[] | null, botSlug = 'manki-review') => {
     jest.spyOn(core, 'info').mockImplementation(() => {});
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     const listForRef = runs ? jest.fn().mockResolvedValue({ data: runs }) : jest.fn().mockRejectedValue(new Error('Forbidden'));
     const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}), listForRef };
-    const user = { login: 'manki-review[bot]', type: 'Bot' };
+    const user = { login: `${botSlug}[bot]`, type: 'Bot' };
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({ checks, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body: roundBody(roundThatPosted('abc123', [])), state: 'APPROVED', commit_id: 'abc123', user }] });
-    return { octokit, checks, createReviewMock };
+    return { octokit, checks, createReviewMock, bot: { logins: [user.login] } };
   };
 
   it.each([
-    ['reports it when no check shows on the head', [], true],
-    ['reports it when the newest check is still in progress', [checkRun(5, 'completed', 'success'), checkRun(9, 'in_progress', null)], true],
-    ['reports it when the newest check did not pass', [checkRun(9, 'completed', 'neutral'), checkRun(5, 'completed', 'success')], true],
-    ['reports it when only another App\'s newer check passed', [checkRun(5, 'in_progress', null), checkRun(9, 'completed', 'success', 'other-app')], true],
-    ['reports it when the checks cannot be read', null, true],
-    ['adds no check when the newest one passed', [checkRun(5, 'in_progress', null), checkRun(9, 'completed', 'success')], false],
-  ])('on an approval that already stands, %s', async (_name, runs, reports) => {
-    const { octokit, checks, createReviewMock } = standingApproval(runs);
+    ['reports it when no check shows on the head', [], true, 'manki-review'],
+    ['reports it when the newest check is still in progress', [checkRun(5, 'completed', 'success'), checkRun(9, 'in_progress', null)], true, 'manki-review'],
+    ['reports it when the newest check did not pass', [checkRun(9, 'completed', 'neutral'), checkRun(5, 'completed', 'success')], true, 'manki-review'],
+    ['reports it when only another App\'s newer check passed', [checkRun(5, 'in_progress', null), checkRun(9, 'completed', 'success', 'other-app')], true, 'manki-review'],
+    ['reports it when the checks cannot be read', null, true, 'manki-review'],
+    ['adds no check when the newest one passed', [checkRun(5, 'in_progress', null), checkRun(9, 'completed', 'success')], false, 'manki-review'],
+    ['reports it with its own App when the Manki service\'s newer check is in progress', [checkRun(5, 'completed', 'success', 'own-app'), checkRun(9, 'in_progress', null)], true, 'own-app'],
+    ['adds no check with its own App when the Manki service\'s newer check passed', [checkRun(5, 'in_progress', null, 'own-app'), checkRun(9, 'completed', 'success')], false, 'own-app'],
+  ])('on an approval that already stands, %s', async (_name, runs, reports, botSlug) => {
+    const { octokit, checks, createReviewMock, bot } = standingApproval(runs, botSlug);
 
-    expect(await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1)).toEqual({ approved: true, standing: true });
+    expect(await approveOrSayWhy(octokit, bot, 'owner', 'repo', 1)).toEqual({ approved: true, standing: true });
 
     expect(checks.listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'abc123', check_name: 'Manki', filter: 'all' }));
     expect(checks.create.mock.calls).toEqual(reports ? [[expect.objectContaining({

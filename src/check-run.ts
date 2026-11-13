@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { isBotLogin, truncateBody } from './github';
+import { BOT_LOGIN, isBotLogin, truncateBody } from './github';
 import type { ApprovalHeld, BotIdentity } from './github';
 import type { RoundOutcome } from './types';
 
@@ -150,7 +150,7 @@ export async function completeReviewCheck(check: ReviewCheck | undefined, report
 /**
  * Reports `report` on `headSha` in a check that is completed in one call, for a run that has nothing to show in progress.
  * It completes the queued check the token service created on `headSha`, and creates one without it. A failure is logged.
- * Throws once the run is cancelled, before any write.
+ * Throws once the run is cancelled, before its next write.
  */
 export async function reportCheck(octokit: Octokit, owner: string, repo: string, headSha: string, report: CheckReport): Promise<void> {
   assertWritesAllowed();
@@ -166,27 +166,31 @@ export async function reportCheck(octokit: Octokit, owner: string, repo: string,
         core.warning(`Could not complete the queued ${CHECK_NAME} check, creating a new one: ${error instanceof Error ? error.message : error}`);
       }
     }
+    assertWritesAllowed();
     await octokit.rest.checks.create({ owner, repo, name: CHECK_NAME, head_sha: headSha, ...completed });
     // The queued check would otherwise stay queued until the token service ends it.
     if (queued) {
+      assertWritesAllowed();
       await completeQueued(queued.id).catch(error => {
         core.warning(`Could not complete the queued ${CHECK_NAME} check: ${error instanceof Error ? error.message : error}`);
       });
     }
   } catch (error) {
+    assertWritesAllowed();
     core.warning(`Could not report the ${CHECK_NAME} check. The GitHub App needs the Checks read and write permission: ${error instanceof Error ? error.message : error}`);
   }
 }
 
 /**
- * Whether the newest `Manki` check that `bot` wrote on `headSha` passed. A required check reads the newest one. A failed
+ * Whether the newest `Manki` check on `headSha` passed, counting the checks of `bot`'s App and of the Manki App. Those are
+ * the checks branch protection reads: the run writes with `bot`, and the Manki service writes the waiting checks. A failed
  * read counts as no, so the caller reports again.
  */
 export async function newestCheckPassed(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, headSha: string): Promise<boolean> {
   try {
     const runs = await octokit.paginate(octokit.rest.checks.listForRef, { owner, repo, ref: headSha, check_name: CHECK_NAME, filter: 'all', per_page: 100 });
     const newest = runs
-      .filter(run => isBotLogin(bot, run.app?.slug))
+      .filter(run => isBotLogin(bot, run.app?.slug) || isBotLogin({ logins: [BOT_LOGIN] }, run.app?.slug))
       .reduce<typeof runs[number] | undefined>((last, run) => (!last || run.id > last.id ? run : last), undefined);
     return newest?.status === 'completed' && newest.conclusion === 'success';
   } catch (error) {
