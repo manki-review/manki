@@ -21,7 +21,7 @@ Manki sizes each review to the nature of the change, and you decide who reviews 
 
 - **Multi-stage pipeline**: a planner triages the change, finders review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings by severity
 - **You decide who reviews what**: a review group lists the readers for a kind of change, each with its own model, effort and focus, and you route changes to groups by path or by the planner's triage. By default a change that could reach a user gets a second finder on another model with the same checklist, so the two models miss different things
-- **Smart verdicts**: blocks PRs on real issues, approves over optional notes, and auto-approves when all blocking threads resolve
+- **Smart verdicts**: blocks PRs on real issues, approves over optional suggestions, and auto-approves when all blocking threads resolve
 - **Multi-provider**: Anthropic, OpenAI, and Gemini, mix-and-match per stage and per reader via `.manki.yml`
 - **Self-learning memory**: `/manki remember` teaches conventions, `/manki dismiss` suppresses false positives, patterns stick across PRs
 - **Conversational**: reply to any review comment to discuss, or use `@manki explain`/`forget` inline
