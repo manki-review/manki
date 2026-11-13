@@ -5184,12 +5184,14 @@ describe('postReview non-blocking findings', () => {
   });
 
   it('does not post a non-blocking finding again while its open thread carries it, or when it repeats an answered thread', async () => {
-    const { octokit, createReview } = makeOctokit();
+    const { octokit, createReview, createReviewComment } = makeOctokit();
     // `Fallback line` was posted on line 1 because its line was outside that round's diff.
     const existingThreads = [
       { title: 'Extract helper', file: 'src/a.ts', line: 5, severity: 'note' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'Extract-helper' },
       { title: 'Fallback line', file: 'src/a.ts', line: 1, findingLine: 30, severity: 'note' as const, status: 'open' as const, threadId: 'T3', markerSlug: 'Fallback-line' },
       { title: 'Retry leaks a timer', file: 'src/a.ts', line: 7, severity: 'warning' as const, status: 'open' as const, threadId: 'T4', markerSlug: 'Retry-leaks-a-timer' },
+      { title: 'Retry never stops', file: 'src/a.ts', line: 9, severity: 'note' as const, status: 'open' as const, threadId: 'T5', markerSlug: 'Retry-never-stops' },
+      { title: 'Lock order flips', file: 'src/a.ts', line: 40, severity: 'note' as const, status: 'open' as const, threadId: 'T6', markerSlug: 'Lock-order-flips' },
     ];
 
     const findings = [
@@ -5198,6 +5200,10 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('note', 'Worse retry', 11, { answeredIn: { threadId: 'T2', answer: 'Withdrawn. Fine.' } }),
       // A warning on code an earlier round reviewed opens no second thread either.
       nonBlocking('warning', 'Retry leaks a timer', 7, { origin: 'reviewed', tags: ['follow-up'] }),
+      // A suggestion thread never carries a warning, which gets a thread of its own. A blocker off the diff's lines is
+      // left to it, and the record makes that thread block.
+      nonBlocking('warning', 'Retry never stops', 9, { tags: ['follow-up'] }),
+      nonBlocking('blocker', 'Lock order flips', 40),
     ];
     // The record entry of the answered thread's finding has its thread already, as `buildRoundContext` writes it.
     const context = makeContext({
@@ -5206,7 +5212,8 @@ describe('postReview non-blocking findings', () => {
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments).toEqual([]);
+    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning, not blocking**']]);
+    expect(createReviewComment).not.toHaveBeenCalled();
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
     expect(visible).not.toContain('Fallback line');
@@ -5214,7 +5221,7 @@ describe('postReview non-blocking findings', () => {
     expect(visible).not.toContain('Retry leaks a timer');
     // The record says which thread carries each finding.
     const record = JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext;
-    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4']]);
+    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2'], ['earlier_thread', 'T4'], ['thread', undefined], ['earlier_thread', 'T6']]);
   });
 
   it('lists the findings of closed threads Manki agreed to leave for later as follow-ups', async () => {

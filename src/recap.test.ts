@@ -2361,11 +2361,15 @@ describe('llmDeduplicateFindings', () => {
       const notWaived = await llmDeduplicateFindings([raised], previous, mockClient);
       expect(notWaived).toEqual({ unique: [raised], duplicates: [] });
       expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title })])).toEqual({ unique: [raised], duplicates: [] });
-      for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true }]) {
+      for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true, severity: raised.severity }]) {
         const waived = await llmDeduplicateFindings([raised], [makePrevious({ ...previous[0], ...guarded })], mockClient);
         expect(waived.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
         expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title, ...guarded })]).duplicates).toHaveLength(1);
       }
+      // A guarded thread graded below the finding, such as a security suggestion, waives nothing above it.
+      const below = makePrevious({ ...previous[0], title: raised.title, isSecurity: true, severity: 'note' });
+      expect(deduplicateFindings([raised], [below]).unique).toEqual([raised]);
+      expect((await llmDeduplicateFindings([raised], [below], mockClient)).unique).toEqual([raised]);
     }
   });
 
@@ -2405,7 +2409,7 @@ describe('llmDeduplicateFindings', () => {
     // Three wordings of one finding, each posted a round after the one before.
     const memory = { file: 'src/memory.ts', severity: 'warning' as const };
     const waived = makePrevious({
-      ...memory, severity: 'note', status: 'resolved', threadId: 'T1', line: 0, originalLine: 80, findingLine: 84, answer: 'Agreed. The move is the follow-up.',
+      ...memory, status: 'resolved', threadId: 'T1', line: 0, originalLine: 80, findingLine: 84, answer: 'Agreed. The move is the follow-up.',
       title: 'Repos with `memory.enabled` and no `memory.repo` lose their existing memory silently',
       description: "Before this change, an empty `memory.repo` meant `<owner>/review-memory` (the removed `resolveMemoryRepo`, called with the App's memory token). Now the same config goes to the central store, which starts empty for that repo.",
     });
@@ -2442,6 +2446,12 @@ describe('llmDeduplicateFindings', () => {
     // The same problem in another file is another place, so a model match there changes nothing.
     const elsewhere = { ...second, file: 'src/index.ts' };
     expect(await llmDeduplicateFindings([elsewhere], [waived], match)).toEqual({ unique: [elsewhere], duplicates: [] });
+
+    // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.
+    const suggestion = { ...waived, severity: 'note' as const };
+    expect(await llmDeduplicateFindings([second], [suggestion], match)).toEqual({ unique: [second], duplicates: [] });
+    expect(deduplicateFindings([third], [{ ...answered, severity: 'note' }]).unique).toEqual([third]);
+    expect(deduplicateFindings([{ ...third, severity: 'note' }], [{ ...answered, severity: 'note' }]).unique[0].answeredIn?.threadId).toBe('T2');
   });
 
   it('does not treat replied findings as dismissed', async () => {

@@ -7,6 +7,16 @@ export type FindingSeverity = 'blocker' | 'warning' | 'note' | 'ignore';
 /** Severities from most to least severe. */
 export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'note', 'ignore'];
 
+/**
+ * Whether a finding of `severity` is graded above an earlier finding or thread: above the grade the round records last
+ * gave it, or else its own severity. One of `unknown` grade predates the markers and counts as a blocker. An earlier
+ * finding graded below never carries, waives or hides a new one.
+ */
+export function gradedAbove(severity: FindingSeverity, earlier: { severity: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
+  const grade = earlier.recordedGrade ?? (earlier.severity === 'unknown' ? 'blocker' : earlier.severity);
+  return SEVERITY_ORDER.indexOf(severity) < SEVERITY_ORDER.indexOf(grade);
+}
+
 /** What a review calls each severity. A note is posted as a suggestion. */
 export const SEVERITY_NAME: Record<FindingSeverity, string> = {
   blocker: 'blocker',

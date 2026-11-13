@@ -7,7 +7,7 @@ import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasOwnMarker, hasReviewRecord } from './review-record';
-import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
+import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
 import { COMMENT_MARKER, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1140,7 +1140,7 @@ function deduplicateFindings(
 
   for (const finding of newFindings) {
     const matched = firstMatch(finding, engaged.filter(prev => prev.fixed || mayWaive(prev, finding)));
-    const answeredMatch = matched ? undefined : firstMatch(finding, answered);
+    const answeredMatch = matched ? undefined : firstMatch(finding, answered.filter(prev => !gradedAbove(finding.severity, prev)));
 
     if (matched?.prev.fixed) {
       unique.push(resemblingFixed(finding, matched.prev));
@@ -1188,10 +1188,10 @@ function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]):
 
 /**
  * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker or a security finding is dropped
- * only for a guarded thread, since the PR author alone can resolve any other thread.
+ * only for a guarded thread, since the PR author alone can resolve any other thread. A finding graded above `prev` is never dropped.
  */
 function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
-  return !prev.fixed && ((finding.severity !== 'blocker' && !isSecurityFinding(finding.tags)) || isGuarded(prev));
+  return !prev.fixed && !gradedAbove(finding.severity, prev) && ((finding.severity !== 'blocker' && !isSecurityFinding(finding.tags)) || isGuarded(prev));
 }
 
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */

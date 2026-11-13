@@ -13,7 +13,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
@@ -1530,10 +1530,15 @@ function formatReplyFinding(finding: Finding): string[] {
   ];
 }
 
-/** Returns the ID of the unresolved Manki thread already posted for this finding, unless the finding is posted on its own. */
+/**
+ * Returns the ID of the unresolved Manki thread already posted for this finding, unless the finding is posted on its own.
+ * A thread graded below a finding that does not block never carries it, so a warning is not left to a suggestion thread.
+ * A blocker left to such a thread makes it block through the round record.
+ */
 function openThreadFor(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
   if (finding.ownThread) return undefined;
-  const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug);
+  const carries = (t: PreviousFinding): boolean => isBlockingFinding(finding) || !gradedAbove(finding.severity, t);
+  const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug && carries(t));
   const fingerprint = { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) };
   return findPriorThreadId(fingerprint, open);
 }

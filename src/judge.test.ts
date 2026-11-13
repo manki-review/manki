@@ -5178,7 +5178,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }], 2)];
@@ -5192,7 +5192,7 @@ describe('applyCrossRoundSuppression', () => {
   it('cites the most-recent agreeing round when multiple prior rounds match', () => {
     const makeMatchingPriorRound = (round: number) => makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }], round);
@@ -5233,7 +5233,7 @@ describe('applyCrossRoundSuppression', () => {
     const outOfWindowRound3 = (round: number, lineStart: number) =>
       makePriorRound([{
         fingerprint: { file: 'src/a.ts', lineStart, lineEnd: lineStart, slug: titleToSlug('Naming convention') },
-        severity: 'note',
+        severity: 'warning',
         title: 'Naming convention',
         authorReply: 'agree',
       }], round);
@@ -5282,7 +5282,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }], 2)];
@@ -5294,6 +5294,16 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].originalSeverity).toBe('warning');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
     expect(result.findings[0].tags).not.toContain('suppressed-by-ratchet');
+
+    // A prior graded below the finding, such as a suggestion the author agreed to, neither demotes nor hides a warning.
+    const belowPrior = [makePriorRound([{
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
+      severity: 'note',
+      title: 'Naming convention',
+      authorReply: 'agree',
+    }], 2)];
+    const kept = applyCrossRoundSuppression(findings, belowPrior);
+    expect([kept.suppressedCount, kept.demotedCount, kept.findings[0].severity]).toEqual([0, 0, 'warning']);
   });
 
   it('demotes a warning via contradiction when reversal word is in suggestedFix only', () => {
@@ -5307,7 +5317,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }])];
@@ -5328,7 +5338,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }])];
@@ -5355,7 +5365,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }])];
@@ -5379,7 +5389,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }])];
@@ -5403,7 +5413,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }])];
@@ -5426,7 +5436,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }])];
@@ -5447,7 +5457,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 30, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }], 2)];
@@ -5471,7 +5481,7 @@ describe('applyCrossRoundSuppression', () => {
     })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-      severity: 'note',
+      severity: 'warning',
       title: 'Naming convention',
       authorReply: 'agree',
     }])];
@@ -5547,14 +5557,14 @@ describe('applyCrossRoundSuppression', () => {
   it('hides a security finding below blocker only for a prior whose thread the PR author alone could not clear', () => {
     const security = (severity: Finding['severity']) => [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity, tags: [SECURITY_TAG] })];
     const priorWith = (entry: Partial<LegacyHandoverFindingFixture>) => [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') }, severity: 'note', title: 'Old issue', authorReply: 'none', ...entry,
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') }, severity: 'warning', title: 'Old issue', authorReply: 'none', ...entry,
     }])];
     const resolved = { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true };
     const addressed = { threadEvaluations: [{ threadId: 'TH1', status: 'addressed' as const, reason: 'fixed' }] };
     const cases: Array<[string, RoundContext[], CrossRoundSuppressionOptions]> = [
       ['resolved', priorWith({ threadId: 'TH1' }), resolved],
       ['agreed', priorWith({ threadId: 'TH1', authorReply: 'agree' }), {}],
-      ['addressed', priorWith({ threadId: 'TH1' }), addressed],
+      ['addressed', priorWith({ threadId: 'TH1', severity: 'note' }), addressed],
     ];
     for (const [name, prior, options] of cases) {
       for (const severity of name === 'addressed' ? ['note'] as const : ['warning', 'note'] as const) {
@@ -5579,7 +5589,7 @@ describe('applyCrossRoundSuppression', () => {
       const findings = [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity: 'note' })];
       const prior = [makePriorRound([{
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') },
-        severity: 'note',
+        severity: 'warning',
         title: 'Old issue',
         authorReply: 'none',
         threadId: 'TH1',
@@ -5596,13 +5606,22 @@ describe('applyCrossRoundSuppression', () => {
       // A blocker cell the judge keeps at a warning is hidden like any warning, whatever its check answered.
       const kept = applyCrossRoundSuppression(keptWarnings({ title: 'Old issue', file: 'src/a.ts', line: 10 }), prior, { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true });
       expect([kept.suppressedCount, kept.findings.map(f => [f.severity, f.tags])]).toEqual([3, Array(3).fill(['ignore', ['suppressed-by-resolved-thread']])]);
+
+      // A resolved suggestion thread hides a later suggestion on the same spot, never a warning.
+      const suggestion = [makePriorRound([{
+        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') }, severity: 'note', title: 'Old issue', authorReply: 'none', threadId: 'TH1',
+      }])];
+      const resolvedSuggestion = { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true };
+      expect(applyCrossRoundSuppression(findings, suggestion, resolvedSuggestion).findings[0].severity).toBe('ignore');
+      const warning = applyCrossRoundSuppression([{ ...findings[0], severity: 'warning' }], suggestion, resolvedSuggestion);
+      expect([warning.suppressedCount, warning.findings[0].severity]).toEqual([0, 'warning']);
     });
 
     it('preserves the agree-reply ratchet behaviour for non-resolved priors', () => {
       const findings = [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity: 'note' })];
       const prior = [makePriorRound([{
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') },
-        severity: 'note',
+        severity: 'warning',
         title: 'Old issue',
         authorReply: 'agree',
         threadId: 'TH1',
@@ -5984,7 +6003,7 @@ describe('runJudgeAgent cross-round suppression', () => {
         timestamp: 't',
         findings: [{
           fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
-          severity: 'note',
+          severity: 'warning',
           title: 'Naming convention',
           authorReply: 'agree',
         }],
