@@ -3221,8 +3221,8 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Judge:** 2 kept · 6 dropped');
-    expect(md).toContain(`${INDENT}kept: 1 blocker · 1 note`);
-    expect(md).toContain(`${INDENT}dropped: 5 note · 1 ignore`);
+    expect(md).toContain(`${INDENT}kept: 1 blocker · 1 suggestion`);
+    expect(md).toContain(`${INDENT}dropped: 5 suggestions · 1 ignore`);
   });
 
   it('renders warning in severity breakdown when warning count is non-zero', () => {
@@ -3234,7 +3234,7 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain(`${INDENT}kept: 1 blocker · 2 warning`);
-    expect(md).toContain(`${INDENT}dropped: 1 warning · 1 note`);
+    expect(md).toContain(`${INDENT}dropped: 1 warning · 1 suggestion`);
   });
 
   it('renders plannerInfo in complete phase', () => {

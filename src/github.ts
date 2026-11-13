@@ -727,7 +727,7 @@ function sanitizeEffort(v: string): string {
 function renderSeverityBreakdown(severities: Record<string, number>): string {
   return SEVERITY_ORDER
     .filter(s => (severities[s] ?? 0) > 0)
-    .map(s => `${severities[s]} ${s}`)
+    .map(s => countOf(severities[s], SEVERITY_NAME[s]))
     .join(' · ');
 }
 
