@@ -1356,6 +1356,9 @@ describe('checkAndAutoApprove', () => {
       issue_number: 1,
       body: expect.stringContaining('repository settings block the approval'),
     }));
+    // The notice records the hold, as the notice of a draft or a conflict does.
+    const notice = createCommentMock.mock.calls[0][0].body as string;
+    expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused', head: 'sha-789' })]);
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
 

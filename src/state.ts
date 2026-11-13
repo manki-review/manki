@@ -985,7 +985,7 @@ async function approveOrSayWhy(
         owner,
         repo,
         issue_number: prNumber,
-        body: withMarkers(refusalNotice, BOT_MARKER),
+        body: withMarkers(refusalNotice, BOT_MARKER, approvalRecord('held', 'refused', pr.head.sha)),
       });
       core.info('Posted auto-approve permission notice as issue comment');
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
