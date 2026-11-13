@@ -2378,7 +2378,7 @@ describe('runJudgeAgent', () => {
       // A note whose damage the judge doubts too. The refuter answers the damage first, then the fact.
       ...Object.fromEntries([
         'Fact confirmed, damage disproved', 'Fact confirmed, damage unsettled', 'Fact confirmed, damage confirmed', 'Fact disproved, damage confirmed',
-        'Fact unsettled, damage confirmed', 'Fact confirmed, defect disproved',
+        'Fact unsettled, damage confirmed', 'Fact confirmed, defect disproved', 'Fact disproved, defect confirmed',
       ].map(title => [title, { ...unseen, doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] }])),
       // The second refuter disproves the fact the first confirms.
       'Fact disputed': unseen,
@@ -2408,6 +2408,7 @@ describe('runJudgeAgent', () => {
       'Fact confirmed, damage confirmed': premise('confirmed', 'confirmed'), 'Fact disproved, damage confirmed': premise('confirmed', 'disproved'),
       'Fact unsettled, damage confirmed': premise('confirmed', 'unsettled'),
       'Fact confirmed, defect disproved': { ...premise('unsettled', 'confirmed'), outcome: 'disproved', proof: ['src/index.ts:3'] },
+      'Fact disproved, defect confirmed': { ...premise('unsettled', 'disproved'), outcome: 'confirmed', proof: ['src/index.ts:3'] },
       'Fact disputed': premise('confirmed'), 'Damage doubted and no finder blocker': premise('confirmed'),
       'No search, check disproves': { outcome: 'disproved', reason: 'The entry is there.', proof: ['src/index.ts:3'] },
       'No search, check confirms': { outcome: 'confirmed', reason: 'No entry anywhere.', proof: ['src/index.ts:3'] },
@@ -2454,6 +2455,8 @@ describe('runJudgeAgent', () => {
         ['Fact unsettled, damage confirmed', 'note', 'unproven', undefined],
         // An answer that the defect does not exist confirms no rule, so it raises nothing and drops the note, like any finding below blocker without a confirmed rule.
         ['Fact confirmed, defect disproved', 'ignore', 'unproven', 'refutation: ignore'],
+        // The answer about the defect is about the damage, so a confirmed defect never keeps a note whose fact the check disproved.
+        ['Fact disproved, defect confirmed', 'ignore', 'unproven', 'refutation: ignore'],
         ['Fact disputed', ...disputed],
         // With `warn` the judge's rule verdict alone posts the warning, and no check runs. With `block` the missing search caps
         // the blocker at a warning, so the refuter checks it: its check is the search the finder left out. A confirmation gives
@@ -2473,7 +2476,7 @@ describe('runJudgeAgent', () => {
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(48);
+      expect(refuterMessages).toHaveLength(50);
       // Only the run with `block` checked the finding no finder filed as a blocker.
       expect(refuterMessages.filter(m => m.includes(': Damage doubted and no finder blocker\n'))).toHaveLength(1);
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
