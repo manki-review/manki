@@ -186,10 +186,18 @@ describe('reviewLocal', () => {
       { key: 'src/b.ts:5:5:Fifth-value-is-wrong', reason: 'hidden_note' },
     ]);
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
+  });
+
+  // Each case runs a whole local review over git, which together can pass the default timeout on a CI runner.
+  it('holds a local follow-up round for an earlier warning thread as a pull request round does', async () => {
+    git(repo, 'checkout', '-q', 'feature');
+    const reviewed = commit(repo, 'Add b', { 'src/b.ts': 'retry();\n' });
+    const fixed = commit(repo, 'Bound b', { 'src/b.ts': 'retry(3);\n' });
+    git(repo, 'checkout', '-q', 'main');
 
     // An earlier warning thread holds an approving round as in a pull request round, until it is found fixed, graded lower
     // or resolved. A resolved security warning holds until a round finds it fixed.
-    const thread = (overrides: Partial<EarlierFinding>): EarlierFinding => ({ id: 'W1', severity: 'warning', title: 'Retry never stops', file: 'src/b.ts', line: 20, thread: 'open', ...overrides });
+    const thread = (overrides: Partial<EarlierFinding>): EarlierFinding => ({ id: 'W1', severity: 'warning', title: 'Retry never stops', file: 'src/b.ts', line: 1, thread: 'open', ...overrides });
     const heldBy = async (findings: EarlierFinding[], threadEvaluations?: ThreadEvaluation[]) => {
       jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'], ...(threadEvaluations && { threadEvaluations }) });
       return (await reviewLocal({ repoRoot: repo, base: 'main', head: fixed, earlier: { head: reviewed, findings }, providerInputs: inputs })).approvalHeld;
@@ -205,7 +213,7 @@ describe('reviewLocal', () => {
     expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Worse.', grade: 'blocker' }])).toBe(false);
     // A warning the earlier round listed only in its review body has no thread, so it holds only if this round finds it again.
     expect(await heldBy([thread({ thread: undefined })])).toBe(false);
-  });
+  }, 30_000);
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
     let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean } | undefined;
