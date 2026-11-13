@@ -311,6 +311,13 @@ describe('fetchBotReviewThreads', () => {
     jest.mocked(recordsUnread.paginate).mockRejectedValueOnce(new Error('rate limited'));
     await expect(fetchHeldWarnings(recordsUnread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending)).rejects.toThrow('Not every round record could be read');
     await expect(fetchHeldWarnings(threadsOctokit(graphqlMock.mockRejectedValueOnce(new Error('bad gateway')), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined)).rejects.toThrow('bad gateway');
+    // A resolved thread that is not a security one, or an open pre-existing one, holds nothing whatever its grade, so missing records do not matter.
+    const settled = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([
+      makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS), isResolved: true }),
+      makeGraphqlFetchThreadNode({ id: 'pe', body: formatFindingComment(finding('warning', 'Old race', ['pre-existing']), TEST_LINKS) }),
+    ])), reviews);
+    jest.mocked(settled.paginate).mockRejectedValueOnce(new Error('rate limited'));
+    expect(await fetchHeldWarnings(settled, TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending)).toEqual([]);
   });
 
   it('reads what backs a resolved thread: a record that says addressed, a latest reply from a person with write access, or such a person as the resolver', async () => {

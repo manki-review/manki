@@ -103,7 +103,8 @@ const THREAD_COMMENTS_LIMIT = 100;
 /**
  * Fetch all review threads `bot` started on a PR using GraphQL.
  * Returns threads with their resolution state and severity. `pending` is a round not posted yet, whose grades count too.
- * Without every round record each thread counts as blocking, unless `failIncomplete` asks for an error instead.
+ * Without every round record each thread counts as blocking. `failIncomplete` asks for an error instead when a thread
+ * could then still hold an approval: an open one, or a resolved security one, which the records may back.
  */
 async function fetchBotReviewThreads(
   octokit: Octokit,
@@ -164,7 +165,11 @@ async function fetchBotReviewThreads(
   });
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records: Awaited<ReturnType<typeof fetchPriorRoundContexts>> = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
-  if (failIncomplete && 'priorRoundsIncomplete' in records) throw new Error('Not every round record could be read, so the grades of the threads are unknown');
+  const mayHold = (thread: typeof botThreads[number]): boolean => {
+    const body = thread.comments.nodes[0]?.body ?? '';
+    return !parseFindingData(body)?.tags?.includes(PRE_EXISTING_TAG) && (!thread.isResolved || isSecurityThread(body));
+  };
+  if (failIncomplete && 'priorRoundsIncomplete' in records && botThreads.some(mayHold)) throw new Error('Not every round record could be read, so the grades of the threads are unknown');
   const rounds = pending ? [...records.priorRounds, pending] : records.priorRounds;
   const grades = recordedThreadGrades(rounds);
   // The pending round is not posted yet, so no reply can come after it.
