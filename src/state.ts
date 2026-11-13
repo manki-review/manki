@@ -505,8 +505,9 @@ function blockOf(
     return { held: `The record of Manki's review of ${sha} does not say what it blocked on.`, named: new Set() };
   }
   const live = new Set(threads.map(t => t.id));
-  // Only a thread posted on the round's own commit can be the round's, and each one carries a single blocker.
-  let own = threads.flatMap(t => t.place?.commit === commitSha ? [{ threadId: t.id, ...t.place }] : []);
+  // Only a blocking thread posted on the round's own commit can be the round's, and each one carries a single blocker.
+  // A suggestion thread on the blocker's line is never its thread, so it never holds the approval.
+  let own = threads.flatMap(t => t.place?.commit === commitSha && t.isBlocking ? [{ threadId: t.id, ...t.place }] : []);
   const named = new Set<string>();
   const loose: typeof blockers = [];
   for (const b of blockers) {

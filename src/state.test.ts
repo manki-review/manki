@@ -608,6 +608,7 @@ describe('checkAndAutoApprove', () => {
     it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
       ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
       ['a new blocker on a changed line, its thread open', blocked([blocker({ posted: 'thread' })]), [thread('t1', 'blocker')], 'Not all blocking findings resolved'],
+      ['a new blocker on a changed line, its thread resolved beside an open suggestion thread on that line', blocked([blocker({ posted: 'thread' })]), [thread('t0', 'note'), fixed()], true],
       ['a new blocker in a changed file outside the hunks, its file-level thread resolved', blocked([blocker({ posted: 'thread', lineStart: 40 })]), [fixed('t1', 'blocker', { line: null })], true],
       ['a new blocker whose thread is not there yet, was refused or was deleted by hand', blocked([blocker({ posted: 'thread' })]), [], GONE],
       ['a new blocker without its thread, beside a resolved thread an earlier round posted at its place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { commit: 'older-sha' })], GONE],
