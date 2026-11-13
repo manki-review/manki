@@ -1142,7 +1142,7 @@ describe('postReview reviewed-commit footer', () => {
     expect(fallbackBody).toContain('<summary><b>1 suggestion</b> · not blocking</summary>');
     expect(fallbackBody).toContain('**Why:** Clearer.');
     // The comment leads with why it does not approve.
-    expect(fallbackBody).toMatch(/^\*\*Approval held:\*\* GitHub refused the approval, so this review is a comment\. [^\n]*\n\n\u2705 \*\*Approved\.\*\* 2 suggestions, none of which block\./u);
+    expect(fallbackBody).toMatch(/^\*\*Approval held:\*\* GitHub refused the approval because the repository does not allow GitHub Actions to approve pull requests, so this review is a comment\. [^\n]*\n\n\u2705 \*\*Approved\.\*\* 2 suggestions, none of which block\./u);
   });
 
   it('preserves the footer even when the review body exceeds the truncation limit', async () => {
@@ -1755,7 +1755,7 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { head: { sha: 'abcdef1234' } } });
     expect(await approval(ready)).toEqual({ held: 'refused' });
     const refused = mockCreateReview.mock.calls.at(-1)![0] as { event: string; body: string };
-    expect([refused.event, refused.body.split('\n')[0]]).toEqual(['COMMENT', expect.stringMatching(/^\*\*Approval held:\*\* GitHub refused the approval, so this review is a comment\./)]);
+    expect([refused.event, refused.body.split('\n')[0]]).toEqual(['COMMENT', expect.stringMatching(/^\*\*Approval held:\*\* GitHub refused the approval because the repository does not allow GitHub Actions to approve pull requests, so this review is a comment\./)]);
     const held = { ...ready, findings: [{ ...ready.findings[0], severity: 'warning' as const, tags: ['follow-up'] }] };
     expect(await approval(held)).toEqual({ held: 'warnings', warningsHeld: true });
     mockGet.mockResolvedValueOnce({ data: { mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
@@ -4468,6 +4468,11 @@ describe('postReview fallback paths', () => {
 
     expect(reviewId).toEqual({ id: 3, approvalHeld: 'refused', warningsHeld: false });
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
+    // The comment names the repository setting only when the setting is what GitHub refused on.
+    const lead = (createReviewMock.mock.calls[1][0].body as string).split('\n')[0];
+    expect(lead).toBe(blamesSetting
+      ? '**Approval held:** GitHub refused the approval because the repository does not allow GitHub Actions to approve pull requests, so this review is a comment. Enable "Allow GitHub Actions to create and approve pull requests" in the repository settings, or approve the PR by hand.'
+      : '**Approval held:** GitHub refused the approval, so this review is a comment. A person needs to approve the PR.');
     const warning = warningSpy.mock.calls.map(c => String(c[0])).find(w => w.includes('Falling back to COMMENT'));
     expect(warning).toContain(`422: ${message}`);
     expect(warning?.includes('Allow GitHub Actions')).toBe(blamesSetting);

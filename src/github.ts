@@ -213,8 +213,14 @@ const MERGEABLE_RETRY_MS = 1500;
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
 export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings' | 'refused';
 
+/** Why GitHub refused a review event: the repository setting that stops GitHub Actions from approving, or another reason. */
+type EventRefusal = 'setting' | 'other';
+
 /** Leads a review that would approve when GitHub refused the approval, so Manki posted it as a comment. */
-const APPROVAL_REFUSED_LINE = '**Approval held:** GitHub refused the approval, so this review is a comment. A person needs to approve the PR, or enable "Allow GitHub Actions to create and approve pull requests" in the repository settings if it is off.';
+const APPROVAL_REFUSED_LINES: Record<EventRefusal, string> = {
+  setting: '**Approval held:** GitHub refused the approval because the repository does not allow GitHub Actions to approve pull requests, so this review is a comment. Enable "Allow GitHub Actions to create and approve pull requests" in the repository settings, or approve the PR by hand.',
+  other: '**Approval held:** GitHub refused the approval, so this review is a comment. A person needs to approve the PR.',
+};
 
 /** The changed files no model reads: those `exclude_paths` drops, and those with no code to read, such as binaries. */
 export interface SkippedFiles {
@@ -1930,12 +1936,12 @@ export async function postReview(
    * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
    * `withoutLineThreads` leaves out the non-blocking line comments, for a review GitHub only takes without them.
    */
-  const renderBody = (withoutLineThreads = false, approvalRefused = false): string => {
+  const renderBody = (withoutLineThreads = false, approvalRefusal?: EventRefusal): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
     const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
     const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
-    const line = approvalRefused ? APPROVAL_REFUSED_LINE : heldLine;
+    const line = approvalRefusal ? APPROVAL_REFUSED_LINES[approvalRefusal] : heldLine;
     let head = line ? `${line}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -2017,10 +2023,9 @@ export async function postReview(
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
-  const withoutLineThreads = (approvalRefused = false): string => highlightCode(renderBody(true, approvalRefused), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, approvalRefused => recordFor(inline, approvalRefused), headlined.map(highlight));
-  // GitHub took a COMMENT for an approval only when it refused the approval.
-  const approvalRefused = postedVerdict === 'APPROVE' && review.verdict === 'COMMENT';
+  const withoutLineThreads = (approvalRefusal?: EventRefusal): string => highlightCode(renderBody(true, approvalRefusal), codeTokens);
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, approvalRefusal => recordFor(inline, !!approvalRefusal), headlined.map(highlight));
+  const approvalRefused = postedVerdict === 'APPROVE' && !!review.refused;
   onPosted?.();
   // A blocker or a holding warning whose line comment GitHub refused gets a file-level thread on its file.
   const retried = review.lineComments ? [] : lineThreads.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
@@ -2085,13 +2090,13 @@ async function submitReview(
   record: string,
   validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}>,
   reviewedCommitFooter: string,
-  /** The body without the line comments listed as threads, for when GitHub refuses their lines or the approval. */
-  bodyWithoutLineComments: (approvalRefused?: boolean) => string = () => body,
+  /** The body without the line comments listed as threads, for when GitHub refuses their lines, or the approval for `approvalRefusal`. */
+  bodyWithoutLineComments: (approvalRefusal?: EventRefusal) => string = () => body,
   /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
-  recordWithoutLineComments: (approvalRefused?: boolean) => string = () => record,
+  recordWithoutLineComments: (approvalRefusal?: EventRefusal) => string = () => record,
   /** The line comments the body names by their headline when the review posts without them. The caller posts a blocker as a file-level thread instead. */
   unthreaded: typeof validComments = validComments,
-): Promise<{ id: number; verdict: ReviewVerdict; body: string; lineComments: boolean }> {
+): Promise<{ id: number; body: string; lineComments: boolean; refused?: EventRefusal }> {
   const event = mapVerdictToEvent(verdict);
   const fit = (text: string, trailer = record): string => truncateBody(text, REVIEW_BODY_BUDGET - trailer.length);
   const compose = (text: string, trailer = record): string => appendReviewFooter(`${text}${trailer}`, reviewedCommitFooter);
@@ -2110,7 +2115,7 @@ async function submitReview(
     });
 
     core.info(`Posted review #${review.id} with verdict ${verdict}`);
-    return { id: review.id, verdict, body: fit(body), lineComments: true };
+    return { id: review.id, body: fit(body), lineComments: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isLineError = errorMessage.includes('pull_request_review_thread.line') ||
@@ -2133,7 +2138,7 @@ async function submitReview(
       });
 
       core.info(`Posted review #${review.id} without inline comments (line validation failed)`);
-      return { id: review.id, verdict, body: lineErrFallbackBody, lineComments: false };
+      return { id: review.id, body: lineErrFallbackBody, lineComments: false };
     }
 
     // Only a 422 is GitHub refusing this review event (e.g. approving or requesting
@@ -2144,13 +2149,15 @@ async function submitReview(
     }
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-    const hint = isApprovalSettingRefusal(error)
+    const refused: EventRefusal = isApprovalSettingRefusal(error) ? 'setting' : 'other';
+    const hint = refused === 'setting'
       ? ' Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.'
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
-    const bare = recordWithoutLineComments(event === 'APPROVE');
-    const fallbackBody = fit(`${bodyWithoutLineComments(event === 'APPROVE')}${listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`)}`, bare);
+    const approvalRefusal = event === 'APPROVE' ? refused : undefined;
+    const bare = recordWithoutLineComments(approvalRefusal);
+    const fallbackBody = fit(`${bodyWithoutLineComments(approvalRefusal)}${listUnthreaded('Findings (could not post inline):', c => `${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`)}`, bare);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -2163,7 +2170,7 @@ async function submitReview(
     });
 
     core.info(`Posted fallback COMMENT review #${review.id} (original verdict: ${verdict})`);
-    return { id: review.id, verdict: 'COMMENT', body: fallbackBody, lineComments: false };
+    return { id: review.id, body: fallbackBody, lineComments: false, refused };
   }
 }
 

@@ -657,7 +657,7 @@ describe('runFullReview end to end', () => {
     expect(core.setFailed).not.toHaveBeenCalled();
     const [review] = postedReviews();
     expect(review.state).toBe('COMMENTED');
-    expect(review.body).toMatch(/^\*\*Approval held:\*\* GitHub refused the approval, so this review is a comment\./);
+    expect(review.body).toMatch(/^\*\*Approval held:\*\* GitHub refused the approval because the repository does not allow GitHub Actions to approve pull requests, so this review is a comment\./);
     expect(mockGitHub.roundContext(review)).toMatchObject({ verdict: 'APPROVE', approval: { held: 'refused' } });
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'COMMENT');
     expect(core.setOutput).toHaveBeenCalledWith('approval_held', 'refused');
