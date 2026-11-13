@@ -840,9 +840,9 @@ describe('runFullReview end to end', () => {
 
     expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
     expect(skipNotices()).toEqual([]);
-    // The run on the same head takes over the failed progress comment, so the head shows one comment.
-    expect(progress?.body).toMatch(/^✅ \*\*Review complete\*\*/);
-    expect(mockGitHub.comments.filter(c => c.body.startsWith('✅ **Review complete**'))).toEqual([progress]);
+    // The run on the same head deletes the failed progress comment, so the head shows one comment.
+    expect(mockGitHub.comments).not.toContain(progress);
+    expect(mockGitHub.comments.filter(c => c.body.startsWith('✅ **Review complete**'))).toHaveLength(1);
   });
 
   it('ends INCOMPLETE and never approves when the judge reply does not parse', async () => {
@@ -922,8 +922,8 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
-    // The run on the same head takes over the failed progress comment, which has the settings block.
-    expect(progress?.body).toMatch(/^✅ \*\*Review complete\*\*/);
+    // The run on the same head deletes the failed progress comment, which has the settings block.
+    expect(mockGitHub.comments).not.toContain(progress);
     expect(other.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`/);
     expect(quoted.body).toBe('🔴 **Review failed:** boom');
   });

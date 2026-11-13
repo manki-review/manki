@@ -721,8 +721,8 @@ const runningSettings = (target: RunTarget, progress: RunProgress): SettingsView
 
 /**
  * Posts the run's progress comment, ending with the settings block, which older comments then lose, so only the newest
- * progress comment has one. The failed progress comment of an earlier run on the same head becomes this run's instead,
- * so a head never gets two.
+ * progress comment has one. The failed progress comment of an earlier run on the same head is deleted, so a head shows
+ * one. It is not edited into this run's, since the token service takes only a comment created after the run started.
  */
 async function postRunProgress(target: RunTarget, progress: RunProgress, { settings = NO_SETTINGS, draft = false }: FullReviewOptions): Promise<number> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
@@ -738,8 +738,17 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
     lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
     ...(latest && failedId === undefined && { previousId: latest.id }),
   };
-  const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress), failedId);
-  await retireSettingsBlocks(octokit, bot, owner, repo, comments, commentId);
+  const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));
+  let kept = comments;
+  if (failedId !== undefined) {
+    try {
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: failedId });
+      kept = comments.filter(c => c.id !== failedId);
+    } catch (error) {
+      core.warning(`Failed to delete the failed progress comment ${failedId}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  await retireSettingsBlocks(octokit, bot, owner, repo, kept, commentId);
   return commentId;
 }
 

@@ -890,8 +890,8 @@ export function buildDashboard(data: DashboardData): string {
 }
 
 /**
- * Post a "review in progress" comment on the PR, or turn comment `reuseId` into one. A new comment is posted when
- * `reuseId` cannot be edited. Returns the comment ID so we can update/delete it later.
+ * Post a "review in progress" comment on the PR.
+ * Returns the comment ID so we can update/delete it later.
  */
 export async function postProgressComment(
   octokit: Octokit,
@@ -900,13 +900,12 @@ export async function postProgressComment(
   prNumber: number,
   dashboard?: DashboardData,
   settings?: SettingsView,
-  reuseId?: number,
 ): Promise<number> {
   const body = withSettingsBlock(withMarkers(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
   ), settings);
-  return placeProgressComment(octokit, owner, repo, prNumber, body, reuseId);
+  return placeProgressComment(octokit, owner, repo, prNumber, body);
 }
 
 /**

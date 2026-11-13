@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -4074,19 +4074,19 @@ describe('postProgressComment', () => {
     saveState.mockRestore();
   });
 
-  it('turns the comment to reuse into the progress comment, or posts a new one when it cannot be edited', async () => {
+  it('turns the comment to reuse into the auto-approve progress comment, or posts a new one when it cannot be edited', async () => {
     const saveState = jest.spyOn(core, 'saveState').mockImplementation(() => {});
     const createComment = jest.fn().mockResolvedValue({ data: { id: 42 } });
     const updateComment = jest.fn().mockResolvedValue({});
-    const mockOctokit = { rest: { issues: { createComment, updateComment } } } as unknown as Parameters<typeof postProgressComment>[0];
+    const mockOctokit = { rest: { issues: { createComment, updateComment } } } as unknown as Parameters<typeof postAutoApproveProgressComment>[0];
 
-    expect(await postProgressComment(mockOctokit, 'owner', 'repo', 1, undefined, undefined, 9)).toBe(9);
-    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 9, body: expect.stringMatching(/^\*\*Review started\*\*/) });
+    expect(await postAutoApproveProgressComment(mockOctokit, 'owner', 'repo', 1, 'abc', 9)).toBe(9);
+    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 9, body: expect.stringMatching(/^\*\*Auto-approving:\*\*/) });
     expect(createComment).not.toHaveBeenCalled();
     expect(saveState).toHaveBeenLastCalledWith('manki_progress_comment', '9');
 
     updateComment.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
-    expect(await postProgressComment(mockOctokit, 'owner', 'repo', 1, undefined, undefined, 9)).toBe(42);
+    expect(await postAutoApproveProgressComment(mockOctokit, 'owner', 'repo', 1, 'abc', 9)).toBe(42);
     expect(createComment).toHaveBeenCalledTimes(1);
     expect(saveState).toHaveBeenLastCalledWith('manki_progress_comment', '42');
     saveState.mockRestore();
