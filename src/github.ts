@@ -2270,29 +2270,29 @@ function linkText(text: string): string {
   return sanitizeMarkdown(text).replace(/\s+/g, ' ').trim().replace(/[\\[\]]/g, '\\$&');
 }
 
-// Most telling first, which is also the order the note lists them in.
-const RELATION_LABEL: Record<Exclude<RelatedRelation, 'unrelated'>, string> = {
-  duplicate: 'Duplicate',
-  fixes_issue: 'Fixed here, not linked',
-  overlapping: 'Overlaps',
+// The relations the author can act on, in the order the note lists them, each with the line telling them what to do.
+const RELATION_ACTION: Record<Extract<RelatedRelation, 'duplicate' | 'fixes_issue'>, (link: string, number: number) => string> = {
+  duplicate: link => `${link} seems to make the same change. Close one of the two if so.`,
+  fixes_issue: (link, number) => `This PR may fix ${link}. Add \`Closes #${number}\` to the description if it does.`,
 };
 
 /**
- * Returns the note listing the open PRs and issues the dedup model tied to this PR, or null when it tied none. The
- * model's reason stays out, since the other PRs' and issues' text can steer it, and only the round record keeps it.
+ * Returns the note listing the open PRs this PR may duplicate and the open issues it may fix, each with what to do, or
+ * null when there is none. Overlapping and unrelated candidates stay in the round record only. The model's reason
+ * stays out too, since the other PRs' and issues' text can steer it.
  */
 function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: string): string | null {
-  const labels = Object.keys(RELATION_LABEL);
-  const related = (work?.items ?? [])
-    .flatMap(item => item.relation && item.relation !== 'unrelated' ? [{ ...item, relation: item.relation }] : [])
-    .sort((a, b) => labels.indexOf(a.relation) - labels.indexOf(b.relation));
-  if (related.length === 0) return null;
-  const lines = related.map(item => {
+  const relations = Object.keys(RELATION_ACTION);
+  const actionable = (work?.items ?? [])
+    .flatMap(item => item.relation === 'duplicate' || item.relation === 'fixes_issue' ? [{ ...item, relation: item.relation }] : [])
+    .sort((a, b) => relations.indexOf(a.relation) - relations.indexOf(b.relation));
+  if (actionable.length === 0) return null;
+  const lines = actionable.map(item => {
     const url = `${repoUrl(github.context.serverUrl, owner, repo)}/${item.kind === 'pr' ? 'pull' : 'issues'}/${item.number}`;
     const draft = item.draft ? ' (draft)' : '';
-    return `- ${RELATION_LABEL[item.relation]} · [#${item.number} ${linkText(item.title)}](${url})${draft}`;
+    return `- ${RELATION_ACTION[item.relation](`[#${item.number} ${linkText(item.title)}](${url})${draft}`, item.number)}`;
   });
-  return `**Related work:** open PRs and issues that may cover the same change. None of them blocks.\n\n${lines.join('\n')}`;
+  return `**Related work:** open PRs and issues this PR may duplicate or fix. None of them blocks.\n\n${lines.join('\n')}`;
 }
 
 /** Returns one line naming the guarded findings a PR author dismissed on their own PR, with the role that allowed it, or null when there are none. */
