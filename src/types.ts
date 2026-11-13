@@ -378,9 +378,10 @@ export interface Finding {
   /**
    * The grade the finding gets once every premise in `doubts` holds. Set when the finding has a doubt. Manki works it
    * out from the `cell`, except that it is `warning` in a cell that gives a blocker when the judge stated `warning`.
-   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. Before its checks,
-   * `refuteBlockers` sets `warning` here on a blocker cell that no confirmation may raise: no finder filed a blocker,
-   * it is no security finding and it restates no earlier blocker. On a finding that `isRareClaim` it is the grade of
+   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. A blocker cell that no
+   * finder filed as a blocker, that is no security finding and that restates no earlier blocker needs more: every
+   * check confirms the defect and a `consequence` premise. Before its checks, `refuteBlockers` sets `warning` here on
+   * such a finding without a `consequence` premise. On a finding that `isRareClaim` it is the grade of
    * the `normal` column, which no confirmation gives.
    */
   gradeIfConfirmed?: FindingSeverity;
@@ -750,7 +751,7 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
 
 /**
  * Whether the cell of `f` gives a blocker that no confirmation of its doubts gives. Either the judge stated `warning`
- * for that case, or `refuteBlockers` set it because no finder filed a blocker.
+ * for that case, or `refuteBlockers` set it because no finder filed a blocker and the judge named no `consequence` premise.
  */
 export function staysWarningIfConfirmed(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): boolean {
   return f.gradeIfConfirmed === 'warning' && isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker';
@@ -776,6 +777,8 @@ export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 export interface Doubt {
   premise: string;
   decides: 'defect' | 'grade';
+  /** Set on the `grade` premise about the damage that makes the cell's row a blocker, worded so the blocker needs it true. */
+  consequence?: true;
 }
 
 /**
@@ -850,6 +853,11 @@ export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome 
   if (votes.size !== 1) return 'unsettled';
   const [outcome] = votes;
   return outcome === 'confirmed' && checks.some(r => outcomeOf(r) === 'disproved' || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
+}
+
+/** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
+export function confirmsAll(checks: readonly Refutation[]): boolean {
+  return checks.length > 0 && checks.every(r => r.defect === 'confirmed' && r.outcome === 'confirmed');
 }
 
 /**

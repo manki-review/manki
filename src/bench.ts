@@ -138,8 +138,10 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       throw caseError(where, `\`cell\` must have a \`row\` of ${Object.keys(CELL_GRADES).join(', ')} and a \`column\` of normal or rare`);
     }
     const doubts = f.doubts as Array<Record<string, unknown>> | undefined;
-    if (doubts !== undefined && !(Array.isArray(doubts) && doubts.every(d => d && typeof d.premise === 'string' && d.premise.trim() && ['defect', 'grade'].includes(d.decides as string)))) {
-      throw caseError(where, '`doubts` must be a list of mappings with a `premise` and a `decides` of defect or grade');
+    const validDoubt = (d: Record<string, unknown>): boolean => !!d && typeof d.premise === 'string' && !!d.premise.trim() && ['defect', 'grade'].includes(d.decides as string)
+      && (d.consequence === undefined || (d.consequence === true && d.decides === 'grade'));
+    if (doubts !== undefined && !(Array.isArray(doubts) && doubts.every(validDoubt))) {
+      throw caseError(where, '`doubts` must be a list of mappings with a `premise`, a `decides` of defect or grade, and `consequence: true` only beside `decides: grade`');
     }
     const [description, howToFix, suggestedFix] = PRIOR_FIELDS.map((field) => {
       if (f[field] !== undefined && typeof f[field] !== 'string') throw caseError(where, `\`${field}\` must be a string`);
@@ -149,7 +151,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       id: requireString(f, 'id', where), severity: f.severity as KeySeverity, title: requireString(f, 'title', where), file: requireString(f, 'file', where), line: f.line as number,
       ...(f.grade_if_confirmed !== undefined && { gradeIfConfirmed: f.grade_if_confirmed as KeySeverity }),
       ...(cell && { cell: { row: cell.row, column: cell.column } }),
-      ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'] })) }),
+      ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'], ...(d.consequence === true && { consequence: true }) })) }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
       ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
     };
@@ -405,8 +407,8 @@ interface GradeRoute {
   judgeIfConfirmed?: Finding['judgeIfConfirmed'];
   /** The steps of the finding's `gradePath`, without their reasons. */
   gradePath?: Array<Omit<GradeStep, 'reason'>>;
-  /** How many doubts of each `decides` kind the judge named. */
-  doubts?: Partial<Record<Doubt['decides'], number>>;
+  /** How many doubts of each `decides` kind the judge named, and how many of the `grade` ones are a `consequence`. */
+  doubts?: Partial<Record<Doubt['decides'] | 'consequence', number>>;
   /** With `relatedLines`, the lines of related repos the check cited, and `prLines`, the lines of the PR's repository beside them. Both are left out of a check that cited no related line. */
   refutation?: Pick<Refutation, 'outcome' | 'defect' | 'stepsUsedUp'> & { relatedLines?: number; prLines?: number };
   checkStatus?: CheckStatus;
@@ -617,7 +619,7 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(gradeIfConfirmed && { gradeIfConfirmed }),
     ...(judgeIfConfirmed && { judgeIfConfirmed }),
     ...(gradePath && { gradePath: gradePath.map(({ from, to, by }) => ({ from, to, by })) }),
-    ...(doubts.length > 0 && { doubts: { defect: doubtsOf('defect'), grade: doubtsOf('grade') } }),
+    ...(doubts.length > 0 && { doubts: { defect: doubtsOf('defect'), grade: doubtsOf('grade'), ...(doubts.some(d => d.consequence) && { consequence: doubts.filter(d => d.consequence).length }) } }),
     ...(refutation && { refutation: {
       outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }), ...(refutation.stepsUsedUp && { stepsUsedUp: refutation.stepsUsedUp }),
       ...(refutation.relatedProof?.length && { relatedLines: refutation.relatedProof.length, prLines: refutation.proof?.length ?? 0 }),
@@ -1234,6 +1236,7 @@ const BLOCKER_ROUTES = {
   finder: 'filed by a finder and kept',
   judge: 'raised by the judge',
   doubt: 'raised by a confirmed doubt',
+  consequence: 'raised by a confirmed doubt and consequence',
   claim: 'claim check',
   reader: 'verdict reader',
   other: 'other',
@@ -1245,8 +1248,9 @@ type BlockerRoute = keyof typeof BLOCKER_ROUTES;
  * Returns which stage made a posted blocker a blocker. A blocker a finder filed as one is `finder`, whatever lowered
  * and restored it between. Any other blocker is named by the last step that raised it to blocker. A step that gives
  * back the blocker an `unproven` cap lowered is no raise. A raise by `judge` is the judge's cell alone, and a raise by
- * `refutation` is a check that confirmed the doubts holding the finding down. A blocker only claim checks reported is
- * `claim`, whatever grade it was filed at. It is `unknown` without a stored route.
+ * `refutation` is a check that confirmed the doubts holding the finding down, `consequence` when they include a
+ * `consequence` premise, which only a finding that needed it keeps. A blocker only claim checks reported is `claim`,
+ * whatever grade it was filed at. It is `unknown` without a stored route.
  */
 function blockerRoute(route: GradeRoute | undefined): BlockerRoute {
   if (!route) return 'unknown';
@@ -1255,7 +1259,8 @@ function blockerRoute(route: GradeRoute | undefined): BlockerRoute {
   if (route.finderGrade === 'blocker') return 'finder';
   const steps = route.gradePath ?? [];
   const raise = steps.filter((step, i) => step.to === 'blocker' && steps[i - 1]?.by !== 'unproven').at(-1);
-  return raise?.by === 'judge' ? 'judge' : raise?.by === 'refutation' ? 'doubt' : 'other';
+  if (raise?.by === 'refutation') return route.doubts?.consequence ? 'consequence' : 'doubt';
+  return raise?.by === 'judge' ? 'judge' : 'other';
 }
 
 /**
