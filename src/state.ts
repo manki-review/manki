@@ -722,24 +722,33 @@ async function postStaleApproveSkippedComment(
   }
 }
 
+/** The notice of an approval GitHub refused because of the repository setting. */
+const REFUSED_LINE = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
+
+/** A held approval: the first reason, the notice's text, and whether this call posted the notice. */
+type HeldApproval = { reason: Exclude<ApprovalHeld, false>; line: string; posted: boolean };
+
 /**
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
- * `line` is the notice's text, and `posted` says whether this call posted the notice.
+ * With `refused`, it holds because GitHub refused the approval, and does not read the PR.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
-  autoApprove = true, recordFor?: (reason: string) => string,
-): Promise<{ reason: Exclude<ApprovalHeld, false>; line: string; posted: boolean } | false> {
-  const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
+  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused' },
+): Promise<HeldApproval | false> {
+  const hold = refused ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
-  core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
+  const why = hold.reason === 'refused' ? 'GitHub refused the approval' : hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft';
+  core.info(`${why}, so it is not approved`);
   assertWritesAllowed();
-  const line = approvalHoldLine(hold, autoApprove);
+  const line = hold.reason === 'refused' ? REFUSED_LINE : approvalHoldLine(hold, autoApprove);
+  // A refusal has its own marker, so a draft or conflict notice of the head does not stand in for it.
+  const marker = `${APPROVAL_HELD_MARKER_PREFIX}${headSha}${hold.reason === 'refused' ? ':refused' : ''} -->`;
   let posted = false;
   try {
-    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
+    posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, marker, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
@@ -940,13 +949,18 @@ async function approveOrSayWhy(
     return withheld(why);
   }
 
-  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, reason => approvalRecord('held', reason, pr.head.sha));
-  if (hold) {
+  const recordFor = (cause: string) => approvalRecord('held', cause, pr.head.sha);
+  /**
+   * Reports the held approval, and the check once, with the notice. A later round reports its own check and deletes the
+   * notice, so a hold after it reports again. A notice this check posted already answers a person.
+   */
+  const heldBy = async (held: HeldApproval): Promise<ApprovalCheck> => {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-    // Reported once, with the notice, as for a refused approval below. A notice this check posted already answers a person.
-    if (hold.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', hold.line, hold.reason));
-    return { approved: false, why: async () => hold.line, ...(hold.posted && { answered: true as const }) };
-  }
+    if (held.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', held.line, held.reason));
+    return { approved: false, why: async () => held.line, ...(held.posted && { answered: true as const }) };
+  };
+  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor);
+  if (hold) return heldBy(hold);
 
   const comments = await fetchPRComments(octokit, owner, repo, prNumber).catch((error: unknown) => {
     core.warning(`Failed to look up an earlier failed auto-approve, posting a new comment: ${error instanceof Error ? error.message : error}`);
@@ -955,9 +969,7 @@ async function approveOrSayWhy(
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber, pr.head.sha, failedAutoApproveId(comments, bot, pr.head.sha));
 
   core.info('All findings resolved — auto-approving');
-  const refusalNotice = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
-  // Set once GitHub refused the approval, to whether this check posted the notice.
-  let refusalPosted: boolean | undefined;
+  let refusal: HeldApproval | false = false;
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
@@ -996,13 +1008,7 @@ async function approveOrSayWhy(
       core.warning(
         'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.',
       );
-      // One notice per head, with its own marker so a draft or conflict notice of the head does not stand in for it.
-      refusalPosted = await postNoticeOnce(
-        octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${pr.head.sha}:refused -->`, `${refusalNotice}\n\n${approvalRecord('held', 'refused', pr.head.sha)}`,
-      );
-      await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-      // Reported once, with the notice. A later round reports its own check and deletes the notice, so a refusal after it reports again.
-      if (refusalPosted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', refusalNotice, 'refused'));
+      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused' });
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.
@@ -1013,9 +1019,8 @@ async function approveOrSayWhy(
   }
 
   await deleteAutoApproveProgressComment(octokit, owner, repo, progressCommentId);
-  // A refused approval is held, as in a review round. A notice this check posted already answers a person.
-  if (refusalPosted === undefined) return { approved: true };
-  return { approved: false, why: async () => refusalNotice, ...(refusalPosted && { answered: true as const }) };
+  // A refused approval is held, as in a review round.
+  return refusal ? heldBy(refusal) : { approved: true };
 }
 
 export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
