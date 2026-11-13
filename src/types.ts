@@ -7,6 +7,38 @@ export type FindingSeverity = 'blocker' | 'warning' | 'note' | 'ignore';
 /** Severities from most to least severe. */
 export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'note', 'ignore'];
 
+/** The grades of an earlier finding or thread: its own severity, and those the round records gave it. */
+export interface ThreadGrade {
+  severity: FindingSeverity | 'unknown';
+  /** The grade the round records last gave it. */
+  recordedGrade?: FindingSeverity;
+  /** The highest grade the round records ever gave it. */
+  peakGrade?: FindingSeverity;
+  /** Set when a round record that may have raised it could not be read, so it may be graded anything. */
+  gradeUnknown?: boolean;
+}
+
+/**
+ * Whether a finding of `severity` is graded above an earlier finding or thread: above its own severity and above the
+ * highest grade the round records gave it, which a later round gives back when it names the problem again. One of
+ * `unknown` grade predates the markers and counts as a blocker, and so does one whose records could not all be read.
+ * An earlier finding graded below never carries, waives or hides a new one.
+ */
+export function gradedAbove(severity: FindingSeverity, earlier: ThreadGrade): boolean {
+  if (earlier.gradeUnknown) return false;
+  const own = earlier.severity === 'unknown' ? 'blocker' : earlier.severity;
+  const rank = SEVERITY_ORDER.indexOf(severity);
+  return [own, earlier.peakGrade ?? earlier.recordedGrade].every(grade => !grade || rank < SEVERITY_ORDER.indexOf(grade));
+}
+
+/** What a review calls each severity. A note is posted as a suggestion. */
+export const SEVERITY_NAME: Record<FindingSeverity, string> = {
+  blocker: 'blocker',
+  warning: 'warning',
+  note: 'suggestion',
+  ignore: 'ignore',
+};
+
 export type CellRow = 'severe' | 'wrong' | 'degraded' | 'improvement' | 'style';
 export type CellColumn = 'normal' | 'rare';
 
@@ -320,8 +352,11 @@ export interface Finding {
   buildClaim?: boolean;
   /** Earlier finding this one resembles, whose fix the judge of an earlier round confirmed. */
   resemblesFixed?: { title: string; file: string; line: number };
-  /** The Manki thread that already answered the developer about this problem, and that answer. The judge keeps the finding only when the code there got worse. */
-  answeredIn?: { threadId: string; answer: string };
+  /**
+   * The Manki thread that already answered the developer about this problem, that answer and the thread's grades. The
+   * judge keeps the finding only when the code there got worse.
+   */
+  answeredIn?: { threadId: string; answer: string; grade: ThreadGrade };
   /** Whether the finding sits on code the PR changed since the last reviewed round or on code an earlier round reviewed, or restates a finding an earlier round listed. */
   origin?: FindingOrigin;
   /** The kind of problem, set by the judge. */
@@ -957,7 +992,7 @@ export type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
 export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
 
 /** Fingerprint-level suppression derived from the current PR's thread state. */
-export interface InPrSuppression {
+export interface InPrSuppression extends ThreadGrade {
   fingerprint: FindingFingerprint;
   reason: InPrSuppressionReason;
   /**
@@ -1510,17 +1545,12 @@ export interface StaticSignal {
  * An unresolved review thread carried into a follow-up review so the judge
  * can decide whether the new diff addresses it.
  */
-export interface OpenThread extends FindingMetadata {
+export interface OpenThread extends FindingMetadata, ThreadGrade {
   threadId: string;
   threadUrl?: string;
   title: string;
   file: string;
   line: number;
-  severity: FindingSeverity | 'unknown';
-  /** The grade the round records last gave the thread, which `threadBlocks` reads before its own severity. */
-  recordedGrade?: FindingSeverity;
-  /** The highest grade the round records ever gave the thread. */
-  peakGrade?: FindingSeverity;
   isSecurity?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets

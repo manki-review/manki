@@ -19,14 +19,14 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, restatesEarlier, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1630,7 +1630,7 @@ export async function runJudgeAgent(
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
     unpostedLater,
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
-    restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
+    restatesEarlier: finding => restatesEarlier(earlier, finding),
     preExisting: staysPreExisting, rules: config.review?.rules,
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(withoutRuleDoubt));
@@ -1674,7 +1674,7 @@ export function applyInPrSuppression(
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
     if (finding.severity === 'blocker') return finding;
     const security = isSecurityFinding(finding.tags);
-    const match = suppressions.find(s => (s.guarded || !security) && matchesInPrSuppression(finding, s));
+    const match = suppressions.find(s => (s.guarded || !security) && !gradedAbove(finding.severity, s) && matchesInPrSuppression(finding, s));
     if (!match) return finding;
     const next: Finding = { ...finding };
     if (finding.severity !== 'ignore') {
@@ -2136,8 +2136,10 @@ export function applyCrossRoundSuppression(
     // silent demotion (prompt-injection guard); a note falls through to ratchet.
     // Only `agree` priors trigger contradiction; resolved-thread priors do not
     // imply the author articulated a position to contradict.
+    // A prior graded below the finding never demotes or hides it, so a suggestion the author settled hides no warning.
     const contradictionMatch = acceptedPriors.find(({ finding: prior, source }) =>
       source === 'agree'
+      && !gradedAbove(current.severity, prior)
       && prior.fingerprint.file === current.file
       && prior.fingerprint.slug === slug
       && (
@@ -2157,7 +2159,7 @@ export function applyCrossRoundSuppression(
 
     const security = isSecurityFinding(current.tags);
     const ratchetMatch = acceptedPriors.find(({ finding: prior, source }) => {
-      if (prior.fingerprint.file !== current.file) return false;
+      if (prior.fingerprint.file !== current.file || gradedAbove(current.severity, prior)) return false;
       // The judge's `addressed` is no person's decision, so it hides no security finding either.
       if (security && (source === 'judge-addressed' || !(prior.threadId && guardedThreadIds?.has(prior.threadId)))) return false;
       // LLM-derived signals must never suppress blocker or warning findings:

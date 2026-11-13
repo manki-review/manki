@@ -294,7 +294,7 @@ describe('refuteBlockers', () => {
       ['Tool alert', { ...raised(), toolSource: 'eslint' }],
       ['Open lead', { ...raised(), notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }],
       ['In a blocking thread', { ...raised(), threadId: 'T1' }],
-      ['Answered in a blocking thread', { ...raised(), answeredIn: { threadId: 'T1', answer: 'Fixed.' } }],
+      ['Answered in a blocking thread', { ...raised(), answeredIn: { threadId: 'T1', answer: 'Fixed.', grade: { severity: 'blocker' } } }],
       ['Same as an earlier blocker', { ...raised(), sameAs: 'src/old.ts:1:1:old-blocker' }],
       ['Variant of a finding in a blocking thread', { ...raised(), variantOf: 'src/old.ts:2:2:in-thread' }],
       ['Same as a finding no record holds', { ...raised(), sameAs: 'src/old.ts:9:9:gone' }],
@@ -742,7 +742,8 @@ describe('refuteBlockers', () => {
     ];
     const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, unsettled])));
 
-    const restatesEarlier = (f: Finding) => f.title === 'Matches an earlier finding';
+    // The caller says which warnings an earlier finding keeps posted, whether the judge linked them or not.
+    const restatesEarlier = (f: Finding) => ['Linked to an open thread', 'Matches an earlier finding'].includes(f.title);
     const options = { workspace, diff, unpostedLater: (f: Finding) => f.title.startsWith('Left out later'), restatesEarlier, doubtBudget: { left: 8 } };
     const judged = await refuteBlockers(client, findings, options);
     // A judge call marks none of the warnings whose check waits for the round's end, since a check may be left for them then.
@@ -1009,15 +1010,16 @@ describe('refuteBlockers', () => {
       finding('Linked on changed code', { severity: 'warning', evidence: { checks: [], proof: [] }, sameAs: 'src/math.ts:1:earlier' }),
       ...findings.filter(f => order.includes(f.title)),
     ];
+    const linked = (f: Finding) => !!(f.sameAs || f.variantOf);
     for (const left of [1, 2, 3, 4, 5]) {
       const picking = fakeClient(Object.fromEntries(listed.map(f => [f.title, answer('unsettled')])));
-      await refuteRound(picking, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), doubtBudget: { left } });
+      await refuteRound(picking, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), restatesEarlier: linked, doubtBudget: { left } });
       expect(picking.calls.map(([title]) => title).sort()).toEqual(order.slice(0, left).sort());
     }
     // A judge call makes only the checks of the first group, whatever is left of the limit, so a later judge call of the round finds the rest of it.
     const first = fakeClient(Object.fromEntries(listed.map(f => [f.title, answer('unsettled')])));
     const doubtBudget = { left: 8 };
-    await refuteBlockers(first, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), doubtBudget });
+    await refuteBlockers(first, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), restatesEarlier: linked, doubtBudget });
     expect([first.calls.map(([title]) => title), doubtBudget]).toEqual([['Unproven 1'], { left: 7 }]);
 
     // Without the mark, a warning its cited lines prove takes no check.

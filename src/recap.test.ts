@@ -44,6 +44,11 @@ describe('deduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(1);
     expect(result.duplicates[0].matchType).toBe('exact');
 
+    // A resolved suggestion on the same spot drops a later suggestion, never a warning.
+    const suggestion = makePrevious({ ...previous[0], severity: 'note' });
+    expect(deduplicateFindings([{ ...findings[0], severity: 'note' }], [suggestion]).duplicates).toHaveLength(1);
+    expect(deduplicateFindings([{ ...findings[0], severity: 'warning' }], [suggestion]).unique).toHaveLength(1);
+
     const fixed = makePrevious({ ...previous[0], line: 40, fixed: true });
     const kept = deduplicateFindings(findings, [fixed]);
     expect(kept.duplicates).toHaveLength(0);
@@ -65,7 +70,7 @@ describe('deduplicateFindings', () => {
       unique: [],
       duplicates: [{ finding: findings[0], matchedTitle: 'Missing null check', matchType: 'exact' }],
     });
-    const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.' } }];
+    const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.', grade: { severity: answered.severity } } }];
     expect(deduplicateFindings(findings, [answered], new Set(['src/foo.ts'])).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [answered]).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, line: 0, originalLine: 41 }]).unique).toEqual(toJudge);
@@ -1264,16 +1269,18 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: { count: 4, severityCounts: { blocker: 3, warning: 1, note: 0 }, entries },
       });
-      const thread = (id: string, isResolved: boolean, slug: string, originalLine: number) => makeThread({
+      const thread = (id: string, isResolved: boolean, slug: string, originalLine: number, grade = 'warning') => makeThread({
         id,
         isResolved,
         line: null,
         originalLine,
-        comments: { nodes: [{ body: `**Warning**: x\n\n<!-- manki:warning:${slug} -->`, author: { login: BOT_LOGIN } }] },
+        comments: { nodes: [{ body: `**x**: x\n\n<!-- manki:${grade}:${slug} -->`, author: { login: BOT_LOGIN } }] },
       });
       const octokit = mockOctokit([
-        thread('T_FAR', false, 'Old-issue', 40),
-        thread('T_RESOLVED', true, 'Old-issue', 12),
+        thread('T_FAR', false, 'Old-issue', 40, 'blocker'),
+        thread('T_RESOLVED', true, 'Old-issue', 12, 'blocker'),
+        // A suggestion thread on the blocker's own line is graded below it, so it is never the blocker's thread.
+        thread('T_SUGGESTION', false, 'Old-issue', 10, 'note'),
         thread('T_OTHER', false, 'Other-issue', 60),
         makeThread({
           id: 'T_FILE',
@@ -2361,11 +2368,15 @@ describe('llmDeduplicateFindings', () => {
       const notWaived = await llmDeduplicateFindings([raised], previous, mockClient);
       expect(notWaived).toEqual({ unique: [raised], duplicates: [] });
       expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title })])).toEqual({ unique: [raised], duplicates: [] });
-      for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true }]) {
+      for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true, severity: raised.severity }]) {
         const waived = await llmDeduplicateFindings([raised], [makePrevious({ ...previous[0], ...guarded })], mockClient);
         expect(waived.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
         expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title, ...guarded })]).duplicates).toHaveLength(1);
       }
+      // A guarded thread graded below the finding, such as a security suggestion, waives nothing above it.
+      const below = makePrevious({ ...previous[0], title: raised.title, isSecurity: true, severity: 'note' });
+      expect(deduplicateFindings([raised], [below]).unique).toEqual([raised]);
+      expect((await llmDeduplicateFindings([raised], [below], mockClient)).unique).toEqual([raised]);
     }
   });
 
@@ -2405,7 +2416,7 @@ describe('llmDeduplicateFindings', () => {
     // Three wordings of one finding, each posted a round after the one before.
     const memory = { file: 'src/memory.ts', severity: 'warning' as const };
     const waived = makePrevious({
-      ...memory, severity: 'note', status: 'resolved', threadId: 'T1', line: 0, originalLine: 80, findingLine: 84, answer: 'Agreed. The move is the follow-up.',
+      ...memory, status: 'resolved', threadId: 'T1', line: 0, originalLine: 80, findingLine: 84, answer: 'Agreed. The move is the follow-up.',
       title: 'Repos with `memory.enabled` and no `memory.repo` lose their existing memory silently',
       description: "Before this change, an empty `memory.repo` meant `<owner>/review-memory` (the removed `resolveMemoryRepo`, called with the App's memory token). Now the same config goes to the central store, which starts empty for that repo.",
     });
@@ -2437,11 +2448,17 @@ describe('llmDeduplicateFindings', () => {
 
     // The static match sends the next wording to the judge with the answer in the thread of the one before.
     const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, answer: 'Unverified. The move is not in this PR.' });
-    expect(deduplicateFindings([third], [answered]).unique).toEqual([{ ...third, answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.' } }]);
+    expect(deduplicateFindings([third], [answered]).unique).toEqual([{ ...third, answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.', grade: { severity: answered.severity } } }]);
 
     // The same problem in another file is another place, so a model match there changes nothing.
     const elsewhere = { ...second, file: 'src/index.ts' };
     expect(await llmDeduplicateFindings([elsewhere], [waived], match)).toEqual({ unique: [elsewhere], duplicates: [] });
+
+    // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.
+    const suggestion = { ...waived, severity: 'note' as const };
+    expect(await llmDeduplicateFindings([second], [suggestion], match)).toEqual({ unique: [second], duplicates: [] });
+    expect(deduplicateFindings([third], [{ ...answered, severity: 'note' }]).unique).toEqual([third]);
+    expect(deduplicateFindings([{ ...third, severity: 'note' }], [{ ...answered, severity: 'note' }]).unique[0].answeredIn?.threadId).toBe('T2');
   });
 
   it('does not treat replied findings as dismissed', async () => {

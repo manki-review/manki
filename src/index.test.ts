@@ -229,7 +229,6 @@ jest.mock('./github', () => ({
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
-  formatRaisedReply: jest.fn().mockReturnValue('Now a blocker.'),
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
@@ -2383,7 +2382,7 @@ describe('runFullReview orchestration', () => {
         { ...finding, title: 'Security note', tags: ['security'] },
         { ...finding, title: 'Tool alert', toolSource: 'eslint' },
         { ...finding, title: 'In a thread', threadId: 'PRRT_open' },
-        { ...finding, title: 'Answered', answeredIn: { threadId: 'PRRT_answered', answer: 'kept' } },
+        { ...finding, title: 'Answered', answeredIn: { threadId: 'PRRT_answered', answer: 'kept', grade: { severity: 'note' as const } } },
         { ...finding, title: 'Outside the diff', file: 'src/other.ts' },
         { ...finding, title: 'Old reviewer', reviewers: ['Security & Safety'] },
         { ...finding, title: 'Also outside', file: 'src/other.ts', line: 3 },
@@ -5821,10 +5820,7 @@ describe('runFullReview orchestration', () => {
     seedPriorRounds(
       [{
         round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'src/app.ts', lineStart: 6, lineEnd: 6, slug: 'Bug-H-loses-data' }, severity: 'warning', title: 'Bug H loses data', authorReply: 'none', threadId: 'PRRT_vwx' },
-          { fingerprint: { file: 'src/app.ts', lineStart: 2, lineEnd: 2, slug: 'Bug-I' }, severity: 'blocker', title: 'Bug I', authorReply: 'none', threadId: 'PRRT_yza' },
-        ],
+        findings: [],
       }],
       [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
@@ -5832,30 +5828,19 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug C', file: 'src/app.ts', line: 8, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
         { title: 'Bug D', file: 'src/app.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl' },
         { title: 'Bug E', file: 'src/app.ts', line: 7, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_mno' },
-        { title: 'Bug F', file: 'src/app.ts', line: 9, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_pqr' },
-        { title: 'Bug H', file: 'src/app.ts', line: 6, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_vwx' },
-        { title: 'Bug I', file: 'src/app.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_yza', recordedGrade: 'warning' as const },
       ],
     );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    const worse = { severity: 'blocker' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' } };
-    // Before the review posts, the variants of an open thread's finding go there in one reply, and so does a blocker that
-    // restates a thread that does not block yet. A smaller restatement adds nothing, nor does a blocker in a thread that
-    // already blocks. A finding whose reply fails leaves its thread, so the review posts it on its own.
+    const worse = { severity: 'warning' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.', grade: { severity: 'warning' as const } } };
+    // Before the review posts, the variants of an open thread's finding go there in one reply. A restatement adds nothing.
+    // A finding whose reply fails leaves its thread, so the review posts it on its own.
     const variant = { severity: 'warning' as const, title: 'Bug C in another field', file: 'src/app.ts', line: 9, description: 'Same miss.', reviewers: [], threadId: 'PRRT_ghi', variantOf: 'src/app.ts:8:8:Bug-C' };
-    const variants = [variant, { ...variant, severity: 'blocker' as const, title: 'Bug C in a third field' }];
+    const variants = [variant, { ...variant, title: 'Bug C in a third field' }];
     const restated = { ...variant, title: 'Bug C again', variantOf: undefined };
-    const raised = { ...restated, severity: 'blocker' as const, title: 'Bug C crashes' };
-    const inBlockerThread = { ...raised, threadId: 'PRRT_jkl' };
+    const inBlockerThread = { ...restated, severity: 'blocker' as const, title: 'Bug C crashes', threadId: 'PRRT_jkl' };
     const unreplied = { ...variant, title: 'Bug E in another field', threadId: 'PRRT_mno' };
-    // A warning restating a suggestion thread is graded above it, so it goes there as a reply too.
-    const aboveSuggestion = { ...restated, title: 'Bug F loses data', threadId: 'PRRT_pqr' };
-    // A raise an earlier round already carried on its thread at that grade was replied then, so it adds nothing now.
-    const raisedBefore = { ...restated, title: 'Bug H loses data', threadId: 'PRRT_vwx' };
-    // A thread a partial fix lowered to a warning hears a blocker that restates it, although its own first record is one.
-    const aboveLowered = { ...restated, severity: 'blocker' as const, title: 'Bug I again', threadId: 'PRRT_yza' };
     mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
       if (query.includes('addPullRequestReviewThreadReply') && vars.threadId === 'PRRT_mno') throw new Error('rate limited');
       if (query.includes('addPullRequestReviewThreadReply')) return { addPullRequestReviewThreadReply: { comment: { id: `C_${vars.threadId}` } } };
@@ -5863,7 +5848,7 @@ describe('runFullReview orchestration', () => {
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, raised, inBlockerThread, unreplied, aboveSuggestion, raisedBefore, aboveLowered],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, inBlockerThread, unreplied],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -5918,10 +5903,8 @@ describe('runFullReview orchestration', () => {
         ...(posted ? [[true, { threadId: 'PRRT_def' }]] : []),
       ]);
     const openThreadReplies = [
-      { threadId: 'PRRT_ghi', body: 'Now a blocker.\n\n---\n\nAnother instance.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_ghi', body: 'Another instance.\n\n<!-- manki -->' },
       { threadId: 'PRRT_mno', body: 'Another instance.\n\n<!-- manki -->' },
-      { threadId: 'PRRT_pqr', body: 'Now a blocker.\n\n<!-- manki -->' },
-      { threadId: 'PRRT_yza', body: 'Now a blocker.\n\n<!-- manki -->' },
     ];
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual([
       ...openThreadReplies,
@@ -5933,17 +5916,14 @@ describe('runFullReview orchestration', () => {
     // Every answered finding of a thread is in its one reply.
     if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith([worse, worse]);
     expect(jest.mocked(ghUtils.formatVariantReply)).toHaveBeenCalledWith(variants);
-    expect(jest.mocked(ghUtils.formatRaisedReply)).toHaveBeenCalledWith([raised]);
-    expect(jest.mocked(ghUtils.formatRaisedReply)).toHaveBeenCalledWith([aboveSuggestion]);
-    expect(jest.mocked(ghUtils.formatRaisedReply)).toHaveBeenCalledWith([aboveLowered]);
     // Taken out of its thread, a finding is posted even beside an open thread with its title.
-    expect(jest.mocked(ghUtils.postReview).mock.calls[0][5].findings.at(-4)).toEqual({ ...unreplied, threadId: undefined, variantOf: undefined, ownThread: true });
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][5].findings.at(-1)).toEqual({ ...unreplied, threadId: undefined, variantOf: undefined, ownThread: true });
     // A review that does not post takes back the replies it sent first, unless the run is cancelled and writes nothing
     // more. A review GitHub created keeps them, even when the head moved or a comment of it failed afterwards.
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('deletePullRequestReviewComment')).map(([, vars]) => vars))
-      .toEqual(outcome === 'superseded' ? [{ id: 'C_PRRT_ghi' }, { id: 'C_PRRT_pqr' }, { id: 'C_PRRT_yza' }] : []);
+      .toEqual(outcome === 'superseded' ? [{ id: 'C_PRRT_ghi' }] : []);
     mockGraphql.mockResolvedValue({ resolveReviewThread: { thread: { isResolved: true } } });
-    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', undefined, 'PRRT_pqr', 'PRRT_vwx', 'PRRT_yza']);
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', undefined]);
   });
 
   it('resolves only threads with status addressed', async () => {
@@ -6028,7 +6008,7 @@ describe('runFullReview orchestration', () => {
     };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-    const partly = (threadId: string, remaining: string) => ({ threadId, status: 'partly_addressed' as const, reason: 'r', remaining, grade: 'warning' as const });
+    const partly = (threadId: string, remaining: string, grade: ThreadEvaluation['grade'] = 'warning') => ({ threadId, status: 'partly_addressed' as const, reason: 'r', remaining, grade });
     const run = async (lastReviewed: string, priorRoundsIncomplete?: true, addressed: string[] = []) => {
       mockGraphql.mockClear();
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
@@ -6048,7 +6028,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
         threadEvaluations: ([
-          partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.'),
+          partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.', 'note'),
           { threadId: 'PRRT_jkl', status: 'not_addressed', reason: 'The timeout is gone again.', grade: 'blocker' },
           { threadId: 'PRRT_mno', status: 'not_addressed', reason: 'Still keyed by user only.' },
         ] as ThreadEvaluation[]).map(e => (addressed.includes(e.threadId) ? { threadId: e.threadId, status: 'addressed' as const, reason: 'Fixed.' } : e)),
@@ -6062,12 +6042,12 @@ describe('runFullReview orchestration', () => {
     // record keeps each grade, so a reply only tells the thread and carries no marker.
     expect(await run('abc123')).toEqual([
       { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->' },
-      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left. What remains is a suggestion.\n\n<!-- manki -->' },
       { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->' },
     ]);
     // The record carries each thread's grade with the review that decided it.
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![7]!.judge.threadEvaluations?.map(e => [e.threadId, e.grade])).toEqual([
-      ['PRRT_abc', 'warning'], ['PRRT_def', 'warning'], ['PRRT_ghi', 'warning'], ['PRRT_jkl', 'blocker'], ['PRRT_mno', undefined],
+      ['PRRT_abc', 'warning'], ['PRRT_def', 'warning'], ['PRRT_ghi', 'note'], ['PRRT_jkl', 'blocker'], ['PRRT_mno', undefined],
     ]);
 
     // A reply that fails loses only the note: the review still posts.
@@ -6181,9 +6161,10 @@ describe('runFullReview orchestration', () => {
   });
 
   it.each([
-    ['fails to resolve', undefined],
-    ['someone else resolved, and that cannot be reopened', 'alice'],
-  ])('keeps a blocker thread that %s open, and requests changes on it instead of approving', async (_name, resolver) => {
+    ['blocker', 'fails to resolve', undefined],
+    ['blocker', 'someone else resolved, and that cannot be reopened', 'alice'],
+    ['note', 'fails to resolve', undefined],
+  ] as const)('keeps a %s thread that %s open, and requests changes on it only when it blocks', async (severity, _name, resolver) => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -6195,7 +6176,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_fail' },
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity, status: 'open' as const, threadId: 'PRRT_fail' },
       ],
       priorRounds: [],
     });
@@ -6219,6 +6200,13 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql).not.toHaveBeenCalledWith(expect.stringContaining('addPullRequestReviewThreadReply'), expect.anything());
     const posts = jest.mocked(ghUtils.postReview).mock.calls;
     expect(posts).toHaveLength(1);
+    // An open suggestion thread never blocks, so the round still approves.
+    if (severity === 'note') {
+      expect(posts[0][7]).toMatchObject({ verdict: 'APPROVE', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
+      expect(posts[0][5]).toMatchObject({ verdict: 'APPROVE', outcome: 'READY' });
+      expect(posts[0][5].verdictTrace).toBeUndefined();
+      return;
+    }
     expect(posts[0][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
     expect(posts[0][5]).toMatchObject({
       verdict: 'REQUEST_CHANGES',

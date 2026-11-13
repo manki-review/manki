@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -52,7 +52,6 @@ import {
   fetchCommitsSince,
   formatFoundAgainReply,
   formatVariantReply,
-  formatRaisedReply,
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
@@ -1116,6 +1115,7 @@ async function collectOpenThreads(
         severity: f.severity,
         ...(f.recordedGrade && { recordedGrade: f.recordedGrade }),
         ...(f.peakGrade && { peakGrade: f.peakGrade }),
+        ...(f.gradeUnknown && { gradeUnknown: true }),
         ...(f.isSecurity && { isSecurity: true }),
         description: f.description,
         suggestedFix: f.suggestedFix,
@@ -1499,10 +1499,10 @@ async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Pr
     let body: string;
     if (status === 'partly_addressed' && remaining) {
       if (thread.recordedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) continue;
-      const regraded = grade === carried ? '' : ` What remains is a ${grade}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
+      const regraded = grade === carried ? '' : ` What remains is a ${SEVERITY_NAME[grade]}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
       body = `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${regraded}`;
     } else if (grade !== carried) {
-      body = `**Open again.** ${sanitizeMarkdown(reason)} This thread is a ${grade} again${grade === 'blocker' ? ', so it blocks' : ''}.`;
+      body = `**Open again.** ${sanitizeMarkdown(reason)} This thread is a ${SEVERITY_NAME[grade]} again${grade === 'blocker' ? ', so it blocks' : ''}.`;
     } else {
       continue;
     }
@@ -1562,34 +1562,20 @@ async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promi
 }
 
 /**
- * Replies in each open thread that carries a finding of this round that adds to it: a variant of the thread's finding,
- * or a restatement graded above the thread. The round record, not the reply, makes the thread block. It runs before the
- * review posts, so a finding whose reply fails is taken out of its thread and the review posts it on its own.
+ * Replies in each open thread with the variants of its finding this round found. It runs before the review posts, so a
+ * finding whose reply fails is taken out of its thread and the review posts it on its own.
  * Returns the node IDs of the replies, which `withdrawReplies` deletes when the review does not post.
  */
 async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise<string[]> {
   const replies: string[] = [];
-  const threads = new Map(run.recap.previousFindings.flatMap(t => t.threadId ? [[t.threadId, t] as const] : []));
-  const rank = (grade: FindingSeverity | 'unknown'): number => grade === 'unknown' ? 0 : -SEVERITY_ORDER.indexOf(grade);
-  const entries = run.recap.priorRounds.flatMap(r => r.findings.entries ?? []);
-  const raises = (f: Finding, threadId: string): boolean => {
-    const thread = threads.get(threadId);
-    if (!thread || threadBlocks(thread)) return false;
-    // An earlier round that carried a finding above the thread's own grade replied with that raise, so it counts too.
-    const raised = entries.filter(e => e.threadId === threadId && rank(e.severity) > rank(thread.severity)).map(e => e.severity);
-    return [thread.recordedGrade ?? thread.severity, ...raised].every(grade => rank(f.severity) > rank(grade));
-  };
   const byThread = new Map<string, Finding[]>();
   for (const f of result.findings) {
-    if (f.answeredIn || !f.threadId || !(f.variantOf || raises(f, f.threadId))) continue;
+    if (f.answeredIn || !f.threadId || !f.variantOf) continue;
     byThread.set(f.threadId, [...(byThread.get(f.threadId) ?? []), f]);
   }
   for (const [threadId, findings] of byThread) {
-    const raised = findings.filter(f => !f.variantOf);
-    const variants = findings.filter(f => f.variantOf);
-    const body = [raised.length > 0 && formatRaisedReply(raised), variants.length > 0 && formatVariantReply(variants)].filter(part => !!part).join('\n\n---\n\n');
     try {
-      const reply = await replyToReviewThread(run.octokit, threadId, body);
+      const reply = await replyToReviewThread(run.octokit, threadId, formatVariantReply(findings));
       if (reply) replies.push(reply);
     } catch (error) {
       core.warning(`Failed to reply in thread ${threadId}, so the review posts its findings on their own: ${error}`);

@@ -757,7 +757,7 @@ describe('runFullReview end to end', () => {
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
   });
 
-  it('lists the notes in the judge\'s order without a thread, and records the note past `review.notes`', async () => {
+  it('posts the notes in the judge\'s order as suggestion threads that never block, records the note past `review.notes`, and resolves a fixed one later', async () => {
     const titles = ['Reuse the range helper', 'Name the limit', 'Cover the empty input', 'Say why the sum is kept'];
     const notes = titles.map((title, i) => ({ ...BLOCKER, severity: 'note', title, line: i + 1, description: `Note ${i + 1}.` }));
     Object.assign(mockLLM.replies, {
@@ -773,14 +773,46 @@ describe('runFullReview end to end', () => {
 
     const [review] = postedReviews();
     expect(review.state).toBe('APPROVED');
-    expect(mockGitHub.threads).toEqual([]);
-    const listed = [...review.body.matchAll(/<summary>\u2728 <b>([^<]+)<\/b>/gu)].map(m => m[1]);
-    expect(listed).toEqual(['Cover the empty input', 'Reuse the range helper', 'Say why the sum is kept']);
-    expect(review.body).toContain('<summary><b>3 notes</b> · not blocking</summary>');
-    expect(review.body).toContain('<sub>1 more note is not listed.</sub>');
+    const posted = ['Cover the empty input', 'Reuse the range helper', 'Say why the sum is kept'];
+    expect(mockGitHub.threads.map(t => t.comments[0].body.split('\n')[2])).toEqual(posted.map(title => `**${title}**`));
+    expect(mockGitHub.threads[0].comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n/u);
+    expect(review.body).toMatch(/^\u2705 \*\*Approved\.\*\* 3 suggestions, none of which block\./u);
+    expect(review.body).not.toContain('<summary>\u2728');
+    expect(review.body).toContain('<sub>1 suggestion is not listed.</sub>');
     const { findings } = mockGitHub.roundContext(review);
-    expect(findings.entries.map(e => [e.title, e.posted])).toEqual(listed.map(title => [title, 'body']));
+    expect(findings.entries.map(e => [e.title, e.posted])).toEqual(posted.map(title => [title, 'thread']));
     expect(findings.unposted).toMatchObject([{ title: 'Name the limit', unpostedReason: 'note_cap', posted: 'record' }]);
+
+    // The next push fixes one. The round resolves its thread, names another again without a second comment, and approves.
+    const threadOf = (title: string) => mockGitHub.threads.find(t => t.comments[0].body.includes(`**${title}**`))!;
+    mockGitHub.headSha = 'c3'.repeat(20);
+    mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify([notes[0]]),
+      judge: JSON.stringify({
+        summary: 'One small point.',
+        findings: [{ id: 1, title: notes[0].title, row: 'improvement', reasoning: 'Works, could be better.' }],
+        noteOrder: [1],
+        threadEvaluations: [{ threadId: threadOf('Cover the empty input').id, status: 'addressed', reason: 'The empty input is covered now.' }],
+      }),
+    });
+    await reviewRound();
+
+    const next = postedReviews().at(-1)!;
+    expect(next.state).toBe('APPROVED');
+    expect(mockGitHub.threads).toHaveLength(3);
+    expect(threadOf('Cover the empty input').isResolved).toBe(true);
+    expect(threadOf('Cover the empty input').comments.at(-1)?.body).toMatch(/^Fixed /);
+    expect(threadOf('Reuse the range helper')).toMatchObject({ isResolved: false });
+    expect(threadOf('Reuse the range helper').comments).toHaveLength(1);
+    expect(threadOf('Say why the sum is kept')).toMatchObject({ isResolved: false });
+    expect(next.body).not.toContain('<summary>\u2728');
+
+    // A reply in a suggestion thread gets the usual answer, and the PR author's word settles a thread that never blocks.
+    const why = threadOf('Say why the sum is kept');
+    await replyInThread(why, 'The variable is there for the debugger.', 'Agreed. Keeping the variable helps when debugging.');
+    expect(why.comments.at(-1)?.body).toMatch(/^Agreed\. Keeping the variable helps when debugging\.\n\n<!-- manki -->/);
+    expect(why.isResolved).toBe(true);
   });
 
   it('ends INCOMPLETE and never approves when a reviewer reply does not parse, and a later run still reviews the commit', async () => {

@@ -11,7 +11,7 @@ import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { formatApprovalRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
-import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
+import { ApprovalRecord, AuthorClearRole, gradedAbove, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
 import { COMMENT_MARKER as BOT_MARKER, ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -73,6 +73,8 @@ interface ReviewThread {
   /** Set on a thread Manki resolved that is at the comment limit, so its latest reply is unknown. */
   repliesUnread?: boolean;
   isBlocking: boolean;
+  /** Whether the thread may carry a blocker: it is or was graded one, or a record that may have raised it is unread. */
+  mayCarryBlocker?: boolean;
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
@@ -169,8 +171,10 @@ async function fetchBotReviewThreads(
       const severity = threadSeverity(body);
       const isSecurity = isSecurityThread(body);
       const recorded = grades.get(thread.id)?.grade;
+      const peak = grades.get(thread.id)?.peak;
       // An unreadable record could hide a raise, so the thread blocks rather than let auto-approve pass it.
       const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
+      const mayCarryBlocker = !gradedAbove('blocker', { severity, ...(peak && { peakGrade: peak }), ...('priorRoundsIncomplete' in records && { gradeUnknown: true }) });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const markerSlug = threadMarkerSlug(body);
       const data = parseFindingData(body);
@@ -196,6 +200,7 @@ async function fetchBotReviewThreads(
         ...backing.get(thread.id),
         ...(repliesUnread(thread) && { repliesUnread: true }),
         isBlocking,
+        ...(mayCarryBlocker && { mayCarryBlocker }),
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
         findingTitle,
@@ -505,8 +510,9 @@ function blockOf(
     return { held: `The record of Manki's review of ${sha} does not say what it blocked on.`, named: new Set() };
   }
   const live = new Set(threads.map(t => t.id));
-  // Only a thread posted on the round's own commit can be the round's, and each one carries a single blocker.
-  let own = threads.flatMap(t => t.place?.commit === commitSha ? [{ threadId: t.id, ...t.place }] : []);
+  // Only a thread posted on the round's own commit can be the round's, and each one carries a single blocker. A
+  // suggestion thread on the blocker's line is never its thread, so it never holds the approval.
+  let own = threads.flatMap(t => t.place?.commit === commitSha && t.mayCarryBlocker ? [{ threadId: t.id, ...t.place }] : []);
   const named = new Set<string>();
   const loose: typeof blockers = [];
   for (const b of blockers) {

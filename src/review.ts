@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -1478,7 +1478,7 @@ export async function runReview(
     const kept = finalFindings;
     const checked = await refuteBlockers(refutation.client, kept, {
       workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
-      outsideInput: config.review?.outside_input, restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
+      outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
       preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
     });
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
@@ -1532,7 +1532,7 @@ export async function runReview(
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   // Unlinked before the threads are graded, so the grades, the fold and the verdict all see the finding on its own.
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
-  const guard = (f: Finding): Finding => withoutUnguardedThread(f, openThreadIndex, previousFindings, priorThreads);
+  const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads);
   finalFindings = finalFindings.map(guard);
   let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
@@ -1599,7 +1599,8 @@ export async function runReview(
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
-      const readerFindings = hideUnprovenWarnings(folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), () => true).posted;
+      // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
+      const readerFindings = hideUnprovenWarnings(folded.blockers.map(guard).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
@@ -1615,7 +1616,8 @@ export async function runReview(
 
   finalFindings = finalFindings.map(f => {
     const named = f.severity === 'blocker' ? priorBlockerNamedBy(f, priorBlockers)?.entry.threadId : undefined;
-    return guard(named && openThreadIndex.has(named) ? { ...f, threadId: named } : f);
+    const thread = named ? openThreadIndex.get(named) : undefined;
+    return guard(named && thread && !gradedAbove(f.severity, thread) ? { ...f, threadId: named } : f);
   });
   if (earlierWrap?.getTotals().calls) logOutputTokens('LLM dedup against earlier findings', earlierWrap.getTotals().usage);
 
@@ -2707,6 +2709,8 @@ interface EarlierFinding {
   threadId?: string;
   /** Whether its open thread is a security thread. */
   isSecurity?: boolean;
+  /** Its grades: its open thread's, or the grade a review body listed it at. It carries no finding graded above it. */
+  grade: ThreadGrade;
   /** Whether it is one of the findings an earlier round recorded under its thread, such as a variant the thread took. */
   recorded?: boolean;
   /** The round that first listed it in its review body. */
@@ -2728,6 +2732,7 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
     keys: new Set(entries.filter(e => e.entry.threadId === t.threadId).map(e => e.key)),
     threadId: t.threadId,
     ...(t.isSecurity && { isSecurity: true }),
+    grade: t,
   }));
   const byKey = new Map<string, EarlierFinding>();
   for (const { entry, key, round } of entries) {
@@ -2738,10 +2743,27 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
     if (known?.raisedIn) known.raisedIn = Math.min(known.raisedIn, round);
     if (known) continue;
     const finding = { title: entry.title, file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence };
-    const security = threads.some(t => t.threadId === entry.threadId && t.isSecurity);
-    byKey.set(key, entry.threadId ? { finding, keys: new Set([key]), threadId: entry.threadId, recorded: true, ...(security && { isSecurity: true }) } : { finding, keys: new Set([key]), raisedIn: round, firstKey: entry.sameAs ?? key });
+    const thread = threads.find(t => t.threadId === entry.threadId);
+    byKey.set(key, thread
+      ? { finding, keys: new Set([key]), threadId: thread.threadId, recorded: true, ...(thread.isSecurity && { isSecurity: true }), grade: thread.grade }
+      : { finding, keys: new Set([key]), raisedIn: round, firstKey: entry.sameAs ?? key, grade: { severity: entry.severity } });
   }
   return [...threads, ...byKey.values()];
+}
+
+/** Whether `earlier` may carry `f`. A finding graded below never does, so a warning never hides behind a suggestion. */
+function carries(earlier: EarlierFinding, f: Finding): boolean {
+  return !gradedAbove(f.severity, earlier.grade);
+}
+
+/**
+ * Whether an earlier finding that may carry `f` keeps it posted: the answered thread it repeats, or one of `earlier` that
+ * the judge links it to or that it restates by the match `foldIntoEarlierFindings` makes without a model.
+ */
+export function restatesEarlier(earlier: EarlierFinding[], f: Finding): boolean {
+  if (f.answeredIn) return !gradedAbove(f.severity, f.answeredIn.grade);
+  const linked = (e: EarlierFinding): boolean => (!!f.sameAs && e.keys.has(f.sameAs)) || (!!f.variantOf && e.keys.has(f.variantOf)) || (!!f.threadId && e.threadId === f.threadId);
+  return earlier.some(e => carries(e, f) && (linked(e) || sameProblem(e.finding, f)));
 }
 
 /**
@@ -2756,7 +2778,7 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
 async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFinding[], dedup: LLMClient | undefined): Promise<Finding[]> {
   if (earlier.length === 0) return findings;
   // A security finding joins only a security thread, so it never loses its guard, and finds the one it opened before.
-  const fits = (f: Finding) => (e: EarlierFinding) => !e.threadId || !!e.isSecurity || !isSecurityFinding(f.tags, f.reviewers);
+  const fits = (f: Finding) => (e: EarlierFinding) => (!e.threadId || !!e.isSecurity || !isSecurityFinding(f.tags, f.reviewers)) && carries(e, f);
   const named = (f: Finding, key: string | undefined) => key ? earlier.filter(fits(f)).find(e => e.keys.has(key)) : undefined;
   // A lockfile alert names its package and change, so only the open thread with its exact title carries it.
   const unlinked = (f: Finding) => !f.threadId && !f.answeredIn && !f.sameAs && !f.variantOf && !isLockfileAlert(f.title);
@@ -2851,26 +2873,31 @@ function postedOnItsOwn(f: Finding): Finding {
 }
 
 /**
- * Returns the security finding `f` with no link to a thread that is not a security thread: not the thread that carries
- * it, the answered thread it repeats, or the thread of the earlier finding its `sameAs` names. A thread is a security
- * thread by its first comment, so another would lose the finding's guard, and a `sameAs` to it would leave that thread
- * out of the open ones in the verdict. `priorThreads` gives the thread of each earlier finding by its key.
+ * Returns `f` with no link to a thread that may not carry it: the thread that carries it or the answered thread it
+ * repeats, when that thread is graded below `f`. The grade is the final one, which the judge may have raised after the
+ * link was made. A security finding also keeps no link to a thread that is not a security thread, not even the thread
+ * of the earlier finding its `sameAs` names. A thread is a security thread by its first comment, so another would lose
+ * the finding's guard, and a `sameAs` to it would leave that thread out of the open ones in the verdict. `priorThreads`
+ * gives the thread of each earlier finding by its key.
  */
-function withoutUnguardedThread(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
-  if (!isSecurityFinding(f.tags, f.reviewers)) return f;
+function withoutUnfitThreads(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
+  const security = isSecurityFinding(f.tags, f.reviewers);
   // A thread the round knows nothing about, as when the threads could not be read, keeps its link.
-  const plain = (threadId: string | undefined): boolean => {
-    const thread = threadId ? openThreadIndex.get(threadId) ?? previousFindings?.find(t => t.threadId === threadId) : undefined;
-    return !!thread && !thread.isSecurity;
-  };
+  const threadOf = (threadId: string | undefined) => threadId ? openThreadIndex.get(threadId) ?? previousFindings?.find(t => t.threadId === threadId) : undefined;
+  const plain = (threadId: string | undefined): boolean => security && !!threadOf(threadId) && !threadOf(threadId)!.isSecurity;
+  const below = (grade: ThreadGrade | undefined): boolean => !!grade && f.severity !== 'ignore' && gradedAbove(f.severity, grade);
+  const unfit = (threadId: string | undefined): boolean => plain(threadId) || below(threadOf(threadId));
+  const answeredUnfit = !!f.answeredIn && (plain(f.answeredIn.threadId) || below(f.answeredIn.grade));
+  if (!security && !(f.threadId && unfit(f.threadId)) && !answeredUnfit) return f;
   const { sameAs, threadId, variantOf, answeredIn, ...rest } = f;
-  return postedOnItsOwn({
+  const linked: Finding = {
     ...rest,
     ...(sameAs && !plain(priorThreads.get(sameAs)) && { sameAs }),
-    ...(threadId && !plain(threadId) && { threadId }),
-    ...(variantOf && !plain(threadId) && { variantOf }),
-    ...(answeredIn && !plain(answeredIn.threadId) && { answeredIn }),
-  });
+    ...(threadId && !unfit(threadId) && { threadId }),
+    ...(variantOf && !(threadId && unfit(threadId)) && { variantOf }),
+    ...(answeredIn && !answeredUnfit && { answeredIn }),
+  };
+  return security ? postedOnItsOwn(linked) : linked;
 }
 
 /** What the same-problem checks read of a finding. */
