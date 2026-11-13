@@ -1783,6 +1783,16 @@ describe('postReview body lead', () => {
     expect((await postedBody(ready, [], undefined)).event).toBe('APPROVE');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 1 });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
+    // With `auto_approve` off an answer runs no approval check, so the line names the Review again box.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 1, autoApprove: false });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread. After a dismissal, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
+    const config = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 2, configHold: 'base' });
+    expect(config.approvalHeld).toBe('config');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n').slice(0, 2)).toEqual([
+      '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
+      '\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one, or dismiss it with a reason in its thread.',
+    ]);
     // A pre-existing warning never holds, nor does one that goes into its answered thread, and a suggestion never does.
     const answeredIn = { threadId: 'T1', answer: 'Agreed. Leave it.', grade: { severity: 'warning' as const } };
     const { event: approved, approvalHeld } = await postedBody({ ...ready, findings: [warning('Old bug', 3, { tags: ['follow-up', 'pre-existing'] }), warning('Answered', 4, { answeredIn }), ...ready.findings] });

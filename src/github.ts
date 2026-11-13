@@ -237,8 +237,8 @@ export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic
 
 /**
  * Returns the line that says why Manki does not approve. `autoApprove` is the `auto_approve` setting. With it off the
- * approval check of a PR marked ready approves nothing, so the line for a draft names the Review again box and promises
- * no approval for marking the PR ready.
+ * approval check approves nothing, so the lines for a draft and for warnings name the Review again box and promise no
+ * approval for marking the PR ready or for an answer in a thread.
  */
 export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string {
   if (hold.reason === 'draft') {
@@ -253,7 +253,10 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`;
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
-  if (hold.reason === 'warnings') return `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}, or dismiss it with a reason in its thread.`;
+  if (hold.reason === 'warnings') {
+    const line = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}, or dismiss it with a reason in its thread.`;
+    return autoApprove ? line : `${line} After a dismissal, tick Review again in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.`;
+  }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
 
@@ -1842,7 +1845,7 @@ export async function postReview(
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
     const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
-    const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold }, limitWarning, unreadRecords);
+    const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -2156,9 +2159,10 @@ const APPROVED_LINE = '✅ **Approved.**';
 
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
-  READY: (_result, _blockers, { threads, listed, carried, hold }) => {
+  READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
     if (hold?.reason === 'unread') return `✅ **Approved, but a person must approve:** no model read ${hold.skipped.excluded.length + hold.skipped.binary.length} of the changed files.`;
-    if (hold?.reason === 'warnings') return `⚠️ ${approvalHoldLine(hold)}`;
+    // A config hold has a line of its own, and the warnings still hold once it lifts.
+    if (warningHold && (hold?.reason === 'warnings' || hold?.reason === 'config')) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}`;
     const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
     return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;
@@ -2184,6 +2188,9 @@ interface PostedFindings {
   /** The warnings carried from earlier rounds, which an approval counts with the findings it lists. */
   carried: FindingFingerprintEntry[];
   hold?: ApprovalHold;
+  /** The warnings that hold the approval, also when another hold comes first. */
+  warningHold?: ApprovalHold;
+  autoApprove: boolean;
 }
 
 /** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 suggestions". */
