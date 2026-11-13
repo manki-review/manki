@@ -6933,11 +6933,12 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expectNoRound();
-      expect(mockChecksCreate).toHaveBeenCalledWith(expect.objectContaining({ name: 'Manki', head_sha: 'abc123', status: 'in_progress' }));
-      expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({
-        conclusion,
+      // The check is created completed in one call, so no check is left in progress when a completion fails.
+      expect(mockChecksCreate.mock.calls).toEqual([[expect.objectContaining({
+        name: 'Manki', head_sha: 'abc123', status: 'completed', conclusion, details_url: expect.stringContaining('/test-owner/test-repo/actions/runs/'),
         output: { title, summary: 'No change to this PR since the reviewed commit `old9999`. The previous verdict stands.' },
-      }));
+      })]]);
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
       expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual(verdict === 'APPROVE' ? [['test-owner', 'test-repo', 42, { approval: { commit: 'abc123', held } }]] : []);
     });
 

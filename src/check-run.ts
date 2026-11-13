@@ -1,8 +1,9 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { truncateBody } from './github';
-import type { ApprovalHeld } from './github';
+import { assertWritesAllowed } from './abort';
+import { BOT_LOGIN, isBotLogin, truncateBody } from './github';
+import type { ApprovalHeld, BotIdentity } from './github';
 import type { RoundOutcome } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -32,12 +33,31 @@ export interface QueuedCheck {
 
 const CHECK_NAME = 'Manki';
 const CHECK_STATE_KEY = 'manki_check_run';
+/** How long a failed completion waits before its one retry. */
+const COMPLETE_RETRY_MS = 3_000;
 
 const queuedChecks = new WeakMap<Octokit, QueuedCheck>();
 
 /** Records the queued check the token service created for the run of `octokit`, for `startReviewCheck` to take over. */
 export function offerQueuedCheck(octokit: Octokit, check: QueuedCheck): void {
   queuedChecks.set(octokit, check);
+}
+
+/** Takes the queued check offered for the run of `octokit` when it sits on `headSha`. A check is offered once, whatever its head. */
+function takeQueuedCheck(octokit: Octokit, headSha: string): QueuedCheck | undefined {
+  const queued = queuedChecks.get(octokit);
+  queuedChecks.delete(octokit);
+  return queued?.headSha === headSha ? queued : undefined;
+}
+
+/** The link from a check to this run. */
+function runUrl(owner: string, repo: string): string {
+  const { serverUrl, runId } = github.context;
+  return `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
+}
+
+function checkOutput({ title, summary }: CheckReport): { title: string; summary: string } {
+  return { title, summary: truncateBody(summary.trim() || title) };
 }
 
 const OUTCOME_REPORTS: Record<RoundOutcome, Omit<CheckReport, 'summary'>> = {
@@ -88,15 +108,14 @@ async function takeOverCheck(octokit: Octokit, owner: string, repo: string, id: 
 /**
  * Shows an in-progress `Manki` check run on `headSha` that links to this run. The run itself belongs to the default
  * branch and so shows on no PR. It takes over the queued check the token service created on `headSha`, and creates
- * one without it. A failure is logged and returns `undefined`.
+ * one without it. A failure is logged and returns `undefined`. Throws once the run is cancelled, before any write.
  */
 export async function startReviewCheck(octokit: Octokit, owner: string, repo: string, headSha: string): Promise<ReviewCheck | undefined> {
-  const { serverUrl, runId } = github.context;
-  const detailsUrl = `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
-  const queued = queuedChecks.get(octokit);
-  queuedChecks.delete(octokit);
+  assertWritesAllowed();
+  const detailsUrl = runUrl(owner, repo);
+  const queued = takeQueuedCheck(octokit, headSha);
   try {
-    const id = queued?.headSha === headSha && await takeOverCheck(octokit, owner, repo, queued.id, detailsUrl)
+    const id = queued && await takeOverCheck(octokit, owner, repo, queued.id, detailsUrl)
       ? queued.id
       : (await octokit.rest.checks.create({ owner, repo, name: CHECK_NAME, head_sha: headSha, status: 'in_progress', details_url: detailsUrl })).data.id;
     core.saveState(CHECK_STATE_KEY, String(id));
@@ -107,21 +126,76 @@ export async function startReviewCheck(octokit: Octokit, owner: string, repo: st
   }
 }
 
-/** Completes `check` with `report`. A failure is logged and leaves the check in progress for the post step to cancel. */
-export async function completeReviewCheck(check: ReviewCheck | undefined, { conclusion, title, summary }: CheckReport): Promise<void> {
+/**
+ * Completes `check` with `report`, trying once more after `COMPLETE_RETRY_MS`. A second failure, or a run cancelled
+ * meanwhile, is logged and leaves the check in progress for the post step to cancel.
+ */
+export async function completeReviewCheck(check: ReviewCheck | undefined, report: CheckReport): Promise<void> {
   if (!check) return;
   const { octokit, owner, repo, id } = check;
+  const complete = () => {
+    assertWritesAllowed();
+    return octokit.rest.checks.update({ owner, repo, check_run_id: id, status: 'completed', conclusion: report.conclusion, output: checkOutput(report) });
+  };
   try {
-    await octokit.rest.checks.update({
-      owner,
-      repo,
-      check_run_id: id,
-      status: 'completed',
-      conclusion,
-      output: { title, summary: truncateBody(summary.trim() || title) },
+    await complete().catch(async () => {
+      await new Promise(resolve => setTimeout(resolve, COMPLETE_RETRY_MS));
+      return complete();
     });
   } catch (error) {
     core.warning(`Could not complete the ${CHECK_NAME} check: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
+ * Reports `report` on `headSha` in a check that is completed in one call, for a run that has nothing to show in progress.
+ * It completes the queued check the token service created on `headSha`, and creates one without it. A failure is logged.
+ * Throws once the run is cancelled, before its next write.
+ */
+export async function reportCheck(octokit: Octokit, owner: string, repo: string, headSha: string, report: CheckReport): Promise<void> {
+  assertWritesAllowed();
+  const completed = { status: 'completed' as const, conclusion: report.conclusion, details_url: runUrl(owner, repo), output: checkOutput(report) };
+  const queued = takeQueuedCheck(octokit, headSha);
+  const completeQueued = (id: number) => octokit.rest.checks.update({ owner, repo, check_run_id: id, ...completed });
+  try {
+    if (queued) {
+      try {
+        await completeQueued(queued.id);
+        return;
+      } catch (error) {
+        core.warning(`Could not complete the queued ${CHECK_NAME} check, creating a new one: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+    assertWritesAllowed();
+    await octokit.rest.checks.create({ owner, repo, name: CHECK_NAME, head_sha: headSha, ...completed });
+    // The queued check would otherwise stay queued until the token service ends it.
+    if (queued) {
+      assertWritesAllowed();
+      await completeQueued(queued.id).catch(error => {
+        core.warning(`Could not complete the queued ${CHECK_NAME} check: ${error instanceof Error ? error.message : error}`);
+      });
+    }
+  } catch (error) {
+    assertWritesAllowed();
+    core.warning(`Could not report the ${CHECK_NAME} check. The GitHub App needs the Checks read and write permission: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
+ * Whether the newest `Manki` check on `headSha` passed, counting the checks of `bot`'s App and of the Manki App. Those are
+ * the checks branch protection reads: the run writes with `bot`, and the Manki service writes the waiting checks. A failed
+ * read counts as no, so the caller reports again.
+ */
+export async function newestCheckPassed(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, headSha: string): Promise<boolean> {
+  try {
+    const runs = await octokit.paginate(octokit.rest.checks.listForRef, { owner, repo, ref: headSha, check_name: CHECK_NAME, filter: 'all', per_page: 100 });
+    const newest = runs
+      .filter(run => isBotLogin(bot, run.app?.slug) || isBotLogin({ logins: [BOT_LOGIN] }, run.app?.slug))
+      .reduce<typeof runs[number] | undefined>((last, run) => (!last || run.id > last.id ? run : last), undefined);
+    return newest?.status === 'completed' && newest.conclusion === 'success';
+  } catch (error) {
+    core.warning(`Could not read the ${CHECK_NAME} checks of ${headSha.slice(0, 7)}: ${error instanceof Error ? error.message : error}`);
+    return false;
   }
 }
 
