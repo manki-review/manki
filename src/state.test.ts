@@ -1257,6 +1257,24 @@ describe('checkAndAutoApprove', () => {
       expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved, and every warning thread is resolved or answered\.\n/u);
     });
 
+    it('shows what the change does and how to test it, kept by the round the warnings held, in the approval that follows', async () => {
+      const answered = [warning('t1', { replies: [reply('author')] })];
+      const line = '\u2705 **Approved.** All blocking threads are resolved, and every warning thread is resolved or answered.';
+      const approval = async (readyReport?: RoundContext['readyReport']) => {
+        const round = { ...roundThatPosted(HEAD, []), approval: { held: 'warnings' as const, warningsHeld: true as const }, ...(readyReport && { readyReport }) };
+        const { body } = await check(answered, 'write', false, [{ id: 7, body: roundBody(round), state: 'COMMENTED', commit_id: HEAD, user, submitted_at: '' }]);
+        return body!.split(`\n\n${BOT_MARKER}`)[0];
+      };
+      expect(await approval({ whatThisDoes: 'Adds a cache <script>x</script>. It halves requests. It also logs hits.', whatToTest: { steps: ['Load the page twice.'] } })).toBe([
+        line,
+        '**What this does:** Adds a cache x. It halves requests.',
+        '<details>\n<summary>What to test</summary>\n\n_The review model wrote these steps. Check what a step runs before you follow it._\n\n1. Load the page twice.\n\n</details>',
+      ].join('\n\n'));
+      // Either part alone shows, and a record that keeps neither, as one from before, gives the one line.
+      expect((await approval({ whatThisDoes: '', whatToTest: { steps: ['Load the page twice.'] } })).startsWith(`${line}\n\n<details>\n<summary>What to test</summary>`)).toBe(true);
+      expect(await approval()).toBe(line);
+    });
+
     it('counts only a reply made after the review that lowered a blocker thread to a warning was posted', async () => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
       const lowered = (replies: ReturnType<typeof reply>[]) => makeGraphqlFetchThreadNode({

@@ -1673,29 +1673,30 @@ describe('postReview body lead', () => {
     return body.slice(0, -TRAILING_MARKERS.length);
   }
 
-  it('opens a READY review with the verdict line, then what the change does and how to test it', async () => {
-    const { body, event, approvalHeld } = await postedBody({ ...ready, findings: [{ ...ready.findings[0], severity: 'warning', tags: ['follow-up'] }] });
+  it('leaves what the change does and how to test it out of a READY review that warnings hold, and keeps both in its record', async () => {
+    const warned: ReviewResult = { ...ready, findings: [{ ...ready.findings[0], severity: 'warning', tags: ['follow-up'] }] };
+    const { body, event, approvalHeld } = await postedBody(warned);
     // A warning thread holds the approval, and the verdict line says what lifts the hold.
     expect([event, approvalHeld]).toEqual(['COMMENT', 'warnings']);
     // The verdict counts what this round posted as threads. Each thread sits under the review, so the body does not list them.
     expect(lead(body)).toBe([
       '\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.',
       '',
-      '**What this does:** Adds a cache in front of the API. x',
-      '',
-      '---',
-      '',
-      '<details>',
-      '<summary>What to test</summary>',
-      '',
-      '_The review model wrote these steps. Check what a step runs before you follow it._',
-      '',
-      '1. Load the page twice. Expect one request.',
-      '',
-      '</details>',
-      '',
       aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)'),
     ].join('\n'));
+    const record = async (result: ReviewResult): Promise<RoundContext> => JSON.parse(extractReviewRecords((await postedBody(result, [], makeContext({}))).body).records[0]);
+    const kept = { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest };
+    expect((await record(warned)).readyReport).toEqual(kept);
+    // Warnings behind a draft hold drop both parts too, and the approval that follows the draft and the warnings shows them.
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
+    const drafted = await record(warned);
+    expect([drafted.approval, drafted.readyReport]).toEqual([{ held: 'draft', warningsHeld: true }, kept]);
+    expect(mockCreateReview.mock.calls[0][0].body).not.toMatch(/What this does|What to test/);
+    // An approval shows both parts in its body, so its record does not keep them, nor does a hold that leaves them blank.
+    expect((await record(ready)).readyReport).toBeUndefined();
+    expect((await record({ ...warned, verdictReport: { ...verdictReport, whatThisDoes: ' ', whatToTest: { steps: [] } } })).readyReport).toBeUndefined();
+    // Either part alone is kept.
+    expect((await record({ ...warned, verdictReport: { ...verdictReport, whatThisDoes: '' } })).readyReport).toEqual({ ...kept, whatThisDoes: '' });
   });
 
   it('puts what the change does under the verdict, with its first two sentences, and a rule before the findings', async () => {
@@ -5611,8 +5612,11 @@ describe('postReview non-blocking findings', () => {
     const verdictReport = { verdict: 'READY' as const, blockers: [], summary: 'Nothing blocks.', whatThisDoes: 'Adds a retry.', whatToTest: { steps: ['Load the page twice.'] } };
     await postReview(threaded.octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([late[0]]), outcome: 'READY', verdictReport }, quoting);
     expect(threaded.createReview.mock.calls[0][0].comments).toHaveLength(1);
-    expect(threaded.createReview.mock.calls[0][0].body).toContain(`<summary>What to test</summary>\n\n${guideNote}\n\n1. Load the page twice.`);
     expect(threaded.createReview.mock.calls[0][0].body).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\* Fix it, or dismiss it with a reason in its thread\.(?![\s\S]*Missed by an earlier review)/u);
+    // An approval shows the note above the test steps as written.
+    const approving = makeOctokit();
+    await postReview(approving.octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), outcome: 'READY', verdictReport }, quoting);
+    expect(approving.createReview.mock.calls[0][0].body).toContain(`<summary>What to test</summary>\n\n${guideNote}\n\n1. Load the page twice.`);
     // When GitHub refuses the line comments, the late warning gets a file-level thread as a blocker does, and the record says so.
     const refusing = makeOctokit({ 'src/a.ts': 'load();\nretry();\nend();\n' });
     refusing.createReview.mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'));

@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox } from './issue-box';
@@ -1922,6 +1922,11 @@ export async function postReview(
   // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
+  const warningsHeld = event === 'APPROVE' && !!warningHold;
+  // A review that warnings hold reads like a change request, so what the change does waits for the approval that follows.
+  const verdictReport = result.outcome === 'READY' ? result.verdictReport : undefined;
+  const readyReport = warningsHeld ? null : formatReadyReport(verdictReport);
+  const keptReport = warningsHeld && verdictReport && formatReadyReport(verdictReport) ? { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest } : undefined;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
@@ -1946,7 +1951,6 @@ export async function postReview(
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
-    const readyReport = formatReadyReport(result);
     if (readyReport?.whatThisDoes) {
       head += `\n\n${readyReport.whatThisDoes}`;
     }
@@ -2005,6 +2009,7 @@ export async function postReview(
         }),
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
         ...(event === 'APPROVE' && { approval: { held: approvalRefused ? 'refused' : approvalHeld, ...(warningHold && { warningsHeld: true as const }) } }),
+        ...(keptReport && { readyReport: keptReport }),
       }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };
@@ -2065,7 +2070,7 @@ export async function postReview(
     }
   }
   // Warnings can hold behind another hold that comes first, and still take back an approval of this commit.
-  return { id: review.id, approvalHeld: approvalRefused ? 'refused' : approvalHeld, warningsHeld: event === 'APPROVE' && !!warningHold };
+  return { id: review.id, approvalHeld: approvalRefused ? 'refused' : approvalHeld, warningsHeld };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */
@@ -2487,16 +2492,17 @@ function formatTestGuide(guide: TestGuide): string {
 }
 
 /**
- * Returns what an approved change does, in at most two sentences, and the collapsed steps to test it, or none. Either part
- * is left out when the reader left it blank, as a reader that asked for changes may.
+ * Returns what an approved change does, in at most two sentences, and the collapsed steps to test it, or null when
+ * `report` has neither. Either part is left out when the reader left it blank, as a reader that asked for changes may.
  */
-function formatReadyReport(result: ReviewResult): { whatThisDoes?: string; whatToTest?: string } | null {
-  if (result.outcome !== 'READY' || !result.verdictReport) return null;
-  const { whatThisDoes, whatToTest } = result.verdictReport;
-  return {
+export function formatReadyReport(report: Pick<VerdictReport, 'whatThisDoes' | 'whatToTest'> | undefined): { whatThisDoes?: string; whatToTest?: string } | null {
+  if (!report) return null;
+  const { whatThisDoes, whatToTest } = report;
+  const parts = {
     ...(whatThisDoes.trim() && { whatThisDoes: formatLabelled('What this does', splitLead(whatThisDoes, 2, 400).lead) }),
     ...(whatToTest.steps.length > 0 && { whatToTest: `<details>\n<summary>What to test</summary>\n\n${formatTestGuide(whatToTest)}\n\n</details>` }),
   };
+  return parts.whatThisDoes || parts.whatToTest ? parts : null;
 }
 
 /** How often `sanitizeMarkdown` strips before it gives up and encodes what could still form markup. Model text needs two or three rounds. */
