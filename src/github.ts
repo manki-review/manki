@@ -903,7 +903,14 @@ export async function postProgressComment(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
   ), settings);
+  return placeProgressComment(octokit, owner, repo, prNumber, body, reuseId);
+}
 
+/**
+ * Posts `body` as the run's progress comment, or edits comment `reuseId` into it, and saves the comment's ID for the post
+ * step. A new comment is posted when `reuseId` cannot be edited.
+ */
+async function placeProgressComment(octokit: Octokit, owner: string, repo: string, prNumber: number, body: string, reuseId?: number): Promise<number> {
   let id = reuseId;
   if (id !== undefined) {
     try {
@@ -947,14 +954,7 @@ export async function postAutoApproveProgressComment(
   prNumber: number,
 ): Promise<number> {
   const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS);
-  const { data } = await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body,
-  });
-  core.saveState(PROGRESS_STATE_KEY, String(data.id));
-  return data.id;
+  return placeProgressComment(octokit, owner, repo, prNumber, body);
 }
 
 /** Deletes the auto-approve progress comment once the run posted its result, which is the record. */
