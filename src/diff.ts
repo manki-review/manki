@@ -85,12 +85,16 @@ export function filterFilesWithAttribution(
   return { included, excluded };
 }
 
+/** Returns the header of one file's diff. `extra` lines, such as a file mode, go between the `diff --git` line and the paths. */
+function fileHeader(oldPath: string, path: string, changeType: DiffFile['changeType'], extra: readonly string[] = []): string {
+  const from = changeType === 'added' ? '/dev/null' : `a/${oldPath}`;
+  const to = changeType === 'deleted' ? '/dev/null' : `b/${path}`;
+  return [`diff --git a/${oldPath} b/${path}`, ...extra, `--- ${from}`, `+++ ${to}`].join('\n');
+}
+
 export function rebuildRawDiff(diff: ParsedDiff): string {
   return diff.files.map((f) => {
-    const oldPath = f.oldPath ?? f.path;
-    const from = f.changeType === 'added' ? '/dev/null' : `a/${oldPath}`;
-    const to = f.changeType === 'deleted' ? '/dev/null' : `b/${f.path}`;
-    const header = `diff --git a/${oldPath} b/${f.path}\n--- ${from}\n+++ ${to}`;
+    const header = fileHeader(f.oldPath ?? f.path, f.path, f.changeType);
     const hunks = f.hunks.map(h => {
       const hunkHeader = `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`;
       return `${hunkHeader}\n${h.content}`;
