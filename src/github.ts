@@ -1925,9 +1925,10 @@ export async function postReview(
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   const warningsHeld = event === 'APPROVE' && !!warningHold;
-  // A review that warnings hold reads like a change request, so what the change does waits for the approval that follows.
-  // A review held for a person gets no approval from Manki, so it keeps both parts.
-  const keepForApproval = warningsHeld && !standingHold;
+  // A review that warnings hold reads like a change request, so what the change does waits for the approval check's
+  // approval. A review held for a person, or posted with `auto_approve` off, gets no such approval, so it keeps both parts
+  // for whoever approves.
+  const keepForApproval = warningsHeld && !standingHold && autoApprove;
   const verdictReport = result.outcome === 'READY' ? result.verdictReport : undefined;
   const readyReport = keepForApproval ? null : formatReadyReport(verdictReport);
   const keptReport = keepForApproval && verdictReport && formatReadyReport(verdictReport) ? { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest } : undefined;

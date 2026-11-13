@@ -1692,9 +1692,10 @@ describe('postReview body lead', () => {
     const drafted = await record(warned);
     expect([drafted.approval, drafted.readyReport]).toEqual([{ held: 'draft', warningsHeld: true }, kept]);
     expect(mockCreateReview.mock.calls[0][0].body).not.toMatch(/What this does|What to test/);
-    // A review held for a person gets no approval from Manki, so with warnings behind it, it keeps both parts in its body.
+    // A review held for a person, or posted with `auto_approve` off, gets no approval check's approval, so with warnings it
+    // keeps both parts in its body.
     const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [] };
-    for (const options of [{ skipped }, { configHold: 'base' as const }]) {
+    for (const options of [{ skipped }, { configHold: 'base' as const }, { autoApprove: false }]) {
       mockCreateReview.mockClear();
       const { warningsHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', warned, diff, makeContext({}), 1000, options);
       const { body: personBody } = mockCreateReview.mock.calls[0][0] as { body: string };
