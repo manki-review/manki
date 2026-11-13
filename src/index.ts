@@ -1647,7 +1647,10 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   });
   // Read after the round resolved the threads it found fixed, and with its own grades, which can lower a blocker thread to a warning.
   const openWarnings = result.verdict === 'APPROVE'
-    ? (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context)).length : 0;
+    ? await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, run.options.prAuthorLogin, run.config.author_clear_role, context).then(held => held.length, (error: unknown) => {
+      core.warning(`Could not read the warning threads, so the approval is held: ${error instanceof Error ? error.message : error}`);
+      return 'unread' as const;
+    }) : 0;
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
     openWarnings,

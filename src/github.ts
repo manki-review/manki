@@ -194,9 +194,10 @@ export type ConfigHold = 'base' | 'head';
 
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
- * model read some of its files, or `count` warning threads wait for an answer.
+ * model read some of its files, or `count` warning threads wait for an answer. Without `count` the warning threads could
+ * not be read.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count: number };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -232,6 +233,9 @@ export function withheldSummary(summary: string): string {
   return text ? `**Summary:** ${asSentence(text)}` : '';
 }
 
+/** Ends a line that sends someone to the Review again box while `auto_approve` is off. */
+const ROUND_APPROVES_LINE = '`auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+
 /** Ends a line that tells someone to push for a review. A push starts none while automatic review is off or paused. */
 export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
@@ -242,7 +246,7 @@ export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic
  */
 export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string {
   if (hold.reason === 'draft') {
-    if (!autoApprove) return '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+    if (!autoApprove) return `**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
     // "Nothing else" covers only what the PR shows, such as an open thread or a conflict. For every other case, in which
     // nothing follows, the check command names the reason.
     return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
@@ -254,8 +258,12 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
   if (hold.reason === 'warnings') {
+    if (hold.count === undefined) {
+      const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
+      return autoApprove ? `${line} Comment \`@manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+    }
     const line = `**Approval waits on ${countOf(hold.count, 'warning')}.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}, or dismiss it with a reason in its thread.`;
-    return autoApprove ? line : `${line} After a dismissal, tick Review again in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.`;
+    return autoApprove ? line : `${line} After a dismissal, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
   }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
@@ -1673,9 +1681,9 @@ export async function postReview(
   reviewTimeMs?: number,
   { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = 0 }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
-    /** How many earlier warning threads still hold the approval. */
-    openWarnings?: number;
-    /** The `auto_approve` setting, which decides what the line for a held draft tells the reader to do. */
+    /** How many earlier warning threads still hold the approval, or `unread` when they could not be read, which holds it too. */
+    openWarnings?: number | 'unread';
+    /** The `auto_approve` setting, which decides what the lines for a held draft and for warnings tell the reader to do. */
     autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
     disproved?: DisprovedFinding[];
@@ -1823,8 +1831,8 @@ export async function postReview(
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
-  const warnings = openWarnings + [...threadFindings, ...unthreaded].filter(holdsApproval).length;
-  const warningHold: ApprovalHold | undefined = warnings > 0 ? { reason: 'warnings', count: warnings } : undefined;
+  const warnings = openWarnings === 'unread' ? undefined : openWarnings + [...threadFindings, ...unthreaded].filter(holdsApproval).length;
+  const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' } : warnings > 0 ? { reason: 'warnings', count: warnings } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? warningHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.

@@ -1786,6 +1786,13 @@ describe('postReview body lead', () => {
     // With `auto_approve` off an answer runs no approval check, so the line names the Review again box.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 1, autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread. After a dismissal, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    // Warning threads that could not be read hold the approval too, in both wordings.
+    const unread = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread' });
+    expect(unread.approvalHeld).toBe('warnings');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string }).event).toBe('COMMENT');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Comment `@manki check`, and Manki approves or says what holds the approval.');
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread', autoApprove: false });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
     const config = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 2, configHold: 'base' });
     expect(config.approvalHeld).toBe('config');
