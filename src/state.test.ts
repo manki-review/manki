@@ -552,6 +552,7 @@ describe('checkAndAutoApprove', () => {
     existingReviews?: Array<{ id?: number; body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
     existingComments?: Array<{ id?: number; body?: string; user?: { login?: string } }>;
     deleteCommentFn?: jest.Mock;
+    updateCommentFn?: jest.Mock;
     /** The PR author's `role_name`. */
     role?: string;
     /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
@@ -582,6 +583,7 @@ describe('checkAndAutoApprove', () => {
           listComments: jest.fn().mockResolvedValue({ data: existingComments }),
           createComment: createCommentFn,
           deleteComment: overrides.deleteCommentFn ?? jest.fn().mockResolvedValue({}),
+          updateComment: overrides.updateCommentFn ?? jest.fn().mockResolvedValue({}),
         },
         repos: {
           getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.role === 'admin' ? 'admin' : 'write', role_name: overrides.role ?? 'write', user: { type: 'User' } } }),
@@ -1400,14 +1402,23 @@ describe('checkAndAutoApprove', () => {
     await retireStaleNotices(listed, TEST_BOT, 'owner', 'repo', 1, 'sha-791');
     expect(deleteComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 11 });
 
-    // Once the setting allows it, the approval of the head retires the notice too.
+    // Once the setting allows it, the approval of the head retires the notice too. It changes no other comment: not a
+    // failed review that holds the PR's settings block, nor the token service's conflict note.
     const deleteOnApproval = jest.fn().mockResolvedValue({});
+    const updateOnApproval = jest.fn().mockResolvedValue({});
+    const failedReview = '🔴 **Review failed** boom\n\n<!-- manki-bot -->\n\n---\nNot reviewed yet · head `sha-789` · failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->';
+    const conflictNote = 'This PR conflicts with `main`. Rebase it, and Manki reviews it then.\n\n<!-- manki-conflict-note -->';
     const approved = await approveOrSayWhy(makeMockOctokit({
-      threads: resolved, prHeadSha: 'sha-789', mergeable: true, deleteCommentFn: deleteOnApproval,
-      existingComments: [{ id: 12, body: posted, user: { login: 'manki-review[bot]' } }],
+      threads: resolved, prHeadSha: 'sha-789', mergeable: true, deleteCommentFn: deleteOnApproval, updateCommentFn: updateOnApproval,
+      existingComments: [
+        { id: 12, body: posted, user: { login: 'manki-review[bot]' } },
+        { id: 13, body: failedReview, user: { login: 'manki-review[bot]' } },
+        { id: 14, body: conflictNote, user: { login: 'manki-review[bot]' } },
+      ],
     }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
     expect(approved).toEqual({ approved: true });
-    expect(deleteOnApproval).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 12 });
+    expect(deleteOnApproval.mock.calls).toEqual([[{ owner: 'owner', repo: 'repo', comment_id: 12 }]]);
+    expect(updateOnApproval).not.toHaveBeenCalled();
   });
 
   it('approve review body is non-empty so it does not register as a placeholder', async () => {

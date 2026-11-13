@@ -746,11 +746,17 @@ async function holdApproval(
 
 /**
  * Deletes the auto-approve withheld notice for `headSha`, every approval-held notice and the token service's conflict
- * note. Call it once a review posts its verdict on `headSha`, an auto-approval included.
+ * note. Call it once a review posts its verdict on `headSha`.
  * Marks every older failed or incomplete review progress comment as superseded by that verdict, whatever commit it was for.
  * With `pauseLifted`, when that round lifted the pause, each pause notice that lost its settings block is marked as resumed.
+ * With `approvalOnly`, for an auto-approval, it deletes only the withheld and approval-held notices and leaves every other
+ * comment as it is, the conflict note included. An auto-approval posts no review round, and it can approve while GitHub
+ * has not said whether the PR conflicts.
  */
-async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLifted = false): Promise<void> {
+async function retireStaleNotices(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
+  { pauseLifted = false, approvalOnly = false } = {},
+): Promise<void> {
   let comments: Awaited<ReturnType<typeof fetchPRComments>>;
   try {
     comments = await fetchPRComments(octokit, owner, repo, prNumber);
@@ -762,8 +768,10 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
   for (const c of comments) {
     if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
     try {
-      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX) || c.body.includes(CONFLICT_NOTE_MARKER)) {
+      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX) || (!approvalOnly && c.body.includes(CONFLICT_NOTE_MARKER))) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+      } else if (approvalOnly) {
+        continue;
       } else if (isFailedProgress(c.body)) {
         await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
       } else if (pauseLifted && c.body.includes(PAUSE_NOTICE_MARKER) && !c.body.includes(SETTINGS_MARKER)) {
@@ -974,7 +982,7 @@ async function approveOrSayWhy(
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, bot, owner, repo, prNumber);
       await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', cleared));
-      await retireStaleNotices(octokit, bot, owner, repo, prNumber, pr.head.sha);
+      await retireStaleNotices(octokit, bot, owner, repo, prNumber, pr.head.sha, { approvalOnly: true });
     } catch (error) {
       if (!isApprovalSettingRefusal(error)) throw error;
       // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder

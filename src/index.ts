@@ -2069,7 +2069,7 @@ async function runFullReview(
     await replyPartlyFixedThreads(run, result);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs);
-    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
+    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, { pauseLifted: !pauseAfter.paused });
     setReviewOutputs(posted, context, result);
     // The title names the first hold, so warnings that hold behind another one are named in the summary.
     const alsoWarnings = posted.warningsHeld && posted.approvalHeld !== 'warnings' ? WARNINGS_ALSO_HOLD_LINE : '';
