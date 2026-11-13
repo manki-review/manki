@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 
-import { completeReviewCheck, ReviewCheck } from './check-run';
+import { RunCancelledError, stopWritesOn } from './abort';
+import { completeReviewCheck, ReviewCheck, startReviewCheck } from './check-run';
 
 describe('completeReviewCheck', () => {
   afterEach(() => {
@@ -27,5 +28,37 @@ describe('completeReviewCheck', () => {
     await complete();
     expect(update).toHaveBeenCalledTimes(4);
     expect(warning.mock.calls).toEqual([['Could not complete the Manki check: Not Found']]);
+  });
+
+  it('skips the retry once the run is cancelled during the wait', async () => {
+    jest.useFakeTimers();
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const update = jest.fn().mockRejectedValue(new Error('Not Found'));
+    const check = { octokit: { rest: { checks: { update } } }, owner: 'o', repo: 'r', id: 5 } as unknown as ReviewCheck;
+    const done = completeReviewCheck(check, { conclusion: 'success', title: 'Approved', summary: '' });
+    const { release } = stopWritesOn(AbortSignal.abort(new RunCancelledError('SIGTERM')));
+    try {
+      await jest.advanceTimersByTimeAsync(3_000);
+      await done;
+    } finally {
+      release();
+    }
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(warning.mock.calls).toEqual([['Could not complete the Manki check: The run was cancelled by SIGTERM']]);
+  });
+});
+
+describe('startReviewCheck', () => {
+  it('throws before any write once the run is cancelled', async () => {
+    const checks = { create: jest.fn(), update: jest.fn() };
+    const octokit = { rest: { checks } } as unknown as Parameters<typeof startReviewCheck>[0];
+    const { release } = stopWritesOn(AbortSignal.abort(new RunCancelledError('SIGTERM')));
+    try {
+      await expect(startReviewCheck(octokit, 'o', 'r', 'abc123')).rejects.toBeInstanceOf(RunCancelledError);
+    } finally {
+      release();
+    }
+    expect(checks.create).not.toHaveBeenCalled();
+    expect(checks.update).not.toHaveBeenCalled();
   });
 });

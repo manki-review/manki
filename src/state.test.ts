@@ -9,6 +9,7 @@ import { determineOutcome } from './review';
 import { ApprovalRecord, AuthorClearRole, Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
 import * as authModule from './auth';
 import { offerQueuedCheck } from './check-run';
+import { RunCancelledError, stopWritesOn } from './abort';
 
 jest.mock('./auth', () => ({
   changeThreadThroughService: jest.fn().mockResolvedValue(false),
@@ -1258,47 +1259,68 @@ describe('checkAndAutoApprove', () => {
   });
 
   it.each([
-    ['in a check it creates completed', undefined, false],
-    ['in the queued check on the head, completed in one update', 'abc123', false],
-    ['in a check it creates when the queued check sits on another head', 'def456', false],
-    ['in a check it creates when the queued check cannot be updated', 'abc123', true],
-  ])('reports the approval as a passing `Manki` check on the head %s', async (_name, queuedHead, updateFails) => {
-    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    ['in a check it creates completed', undefined, 0],
+    ['in the queued check on the head, completed in one update', 'abc123', 0],
+    ['in a check it creates when the queued check sits on another head', 'def456', 0],
+    ['in a check it creates, then completes the queued check, when its first update fails', 'abc123', 1],
+    ['in a check it creates when the queued check cannot be updated at all', 'abc123', 2],
+  ])('reports the approval as a passing `Manki` check on the head %s', async (_name, queuedHead, updateFailures) => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}) };
-    if (updateFails) checks.update.mockRejectedValueOnce(new Error('Not Found'));
+    for (let i = 0; i < updateFailures; i++) checks.update.mockRejectedValueOnce(new Error('Not Found'));
     const octokit = makeMockOctokit({ threads: [], checks });
     if (queuedHead) offerQueuedCheck(octokit, { id: 77, headSha: queuedHead });
     expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
 
-    // Each call completes the check, so none is left in progress when a call fails.
+    // Each call writes a completed check, so a failed takeover still leaves a passing check newest on the head.
     const completed = { status: 'completed', conclusion: 'success', details_url: expect.any(String), output: { title: 'Approved', summary: 'All blocking threads are resolved.' } };
     const takesOver = queuedHead === 'abc123';
-    expect(checks.update.mock.calls).toEqual(takesOver ? [[{ owner: 'owner', repo: 'repo', check_run_id: 77, ...completed }]] : []);
-    expect(checks.create.mock.calls).toEqual(takesOver && !updateFails ? [] : [[{ owner: 'owner', repo: 'repo', name: 'Manki', head_sha: 'abc123', ...completed }]]);
+    const updateQueued = [{ owner: 'owner', repo: 'repo', check_run_id: 77, ...completed }];
+    expect(checks.update.mock.calls).toEqual(takesOver ? (updateFailures ? [updateQueued, updateQueued] : [updateQueued]) : []);
+    expect(checks.create.mock.calls).toEqual(takesOver && !updateFailures ? [] : [[{ owner: 'owner', repo: 'repo', name: 'Manki', head_sha: 'abc123', ...completed }]]);
+    expect(warning.mock.calls.filter(([message]) => String(message).includes('queued Manki check')).length).toBe(updateFailures);
   });
 
-  it.each([
-    ['reports it when no check shows on the head', [], true],
-    ['reports it when the newest check is still in progress', [{ id: 5, status: 'completed', conclusion: 'success' }, { id: 9, status: 'in_progress', conclusion: null }], true],
-    ['reports it when the newest check did not pass', [{ id: 9, status: 'completed', conclusion: 'neutral' }, { id: 5, status: 'completed', conclusion: 'success' }], true],
-    ['reports it when the checks cannot be read', null, true],
-    ['adds no check when the newest one passed', [{ id: 5, status: 'in_progress', conclusion: null }, { id: 9, status: 'completed', conclusion: 'success' }], false],
-  ])('on an approval that already stands, %s', async (_name, runs, reports) => {
+  const checkRun = (id: number, status: string, conclusion: string | null, slug = 'manki-review') => ({ id, status, conclusion, app: { slug } });
+  const standingApproval = (runs: ReturnType<typeof checkRun>[] | null) => {
     jest.spyOn(core, 'info').mockImplementation(() => {});
     jest.spyOn(core, 'warning').mockImplementation(() => {});
-    const listForRef = runs ? jest.fn().mockResolvedValue({ data: { check_runs: runs } }) : jest.fn().mockRejectedValue(new Error('Forbidden'));
+    const listForRef = runs ? jest.fn().mockResolvedValue({ data: runs }) : jest.fn().mockRejectedValue(new Error('Forbidden'));
     const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}), listForRef };
     const user = { login: 'manki-review[bot]', type: 'Bot' };
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({ checks, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body: roundBody(roundThatPosted('abc123', [])), state: 'APPROVED', commit_id: 'abc123', user }] });
+    return { octokit, checks, createReviewMock };
+  };
+
+  it.each([
+    ['reports it when no check shows on the head', [], true],
+    ['reports it when the newest check is still in progress', [checkRun(5, 'completed', 'success'), checkRun(9, 'in_progress', null)], true],
+    ['reports it when the newest check did not pass', [checkRun(9, 'completed', 'neutral'), checkRun(5, 'completed', 'success')], true],
+    ['reports it when only another App\'s newer check passed', [checkRun(5, 'in_progress', null), checkRun(9, 'completed', 'success', 'other-app')], true],
+    ['reports it when the checks cannot be read', null, true],
+    ['adds no check when the newest one passed', [checkRun(5, 'in_progress', null), checkRun(9, 'completed', 'success')], false],
+  ])('on an approval that already stands, %s', async (_name, runs, reports) => {
+    const { octokit, checks, createReviewMock } = standingApproval(runs);
 
     expect(await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1)).toEqual({ approved: true, standing: true });
 
-    expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'abc123', check_name: 'Manki', filter: 'all' }));
+    expect(checks.listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'abc123', check_name: 'Manki', filter: 'all' }));
     expect(checks.create.mock.calls).toEqual(reports ? [[expect.objectContaining({
       head_sha: 'abc123', status: 'completed', conclusion: 'success', output: { title: 'Approved', summary: 'Manki\'s approval of this commit stands.' },
     })]] : []);
     expect(createReviewMock).not.toHaveBeenCalled();
+  });
+
+  it('writes no check on an approval that already stands once the run is cancelled', async () => {
+    const { octokit, checks } = standingApproval([]);
+    const { release } = stopWritesOn(AbortSignal.abort(new RunCancelledError('SIGTERM')));
+    try {
+      await expect(approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1)).rejects.toBeInstanceOf(RunCancelledError);
+    } finally {
+      release();
+    }
+    expect(checks.create).not.toHaveBeenCalled();
   });
 
   it('posts an issue comment (not a COMMENT review) when APPROVE fails', async () => {

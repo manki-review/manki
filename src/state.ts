@@ -903,7 +903,7 @@ async function approveOrSayWhy(
   if (latestBotReview?.state === 'APPROVED') {
     core.info('Already approved — skipping duplicate approval');
     // A check left in progress or stale on the head would hide the approval, and a passing one needs no other.
-    if (!await newestCheckPassed(octokit, owner, repo, pr.head.sha)) {
+    if (!await newestCheckPassed(octokit, bot, owner, repo, pr.head.sha)) {
       await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', 'Manki\'s approval of this commit stands.'));
     }
     return { approved: true, standing: true };
