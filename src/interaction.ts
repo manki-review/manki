@@ -5,7 +5,7 @@ import { assertWritesAllowed } from './abort';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -673,8 +673,17 @@ async function handleExplain(
   prNumber: number,
   topic: string,
 ): Promise<void> {
+  let fetched: string;
+  try {
+    fetched = await fetchPRDiff(octokit, owner, repo, prNumber);
+  } catch (error) {
+    if (!(error instanceof TooManyFilesError)) throw error;
+    const body = `This PR changes ${error.changedFiles} files, and GitHub lists only ${error.listedFiles} of them, so Manki cannot read it to explain it. Split it into smaller PRs to get an explanation.`;
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(body, BOT_MARKER) });
+    return;
+  }
   // The diff of a PR GitHub refuses is built from up to 3,000 files, so the prompt gets at most one review slice of it.
-  const diff = truncateDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
+  const diff = truncateDiff(fetched);
 
   const safeDiff = diff.replace(/```/g, '` ` `');
   const response = await askWithRecord(
