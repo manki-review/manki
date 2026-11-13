@@ -44,6 +44,11 @@ describe('deduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(1);
     expect(result.duplicates[0].matchType).toBe('exact');
 
+    // A resolved suggestion on the same spot drops a later suggestion, never a warning.
+    const suggestion = makePrevious({ ...previous[0], severity: 'note' });
+    expect(deduplicateFindings([{ ...findings[0], severity: 'note' }], [suggestion]).duplicates).toHaveLength(1);
+    expect(deduplicateFindings([{ ...findings[0], severity: 'warning' }], [suggestion]).unique).toHaveLength(1);
+
     const fixed = makePrevious({ ...previous[0], line: 40, fixed: true });
     const kept = deduplicateFindings(findings, [fixed]);
     expect(kept.duplicates).toHaveLength(0);
