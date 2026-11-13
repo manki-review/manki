@@ -4630,7 +4630,7 @@ describe('postReview fallback paths', () => {
       // A thread graded below the blocker never carries it, even when the judge links them, so the blocker gets a thread
       // of its own and counts as new. One off the diff's lines gets a file-level comment. Its record entry names no
       // thread, which would make the lower thread block next round.
-      const lower = [{ severity: 'warning' as const }, { severity: 'note' as const }, { severity: 'warning' as const, gradeUnknown: true }];
+      const lower = [{ severity: 'warning' as const }, { severity: 'note' as const }];
       for (const grade of lower) {
         for (const finding of [named(2), named(40)]) {
           createReview.mockClear();
@@ -4647,6 +4647,16 @@ describe('postReview fallback paths', () => {
           const [recorded] = (JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext).findings.entries;
           expect([recorded.posted, recorded.threadId]).toEqual(['thread', undefined]);
         }
+      }
+      // A thread whose round records could not all be read may have been raised to a blocker, so it still carries one, and
+      // a blocker thread a partial fix lowered carries its blocker again.
+      for (const grade of [{ severity: 'warning' as const, gradeUnknown: true }, { recordedGrade: 'warning' as const, peakGrade: 'blocker' as const }]) {
+        createReview.mockClear();
+        await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(2)]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
+          existingThreads: [{ ...existingThreads[0], ...grade }],
+        });
+        expect(createReview.mock.calls[0][0].comments).toEqual([]);
+        expect(createReview.mock.calls[0][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\./u);
       }
     });
 

@@ -14,15 +14,18 @@ export interface ThreadGrade {
   recordedGrade?: FindingSeverity;
   /** The highest grade the round records ever gave it. */
   peakGrade?: FindingSeverity;
+  /** Set when a round record that may have raised it could not be read, so it may be graded anything. */
+  gradeUnknown?: boolean;
 }
 
 /**
  * Whether a finding of `severity` is graded above an earlier finding or thread: above its own severity and above the
  * highest grade the round records gave it, which a later round gives back when it names the problem again. One of
- * `unknown` grade predates the markers and counts as a blocker. An earlier finding graded below never carries, waives
- * or hides a new one.
+ * `unknown` grade predates the markers and counts as a blocker, and so does one whose records could not all be read.
+ * An earlier finding graded below never carries, waives or hides a new one.
  */
 export function gradedAbove(severity: FindingSeverity, earlier: ThreadGrade): boolean {
+  if (earlier.gradeUnknown) return false;
   const own = earlier.severity === 'unknown' ? 'blocker' : earlier.severity;
   const rank = SEVERITY_ORDER.indexOf(severity);
   return [own, earlier.peakGrade ?? earlier.recordedGrade].every(grade => !grade || rank < SEVERITY_ORDER.indexOf(grade));
@@ -1542,17 +1545,12 @@ export interface StaticSignal {
  * An unresolved review thread carried into a follow-up review so the judge
  * can decide whether the new diff addresses it.
  */
-export interface OpenThread extends FindingMetadata {
+export interface OpenThread extends FindingMetadata, ThreadGrade {
   threadId: string;
   threadUrl?: string;
   title: string;
   file: string;
   line: number;
-  severity: FindingSeverity | 'unknown';
-  /** The grade the round records last gave the thread, which `threadBlocks` reads before its own severity. */
-  recordedGrade?: FindingSeverity;
-  /** The highest grade the round records ever gave the thread. */
-  peakGrade?: FindingSeverity;
   isSecurity?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets

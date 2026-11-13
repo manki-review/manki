@@ -1599,7 +1599,8 @@ export async function runReview(
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
-      const readerFindings = hideUnprovenWarnings(folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), () => true).posted;
+      // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
+      const readerFindings = hideUnprovenWarnings(folded.blockers.map(guard).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
@@ -2731,7 +2732,7 @@ export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenTh
     keys: new Set(entries.filter(e => e.entry.threadId === t.threadId).map(e => e.key)),
     threadId: t.threadId,
     ...(t.isSecurity && { isSecurity: true }),
-    grade: { severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }), ...(t.peakGrade && { peakGrade: t.peakGrade }) },
+    grade: t,
   }));
   const byKey = new Map<string, EarlierFinding>();
   for (const { entry, key, round } of entries) {

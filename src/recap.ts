@@ -431,6 +431,7 @@ function collectInPrSuppressions(
       severity: pf.severity,
       ...(pf.recordedGrade && { recordedGrade: pf.recordedGrade }),
       ...(pf.peakGrade && { peakGrade: pf.peakGrade }),
+      ...(pf.gradeUnknown && { gradeUnknown: true }),
     };
     if (reason === 'agree-reply' && pf.authorReplyLogin) {
       entry.authorLogin = pf.authorReplyLogin;
@@ -1154,8 +1155,9 @@ function deduplicateFindings(
       core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
       duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
     } else if (answeredMatch) {
-      const { threadId, answer, severity, recordedGrade, peakGrade } = answeredMatch.prev;
-      unique.push({ ...finding, answeredIn: { threadId, answer, grade: { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }) } } });
+      const { threadId, answer, severity, recordedGrade, peakGrade, gradeUnknown } = answeredMatch.prev;
+      const grade = { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }), ...(gradeUnknown && { gradeUnknown }) };
+      unique.push({ ...finding, answeredIn: { threadId, answer, grade } });
     } else {
       unique.push(finding);
     }

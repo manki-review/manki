@@ -451,8 +451,6 @@ export function needsProof(finding: Finding): boolean {
   return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !breaksRule(finding);
 }
 
-/** Whether an earlier finding is linked to `finding`. A later step then probably keeps the warning out of the review, but only a certain result takes a warning out of the checks, so this one is checked last. */
-
 /**
  * Returns the warnings to check with tools, at most `limit`, and those `over` that limit. A check that decides whether
  * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code

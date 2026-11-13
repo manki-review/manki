@@ -207,7 +207,7 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(3);
-    expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: 'sha-1' } });
+    expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: 'sha-1' } });
     expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
     expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)] });
   });
@@ -269,6 +269,9 @@ describe('fetchBotReviewThreads', () => {
 
     // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
     expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true], ['l', false]]);
+    // A blocker thread a partial fix lowered can still be the thread of the round's blocker, and a suggestion or warning
+    // thread a round raised to a blocker can too, but no other one.
+    expect(threads.filter(t => t.mayCarryBlocker).map(t => t.id)).toEqual(['b', 'f', 'pw', 'pb', 'pf', 'ps', 'pr', 'pa']);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
     expect(unclearedThreads(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toEqual([]);
     expect(unclearedThreads(threads, TEST_BOT)).not.toEqual([]);
@@ -282,7 +285,7 @@ describe('fetchBotReviewThreads', () => {
     const unread = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('note', 'Extract helper'), TEST_LINKS), isResolved: true }), late])));
     jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
     const unreadThreads = await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1);
-    expect(unreadThreads.map(t => [t.id, t.isBlocking])).toEqual([['s', true], ['l', true]]);
+    expect(unreadThreads.map(t => [t.id, t.isBlocking, t.mayCarryBlocker])).toEqual([['s', true, true], ['l', true, true]]);
     expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
   });
 

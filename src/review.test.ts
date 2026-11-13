@@ -4235,6 +4235,19 @@ describe('runReview', () => {
     });
     const absorbed = await readAgainst(blockerThreadOf);
     expect(absorbed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends under load', threadId: 'T1' })]);
+    // From a warning thread it takes no link, so the thread is not named again: a partial fix a push made lowers it.
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [finding('warning', 'Retry never ends', 'src/x.ts', 13)], summary: 'One warning.',
+      threadEvaluations: [{ threadId: 'T1', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'note' }],
+    });
+    const fromWarning = await runReview(reading, {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, previousFindings: [], priorRounds: [prior], headSha: 'sha2',
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends' })],
+      interRoundDiff: 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -13 +13 @@\n-old\n+new\n',
+    });
+    expect(fromWarning.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends under load' })]);
+    expect(fromWarning.findings[0]).not.toHaveProperty('threadId');
+    expect(fromWarning.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', grade: 'note' })]);
 
     // A later round matches every finding an earlier round took into a thread, so a variant the thread took already is
     // restated, whether the judge calls it a variant of the thread again or leaves it unlinked.

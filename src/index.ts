@@ -1115,6 +1115,7 @@ async function collectOpenThreads(
         severity: f.severity,
         ...(f.recordedGrade && { recordedGrade: f.recordedGrade }),
         ...(f.peakGrade && { peakGrade: f.peakGrade }),
+        ...(f.gradeUnknown && { gradeUnknown: true }),
         ...(f.isSecurity && { isSecurity: true }),
         description: f.description,
         suggestedFix: f.suggestedFix,
