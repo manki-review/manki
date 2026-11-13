@@ -196,7 +196,7 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     // A rule warning on code an earlier round reviewed says so under its title and names the rule the same way.
     const late = render({ ...baseFinding, severity: 'warning', origin: 'reviewed', tags: ['follow-up'], rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] });
-    expect(late).toContain("_An earlier round already reviewed these lines and missed this. It is in this PR's own code, so it still needs a fix or an answer._\n\n");
+    expect(late).toContain("_An earlier round already reviewed these lines and missed this. It is in this PR's own code, so it still holds the approval._\n\n");
     expect(late).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, cell: { row: 'severe', column: 'normal' } })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
     // A quote with a hidden character is not printed, and a rule the judge did not confirm gives no line.
@@ -5347,7 +5347,7 @@ describe('postReview non-blocking findings', () => {
     const review = createReview.mock.calls[0][0];
     const byLine = new Map<number, string>(review.comments.map((c: { line: number; body: string }) => [c.line, c.body]));
     expect([...byLine.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14]);
-    expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, needs an answer\*\*\n\n\*\*Deferred warning\*\*\n/u);
+    expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning: fix, explain or track\*\*\n\n\*\*Deferred warning\*\*\n/u);
     expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
     expect(byLine.get(5)).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Suggestion one\*\*\n/u);
     expect(review.body).toContain('### Findings · 1 suggestion\n\n<details>\n<summary>\u2728 <b>Unescaped path 15</b>');
@@ -5452,7 +5452,7 @@ describe('postReview non-blocking findings', () => {
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning, needs an answer**']]);
+    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning: fix, explain or track**']]);
     expect(createReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.split('\n')[0]])).toEqual([['src/a.ts', 'file', '\u{1F6AB} **Blocker**']]);
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
@@ -5561,13 +5561,13 @@ describe('postReview non-blocking findings', () => {
 
   it('lists smaller findings by where they sit, found this round, missed earlier or pre-existing, and posts a warning or a blocker on reviewed code as a thread', async () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
-    const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
+    const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._';
     const unconfirmedNote = '_Manki could not confirm this, so please check it._';
     const guideNote = '_The review model wrote these steps. Check what a step runs before you follow it._';
     // The PR quotes Manki's own notes, as a PR on Manki does. The first and last word of each are then identifiers of
     // the diff with their underscore, which the posted text must not show as code.
     const quoting: ParsedDiff = { ...diff, files: [...diff.files, { path: 'src/notes.ts', changeType: 'added', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, content: `+const NOTES = '${missedNote} ${unconfirmedNote} ${guideNote}';` }] }] };
-    expect([...codeTokensFromDiff(quoting)]).toEqual(expect.arrayContaining(['_An', 'answer._', '_Manki', 'it._', '_The']));
+    expect([...codeTokensFromDiff(quoting)]).toEqual(expect.arrayContaining(['_An', 'approval._', '_Manki', 'it._', '_The']));
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
       nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'] }),
@@ -5586,13 +5586,13 @@ describe('postReview non-blocking findings', () => {
     // note is posted as written, so the next round reads the description without them.
     const threads: string[] = review.comments.map((c: { body: string }) => c.body);
     expect(threads.map(body => body.split('\n')[2])).toEqual(['**On new code**', '**On old code**', '**Old blocker**']);
-    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning, needs an answer**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
+    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning: fix, explain or track**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
     expect(parseFindingFromComment(threads[1]).description).toBe('It goes wrong. Second sentence. Third sentence.');
     expect([threads[0], threads[2]].join('\n')).not.toContain('An earlier round');
     // A late warning off the changed lines gets a file-level thread with the same notes.
     const [offDiff] = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
     expect([offDiff.path, offDiff.subject_type]).toEqual(['src/a.ts', 'file']);
-    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning, needs an answer**\n\n**Old code off the diff**\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
+    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning: fix, explain or track**\n\n**Old code off the diff**\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
     expect(review.body).not.toContain('Old code off the diff');
     // Each origin gets its section with exact counts, and the sections follow each other under rules. A security note on
     // reviewed code stays listed.

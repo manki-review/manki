@@ -735,7 +735,7 @@ describe('runFullReview end to end', () => {
       // The warning it ends as holds the approval until its thread is answered.
       expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
       const [comment] = mockGitHub.threads.map(t => t.comments[0].body);
-      expect(comment).toContain('**Warning, needs an answer**');
+      expect(comment).toContain('**Warning: fix, explain or track**');
       expect(comment).toContain('a second check on another model agreed, so this does not block. Please check it yourself. Both inputs are bounded at src/api.ts:3.');
       const [entry] = mockGitHub.roundContext(postedReviews()[0]).findings.entries;
       expect(entry).toMatchObject({
@@ -1350,7 +1350,7 @@ describe('runFullReview end to end', () => {
 
     // A push that changes only the README, so the lines in `src/math.ts` are the ones round 1 reviewed. The new line
     // quotes the sentence Manki puts in the thread, so `_An` and `PR._` are identifiers of the diff.
-    const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._';
+    const missedNote = '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still holds the approval._';
     const readme = `diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+A late warning says: ${missedNote}\n`;
     mockGitHub.headSha = 'b2'.repeat(20);
     mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;

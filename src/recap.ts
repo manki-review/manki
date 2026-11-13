@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
+import { ANSWERABLE_LABEL, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -256,9 +256,11 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
  * A comment with finding data is matched from its top first, so text of the finding further down cannot pass as the title line.
  */
 function matchTitleLine(body: string): RegExpMatchArray | null {
+  // Threads posted before the current label wording still say "needs an answer".
+  const tail = `(?:, not blocking|, needs an answer|, needs a fix|${ANSWERABLE_LABEL})`;
   const atTop = ownMarker(body, FINDING_DATA_OPENER) !== undefined
-    ? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
-      ?? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
+    ? body.match(new RegExp(`^\\S+ \\*\\*\\w+${tail}?(?::\\*\\*|\\*\\* \\(.*?\\):) (.+?)[ \\t]*(?:\\n|$)`))
+      ?? body.match(new RegExp(`^\\S+ \\*\\*\\w+${tail}?\\*\\*[^\\n]*\\n\\n\\*\\*(.+)\\*\\*[ \\t]*(?:\\n|$)`))
     : null;
   return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }
@@ -939,8 +941,11 @@ interface ReviewThread extends FindingMetadata {
   answer?: string;
 }
 
-/** The wording of `MISSED_EARLIER_NOTE` that late-find threads posted while warnings did not hold still carry. */
-const OLD_MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+/** Earlier wordings of `MISSED_EARLIER_NOTE` that threads posted before still carry. */
+const OLD_MISSED_EARLIER_NOTES = [
+  '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._',
+  '_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._',
+];
 
 /**
  * Parse the prose description and suggested-fix excerpt from a manki-authored
@@ -977,7 +982,7 @@ function parseFindingFromComment(posted: string): FindingMetadata {
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const data = parseFindingData(body);
   // The other notes under the title are skipped in whatever order they come.
-  const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, OLD_MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
+  const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, ...OLD_MISSED_EARLIER_NOTES].find(n => descSlice.startsWith(n));
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
   if (label) descSlice = descSlice.slice(label.length).trimStart();
