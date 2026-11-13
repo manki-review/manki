@@ -461,7 +461,7 @@ describe('determineOutcome', () => {
       // A blocker that names the prior again, or sits on its thread, carries it, so the prior is not listed twice.
       const namedAgain = { ...blocker, sameAs: 'src/x.ts:10:10:old-issue' };
       expect(determineOutcome([namedAgain], fingerprintEntriesFromLegacy(priors), open).verdictTrace.unresolvedPriors).toEqual([]);
-      const answered = { ...blocker, answeredIn: { threadId: 'T1', answer: 'a' } };
+      const answered = { ...blocker, answeredIn: { threadId: 'T1', answer: 'a', grade: { severity: 'blocker' as const } } };
       expect(determineOutcome([answered], fingerprintEntriesFromLegacy(priors), open).verdictTrace.unresolvedPriors).toEqual([]);
     });
 
@@ -4126,15 +4126,15 @@ describe('runReview', () => {
     expect(await gradeAfter(open, elsewhere)).toEqual([undefined, 'READY']);
     expect(await gradeAfter(addressed, elsewhere, [repeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
     // A blocker that repeats the thread's answered problem, or that this round folds into the thread, raises it again the same way.
-    const answeredRepeat: Finding = { ...repeat, sameAs: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.' } };
+    const answeredRepeat: Finding = { ...repeat, sameAs: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.', grade: { severity: 'blocker' } } };
     expect(await gradeAfter(open, elsewhere, [answeredRepeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(open, elsewhere, [{ ...repeat, sameAs: undefined, threadId: 'T1' }])).toEqual(['blocker', 'ADDRESS_FIRST']);
-    // A blocker that only restates the lowered thread is graded above it, so the thread does not take it and the blocker
-    // is posted on its own.
+    // A blocker this round only links to the thread by folding it there after grading raises it too. The thread was a
+    // blocker before its partial fix, so it carries the blocker, and no second thread opens for it.
     const restated: Finding = { severity: 'blocker', title: 'Old issue', file: 'src/x.ts', line: 10, description: 'd', reviewers: ['r'] };
-    expect(await gradeAfter(open, elsewhere, [restated])).toEqual([undefined, 'ADDRESS_FIRST']);
+    expect(await gradeAfter(open, elsewhere, [restated])).toEqual(['blocker', 'ADDRESS_FIRST']);
     mockedRunJudgeAgent.mockResolvedValue({ findings: [restated], summary: 's', threadEvaluations: [open] });
-    expect((await runWith(elsewhere)).findings[0]).not.toHaveProperty('threadId');
+    expect((await runWith(elsewhere)).findings[0].threadId).toBe('T1');
     // A warning thread a later round raised to blocker keeps that grade: finding it open again never drops it to its
     // own, and a partial fix lowers it only after a push to its file.
     openThread.severity = 'warning';
@@ -4286,9 +4286,13 @@ describe('runReview', () => {
       ['Cache grows without bound', undefined, undefined, undefined],
       ['Cache could have a limit', undefined, undefined, 1],
     ]);
-    // The refuter checks a warning that restates a suggestion like any other, since no suggestion keeps it posted.
+    // The refuter checks a warning that restates a suggestion like any other, whether the judge linked them or not, since
+    // no suggestion keeps it posted.
     const earlierOnes = earlierFindings([suggestionRound], [suggestionThread], undefined);
-    expect([finding('warning', 'Retry never ends', 'src/x.ts', 10), finding('note', 'Retry never ends', 'src/x.ts', 10)].map(f => restatesEarlier(earlierOnes, f))).toEqual([false, true]);
+    const linkedTo = { sameAs: 'src/x.ts:10:10:retry-never-ends' };
+    const answeredBy = { answeredIn: { threadId: 'T8', answer: 'Agreed.', grade: { severity: 'note' as const } } };
+    const keptPosted = (severity: Finding['severity']) => [{}, linkedTo, answeredBy].map(link => restatesEarlier(earlierOnes, finding(severity, 'Retry never ends', 'src/x.ts', 10, link)));
+    expect([keptPosted('warning'), keptPosted('note')]).toEqual([[false, false, false], [true, true, true]]);
 
     // A security finding never rides a thread that is not a security thread, since only the first comment makes a thread
     // guarded. It is posted on its own, while a security thread takes it.
@@ -4326,7 +4330,7 @@ describe('runReview', () => {
     expect(named.findings[0]).not.toHaveProperty('sameAs');
     expect(named.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
     // It does so whichever thread the finding leaves, here a closed answered one.
-    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends', answeredIn: { threadId: 'T9', answer: 'Agreed.' } })] });
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends', answeredIn: { threadId: 'T9', answer: 'Agreed.', grade: { severity: 'warning' } } })] });
     const elsewhere = await runReview(makeClients(), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3',
       openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'blocker' })],
@@ -4337,7 +4341,7 @@ describe('runReview', () => {
     expect(elsewhere.findings[0]).not.toHaveProperty('answeredIn');
     expect(elsewhere.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
     // It keeps no link to a plain thread at all: here `answeredIn` and `sameAs` name two different closed plain threads.
-    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:30:30:cache-leaks', answeredIn: { threadId: 'T9', answer: 'Agreed.' } })] });
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:30:30:cache-leaks', answeredIn: { threadId: 'T9', answer: 'Agreed.', grade: { severity: 'warning' } } })] });
     const closed = await runReview(makeClients(), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3', openThreads: [],
       previousFindings: [
@@ -4386,14 +4390,24 @@ describe('runReview', () => {
     expect(info).toHaveBeenCalledWith('The review threads could not be read, so no finding is matched to an earlier one this round');
     info.mockRestore();
     // A closed answered thread is read from the recap, so a security thread among them keeps its repeat.
-    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged', 'src/x.ts', 50, { tags: ['security'], answeredIn: { threadId: 'T9', answer: 'Agreed.' } })] });
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged', 'src/x.ts', 50, { tags: ['security'], answeredIn: { threadId: 'T9', answer: 'Agreed.', grade: { severity: 'blocker' } } })] });
     const answered = (isSecurity: boolean) => runReview(makeClients(), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, openThreads: [],
-      previousFindings: [{ title: 'Token logged', file: 'src/x.ts', line: 50, severity: 'warning', status: 'resolved', threadId: 'T9', answer: 'Agreed.', isSecurity }],
+      previousFindings: [{ title: 'Token logged', file: 'src/x.ts', line: 50, severity: 'blocker', status: 'resolved', threadId: 'T9', answer: 'Agreed.', isSecurity }],
       priorRounds: [prior], headSha: 'sha3',
     });
-    expect((await answered(true)).findings[0].answeredIn).toEqual({ threadId: 'T9', answer: 'Agreed.' });
+    expect((await answered(true)).findings[0].answeredIn).toEqual({ threadId: 'T9', answer: 'Agreed.', grade: { severity: 'blocker' } });
     expect((await answered(false)).findings[0]).toEqual(expect.objectContaining({ title: 'Token logged', ownThread: true }));
+    // Dedup matched the finding to an answered suggestion at the finder's grade. The judge raised it to a warning, so the
+    // suggestion thread no longer takes it, and it is posted on its own.
+    const answeredSuggestion = { threadId: 'T8', answer: 'Agreed.', grade: { severity: 'note' as const } };
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('warning', 'Retry log is noisy', 'src/x.ts', 20, { answeredIn: answeredSuggestion }), finding('note', 'Retry log could be shorter', 'src/x.ts', 21, { answeredIn: answeredSuggestion })] });
+    const raised = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, openThreads: [],
+      previousFindings: [{ title: 'Retry log is noisy', file: 'src/x.ts', line: 20, severity: 'note', status: 'resolved', threadId: 'T8', answer: 'Agreed.' }],
+      priorRounds: [prior], headSha: 'sha3',
+    });
+    expect(raised.findings.map(f => [f.title, f.answeredIn?.threadId])).toEqual([['Retry log is noisy', undefined], ['Retry log could be shorter', 'T8']]);
   });
 
   it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {

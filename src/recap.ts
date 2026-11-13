@@ -430,6 +430,7 @@ function collectInPrSuppressions(
       ...(isGuarded(pf) && { guarded: true }),
       severity: pf.severity,
       ...(pf.recordedGrade && { recordedGrade: pf.recordedGrade }),
+      ...(pf.peakGrade && { peakGrade: pf.peakGrade }),
     };
     if (reason === 'agree-reply' && pf.authorReplyLogin) {
       entry.authorLogin = pf.authorReplyLogin;
@@ -774,7 +775,8 @@ function attachPriorThreadIds(rounds: RoundContext[], previousFindings: Previous
       ...r.findings,
       entries: r.findings.entries.map(entry => {
         if (entry.threadId) return entry;
-        const threadId = findPriorThreadId(entry.fingerprint, threads);
+        // A thread graded below the entry was not its thread, so a blocker never lands on a suggestion thread on its spot.
+        const threadId = findPriorThreadId(entry.fingerprint, threads.filter(t => entry.severity === 'ignore' || entry.severity === 'unknown' || !gradedAbove(entry.severity, t)));
         return threadId ? { ...entry, threadId } : entry;
       }),
     },
@@ -1152,7 +1154,8 @@ function deduplicateFindings(
       core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
       duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
     } else if (answeredMatch) {
-      unique.push({ ...finding, answeredIn: { threadId: answeredMatch.prev.threadId, answer: answeredMatch.prev.answer } });
+      const { threadId, answer, severity, recordedGrade, peakGrade } = answeredMatch.prev;
+      unique.push({ ...finding, answeredIn: { threadId, answer, grade: { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }) } } });
     } else {
       unique.push(finding);
     }

@@ -452,15 +452,14 @@ export function needsProof(finding: Finding): boolean {
 }
 
 /** Whether an earlier finding is linked to `finding`. A later step then probably keeps the warning out of the review, but only a certain result takes a warning out of the checks, so this one is checked last. */
-const linkedToEarlier = (finding: Finding): boolean => !!(finding.sameAs || finding.variantOf || finding.threadId || finding.answeredIn);
 
 /**
  * Returns the warnings to check with tools, at most `limit`, and those `over` that limit. A check that decides whether
  * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
  * whether the defect exists, and one no cited line proves. Then come the warnings `preExisting` accepts, which are
- * posted only when a check confirms them, those with a doubt first. Then come the warnings of both kinds that are
- * `linkedToEarlier` or that `restatesEarlier` accepts. Last come the findings the judge doubts that are posted without
+ * posted only when a check confirms them, those with a doubt first. Then come the warnings of both kinds that
+ * `restatesEarlier` accepts, which an earlier finding keeps posted. Last come the findings the judge doubts that are posted without
  * proof: a security finding and one that `breaksRule`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding with a
@@ -473,13 +472,12 @@ function doubtsToCheck(
   findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
   preExisting?: (finding: Finding) => boolean, roundEnd = false,
 ): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
-  const last = (finding: Finding): boolean => linkedToEarlier(finding) || restatesEarlier(finding);
   const warnings = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation);
   const unchanged = warnings.filter(f => needsProof(f) && preExisting?.(f));
   const unproven = warnings.filter(f => needsProof(f) && !unchanged.includes(f) && (doubtsDefect(f) || citesNoProof(f)));
   const statusOnly = warnings.filter(f => !needsProof(f) && doubtsDefect(f));
   const old = [...unchanged.filter(f => f.doubts?.length), ...unchanged.filter(f => !f.doubts?.length)];
-  const groups = roundEnd ? [...old.filter(f => !last(f)), ...[...unproven, ...old].filter(last), ...statusOnly] : unproven.filter(f => !last(f));
+  const groups = roundEnd ? [...old.filter(f => !restatesEarlier(f)), ...[...unproven, ...old].filter(restatesEarlier), ...statusOnly] : unproven.filter(f => !restatesEarlier(f));
   const open = groups.filter(f => !noCheck(f));
   const reused = open.filter(needsNoCall);
   const ordered = open.filter(f => !reused.includes(f));
@@ -571,7 +569,10 @@ export interface RefuteOptions {
   hiddenLater?: (finding: Finding) => boolean;
   /** Whether a later step keeps the warning `finding` out of the review whatever a check says. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks, and none at all unless its check `decidesGrade`. */
   unpostedLater?: (finding: Finding) => boolean;
-  /** Whether the warning `finding` probably restates an earlier finding that nothing links it to yet. Such a warning is checked after the others, like a linked one. */
+  /**
+   * Whether an earlier finding that may carry the warning `finding` keeps it posted: one the judge links it to, the
+   * answered thread it repeats, or one it probably restates. Such a warning is checked after the others.
+   */
   restatesEarlier?: (finding: Finding) => boolean;
   /** How many of the round's `MAX_DOUBT_CHECKS` checks are left. Each one this call makes lowers it, so the calls of one round share them. */
   doubtBudget?: { left: number };

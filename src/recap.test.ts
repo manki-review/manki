@@ -70,7 +70,7 @@ describe('deduplicateFindings', () => {
       unique: [],
       duplicates: [{ finding: findings[0], matchedTitle: 'Missing null check', matchType: 'exact' }],
     });
-    const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.' } }];
+    const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.', grade: { severity: answered.severity } } }];
     expect(deduplicateFindings(findings, [answered], new Set(['src/foo.ts'])).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [answered]).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, line: 0, originalLine: 41 }]).unique).toEqual(toJudge);
@@ -1269,16 +1269,18 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: { count: 4, severityCounts: { blocker: 3, warning: 1, note: 0 }, entries },
       });
-      const thread = (id: string, isResolved: boolean, slug: string, originalLine: number) => makeThread({
+      const thread = (id: string, isResolved: boolean, slug: string, originalLine: number, grade = 'warning') => makeThread({
         id,
         isResolved,
         line: null,
         originalLine,
-        comments: { nodes: [{ body: `**Warning**: x\n\n<!-- manki:warning:${slug} -->`, author: { login: BOT_LOGIN } }] },
+        comments: { nodes: [{ body: `**x**: x\n\n<!-- manki:${grade}:${slug} -->`, author: { login: BOT_LOGIN } }] },
       });
       const octokit = mockOctokit([
-        thread('T_FAR', false, 'Old-issue', 40),
-        thread('T_RESOLVED', true, 'Old-issue', 12),
+        thread('T_FAR', false, 'Old-issue', 40, 'blocker'),
+        thread('T_RESOLVED', true, 'Old-issue', 12, 'blocker'),
+        // A suggestion thread on the blocker's own line is graded below it, so it is never the blocker's thread.
+        thread('T_SUGGESTION', false, 'Old-issue', 10, 'note'),
         thread('T_OTHER', false, 'Other-issue', 60),
         makeThread({
           id: 'T_FILE',
@@ -2446,7 +2448,7 @@ describe('llmDeduplicateFindings', () => {
 
     // The static match sends the next wording to the judge with the answer in the thread of the one before.
     const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, answer: 'Unverified. The move is not in this PR.' });
-    expect(deduplicateFindings([third], [answered]).unique).toEqual([{ ...third, answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.' } }]);
+    expect(deduplicateFindings([third], [answered]).unique).toEqual([{ ...third, answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.', grade: { severity: answered.severity } } }]);
 
     // The same problem in another file is another place, so a model match there changes nothing.
     const elsewhere = { ...second, file: 'src/index.ts' };

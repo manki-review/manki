@@ -4615,7 +4615,7 @@ describe('postReview fallback paths', () => {
       }];
       const named = (line: number): Finding => ({ ...offLineBlocker, title: 'Floor class weakened by the PR', line, threadId: 'T1' });
 
-      const answered: Finding = { ...named(2), threadId: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.' } };
+      const answered: Finding = { ...named(2), threadId: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.', grade: { severity: 'blocker' } } };
       for (const finding of [named(2), named(40), answered]) {
         await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([finding]), outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { existingThreads });
       }
@@ -4630,7 +4630,7 @@ describe('postReview fallback paths', () => {
       // A thread graded below the blocker never carries it, even when the judge links them, so the blocker gets a thread
       // of its own and counts as new. One off the diff's lines gets a file-level comment. Its record entry names no
       // thread, which would make the lower thread block next round.
-      const lower = [{ severity: 'warning' as const }, { severity: 'note' as const }, { severity: 'warning' as const, gradeUnknown: true }, { recordedGrade: 'warning' as const }];
+      const lower = [{ severity: 'warning' as const }, { severity: 'note' as const }, { severity: 'warning' as const, gradeUnknown: true }];
       for (const grade of lower) {
         for (const finding of [named(2), named(40)]) {
           createReview.mockClear();
@@ -5208,7 +5208,7 @@ describe('postReview non-blocking findings', () => {
     const findings = [
       nonBlocking('note', 'Extract helper', 5),
       nonBlocking('note', 'Fallback line', 30),
-      nonBlocking('note', 'Worse retry', 11, { answeredIn: { threadId: 'T2', answer: 'Withdrawn. Fine.' } }),
+      nonBlocking('note', 'Worse retry', 11, { answeredIn: { threadId: 'T2', answer: 'Withdrawn. Fine.', grade: { severity: 'note' } } }),
       // A warning on code an earlier round reviewed opens no second thread either.
       nonBlocking('warning', 'Retry leaks a timer', 7, { origin: 'reviewed', tags: ['follow-up'] }),
       // A suggestion thread never carries a warning or a blocker, which get a thread of their own, a blocker off the

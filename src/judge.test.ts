@@ -3484,7 +3484,7 @@ describe('runJudgeAgent', () => {
       findings: [
         makeFinding({ title: 'Wrong fee', file: 'src/consensus/fees.ts' }),
         makeFinding({ title: 'Wrong check', file: 'src/consensus/validate/block.ts' }),
-        makeFinding({ title: 'Slow loop', file: 'src/net/peer.ts', answeredIn: { threadId: 'T1', answer: 'Withdrawn. The loop\nruns once.' } }),
+        makeFinding({ title: 'Slow loop', file: 'src/net/peer.ts', answeredIn: { threadId: 'T1', answer: 'Withdrawn. The loop\nruns once.', grade: { severity: 'warning' } } }),
       ],
       diff: makeDiff(),
       rawDiff: '',
@@ -4108,7 +4108,7 @@ describe('applyInPrSuppression', () => {
     expect(result.findings[0].originalSeverity).toBe('warning');
 
     // A resolved or agreed suggestion thread hides a later suggestion on its spot, never a warning.
-    for (const grade of [{ severity: 'note' as const }, { severity: 'warning' as const, recordedGrade: 'note' as const }]) {
+    for (const grade of [{ severity: 'note' as const }, { severity: 'note' as const, recordedGrade: 'note' as const }]) {
       const suggestion = { ...makeSuppression(), ...grade };
       expect(applyInPrSuppression([makeFinding({ severity: 'note' })], [suggestion]).count).toBe(1);
       expect(applyInPrSuppression(findings, [suggestion])).toEqual({ findings, count: 0 });

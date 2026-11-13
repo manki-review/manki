@@ -2382,7 +2382,7 @@ describe('runFullReview orchestration', () => {
         { ...finding, title: 'Security note', tags: ['security'] },
         { ...finding, title: 'Tool alert', toolSource: 'eslint' },
         { ...finding, title: 'In a thread', threadId: 'PRRT_open' },
-        { ...finding, title: 'Answered', answeredIn: { threadId: 'PRRT_answered', answer: 'kept' } },
+        { ...finding, title: 'Answered', answeredIn: { threadId: 'PRRT_answered', answer: 'kept', grade: { severity: 'note' as const } } },
         { ...finding, title: 'Outside the diff', file: 'src/other.ts' },
         { ...finding, title: 'Old reviewer', reviewers: ['Security & Safety'] },
         { ...finding, title: 'Also outside', file: 'src/other.ts', line: 3 },
@@ -5833,7 +5833,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    const worse = { severity: 'blocker' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' } };
+    const worse = { severity: 'warning' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.', grade: { severity: 'warning' as const } } };
     // Before the review posts, the variants of an open thread's finding go there in one reply. A restatement adds nothing.
     // A finding whose reply fails leaves its thread, so the review posts it on its own.
     const variant = { severity: 'warning' as const, title: 'Bug C in another field', file: 'src/app.ts', line: 9, description: 'Same miss.', reviewers: [], threadId: 'PRRT_ghi', variantOf: 'src/app.ts:8:8:Bug-C' };

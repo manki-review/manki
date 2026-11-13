@@ -7,14 +7,25 @@ export type FindingSeverity = 'blocker' | 'warning' | 'note' | 'ignore';
 /** Severities from most to least severe. */
 export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'note', 'ignore'];
 
+/** The grades of an earlier finding or thread: its own severity, and those the round records gave it. */
+export interface ThreadGrade {
+  severity: FindingSeverity | 'unknown';
+  /** The grade the round records last gave it. */
+  recordedGrade?: FindingSeverity;
+  /** The highest grade the round records ever gave it. */
+  peakGrade?: FindingSeverity;
+}
+
 /**
- * Whether a finding of `severity` is graded above an earlier finding or thread: above the grade the round records last
- * gave it, or else its own severity. One of `unknown` grade predates the markers and counts as a blocker. An earlier
- * finding graded below never carries, waives or hides a new one.
+ * Whether a finding of `severity` is graded above an earlier finding or thread: above its own severity and above the
+ * highest grade the round records gave it, which a later round gives back when it names the problem again. One of
+ * `unknown` grade predates the markers and counts as a blocker. An earlier finding graded below never carries, waives
+ * or hides a new one.
  */
-export function gradedAbove(severity: FindingSeverity, earlier: { severity: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
-  const grade = earlier.recordedGrade ?? (earlier.severity === 'unknown' ? 'blocker' : earlier.severity);
-  return SEVERITY_ORDER.indexOf(severity) < SEVERITY_ORDER.indexOf(grade);
+export function gradedAbove(severity: FindingSeverity, earlier: ThreadGrade): boolean {
+  const own = earlier.severity === 'unknown' ? 'blocker' : earlier.severity;
+  const rank = SEVERITY_ORDER.indexOf(severity);
+  return [own, earlier.peakGrade ?? earlier.recordedGrade].every(grade => !grade || rank < SEVERITY_ORDER.indexOf(grade));
 }
 
 /** What a review calls each severity. A note is posted as a suggestion. */
@@ -338,8 +349,11 @@ export interface Finding {
   buildClaim?: boolean;
   /** Earlier finding this one resembles, whose fix the judge of an earlier round confirmed. */
   resemblesFixed?: { title: string; file: string; line: number };
-  /** The Manki thread that already answered the developer about this problem, and that answer. The judge keeps the finding only when the code there got worse. */
-  answeredIn?: { threadId: string; answer: string };
+  /**
+   * The Manki thread that already answered the developer about this problem, that answer and the thread's grades. The
+   * judge keeps the finding only when the code there got worse.
+   */
+  answeredIn?: { threadId: string; answer: string; grade: ThreadGrade };
   /** Whether the finding sits on code the PR changed since the last reviewed round or on code an earlier round reviewed, or restates a finding an earlier round listed. */
   origin?: FindingOrigin;
   /** The kind of problem, set by the judge. */
@@ -975,7 +989,7 @@ export type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
 export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
 
 /** Fingerprint-level suppression derived from the current PR's thread state. */
-export interface InPrSuppression {
+export interface InPrSuppression extends ThreadGrade {
   fingerprint: FindingFingerprint;
   reason: InPrSuppressionReason;
   /**
@@ -985,9 +999,6 @@ export interface InPrSuppression {
   authorLogin?: string;
   /** Set when the PR author alone could not clear the thread. Only such an entry hides a security finding. */
   guarded?: boolean;
-  /** The thread's grade. It hides no finding graded above it. */
-  severity: FindingSeverity | 'unknown';
-  recordedGrade?: FindingSeverity;
 }
 
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
