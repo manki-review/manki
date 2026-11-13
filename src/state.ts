@@ -677,18 +677,19 @@ function warningThreadsLine(held: ReviewThread[], clearRole: AuthorClearRole | u
   return `${held.length === 1 ? '1 warning thread holds' : `${held.length} warning threads hold`} the approval:\n${list}\n\nApproval follows once each one is fixed, resolved, or answered in its thread by ${who} with a reason to keep it.`;
 }
 
-/** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
+/** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. Returns whether it posted. */
 async function postNoticeOnce(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, marker: string, text: string,
-): Promise<void> {
+): Promise<boolean> {
   const existing = await octokit.paginate(octokit.rest.issues.listComments, {
     owner, repo, issue_number: prNumber, per_page: 100,
   });
   if (existing.some(c => isBotLogin(bot, c.user?.login) && c.body?.includes(marker))) {
     core.info(`Notice ${marker} already present, skipping duplicate`);
-    return;
+    return false;
   }
   await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, marker) });
+  return true;
 }
 
 /**
@@ -943,7 +944,8 @@ async function approveOrSayWhy(
 
   core.info('All findings resolved — auto-approving');
   const refusalNotice = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
-  let refused = false;
+  // Set once GitHub refused the approval, to whether this check posted the notice.
+  let refusalPosted: boolean | undefined;
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
@@ -981,15 +983,11 @@ async function approveOrSayWhy(
       core.warning(
         'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.',
       );
-      await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: prNumber,
-        body: withMarkers(refusalNotice, BOT_MARKER, approvalRecord('held', 'refused', pr.head.sha)),
-      });
-      core.info('Posted auto-approve permission notice as issue comment');
+      // One notice per head, with its own marker so a draft or conflict notice of the head does not stand in for it.
+      refusalPosted = await postNoticeOnce(
+        octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${pr.head.sha}:refused -->`, `${refusalNotice}\n\n${approvalRecord('held', 'refused', pr.head.sha)}`,
+      );
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-      refused = true;
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.
@@ -1000,8 +998,9 @@ async function approveOrSayWhy(
   }
 
   await deleteAutoApproveProgressComment(octokit, owner, repo, progressCommentId);
-  // A refused approval is held, as in a review round, and its notice already answers a person.
-  return refused ? { approved: false, why: async () => refusalNotice, answered: true } : { approved: true };
+  // A refused approval is held, as in a review round. A notice this check posted already answers a person.
+  if (refusalPosted === undefined) return { approved: true };
+  return { approved: false, why: async () => refusalNotice, ...(refusalPosted && { answered: true as const }) };
 }
 
 export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

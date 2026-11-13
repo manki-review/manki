@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
@@ -1360,6 +1360,43 @@ describe('checkAndAutoApprove', () => {
     const notice = createCommentMock.mock.calls[0][0].body as string;
     expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused', head: 'sha-789' })]);
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
+  });
+
+  it('posts the refusal notice once per head, and a later verdict retires it', async () => {
+    const refusal = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
+    const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true })];
+    const createReviewMock = jest.fn().mockRejectedValue(new Error(SETTING_REFUSAL));
+    const createCommentMock = jest.fn().mockResolvedValue({});
+    const check = (prHeadSha: string, existing: string[] = []) => approveOrSayWhy(makeMockOctokit({
+      threads: resolved, prHeadSha, mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock,
+      existingComments: existing.map(body => ({ body, user: { login: 'manki-review[bot]' } })),
+    }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+
+    const first = await check('sha-789');
+    expect(first).toMatchObject({ approved: false, answered: true });
+    const [posted] = createCommentMock.mock.calls.map(([c]) => c.body as string);
+    expect(posted.startsWith(`${refusal}\n\n<!-- manki-approval-record: `)).toBe(true);
+    expect(posted.endsWith(' -->\n\n<!-- manki-approval-held:sha-789:refused -->')).toBe(true);
+
+    // A second check on the head posts nothing, so a person who asked gets the notice as the reply.
+    const again = await check('sha-789', [posted]);
+    expect(createCommentMock).toHaveBeenCalledTimes(1);
+    expect(again.approved).toBe(false);
+    expect(again).not.toHaveProperty('answered');
+    expect(await (again as { why: () => Promise<string> }).why()).toBe(refusal);
+
+    // A new head gets its own notice, and the draft or conflict notice of that head does not stand in for it.
+    await check('sha-790', [posted, '**Approval held:** this PR is a draft.\n\n<!-- manki-approval-held:sha-790 -->']);
+    expect(createCommentMock).toHaveBeenCalledTimes(2);
+    expect(createCommentMock.mock.calls[1][0].body).toContain('<!-- manki-approval-held:sha-790:refused -->');
+
+    const deleteComment = jest.fn().mockResolvedValue({});
+    const listed = { paginate: jest.fn(paginateSinglePage), rest: { issues: {
+      listComments: jest.fn().mockResolvedValue({ data: [{ id: 11, body: posted, user: { login: 'manki-review[bot]' }, updated_at: '2025-01-01T00:00:00Z' }] }),
+      deleteComment,
+    } } } as unknown as Octokit;
+    await retireStaleNotices(listed, TEST_BOT, 'owner', 'repo', 1, 'sha-791');
+    expect(deleteComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 11 });
   });
 
   it('approve review body is non-empty so it does not register as a placeholder', async () => {
