@@ -2571,7 +2571,7 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 function formatFindingHeader(finding: Finding): string {
   const name = SEVERITY_NAME[finding.severity];
   const severity = `${name[0].toUpperCase()}${name.slice(1)}`;
-  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, not blocking`}**`;
+  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, ${holdsApproval(finding) ? 'needs an answer' : 'not blocking'}`}**`;
   // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';
   const kind = [isPreExisting(finding) && 'Pre-existing', finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);

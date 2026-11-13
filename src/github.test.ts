@@ -1802,7 +1802,7 @@ describe('postReview body lead', () => {
     const unthreaded = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
     expect(nowhere.approvalHeld).toBe('warnings');
     expect(unthreaded.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
-    expect(unthreaded).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, not blocking**\n**Nowhere**\n');
+    expect(unthreaded).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs an answer**\n**Nowhere**\n');
     expect(unthreaded).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     // A blocker still requests changes.
     const blocked = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker, warning('Retry never stops', 3)] }, diff, undefined, undefined, { openWarnings: 1 });
@@ -5185,7 +5185,7 @@ describe('postReview non-blocking findings', () => {
     const review = createReview.mock.calls[0][0];
     const byLine = new Map<number, string>(review.comments.map((c: { line: number; body: string }) => [c.line, c.body]));
     expect([...byLine.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14]);
-    expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, not blocking\*\*\n\n\*\*Deferred warning\*\*\n/u);
+    expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, needs an answer\*\*\n\n\*\*Deferred warning\*\*\n/u);
     expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
     expect(byLine.get(5)).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Suggestion one\*\*\n/u);
     expect(review.body).toContain('### Findings · 1 suggestion\n\n<details>\n<summary>\u2728 <b>Unescaped path 15</b>');
@@ -5290,7 +5290,7 @@ describe('postReview non-blocking findings', () => {
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning, not blocking**']]);
+    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning, needs an answer**']]);
     expect(createReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.split('\n')[0]])).toEqual([['src/a.ts', 'file', '\u{1F6AB} **Blocker**']]);
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
@@ -5425,13 +5425,13 @@ describe('postReview non-blocking findings', () => {
     // note is posted as written, so the next round reads the description without them.
     const threads: string[] = review.comments.map((c: { body: string }) => c.body);
     expect(threads.map(body => body.split('\n')[2])).toEqual(['**On new code**', '**On old code**', '**Old blocker**']);
-    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning, not blocking**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
+    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning, needs an answer**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
     expect(parseFindingFromComment(threads[1]).description).toBe('It goes wrong. Second sentence. Third sentence.');
     expect([threads[0], threads[2]].join('\n')).not.toContain('An earlier round');
     // A late warning off the changed lines gets a file-level thread with the same notes.
     const [offDiff] = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
     expect([offDiff.path, offDiff.subject_type]).toEqual(['src/a.ts', 'file']);
-    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning, not blocking**\n\n**Old code off the diff**\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
+    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning, needs an answer**\n\n**Old code off the diff**\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
     expect(review.body).not.toContain('Old code off the diff');
     // Each origin gets its section with exact counts, and the sections follow each other under rules. A security note on
     // reviewed code stays listed.
@@ -5488,7 +5488,7 @@ describe('postReview non-blocking findings', () => {
     await postReview(unthreading.octokit, 'owner', 'repo', 1, 'sha', refusedLines, diff, lateContext, 1000);
     const updated = unthreading.updateReview.mock.calls[0][0].body as string;
     expect(updated).toMatch(/^\u26A0\uFE0F \*\*Approval waits on 1 warning\.\*\*/u);
-    expect(updated).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, not blocking**\n**On old code**\n');
+    expect(updated).toContain('**Warnings that could not be posted as threads:**\n\n**Warning, needs an answer**\n**On old code**\n');
     expect(updated).toContain('There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.');
     expect(updated).not.toContain('Blockers that could not be posted as threads');
     expect(JSON.parse(extractReviewRecords(updated).records[0]).findings.entries).toEqual([expect.objectContaining({ posted: 'body', citedLine: { hash: expect.any(String), count: 1 } }), expect.objectContaining({ posted: 'body' })]);

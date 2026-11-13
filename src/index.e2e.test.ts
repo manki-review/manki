@@ -711,7 +711,7 @@ describe('runFullReview end to end', () => {
       // The warning it ends as holds the approval until its thread is answered.
       expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
       const [comment] = mockGitHub.threads.map(t => t.comments[0].body);
-      expect(comment).toContain('**Warning, not blocking**');
+      expect(comment).toContain('**Warning, needs an answer**');
       expect(comment).toContain('a second check on another model agreed, so this does not block. Please check it yourself. Both inputs are bounded at src/api.ts:3.');
       const [entry] = mockGitHub.roundContext(postedReviews()[0]).findings.entries;
       expect(entry).toMatchObject({

@@ -1102,16 +1102,16 @@ describe('checkAndAutoApprove', () => {
   describe('a warning thread', () => {
     const HEAD = 'head-sha';
     const user = { login: 'manki-review[bot]', type: 'Bot' };
-    const reply = (login: string, body = 'It is bounded by the caller.', __typename?: string) => ({ body, author: { login, ...(__typename && { __typename }) } });
+    const reply = (login: string, body = 'It is bounded by the caller.', __typename?: string, createdAt?: string) => ({ body, author: { login, ...(__typename && { __typename }) }, ...(createdAt && { createdAt }) });
     const warning = (id: string, overrides: Parameters<typeof makeGraphqlFetchThreadNode>[0] = {}, tags?: string[]) => makeGraphqlFetchThreadNode({
       id, url: `https://example.com/${id}`, body: formatFindingComment({ severity: 'warning', title: `Retry ${id}`, file: 'src/a.ts', line: 10, description: 'd', reviewers: [], ...(tags && { tags }) }, TEST_LINKS), ...overrides,
     });
-    /** Runs the state check after a round on the head that held its approval for warnings. */
-    const check = async (threads: ReturnType<typeof makeGraphqlFetchThreadNode>[], role = 'write', unreadRecords = false) => {
+    /** Runs the state check after a round on the head that held its approval for warnings, or after `reviews`. */
+    const check = async (threads: ReturnType<typeof makeGraphqlFetchThreadNode>[], role = 'write', unreadRecords = false, reviews?: Array<{ id: number; body: string; state: string; commit_id: string; user: typeof user; submitted_at: string }>) => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({
         threads, prHeadSha: HEAD, mergeable: true, role, createReviewFn: createReviewMock,
-        existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'COMMENTED', commit_id: HEAD, user }],
+        existingReviews: reviews ?? [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'COMMENTED', commit_id: HEAD, user }],
       });
       // The round records are the first list the check reads.
       if (unreadRecords) jest.mocked(octokit.paginate).mockRejectedValueOnce(new Error('rate limited'));
@@ -1127,6 +1127,13 @@ describe('checkAndAutoApprove', () => {
       ['a security warning thread the PR author replied in', [warning('t1', { replies: [reply('author')] }, ['security'])]],
       ['a security warning thread the PR author resolved without the role', [warning('t1', { isResolved: true, resolvedBy: 'author' }, ['security'])]],
       ['a second warning thread nobody answered', [warning('t1', { isResolved: true }), warning('t2')]],
+      ['a warning thread the PR author only asked a question in', [warning('t1', { replies: [reply('author', 'Why would the caller pass more than three?  ')] })]],
+      ['a warning thread the PR author only sent a command in', [warning('t1', { replies: [reply('author', '@manki explain why this matters')] })]],
+      ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
+        body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
+          .replace('**Warning, needs an answer**', '**Warning, not blocking**')
+          .replace('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or an answer._', '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._'),
+      })]],
     ])('holds the approval while it is %s', async (_label, threads, role = 'write') => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
       const { approved, why, events } = await check(threads, role);
@@ -1144,6 +1151,7 @@ describe('checkAndAutoApprove', () => {
       ['answered by a person with the role `author_clear_role` allows', [warning('t1', { replies: [reply('maria')] })], 'maintain'],
       ['a security warning a maintainer resolved', [warning('t1', { isResolved: true, resolvedBy: 'maria' }, ['security'])]],
       ['the last of several, all answered', [warning('t1', { isResolved: true }), warning('t2', { replies: [reply('author')] })]],
+      ['answered by the PR author after a question and a command', [warning('t1', { replies: [reply('author', 'Why?'), reply('author', '/manki explain'), reply('author')] })]],
       // Neither a pre-existing defect nor a suggestion holds, though nobody answered them.
       ['answered, beside an open pre-existing warning and an open suggestion', [
         warning('t1', { replies: [reply('author')] }), warning('t2', {}, ['pre-existing']), makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:note:style --> style' }),
@@ -1153,6 +1161,28 @@ describe('checkAndAutoApprove', () => {
       expect(approved).toBe(true);
       expect(events).toEqual(['APPROVE']);
       expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved, and every warning thread is resolved or answered\.\n/u);
+    });
+
+    it('counts only a reply made after the review that lowered a blocker thread to a warning was posted', async () => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      const lowered = (replies: ReturnType<typeof reply>[]) => makeGraphqlFetchThreadNode({
+        id: 't1', url: 'https://example.com/t1', body: formatFindingComment({ severity: 'blocker', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [] }, TEST_LINKS), replies,
+      });
+      const evaluations = [{ threadId: 't1', status: 'partly_addressed' as const, reason: 'Capped, but the cap is too high.', grade: 'warning' as const }];
+      const round = blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] }, judge: { summary: '', threadEvaluations: evaluations } }, 2);
+      const reviews = (submitted?: string) => [{ id: 7, body: roundBody(round), state: 'COMMENTED', commit_id: HEAD, user, submitted_at: submitted ?? '' }];
+      const posted = '2026-11-12T10:00:00Z';
+      // A reply to the blocker, made before the round lowered it, does not answer the warning.
+      const before = await check([lowered([reply('author', 'It is bounded by the caller.', undefined, '2026-11-12T09:59:00Z')])], 'write', false, reviews(posted));
+      expect([before.approved, before.events]).toEqual([false, []]);
+      expect(before.why).toMatch(/^1 warning thread holds the approval:\n- \[Retry t1\]/);
+      // Without the time the review was posted, no reply counts.
+      const unknown = await check([lowered([reply('author', 'It is bounded by the caller.', undefined, '2026-11-12T10:01:00Z')])], 'write', false, reviews());
+      expect(unknown.approved).toBe(false);
+      // Neither does a reply whose own time is unknown.
+      expect((await check([lowered([reply('author')])], 'write', false, reviews(posted))).approved).toBe(false);
+      const after = await check([lowered([reply('author', 'It is bounded by the caller.', undefined, '2026-11-12T10:01:00Z')])], 'write', false, reviews(posted));
+      expect([after.approved, after.events]).toEqual([true, ['APPROVE']]);
     });
 
     it('holds the approval when the round records cannot be read, since the thread then counts as blocking', async () => {

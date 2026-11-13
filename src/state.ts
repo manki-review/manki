@@ -8,10 +8,10 @@ import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_AP
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isLogin, isOverrideCandidate, latestPersonReply, parseContextBlocks, personReplies, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { answersWarning, fetchPriorRoundContexts, fetchRecapState, isLogin, isOverrideCandidate, latestPersonReply, parseContextBlocks, personReplies, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { formatApprovalRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
-import { ApprovalRecord, AuthorClearRole, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
+import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
 import { COMMENT_MARKER as BOT_MARKER, ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -77,7 +77,7 @@ interface ReviewThread {
   mayCarryBlocker?: boolean;
   /** Whether the thread is a warning that is no pre-existing defect, so it holds an approval until it is answered. */
   isWarning?: true;
-  /** Who replied in a warning thread with any text, other than Manki and other bots. */
+  /** Who answered a warning thread after it became a warning, by `answersWarning`, other than Manki and other bots. */
   replierLogins?: string[];
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
@@ -124,6 +124,7 @@ async function fetchBotReviewThreads(
         databaseId?: number | null;
         body: string;
         url?: string;
+        createdAt?: string;
         author: { login: string; __typename?: string } | null;
         originalCommit?: { oid: string } | null;
       }>;
@@ -142,6 +143,7 @@ async function fetchBotReviewThreads(
         databaseId
         body
         url
+        createdAt
         author {
           login
           __typename
@@ -159,8 +161,11 @@ async function fetchBotReviewThreads(
       (firstComment.body?.includes('manki:') || firstComment.body?.includes(BOT_MARKER));
   });
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
-  const records = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
+  const records: Awaited<ReturnType<typeof fetchPriorRoundContexts>> = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
   const grades = recordedThreadGrades(pending ? [...records.priorRounds, pending] : records.priorRounds);
+  // The pending round is not posted yet, so no reply can come after it.
+  const postedAt = new Map(records.postedAt);
+  if (pending) postedAt.delete(pending.meta.round);
   // Only Manki's own resolve needs a replier to back it. A thread at the comment limit may hide a later reply, so it names none.
   const byManki = (thread: typeof botThreads[number]) => thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login);
   const repliesUnread = (thread: typeof botThreads[number]) => byManki(thread) && thread.comments.nodes.length >= THREAD_COMMENTS_LIMIT;
@@ -184,7 +189,9 @@ async function fetchBotReviewThreads(
       const markerSlug = threadMarkerSlug(body);
       const data = parseFindingData(body);
       const isWarning = !isBlocking && threadWarns({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity }) && !data?.tags?.includes(PRE_EXISTING_TAG);
-      const replierLogins = isWarning ? [...new Set(personReplies(bot, thread.comments.nodes).flatMap(c => c.author && c.body.trim() ? [c.author.login] : []))] : [];
+      const since = isWarning ? warningSince(severity, grades.get(thread.id)?.history ?? [], postedAt) : undefined;
+      const after = (c: { createdAt?: string }) => since === 'posted' || (!!since && !!c.createdAt && Date.parse(c.createdAt) > Date.parse(since));
+      const replierLogins = [...new Set(personReplies(bot, thread.comments.nodes).flatMap(c => c.author && answersWarning(c.body) && after(c) ? [c.author.login] : []))];
       const findingTitle = data?.title?.trim() || (markerSlug?.replace(/-/g, ' ') ?? 'Unknown');
       const commit = thread.comments.nodes[0]?.originalCommit?.oid;
       const place = thread.path && markerSlug
@@ -218,6 +225,20 @@ async function fetchBotReviewThreads(
         ...(fixedOn.length > 0 && { fixedOn }),
       };
     });
+}
+
+/**
+ * Returns when a warning thread became a warning: `posted` when its first comment was already one and no round graded
+ * it otherwise since, or else when the review of the round that last made it a warning was submitted. Returns
+ * `undefined` when that time is not known, as for a round not posted yet.
+ */
+function warningSince(severity: FindingSeverity | 'unknown', history: RecordedGrade['history'], postedAt: ReadonlyMap<number, string>): 'posted' | string | undefined {
+  let since: 'posted' | number | undefined = severity === 'warning' ? 'posted' : undefined;
+  for (const { round, grade } of history) {
+    if (grade !== 'warning') since = undefined;
+    else if (since === undefined) since = round;
+  }
+  return typeof since === 'number' ? postedAt.get(since) : since;
 }
 
 /** Why a thread closed, as GitHub shows it on the resolved thread. */
@@ -330,8 +351,8 @@ function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLog
 
 /**
  * Returns the warning threads that hold an approval. A thread stops holding once it is resolved, or once the PR author
- * or a person with `clearRole` replied in it with any text, whether or not Manki agreed. A security thread clears only
- * as a blocking one does, by `settledBy`.
+ * or a person with `clearRole` answered it in `replierLogins`, whether or not Manki agreed. A security thread clears
+ * only as a blocking one does, by `settledBy`.
  */
 async function heldWarnings(
   octokit: Octokit, owner: string, repo: string, threads: ReviewThread[], bot: BotIdentity,

@@ -113,23 +113,25 @@ const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
  */
 function recordedThreadGrades(priorRounds: readonly RoundContext[]): Map<string, RecordedGrade> {
   const grades = new Map<string, RecordedGrade>();
-  const record = (threadId: string, grade: FindingSeverity): void => {
-    const peak = grades.get(threadId)?.peak;
-    grades.set(threadId, { grade, peak: peak && SEVERITY_ORDER.indexOf(peak) < SEVERITY_ORDER.indexOf(grade) ? peak : grade });
+  const record = (threadId: string, grade: FindingSeverity, round: number): void => {
+    const earlier = grades.get(threadId);
+    const peak = earlier?.peak;
+    const history = (earlier?.history ?? []).filter(h => h.round !== round);
+    grades.set(threadId, { grade, peak: peak && SEVERITY_ORDER.indexOf(peak) < SEVERITY_ORDER.indexOf(grade) ? peak : grade, history: [...history, { round, grade }] });
   };
   for (const round of [...priorRounds].sort((a, b) => a.meta.round - b.meta.round)) {
     for (const { threadId, grade } of round.judge.threadEvaluations ?? []) {
-      if (grade) record(threadId, grade);
+      if (grade) record(threadId, grade, round.meta.round);
     }
     for (const { threadId, severity } of round.findings.entries ?? []) {
-      if (threadId && severity === 'blocker') record(threadId, 'blocker');
+      if (threadId && severity === 'blocker') record(threadId, 'blocker', round.meta.round);
     }
   }
   return grades;
 }
 
-/** The grade the round records last gave a thread, and the highest one they ever gave it. */
-interface RecordedGrade { grade: FindingSeverity; peak: FindingSeverity }
+/** The grade the round records last gave a thread, the highest one they ever gave it, and the grade each round gave it, oldest first. */
+interface RecordedGrade { grade: FindingSeverity; peak: FindingSeverity; history: Array<{ round: number; grade: FindingSeverity }> }
 
 // The outcome a Manki reply to a developer starts with.
 const REPLY_OUTCOME_RE = /^\**(Fixed|Withdrawn|Agreed|Kept|Unverified)\./;
@@ -249,8 +251,8 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
  */
 function matchTitleLine(body: string): RegExpMatchArray | null {
   const atTop = ownMarker(body, FINDING_DATA_OPENER) !== undefined
-    ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
-      ?? body.match(/^\S+ \*\*\w+(?:, not blocking)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
+    ? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
+      ?? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
     : null;
   return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }
@@ -505,16 +507,17 @@ const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planne
  * are preserved opaquely. Duplicates on `meta.round` are deduped by keeping
  * the entry with the highest review id (latest-posted). Result is sorted
  * ascending by `meta.round`. The record of an incomplete round is left out: it holds
- * diagnostics only, and the next round takes its number.
+ * diagnostics only, and the next round takes its number. `postedAt` maps each kept round to the time its review was
+ * submitted, when the review gives one.
  */
 function parseContextBlocks(
-  reviews: Array<{ body: string; id: number }>,
+  reviews: Array<{ body: string; id: number; submitted_at?: string | null }>,
   owner: string,
   repo: string,
   prNumber: number,
-): { rounds: RoundContext[]; unread: string[] } {
+): { rounds: RoundContext[]; unread: string[]; postedAt: Map<number, string> } {
   const unread = new Set<string>();
-  const byRound = new Map<number, { ctx: RoundContext; reviewId: number }>();
+  const byRound = new Map<number, { ctx: RoundContext; reviewId: number; submittedAt?: string | null }>();
   const duplicateRounds = new Set<number>();
 
   for (const review of reviews) {
@@ -572,10 +575,10 @@ function parseContextBlocks(
       if (existing) {
         duplicateRounds.add(round);
         if (review.id > existing.reviewId) {
-          byRound.set(round, { ctx, reviewId: review.id });
+          byRound.set(round, { ctx, reviewId: review.id, submittedAt: review.submitted_at });
         }
       } else {
-        byRound.set(round, { ctx, reviewId: review.id });
+        byRound.set(round, { ctx, reviewId: review.id, submittedAt: review.submitted_at });
       }
     }
   }
@@ -588,7 +591,8 @@ function parseContextBlocks(
   const rounds = Array.from(byRound.values())
     .map(v => v.ctx)
     .sort((a, b) => a.meta.round - b.meta.round);
-  return { rounds, unread: [...unread] };
+  const postedAt = new Map([...byRound].flatMap(([round, v]) => v.submittedAt ? [[round, v.submittedAt] as const] : []));
+  return { rounds, unread: [...unread], postedAt };
 }
 
 /**
@@ -718,6 +722,12 @@ interface ThreadFacts extends OverrideCandidate {
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
 function personReplies<T extends { author?: { login: string; __typename?: string } | null }>(bot: BotIdentity, comments: T[]): T[] {
   return comments.slice(1).filter(c => !isBotLogin(bot, c.author?.login) && c.author?.__typename !== 'Bot');
+}
+
+/** Whether a person's reply answers a warning: it has text, mentions no Manki command, and does not end in a question mark. */
+function answersWarning(body: string): boolean {
+  const text = body.trim();
+  return !!text && !hasBotMention(text) && !text.endsWith('?');
 }
 
 /** The latest reply in a thread that neither Manki nor another bot wrote. */
@@ -855,7 +865,7 @@ function refreshAuthorReplyClass(
 }
 
 /**
- * Returns the round contexts in Manki's reviews, and when auto-approve last approved the PR.
+ * Returns the round contexts in Manki's reviews, when each was posted, and when auto-approve last approved the PR.
  * An auto-approval is found by its marker, which stays in the body after GitHub dismisses the review.
  */
 async function fetchPriorRoundContexts(
@@ -864,7 +874,7 @@ async function fetchPriorRoundContexts(
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt' | 'priorRoundsIncomplete' | 'unreadRecords'>> {
+): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt' | 'priorRoundsIncomplete' | 'unreadRecords'> & { postedAt?: Map<number, string> }> {
   try {
     const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
@@ -873,13 +883,13 @@ async function fetchPriorRoundContexts(
       per_page: 100,
     });
     const botReviews = reviews.filter((r): r is typeof r & { body: string; id: number } => !!r.body && isBotLogin(bot, r.user?.login));
-    const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id }));
+    const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id, submitted_at: r.submitted_at }));
     // A round review quotes model text, which could echo the marker, so only a review without a round context counts.
     const lastApprovalAt = botReviews
       .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && hasOwnMarker(r.body, AUTO_APPROVE_MARKER))
       .at(-1)?.submitted_at;
-    const { rounds, unread } = parseContextBlocks(candidates, owner, repo, prNumber);
-    return { priorRounds: rounds, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }) };
+    const { rounds, unread, postedAt } = parseContextBlocks(candidates, owner, repo, prNumber);
+    return { priorRounds: rounds, postedAt, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }) };
   } catch (error) {
     core.warning(`Failed to fetch prior round contexts: ${error}`);
     return { priorRounds: [], priorRoundsIncomplete: true };
@@ -919,6 +929,9 @@ interface ReviewThread extends FindingMetadata {
   answer?: string;
 }
 
+/** The wording of `MISSED_EARLIER_NOTE` that late-find threads posted while warnings did not hold still carry. */
+const OLD_MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+
 /**
  * Parse the prose description and suggested-fix excerpt from a manki-authored
  * thread's first comment body. Returns `undefined` for either field when the
@@ -954,7 +967,7 @@ function parseFindingFromComment(posted: string): FindingMetadata {
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const data = parseFindingData(body);
   // The other notes under the title are skipped in whatever order they come.
-  const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
+  const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE, OLD_MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
   if (label) descSlice = descSlice.slice(label.length).trimStart();
@@ -1384,4 +1397,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { BOT_MENTION_PATTERN, blockersToRecheck, hasBotMention, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { answersWarning, BOT_MENTION_PATTERN, blockersToRecheck, hasBotMention, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
