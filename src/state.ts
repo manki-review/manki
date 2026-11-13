@@ -746,7 +746,7 @@ async function holdApproval(
 
 /**
  * Deletes the auto-approve withheld notice for `headSha`, every approval-held notice and the token service's conflict
- * note. Call it once a review posts its verdict on `headSha`.
+ * note. Call it once a review posts its verdict on `headSha`, an auto-approval included.
  * Marks every older failed or incomplete review progress comment as superseded by that verdict, whatever commit it was for.
  * With `pauseLifted`, when that round lifted the pause, each pause notice that lost its settings block is marked as resumed.
  */
@@ -974,6 +974,7 @@ async function approveOrSayWhy(
       await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, bot, owner, repo, prNumber);
       await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', cleared));
+      await retireStaleNotices(octokit, bot, owner, repo, prNumber, pr.head.sha);
     } catch (error) {
       if (!isApprovalSettingRefusal(error)) throw error;
       // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder

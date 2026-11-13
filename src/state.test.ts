@@ -550,7 +550,8 @@ describe('checkAndAutoApprove', () => {
     createCommentFn?: jest.Mock;
     checks?: { create: jest.Mock; update: jest.Mock; listForRef?: jest.Mock };
     existingReviews?: Array<{ id?: number; body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
-    existingComments?: Array<{ body?: string; user?: { login?: string } }>;
+    existingComments?: Array<{ id?: number; body?: string; user?: { login?: string } }>;
+    deleteCommentFn?: jest.Mock;
     /** The PR author's `role_name`. */
     role?: string;
     /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
@@ -580,6 +581,7 @@ describe('checkAndAutoApprove', () => {
         issues: {
           listComments: jest.fn().mockResolvedValue({ data: existingComments }),
           createComment: createCommentFn,
+          deleteComment: overrides.deleteCommentFn ?? jest.fn().mockResolvedValue({}),
         },
         repos: {
           getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.role === 'admin' ? 'admin' : 'write', role_name: overrides.role ?? 'write', user: { type: 'User' } } }),
@@ -1362,7 +1364,7 @@ describe('checkAndAutoApprove', () => {
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
-  it('posts the refusal notice once per head, and a later verdict retires it', async () => {
+  it('posts the refusal notice once per head, and a later verdict or approval retires it', async () => {
     const refusal = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
     const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true })];
     const createReviewMock = jest.fn().mockRejectedValue(new Error(SETTING_REFUSAL));
@@ -1397,6 +1399,15 @@ describe('checkAndAutoApprove', () => {
     } } } as unknown as Octokit;
     await retireStaleNotices(listed, TEST_BOT, 'owner', 'repo', 1, 'sha-791');
     expect(deleteComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 11 });
+
+    // Once the setting allows it, the approval of the head retires the notice too.
+    const deleteOnApproval = jest.fn().mockResolvedValue({});
+    const approved = await approveOrSayWhy(makeMockOctokit({
+      threads: resolved, prHeadSha: 'sha-789', mergeable: true, deleteCommentFn: deleteOnApproval,
+      existingComments: [{ id: 12, body: posted, user: { login: 'manki-review[bot]' } }],
+    }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+    expect(approved).toEqual({ approved: true });
+    expect(deleteOnApproval).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 12 });
   });
 
   it('approve review body is non-empty so it does not register as a placeholder', async () => {
