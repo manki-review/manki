@@ -306,6 +306,11 @@ describe('fetchBotReviewThreads', () => {
     expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true]]);
     const held = await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending);
     expect(held.map(t => t.id)).toEqual(['b']);
+    // Without every round record or without the threads, a warning thread could be missed, so the read fails rather than return none.
+    const recordsUnread = threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews);
+    jest.mocked(recordsUnread.paginate).mockRejectedValueOnce(new Error('rate limited'));
+    await expect(fetchHeldWarnings(recordsUnread, TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending)).rejects.toThrow('Not every round record could be read');
+    await expect(fetchHeldWarnings(threadsOctokit(graphqlMock.mockRejectedValueOnce(new Error('bad gateway')), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined)).rejects.toThrow('bad gateway');
   });
 
   it('reads what backs a resolved thread: a record that says addressed, a latest reply from a person with write access, or such a person as the resolver', async () => {

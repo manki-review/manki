@@ -103,6 +103,7 @@ const THREAD_COMMENTS_LIMIT = 100;
 /**
  * Fetch all review threads `bot` started on a PR using GraphQL.
  * Returns threads with their resolution state and severity. `pending` is a round not posted yet, whose grades count too.
+ * Without every round record each thread counts as blocking, unless `failIncomplete` asks for an error instead.
  */
 async function fetchBotReviewThreads(
   octokit: Octokit,
@@ -111,6 +112,7 @@ async function fetchBotReviewThreads(
   repo: string,
   prNumber: number,
   pending?: RoundContext,
+  failIncomplete = false,
 ): Promise<ReviewThread[]> {
   const threads = await fetchReviewThreadNodes<{
     id: string;
@@ -162,6 +164,7 @@ async function fetchBotReviewThreads(
   });
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records: Awaited<ReturnType<typeof fetchPriorRoundContexts>> = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
+  if (failIncomplete && 'priorRoundsIncomplete' in records) throw new Error('Not every round record could be read, so the grades of the threads are unknown');
   const rounds = pending ? [...records.priorRounds, pending] : records.priorRounds;
   const grades = recordedThreadGrades(rounds);
   // The pending round is not posted yet, so no reply can come after it.
@@ -380,12 +383,15 @@ async function overrideRole(
   return prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin)) ? await authorClearRole(octokit, owner, repo, prAuthorLogin, clearRole) : undefined;
 }
 
-/** Reads the PR's threads with the grades of `pending`, a round not posted yet, and returns the warning threads that hold an approval. */
+/**
+ * Reads the PR's threads with the grades of `pending`, a round not posted yet, and returns the warning threads that hold an
+ * approval. Throws when the threads or the round records cannot all be read, since a warning thread could then be missed.
+ */
 async function fetchHeldWarnings(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined, pending?: RoundContext,
 ): Promise<ReviewThread[]> {
-  const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, pending);
+  const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber, pending, true);
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
   return heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole);
 }
