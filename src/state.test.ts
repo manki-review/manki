@@ -642,6 +642,9 @@ describe('checkAndAutoApprove', () => {
       ({ ...makeFindingFingerprintEntry({ title: 'Retry never stops', file: 'src/lock.ts', posted }), tags, ...(holds && { holds: true as const }) });
     const held = (entries: FindingFingerprintEntry[]) => roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: entries.length, severityCounts: {}, entries } }));
     const NO_WARNING_THREAD = 'Manki\'s review of `head-sh` lists 1 warning with no thread, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
+    const WARNING_THREAD = '1 warning thread holds the approval:\n- Lock is never released\n\nApproval follows once each one is fixed, resolved, or answered in its thread by the PR author or someone with the `maintain` role or a higher one with a reason to keep it.';
+    const HELD_FOR_PERSON = 'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.';
+    const DRAFT = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
     const GONE_WARNING = 'The record of Manki\'s review of `head-sh` names a thread that does not exist for 1 warning, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
 
     it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
@@ -916,6 +919,19 @@ describe('checkAndAutoApprove', () => {
       ['a review that holds its approval for a person', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
         'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.'],
       ['a conflict with the base', { mergeable: false }, '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.'],
+      // Every reason that holds is named at once, blocking threads first, then warning threads, then the other holds.
+      ['an open warning thread beside a review that holds its approval for a person', {
+        threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }],
+      }, `${WARNING_THREAD}\n\n${HELD_FOR_PERSON}`],
+      ['an open warning thread beside a warning the review lists with no thread', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: held([warning('body')]), state: 'COMMENTED', commit_id: HEAD, user }] },
+        `${NO_WARNING_THREAD}\n\n${NEXT_ROUND}\n\n${WARNING_THREAD}`],
+      ['an open warning thread on a head no review covers',
+        { threads: [thread('t1', 'warning', undefined, { commit: 'old-sha' })], existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
+        `${NOT_REVIEWED_YET}\n\n${WARNING_THREAD}`],
+      ['an open blocking thread and an open warning thread on a draft that conflicts', { threads: [thread('t1', 'blocker'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })], draft: true, mergeable: false },
+        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}`],
+      ['an open warning thread on a PR that conflicts', { threads: [thread('t1', 'warning')], mergeable: false },
+        `${WARNING_THREAD}\n\n**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment \`@manki review\`.`],
     // A rest parameter, since jest takes a named one the row lacks for its `done` callback.
     ])('tells a person who asks why there is no approval: %s', async (_label, setup, reply, ...[config]) => {
       jest.spyOn(core, 'info').mockImplementation(() => {});
