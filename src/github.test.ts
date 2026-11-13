@@ -1768,7 +1768,7 @@ describe('postReview body lead', () => {
     expect((await postedBody(ready)).body).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `rel\/'y`\. Rebase it/);
   });
 
-  it('holds the approval of a READY round as a COMMENT while a warning on this PR\'s code has a thread, without reading the PR', async () => {
+  it('holds the approval of a READY round as a COMMENT while a warning on this PR\'s code has a thread', async () => {
     const warning = (title: string, line: number, extra: Partial<Finding> = {}): Finding =>
       ({ severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: [], tags: ['follow-up'], ...extra });
     mockGet.mockClear();
@@ -1778,7 +1778,19 @@ describe('postReview body lead', () => {
     expect([event, held.approvalHeld, held.warningsHeld]).toEqual(['COMMENT', 'warnings', true]);
     expect(body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 3 warnings.** Fix each one, or dismiss it with a reason in its thread.');
     expect(body).not.toContain('<!-- manki-held-for-person -->');
-    expect(mockGet).not.toHaveBeenCalled();
+    // The PR is still read, so a draft or a conflict is not hidden behind the warnings.
+    expect(mockGet).toHaveBeenCalled();
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
+    const drafted = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}] });
+    expect([drafted.approvalHeld, drafted.warningsHeld]).toEqual(['draft', true]);
+    const draftBody = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n');
+    expect(draftBody[0]).toMatch(/^\*\*Approval held:\*\* this PR is a draft\./);
+    expect(draftBody[1]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread.');
+    // With files no model read, the verdict line names the warnings and the person who must approve.
+    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [] };
+    const unreadFiles = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}], skipped });
+    expect([unreadFiles.approvalHeld, unreadFiles.warningsHeld]).toEqual(['unread', true]);
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 1 warning.** Fix it, or dismiss it with a reason in its thread. A person must also approve, since no model read 1 of the changed files.');
     // An earlier warning thread alone holds too.
     expect((await postedBody(ready, [], undefined)).event).toBe('APPROVE');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{}] });

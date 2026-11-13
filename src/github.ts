@@ -1843,7 +1843,8 @@ export async function postReview(
   const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length;
   const security = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity).length + holding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length;
   const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' } : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }) } : undefined;
-  const hold = event === 'APPROVE' ? standingHold ?? warningHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
+  // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
+  const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
@@ -2179,9 +2180,10 @@ const APPROVED_LINE = '✅ **Approved.**';
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
   READY: (_result, _blockers, { threads, listed, carried, hold, warningHold, autoApprove }) => {
-    if (hold?.reason === 'unread') return `✅ **Approved, but a person must approve:** no model read ${hold.skipped.excluded.length + hold.skipped.binary.length} of the changed files.`;
-    // A config hold has a line of its own, and the warnings still hold once it lifts.
-    if (warningHold && (hold?.reason === 'warnings' || hold?.reason === 'config')) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}`;
+    const unread = hold?.reason === 'unread' && hold.skipped.excluded.length + hold.skipped.binary.length;
+    // Another hold has a line of its own or is named here, and the warnings still hold once it lifts.
+    if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
+    if (unread) return `✅ **Approved, but a person must approve:** no model read ${unread} of the changed files.`;
     const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
     return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;
