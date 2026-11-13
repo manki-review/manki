@@ -232,6 +232,7 @@ jest.mock('./github', () => ({
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
+  skippedFiles: jest.requireActual('./github').skippedFiles,
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
   withheldSummary: jest.requireActual('./github').withheldSummary,

@@ -219,6 +219,11 @@ export interface SkippedFiles {
   binary: BinaryFile[];
 }
 
+/** Returns the changed files of `diff` that no model reads. A parsed lockfile is read even when `exclude_paths` drops it, and a deleted binary has nothing to read. */
+export function skippedFiles(excluded: RoundDiffExcludedFile[], lockfiles: ReadonlyArray<{ path: string }>, diff: ParsedDiff): SkippedFiles {
+  return { excluded: excluded.filter(f => !lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) };
+}
+
 /** The config file that holds an approval because it does not load: the base branch's, or the PR's own copy. */
 export type ConfigHold = 'base' | 'head';
 

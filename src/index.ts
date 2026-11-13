@@ -89,6 +89,7 @@ import {
   retireSettingsBlocks,
   setSettingsBlock,
   showSettings,
+  skippedFiles,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
@@ -1679,7 +1680,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     memorySkip: run.memorySkip?.message,
     restart,
     ...(unreadRecords && { unreadRecords }),
-    skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
+    skipped: skippedFiles(run.excludedFiles, run.lockfiles, diff),
     onPosted: () => { run.progress.reviewPosted = true; },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
