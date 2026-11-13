@@ -1698,7 +1698,7 @@ export async function postReview(
     /** Called once GitHub created the review, before the file-level comments, which can still fail. */
     onPosted?: () => void;
   } = {},
-): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
+): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean }> {
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -1964,7 +1964,8 @@ export async function postReview(
       throw new Error(`Could not post findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
-  return { id: review.id, approvalHeld };
+  // Warnings can hold behind another hold that comes first, and still take back an approval of this commit.
+  return { id: review.id, approvalHeld, warningsHeld: event === 'APPROVE' && !!warningHold };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */

@@ -1775,7 +1775,7 @@ describe('postReview body lead', () => {
     // Each new warning thread counts, and so does each earlier warning thread that still holds.
     const held = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Retry never stops', 3), warning('Missed before', 9, { origin: 'reviewed' })] }, diff, undefined, undefined, { openWarnings: 1 });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
-    expect([event, held.approvalHeld]).toEqual(['COMMENT', 'warnings']);
+    expect([event, held.approvalHeld, held.warningsHeld]).toEqual(['COMMENT', 'warnings', true]);
     expect(body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on 3 warnings.** Fix each one, or dismiss it with a reason in its thread.');
     expect(body).not.toContain('<!-- manki-held-for-person -->');
     expect(mockGet).not.toHaveBeenCalled();
@@ -1795,7 +1795,7 @@ describe('postReview body lead', () => {
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
     const config = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 2, configHold: 'base' });
-    expect(config.approvalHeld).toBe('config');
+    expect([config.approvalHeld, config.warningsHeld]).toEqual(['config', true]);
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n').slice(0, 2)).toEqual([
       '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
       '\u26A0\uFE0F **Approval waits on 2 warnings.** Fix each one, or dismiss it with a reason in its thread.',
@@ -4306,7 +4306,7 @@ describe('postReview fallback paths', () => {
     };
 
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    expect(reviewId).toEqual({ id: 2, approvalHeld: 'warnings' });
+    expect(reviewId).toEqual({ id: 2, approvalHeld: 'warnings', warningsHeld: true });
     expect(createReviewMock).toHaveBeenCalledTimes(2);
     // Second call should have empty comments
     expect(createReviewMock.mock.calls[1][0].comments).toEqual([]);
@@ -4338,7 +4338,7 @@ describe('postReview fallback paths', () => {
 
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', approveWithSuggestion);
 
-    expect(reviewId).toEqual({ id: 3, approvalHeld: false });
+    expect(reviewId).toEqual({ id: 3, approvalHeld: false, warningsHeld: false });
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
     const warning = warningSpy.mock.calls.map(c => String(c[0])).find(w => w.includes('Falling back to COMMENT'));
     expect(warning).toContain(`422: ${message}`);
@@ -4385,7 +4385,7 @@ describe('postReview fallback paths', () => {
     };
 
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    expect(reviewId).toEqual({ id: 4, approvalHeld: false });
+    expect(reviewId).toEqual({ id: 4, approvalHeld: false, warningsHeld: false });
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
   });
 

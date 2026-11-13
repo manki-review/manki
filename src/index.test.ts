@@ -226,7 +226,7 @@ jest.mock('./github', () => ({
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
-  postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false }),
+  postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
@@ -1906,7 +1906,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
-    jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false });
+    jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false });
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
     jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '', files: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
@@ -2080,8 +2080,10 @@ describe('runFullReview orchestration', () => {
       ['unread', 'Approval held: some changed files were not read'],
       ['warnings', 'Approval held: warnings wait for an answer'],
       ['unread warnings', 'Approval held: warnings wait for an answer'],
+      ['config with warnings', 'Approval held: a config file did not load'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
-      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held === 'unread warnings' ? 'warnings' : held });
+      const approvalHeld = held === 'unread warnings' ? 'warnings' : held === 'config with warnings' ? 'config' : held;
+      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld, warningsHeld: held.includes('warnings') });
       const open = { id: 'T1', isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Retry never stops' };
       if (held === 'warnings') jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValueOnce([open, { ...open, id: 'T2' }]);
       // A failed read of the warning threads still posts the review, which holds the approval.
@@ -2096,7 +2098,7 @@ describe('runFullReview orchestration', () => {
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
       // An approval of the same commit stays for every hold but warnings, which a round run again on the commit can find.
-      const keepCommit = held === 'warnings' || held === 'unread warnings' ? undefined : 'abc123';
+      const keepCommit = held.includes('warnings') ? undefined : 'abc123';
       expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', keepCommit);
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
     });
@@ -5881,7 +5883,7 @@ describe('runFullReview orchestration', () => {
     if (outcome === 'replaced') {
       jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
         mockPullsGet.mockResolvedValueOnce({ data: { title: 'Test PR', body: 'body', head: { sha: 'def456' }, base: { ref: 'main' } } });
-        return { id: 123, approvalHeld: false };
+        return { id: 123, approvalHeld: false, warningsHeld: false };
       });
     }
     if (outcome === 'cancelled') {
@@ -7929,7 +7931,7 @@ describe('runFullReview config and dedupe', () => {
       if (moment === 'dismiss') {
         jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
           mockPullsGet.mockResolvedValueOnce(movedHead);
-          return { id: 123, approvalHeld: false };
+          return { id: 123, approvalHeld: false, warningsHeld: false };
         });
       }
 
