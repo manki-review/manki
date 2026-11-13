@@ -1637,8 +1637,10 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
   };
 }
 
-/** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
+const WARNINGS_ALSO_HOLD_LINE = 'Warnings also hold the approval. The review names each one and what clears it.';
+
+/** Posts the round's review and dismisses the previous one. Returns the new review's id, whether its approval was held, and whether warnings hold it. */
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld; warningsHeld: boolean }> {
   const { octokit, bot, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
   const disproved = (result.allJudgedFindings ?? []).flatMap((f): DisprovedFinding[] => {
@@ -2040,7 +2042,10 @@ async function runFullReview(
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
-    checkReport = outcomeReport(result.outcome, unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(roundSentence(result))].filter(Boolean).join('\n\n') : roundSummary(result), posted.approvalHeld);
+    // The title names the first hold, so warnings that hold behind another one are named in the summary.
+    const alsoWarnings = posted.warningsHeld && posted.approvalHeld !== 'warnings' ? WARNINGS_ALSO_HOLD_LINE : '';
+    const summary = unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(roundSentence(result))].filter(Boolean).join('\n\n') : roundSummary(result);
+    checkReport = outcomeReport(result.outcome, [summary, alsoWarnings].filter(Boolean).join('\n\n'), posted.approvalHeld);
   } catch (caught) {
     cancelDashboardFlush(progress);
     // A stopped run reports the stop, whatever error it ended on.

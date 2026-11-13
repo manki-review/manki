@@ -2078,8 +2078,8 @@ describe('runFullReview orchestration', () => {
       ['draft', 'Approval held: the PR is a draft'],
       ['config', 'Approval held: a config file did not load'],
       ['unread', 'Approval held: some changed files were not read'],
-      ['warnings', 'Approval held: warnings wait for an answer'],
-      ['unread warnings', 'Approval held: warnings wait for an answer'],
+      ['warnings', 'Approval held: warnings wait for a fix or an answer'],
+      ['unread warnings', 'Approval held: warnings wait for a fix or an answer'],
       ['config with warnings', 'Approval held: a config file did not load'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       const approvalHeld = held === 'unread warnings' ? 'warnings' : held === 'config with warnings' ? 'config' : held;
@@ -2097,6 +2097,8 @@ describe('runFullReview orchestration', () => {
       expect(options).toEqual(expect.objectContaining({ openWarnings: held === 'warnings' ? [open, { ...open, id: 'T2' }] : held === 'unread warnings' ? 'unread' : [] }));
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
+      // Warnings that hold behind another hold are named in the summary, since the title names only the first.
+      expect((completedCheck() as { output: { summary: string } }).output.summary.endsWith('\n\nWarnings also hold the approval. The review names each one and what clears it.')).toBe(held === 'config with warnings');
       // An approval of the same commit stays for every hold but warnings, which a round run again on the commit can find.
       const keepCommit = held.includes('warnings') ? undefined : 'abc123';
       expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', keepCommit);

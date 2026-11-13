@@ -1949,7 +1949,7 @@ export async function postReview(
     const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
       : hold?.reason === 'config' ? (hold.file === 'base' ? 'The base branch config did not load' : 'The PR\'s own config does not load')
       : hold?.reason === 'unread' ? 'No model read some of the changed files'
-      : hold?.reason === 'warnings' ? 'Open warning threads wait for an answer' : 'The PR is a draft';
+      : hold?.reason === 'warnings' ? 'Warnings wait for a fix or an answer' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
