@@ -79,6 +79,8 @@ export interface EarlierFinding {
   howToFix?: string;
   suggestedFix?: string;
   security?: boolean;
+  /** A pre-existing defect, whose thread never holds an approval. */
+  preExisting?: boolean;
   /**
    * How its review thread stands before the round: `fixed` when an earlier round resolved it as fixed, and `resolved`
    * when a person resolved it. Unset for a finding posted only in the review body.
@@ -384,7 +386,8 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     // An earlier warning thread holds as in a pull request round, unless this round found it fixed or graded it lower.
     // No reply is known here, so an open one holds, and so does a resolved security one that no round found fixed.
     const evaluationOf = (threadId?: string) => result.threadEvaluations?.find(e => e.threadId === threadId);
-    const threadHolds = (followUp?.previousFindings ?? []).some(p => {
+    const preExisting = new Set(input.earlier?.findings.filter(f => f.preExisting).map(f => f.id));
+    const threadHolds = (followUp?.previousFindings ?? []).filter(p => !preExisting.has(p.threadId ?? '')).some(p => {
       const evaluation = evaluationOf(p.threadId);
       const warns = threadWarns({ severity: p.severity, ...(evaluation?.grade && { recordedGrade: evaluation.grade }), isSecurity: p.isSecurity });
       return warns && evaluation?.status !== 'addressed' && (p.status === 'open' || (!!p.isSecurity && !p.fixed));

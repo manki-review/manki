@@ -213,6 +213,8 @@ describe('reviewLocal', () => {
     expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'partly_addressed', reason: 'Worse.', grade: 'blocker' }])).toBe(false);
     // A warning the earlier round listed only in its review body has no thread, so it holds only if this round finds it again.
     expect(await heldBy([thread({ thread: undefined })])).toBe(false);
+    // A pre-existing defect never holds, as its thread does not in a pull request round.
+    expect(await heldBy([thread({ preExisting: true })])).toBe(false);
   }, 30_000);
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
