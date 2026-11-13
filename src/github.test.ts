@@ -1692,6 +1692,16 @@ describe('postReview body lead', () => {
     const drafted = await record(warned);
     expect([drafted.approval, drafted.readyReport]).toEqual([{ held: 'draft', warningsHeld: true }, kept]);
     expect(mockCreateReview.mock.calls[0][0].body).not.toMatch(/What this does|What to test/);
+    // A review held for a person gets no approval from Manki, so with warnings behind it, it keeps both parts in its body.
+    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [] };
+    for (const options of [{ skipped }, { configHold: 'base' as const }]) {
+      mockCreateReview.mockClear();
+      const { warningsHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', warned, diff, makeContext({}), 1000, options);
+      const { body: personBody } = mockCreateReview.mock.calls[0][0] as { body: string };
+      expect([warningsHeld, JSON.parse(extractReviewRecords(personBody).records[0]).readyReport]).toEqual([true, undefined]);
+      expect(personBody).toContain('**What this does:** Adds a cache in front of the API. x');
+      expect(personBody).toContain('<summary>What to test</summary>');
+    }
     // An approval shows both parts in its body, so its record does not keep them, nor does a hold that leaves them blank.
     expect((await record(ready)).readyReport).toBeUndefined();
     expect((await record({ ...warned, verdictReport: { ...verdictReport, whatThisDoes: ' ', whatToTest: { steps: [] } } })).readyReport).toBeUndefined();

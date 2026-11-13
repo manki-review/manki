@@ -1924,9 +1924,11 @@ export async function postReview(
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   const warningsHeld = event === 'APPROVE' && !!warningHold;
   // A review that warnings hold reads like a change request, so what the change does waits for the approval that follows.
+  // A review held for a person gets no approval from Manki, so it keeps both parts.
+  const keepForApproval = warningsHeld && !standingHold;
   const verdictReport = result.outcome === 'READY' ? result.verdictReport : undefined;
-  const readyReport = warningsHeld ? null : formatReadyReport(verdictReport);
-  const keptReport = warningsHeld && verdictReport && formatReadyReport(verdictReport) ? { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest } : undefined;
+  const readyReport = keepForApproval ? null : formatReadyReport(verdictReport);
+  const keptReport = keepForApproval && verdictReport && formatReadyReport(verdictReport) ? { whatThisDoes: verdictReport.whatThisDoes, whatToTest: verdictReport.whatToTest } : undefined;
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
