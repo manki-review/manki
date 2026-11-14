@@ -1679,15 +1679,17 @@ function carriedBy(finding: Finding, matched: string | undefined): string | unde
 }
 
 /**
- * Puts the notes of `result.findings` last, in the judge's order, and keeps the first `limit` of them. The others move
- * to `result.unposted`, marked `note_cap`. A note the judge did not rank follows the ranked ones, in the order
- * returned. A tool alert is listed with the notes and counts toward no limit. A note an earlier thread carries is not
- * listed, so it stays in place and counts toward no limit.
+ * Puts the notes of `result.findings` last and keeps the first `limit` of them. The others move to `result.unposted`,
+ * marked `note_cap`. Every note in the `style` row of the severity table follows every other note, so a style note
+ * takes only a slot no other note fills. Within each group the notes keep the judge's order, and a note the judge did
+ * not rank follows the ranked ones, in the order returned. A tool alert is listed with the notes and counts toward no
+ * limit. A note an earlier thread carries is not listed, so it stays in place and counts toward no limit.
  */
 export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
   const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, openThreadFor(f, existingThreads))));
+  const group = (f: Finding): number => (f.cell?.row === 'style' ? 1 : 0);
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
-  const ordered = [...listable].sort((a, b) => rank(a) - rank(b));
+  const ordered = [...listable].sort((a, b) => group(a) - group(b) || rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
   result.findings = [...result.findings.filter(f => !listable.has(f)), ...ordered.filter(f => !capped.has(f))];
   if (capped.size > 0) result.unposted = [...(result.unposted ?? []), ...[...capped].map((f): Finding => ({ ...f, unpostedReason: 'note_cap' }))];
