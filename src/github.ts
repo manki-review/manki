@@ -623,7 +623,9 @@ async function resolveReferences(
 }
 
 const INSTRUCTION_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md'];
-const ROOT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.claude/CLAUDE.md', 'CONTRIBUTING.md'];
+const ROOT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.claude/CLAUDE.md'];
+/** The places GitHub looks for a contributing guide, in its order. Only the first found is read. */
+const CONTRIBUTING_GUIDES = ['.github/CONTRIBUTING.md', 'CONTRIBUTING.md', 'docs/CONTRIBUTING.md'];
 const MAX_INSTRUCTIONS_CHARS = 30_000;
 
 /** An instruction file as the prompts print it: its path in the repo and its text, with `@file` references inlined. */
@@ -663,21 +665,29 @@ export async function fetchRepoContext(
 
 /**
  * Returns the `AGENTS.md` and `CLAUDE.md` files nearest above each changed file, nearest first, then those at the root
- * and the root `CONTRIBUTING.md`, then the `.md` files they link to, breadth first. A path appears once, and so do files
- * with the same content after `@file` resolution. The file that crosses `MAX_INSTRUCTIONS_CHARS` is cut, and farther
- * files are left out.
+ * and the first contributing guide of `CONTRIBUTING_GUIDES`, then the `.md` files they link to, breadth first. A path
+ * appears once, and so do files with the same content after `@file` resolution. The file that crosses
+ * `MAX_INSTRUCTIONS_CHARS` is cut, and farther files are left out.
  */
 export async function buildRepoContext(files: RepoFiles, changedPaths: string[]): Promise<RepoContext> {
-  const queue = [...await findNearestInstructionFiles(files, changedPaths), ...ROOT_INSTRUCTION_FILES].map(path => ({ path, depth: 0 }));
+  const queue: { path: string; depth: number; guide?: boolean }[] = [...await findNearestInstructionFiles(files, changedPaths), ...ROOT_INSTRUCTION_FILES].map(path => ({ path, depth: 0 }));
   const queued = new Set(queue.map(({ path }) => path));
+  // A guide passed over is left out of `queued`, so a link to it still reads it.
+  queue.push(...CONTRIBUTING_GUIDES.map(path => ({ path, depth: 0, guide: true })));
 
   const parts: string[] = [];
   const loaded: InstructionFile[] = [];
   const seen = new Set<string>();
   let total = 0;
   let cut: string | undefined;
-  for (const { path, depth } of queue) {
+  let guideFound = false;
+  for (const { path, depth, guide } of queue) {
+    if (guide && guideFound) continue;
     const file = await readInstructionFile(files, path);
+    if (guide && file !== null) {
+      guideFound = true;
+      queued.add(path);
+    }
     if (file === null || !file.content.trim() || seen.has(file.content.trim())) continue;
     seen.add(file.content.trim());
     if (depth < MAX_RESOLVE_DEPTH) {
@@ -739,8 +749,8 @@ async function findNearestInstructionFiles(files: RepoFiles, changedPaths: strin
 }
 
 /**
- * Returns the file's content with `@file` references inlined and the `.md` files it links to, or null when it can't be
- * read.
+ * Returns the file's content with `@file` references inlined and the `.md` files it links to, or null when no file is at
+ * `path`. A file that cannot be read is logged and reads as empty, so the guide search stops at it as GitHub would.
  */
 async function readInstructionFile(files: RepoFiles, path: string): Promise<{ content: string; links: string[] } | null> {
   try {
@@ -750,7 +760,7 @@ async function readInstructionFile(files: RepoFiles, path: string): Promise<{ co
     return { content: await resolveReferences(files, content, dirOf(path), links), links };
   } catch (error) {
     core.warning(`Could not read instruction file ${path}: ${error}`);
-    return null;
+    return { content: '', links: [] };
   }
 }
 

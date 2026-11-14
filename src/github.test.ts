@@ -3074,6 +3074,23 @@ describe('fetchRepoContext instruction files', () => {
     expect(read.filter((path: string) => path.includes('secret') || path.includes('example.com'))).toEqual([]);
   });
 
+  it('reads only the first contributing guide in GitHub\'s order, after the root instruction files', async () => {
+    const headings = async (contents: Record<string, string>) => (await fetchRepoContext(mockOctokit(agentsTree, contents), 'owner', 'repo', 'abc123', [])).text.match(/^## .+$/gm);
+    const guides = { '.github/CONTRIBUTING.md': 'GitHub guide', 'CONTRIBUTING.md': 'Root guide', 'docs/CONTRIBUTING.md': 'Docs guide' };
+
+    expect(await headings({ ...guides, 'AGENTS.md': 'Root rules' })).toEqual(['## AGENTS.md', '## .github/CONTRIBUTING.md']);
+    expect(await headings({ 'CONTRIBUTING.md': 'Root guide', 'docs/CONTRIBUTING.md': 'Docs guide' })).toEqual(['## CONTRIBUTING.md']);
+    expect(await headings({ 'docs/CONTRIBUTING.md': 'Docs guide', 'CLAUDE.md': 'Claude rules' })).toEqual(['## CLAUDE.md', '## docs/CONTRIBUTING.md']);
+    // An empty guide is still the one found, as on GitHub, and so is one that fails to read.
+    expect(await headings({ ...guides, '.github/CONTRIBUTING.md': '' })).toBeNull();
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    expect(await headings({ ...guides, '.github/CONTRIBUTING.md': 'FAIL' })).toBeNull();
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Could not read instruction file .github/CONTRIBUTING.md'));
+    warningSpy.mockRestore();
+    // A guide passed over is still read where an instruction file links to it.
+    expect(await headings({ ...guides, 'AGENTS.md': 'See [the docs guide](docs/CONTRIBUTING.md).' })).toEqual(['## AGENTS.md', '## .github/CONTRIBUTING.md', '## docs/CONTRIBUTING.md']);
+  });
+
   it('includes files with identical content once', async () => {
     const octokit = mockOctokit(agentsTree, {
       'CLAUDE.md': 'Shared rules',

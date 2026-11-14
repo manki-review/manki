@@ -198,7 +198,7 @@ A reply is one model call with 15 tool steps and 5 minutes. A reply without repo
 
 ## Rules from instruction files
 
-Manki reads the repository's instruction files from the PR's base branch only, so a PR cannot relax a rule for itself: the nearest `AGENTS.md` and `CLAUDE.md` above each changed file, the root `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md` and `CONTRIBUTING.md`, and the `.md` files these link to. A PR that edits one of them is reviewed against the base branch's text, and the edit applies after merge.
+Manki reads the repository's instruction files from the PR's base branch only, so a PR cannot relax a rule for itself: the nearest `AGENTS.md` and `CLAUDE.md` above each changed file, the root `AGENTS.md`, `CLAUDE.md` and `.claude/CLAUDE.md`, the contributing guide, and the `.md` files these link to. Like GitHub, Manki reads one contributing guide: the first `CONTRIBUTING.md` it finds in `.github/`, the root and `docs/`, in that order. A PR that edits one of them is reviewed against the base branch's text, and the edit applies after merge.
 
 The files are printed in that order, up to 30,000 characters in total. The file that crosses the limit is cut and the files after it are left out, so the review does not see their rules. The run then logs a warning that names the cut file. The round record lists the files the round read under `instructions.files` and the cut one under `instructions.cut`.
 
