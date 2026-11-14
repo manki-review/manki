@@ -508,6 +508,13 @@ describe('reopenAuthorResolvedThreads', () => {
     graphql.mockClear();
     await reopen(graphql, [{ ...previous('T_plain', true), isSecurity: false }]);
     expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A blocking finding needs a maintainer or a fix/);
+    // No review clears a thread tied to no file, so its reply names no fix and no review.
+    graphql.mockClear();
+    await reopen(graphql, [{ ...previous('T_nowhere', true), isSecurity: false, file: '', line: 0 }]);
+    expect(graphql.mock.calls[1][1].body).toBe(
+      'Reopened. A blocking finding that is not tied to a file needs a maintainer: the PR author cannot resolve it, and no review can confirm a fix for it. '
+      + `A reviewer with write access can resolve it.\n\n${BOT_MARKER}\n${REOPENED_MARKER}`,
+    );
   });
 
   // The reply's marker stops every later reopen, so a thread that stayed resolved must not get it.

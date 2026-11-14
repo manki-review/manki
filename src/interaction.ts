@@ -327,24 +327,19 @@ function requireNewProof(reply: string, finding: string, file: string | undefine
 }
 
 /**
- * Returns the files of `proof`, the lines a "Fixed." answer cites, when none of them is the thread's `file` or a file in
- * `evidenceFiles`, and none otherwise. A review confirms a fix on a guarded thread only after a push to one of those. A
- * cited path that is no plain repository path cannot be compared, so it returns none.
+ * Returns why no review can confirm the fix that a "Fixed." answer's `proof` cites, or nothing when one can. A review
+ * confirms a fix on a guarded thread only after a push to its `file` or a file in `evidenceFiles`. So it never confirms
+ * one on a thread tied to no file, or one whose cited lines all lie in other files. A cited path that is no plain
+ * repository path cannot be compared, so it says nothing.
  */
-function uncitedFixFiles(proof: readonly string[], file: string, evidenceFiles: string[] | undefined): string[] {
+function unconfirmableFix(proof: readonly string[], file: string, evidenceFiles: string[] | undefined): string | undefined {
+  if (!file) return 'This finding is not tied to a file, so a review cannot confirm the fix.';
   const paths = proof.map(location => plainRepoPath(locationFile(location)));
-  if (!file || paths.length === 0 || paths.some(path => path === undefined)) return [];
-  const files = new Set(paths as string[]);
-  return pushTouchesThread({ file, evidenceFiles }, files) ? [] : [...files];
-}
-
-/**
- * Turns a "Fixed." answer whose fix lies only in `files` into "Unverified.", since no review can confirm a fix in a
- * file the finding did not cite.
- */
-function uncitedFix(reply: string, files: string[]): string {
+  if (paths.length === 0 || paths.some(path => path === undefined)) return undefined;
+  const files = [...new Set(paths as string[])];
+  if (pushTouchesThread({ file, evidenceFiles }, new Set(files))) return undefined;
   const where = files.length === 1 ? `${inline(files[0])}, a file` : `${files.map(inline).join(', ')}, files`;
-  return `${reply.replace(FIXED_REPLY_RE, '$1Unverified.$2')} The fix is in ${where} this finding did not cite, so a review cannot confirm it.`;
+  return `The fix is in ${where} this finding did not cite, so a review cannot confirm it.`;
 }
 
 /**
@@ -532,10 +527,10 @@ export async function handleReviewCommentReply(
     // Every other answer reopens it with the note. The note's marker stops every later reopen, so the thread opens before the answer is posted.
     const noted = !!reopenNote && !!live && posts && !clears && await reopenThread(octokit, live.id);
     const staysOpen = !!thread && !mayClear && !noted && (thread.isResolved ? held : isGuarded(thread));
-    // A guarded thread left open clears on review only after a push to its file or a file its finding cited.
-    const uncited = outcome === 'Fixed' && (staysOpen || noted) ? uncitedFixFiles(checked.proof, filePath, parseFindingData(findingBody)?.evidenceFiles) : [];
-    const answer = uncited.length > 0 ? uncitedFix(reply, uncited) : reply;
-    const settled = uncited.length > 0 ? undefined : outcome;
+    // A "Fixed." that no review can confirm turns into "Unverified.", so the guarded thread it leaves open hears who clears it.
+    const unconfirmable = outcome === 'Fixed' && (staysOpen || noted) ? unconfirmableFix(checked.proof, filePath, parseFindingData(findingBody)?.evidenceFiles) : undefined;
+    const answer = unconfirmable ? `${reply.replace(FIXED_REPLY_RE, '$1Unverified.$2')} ${unconfirmable}` : reply;
+    const settled = unconfirmable ? undefined : outcome;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
@@ -560,8 +555,9 @@ export async function handleReviewCommentReply(
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       const list = statementList(checked);
-      // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays open.
-      const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(isSecurity, true, config?.author_clear_role, live.isResolved)] : [])] : [];
+      // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
+      // open, and names a review as a way out only when a review can clear it.
+      const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(isSecurity, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
       await octokit.rest.pulls.createReplyForReviewComment({
         owner,
         repo,

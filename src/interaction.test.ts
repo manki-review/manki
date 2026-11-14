@@ -389,9 +389,10 @@ type FindingKind = 'security' | 'blocker' | 'warning' | 'reraised';
 /** The REST author of a comment Manki wrote. */
 const MANKI_USER = { login: TEST_BOT.logins[0] };
 
-function findingComment(kind: FindingKind, detached = false, evidence?: Finding['evidence']): string {
+/** `file` empty gives a finding tied to no file, which is posted detached. */
+function findingComment(kind: FindingKind, detached = false, evidence?: Finding['evidence'], file = 'src/file.ts'): string {
   return jest.requireActual('./github').formatFindingComment({
-    severity: kind === 'warning' || kind === 'reraised' ? 'warning' : 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [],
+    severity: kind === 'warning' || kind === 'reraised' ? 'warning' : 'blocker', title: 'Token leaks into logs', file, line: file ? 10 : 0, description: 'd', reviewers: [],
     ...(kind === 'security' && { tags: ['security'] }),
     ...(evidence && { evidence }),
   }, TEST_LINKS, detached ? 'detached' : 'line');
@@ -1040,35 +1041,41 @@ describe('handleReviewCommentReply', () => {
   const CITED_EVIDENCE = { checks: ['src/util.ts:5 passes the token on'], proof: [] };
   const UNCITED = 'The fix is in `src/other.ts`, a file this finding did not cite, so a review cannot confirm it.';
   const AUTHOR_CLOSES = 'so the thread stays open until someone other than the PR author with write access closes it. A PR author can close it only with the `maintain` role or a higher one.';
-  it.each<[string, string, string[], FindingKind, Finding['evidence'] | undefined, string, state.ResolutionReason | undefined]>([
+  it.each<[string, string, string[], FindingKind, Finding['evidence'] | undefined, string, state.ResolutionReason | undefined, string | undefined, Record<string, unknown>]>([
     ['a fix only in a file the finding did not cite', 'pr-author', ['src/other.ts:2'], 'blocker', CITED_EVIDENCE,
-      `Unverified. The guard now runs first. ${UNCITED}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined],
-    ['a fix in a file the finding cited', 'pr-author', ['src/util.ts:2'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined],
-    ['a fix in the thread\'s own file and another', 'pr-author', ['src/other.ts:2', 'src/file.ts:10'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined],
+      `Unverified. The guard now runs first. ${UNCITED}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined, undefined, {}],
+    ['a fix in a file the finding cited', 'pr-author', ['src/util.ts:2'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined, undefined, {}],
+    ['a fix in the thread\'s own file and another', 'pr-author', ['src/other.ts:2', 'src/file.ts:10'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined, undefined, {}],
     // A path spelled another way names the same file.
-    ['a fix in the thread\'s own file, spelled with `./`', 'pr-author', ['./src/file.ts:10'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined],
-    ['a fix in a cited file, spelled through `..`', 'pr-author', ['src/lib/../util.ts:2'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined],
+    ['a fix in the thread\'s own file, spelled with `./`', 'pr-author', ['./src/file.ts:10'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined, undefined, {}],
+    ['a fix in a cited file, spelled through `..`', 'pr-author', ['src/lib/../util.ts:2'], 'blocker', CITED_EVIDENCE, `Fixed. The guard now runs first.\n\n${STAYS_OPEN}`, undefined, undefined, {}],
     ['a fix in an uncited file, spelled with a double slash', 'pr-author', ['src//other.ts:2'], 'blocker', CITED_EVIDENCE,
-      `Unverified. The guard now runs first. ${UNCITED}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined],
+      `Unverified. The guard now runs first. ${UNCITED}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined, undefined, {}],
     ['a fix outside the cited files on a security thread', 'pr-author', ['src/other.ts:2'], 'security', CITED_EVIDENCE,
-      `Unverified. The guard now runs first. ${UNCITED}\n\nThis is a security finding, ${AUTHOR_CLOSES}`, undefined],
-    ['a fix outside the cited files that a maintainer reports', 'someone', ['src/other.ts:2'], 'blocker', CITED_EVIDENCE, 'Fixed. The guard now runs first.', 'ADDRESSED'],
+      `Unverified. The guard now runs first. ${UNCITED}\n\nThis is a security finding, ${AUTHOR_CLOSES}`, undefined, undefined, {}],
+    ['a fix outside the cited files that a maintainer reports', 'someone', ['src/other.ts:2'], 'blocker', CITED_EVIDENCE, 'Fixed. The guard now runs first.', 'ADDRESSED', undefined, {}],
     ['a fix in a file the finding data does not name, which falls back to the thread\'s file', 'pr-author', ['src/util.ts:2'], 'blocker', undefined,
-      `Unverified. The guard now runs first. ${UNCITED.replace('src/other.ts', 'src/util.ts')}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined],
-  ])('answers a "Fixed." by where the fix lies: %s', async (_name, sender, proof, kind, evidence, posted, reason) => {
+      `Unverified. The guard now runs first. ${UNCITED.replace('src/other.ts', 'src/util.ts')}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined, undefined, {}],
+    // A thread tied to no file is never cleared by a review, so neither a "Fixed." nor the note below a list promises one.
+    ['a fix on a thread tied to no file', 'pr-author', ['src/file.ts:10'], 'blocker', undefined,
+      `Unverified. The guard now runs first. This finding is not tied to a file, so a review cannot confirm the fix.\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined, 'Fixed', {}],
+    ['an unchecked answer with a list, on a thread tied to no file', 'pr-author', ['src/file.ts:10'], 'blocker', undefined,
+      `Unverified. A maintainer should confirm it.\n\n${LISTED}\n\n${MAINTAINER}\n\nThis is a blocking finding, ${AUTHOR_CLOSES}`, undefined, 'Unverified', CONFIRMED],
+  ])('answers a "Fixed." by where the fix lies: %s', async (_name, sender, proof, kind, evidence, posted, reason, noFileAnswer, more) => {
     setContext({
-      comment: { id: 1, body: 'Fixed in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
+      comment: { id: 1, body: `${CSV} Fixed in the latest commit.`, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
       pull_request: { number: 1, user: { login: 'pr-author' } },
       sender: { login: sender },
     });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment(kind, false, evidence), path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: noFileAnswer ? findingComment(kind, true, evidence, '') : findingComment(kind, false, evidence), path: 'src/file.ts', line: 10 } });
     // The checkout the reply reads, so each cited line is checked to exist there.
     const workspace = mkdtempSync(join(tmpdir(), 'manki-fix-'));
     mkdirSync(join(workspace, 'src', 'lib'), { recursive: true });
     for (const file of ['file.ts', 'util.ts', 'other.ts']) writeFileSync(join(workspace, 'src', file), Array.from({ length: 20 }, (_, i) => `line ${i + 1};`).join('\n'));
     const client = { ...createMockClient(), repoTools: true } as LLMClient;
-    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { proof }) });
+    const said = noFileAnswer === 'Unverified' ? 'Unverified. A maintainer should confirm it.' : 'Fixed. The guard now runs first.';
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(said, { proof, ...more }) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, isSecurity: kind === 'security', findingTitle: 'This' },
     ]);
