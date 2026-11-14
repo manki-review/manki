@@ -728,6 +728,7 @@ describe('run', () => {
           sender: { login: 'user' },
           comment: { body: '@manki help', user: { type: 'User' } },
           issue: { number: 10 },
+          repository: { default_branch: 'main' },
         },
       });
 
@@ -7626,6 +7627,7 @@ describe('handleIssueInteraction', () => {
         action: 'created',
         comment: { body: '@manki help', user: { type: 'User' } },
         issue: { number: 15 },
+        repository: { default_branch: 'main' },
       },
     });
 
@@ -7638,15 +7640,25 @@ describe('handleIssueInteraction', () => {
       'test-owner', 'test-repo', 15,
       undefined, expect.anything(), false,
     );
-    // An issue has no base branch, so the config is the default branch's, and `main` only when the event names none.
-    const readAt = (): unknown => jest.mocked(ghUtils.readConfigFile).mock.calls.at(-1)?.[3];
-    expect(readAt()).toBe('main');
-    setContext({
-      eventName: 'issue_comment',
-      payload: { action: 'created', comment: { body: '@manki help', user: { type: 'User' } }, issue: { number: 15 }, repository: { default_branch: 'trunk' } },
-    });
+  });
+
+  it('reads the config from the default branch, and fails the command when the event names none', async () => {
+    // An issue has no base branch, so `remember` uses the memory settings of the default branch's `.manki.yml`.
+    jest.mocked(configModule.loadConfig).mockImplementationOnce(jest.requireActual('./config').loadConfig);
+    jest.mocked(ghUtils.readConfigFile).mockImplementationOnce(async (_octokit, _owner, _repo, ref) => (ref === 'trunk' ? 'memory:\n  enabled: true\n' : null));
+    const comment = { body: '@manki remember use `Result` for errors', user: { type: 'User' } };
+    setContext({ eventName: 'issue_comment', payload: { action: 'created', comment, issue: { number: 15 }, repository: { default_branch: 'trunk' } } });
+
     await handleIssueInteraction();
-    expect(readAt()).toBe('trunk');
+
+    expect(jest.mocked(ghUtils.readConfigFile).mock.calls.map(call => call[3])).toEqual(['trunk']);
+    expect(jest.mocked(memoryModule.openMemoryStore)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ enabled: true }), 'test-owner', 'test-repo', 15);
+    expect(jest.mocked(interaction.handlePRComment).mock.calls[0][7]?.memory.enabled).toBe(true);
+
+    jest.mocked(interaction.handlePRComment).mockClear();
+    setContext({ eventName: 'issue_comment', payload: { action: 'created', comment, issue: { number: 15 } } });
+    await expect(handleIssueInteraction()).rejects.toThrow('The event names no default branch, so Manki cannot read its config');
+    expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
   });
 });
 

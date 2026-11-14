@@ -467,6 +467,12 @@ function repoConfigPath(): string {
   return outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
 }
 
+/** Returns the branch the event names as `what`. Throws when it names none, so a config is never read from a guessed branch. */
+function eventBranch(ref: unknown, what: string): string {
+  if (typeof ref !== 'string' || !ref) throw new Error(`The event names no ${what}, so Manki cannot read its config`);
+  return ref;
+}
+
 /**
  * Loads the base branch's config at `ref` for an event that runs no review round. `held` says that it could not be
  * read or loaded. The config is then `fallbackConfig`, and the event must approve nothing.
@@ -2187,7 +2193,7 @@ async function handleIssueInteraction(): Promise<void> {
   if (!issueNumber) return;
 
   const { octokit, bot } = await getAuth();
-  const { config, held } = await loadEventConfig(octokit, owner, repo, payload.repository?.default_branch ?? 'main');
+  const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(payload.repository?.default_branch, 'default branch'));
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, issueNumber);
 
@@ -2206,7 +2212,7 @@ async function handleIssueTick(): Promise<void> {
   }
   if (!comment || !await handleIssueBoxTick(octokit, bot, owner, repo, pr.number, comment as Parameters<typeof handleIssueBoxTick>[5], sender.login)) return;
   // Manki's own resolve starts no approval check, so it runs here, as it does after a person resolves a thread.
-  const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base?.ref ?? 'main');
+  const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(pr.base?.ref, 'base branch'));
   if (held || !config.auto_approve) return;
   if (await checkAndAutoApprove(octokit, bot, owner, repo, pr.number, config)) core.info(`PR #${pr.number} auto-approved after a ticked issue box resolved its thread`);
 }
@@ -2242,7 +2248,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
 
-  const { config, held } = await loadEventConfig(octokit, owner, repo, payload.pull_request?.base?.ref ?? 'main');
+  const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(payload.pull_request?.base?.ref, 'base branch'));
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
