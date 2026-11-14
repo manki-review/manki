@@ -1376,7 +1376,11 @@ export async function runReview(
     ...(refutation && { refutation }),
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
-    carriedWarnings: carriedWarnings.map(e => ({ ...e, currentCode: extractCurrentCodeWindow(fileContents, e.fingerprint.file, e.currentLine ?? e.fingerprint.lineStart) })),
+    carriedWarnings: carriedWarnings.map(e => ({
+      ...e,
+      currentCode: extractCurrentCodeWindow(fileContents, e.fingerprint.file, e.currentLine ?? e.fingerprint.lineStart),
+      ...(!fileContents?.has(e.fingerprint.file) && !diff.files.some(f => f.path === e.fingerprint.file && f.changeType === 'deleted') && { codeUnread: true }),
+    })),
   };
   if (judgeSkipped) {
     core.info('No finding, open thread or carried warning to judge, so the judge is skipped');

@@ -2720,7 +2720,7 @@ describe('runJudgeAgent', () => {
     });
     const carriedWarnings: CarriedWarning[] = [
       carried('Wait ignores the limit', 16, { description: 'The handler\nwaits forever.', currentLine: 20, currentCode: '>>> 20:   await waitFor(limit);' }),
-      carried('Token kept after logout', 30),
+      carried('Token kept after logout', 30, { codeUnread: true }),
       carried('Retry has no cap', 40),
       carried('Cache never cleared', 50),
     ];
@@ -2884,7 +2884,9 @@ describe('runJudgeAgent', () => {
       findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
       openThreads: [
         { threadId: 'PRRT_x', title: 'Null check', file: 'src/z.ts', evidenceFiles: ['src/b.ts'], line: 5, severity: 'warning' },
-        { threadId: 'PRRT_y', title: 'Naming', file: 'src/a.ts', line: 5, severity: 'note', currentCode: '(file content unavailable)' },
+        { threadId: 'PRRT_y', title: 'Naming', file: 'src/a.ts', line: 5, severity: 'note', currentCode: '(file content unavailable)', codeUnread: true },
+        // A file the fix deleted has no code, which says nothing about reading it.
+        { threadId: 'PRRT_d', title: 'Dead code', file: 'src/dead.ts', line: 5, severity: 'note', currentCode: '(file content unavailable)' },
       ],
       priorRounds: priorRounds.map(roundContextFromLegacy),
       interRoundDiff: long,
@@ -2894,6 +2896,7 @@ describe('runJudgeAgent', () => {
     expect(notedMessage).toContain('Left out: `src/a.ts`.');
     expect(notedMessage).toContain(`${fix}\n${'`'.repeat(3)}`);
     expect(notedMessage).toContain('- **The fix may not be shown**: The inter-round diff leaves out `src/a.ts`. The current code of `src/a.ts` is not shown, as the file could not be read in full this round. Do not call this thread addressed from code you cannot see.');
+    expect(notedMessage).toContain('### PRRT_d — src/dead.ts:5\n```\n(file content unavailable)');
     expect(notedMessage).toContain('### PRRT_x — src/z.ts:5\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this thread addressed from code you cannot see.');
 
     // The file of an earlier warning goes first too.

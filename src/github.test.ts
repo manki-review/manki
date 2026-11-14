@@ -2627,9 +2627,11 @@ describe('fetchFileContents', () => {
     const many = mockOctokit({ 'a.rs': sized(190), 'b.rs': sized(190), 'c.rs': sized(30) });
     expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'])).keys()]).toEqual(['a.rs', 'b.rs']);
     // A small thread file is read before two large files fill the budget, and the map keeps the largest-first order.
-    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'], undefined, undefined, new Set(['c.rs']))).keys()]).toEqual(['a.rs', 'c.rs']);
+    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'], undefined, undefined, ['c.rs'])).keys()]).toEqual(['a.rs', 'c.rs']);
+    // The files in `first` are read in their order, so a later one is the one left out.
+    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'], undefined, undefined, ['c.rs', 'b.rs', 'a.rs'])).keys()]).toEqual(['b.rs', 'c.rs']);
     // A thread file over the per-file cap is still skipped.
-    expect([...(await fetchFileContents(large, 'owner', 'repo', 'abc123', ['checker.rs', 'collection.rs', 'huge.rs'], undefined, undefined, new Set(['huge.rs']))).keys()]).toEqual(['checker.rs', 'collection.rs']);
+    expect([...(await fetchFileContents(large, 'owner', 'repo', 'abc123', ['checker.rs', 'collection.rs', 'huge.rs'], undefined, undefined, ['huge.rs'])).keys()]).toEqual(['checker.rs', 'collection.rs']);
   });
 
   it('skips files exceeding maxFileSize', async () => {

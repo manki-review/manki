@@ -250,8 +250,11 @@ export function isEmptyInterRoundDiff(interRoundDiff: string | undefined): boole
   return interRoundDiff !== undefined && interRoundDiff.trim().length === 0;
 }
 
-/** A warning an earlier round listed only in its review body, with the code around its line at the head when its file was read. */
-export type CarriedWarning = FindingFingerprintEntry & { currentCode?: string };
+/**
+ * A warning an earlier round listed only in its review body, with the code around its line at the head. `codeUnread`
+ * is set when its file is at the head but could not be read in full.
+ */
+export type CarriedWarning = FindingFingerprintEntry & { currentCode?: string; codeUnread?: boolean };
 
 export interface JudgeInput {
   findings: Finding[];
@@ -873,7 +876,7 @@ export function buildJudgeUserMessage(
     const heldOpen = threads.filter(t => guardedThreadStaysOpen(t, pushChangedFiles));
     const hasDiffSection = !!(priorRounds && priorRounds.length > 0);
     const shownDiff = hasDiffSection && interRoundDiff?.trim()
-      ? cutDiffPerFile(interRoundDiff, MAX_INTER_ROUND_DIFF_CHARS, new Set([...fixThreadFiles(threads), ...carriedWarnings.map(e => e.fingerprint.file)]), lockfilePaths)
+      ? cutDiffPerFile(interRoundDiff, MAX_INTER_ROUND_DIFF_CHARS, new Set([...fixThreadFiles(threads, true), ...carriedWarnings.map(e => e.fingerprint.file)]), lockfilePaths)
       : undefined;
     const named = (paths: string[]): string => paths.map(p => `\`${sanitize(p)}\``).join(', ');
     // Says why the fix of a thread or warning on `files` may not be shown, so the judge does not call it addressed unseen.
@@ -903,9 +906,8 @@ export function buildJudgeUserMessage(
       carriedWarnings.forEach((e, i) => {
         const description = e.description ? ` ${sanitizeForPromptEmbed(safeTruncate(e.description.replace(/[\r\n]+/g, ' '), MAX_CARRIED_DESCRIPTION_CHARS))}` : '';
         parts.push(`- **C${i + 1}**: "${sanitize(e.title ?? '')}" at ${sanitize(e.fingerprint.file)}:${e.currentLine ?? e.fingerprint.lineStart}.${description}`);
-        const codeRead = !!e.currentCode && e.currentCode !== '(file content unavailable)';
-        parts.push(...unseenNote([e.fingerprint.file], !codeRead, 'warning'));
-        if (codeRead) {
+        parts.push(...unseenNote([e.fingerprint.file], !!e.codeUnread, 'warning'));
+        if (e.currentCode && e.currentCode !== '(file content unavailable)') {
           const fence = dynamicFence(e.currentCode!);
           parts.push(fence, e.currentCode!, fence);
         }
@@ -979,7 +981,7 @@ export function buildJudgeUserMessage(
         fenced(t.postedCode);
         parts.push(t.postedCodeGone ? '- **Now**: that code is not found in the file any more. The head\'s code near the same line:' : t.movedTo ? `- **Now**: that code is not found in the file any more. The same code sits in \`${sanitize(t.movedTo)}\` at the head:` : '- **Now**: where that code sits at the head:');
       }
-      parts.push(...unseenNote([t.file, ...(t.evidenceFiles ?? [])].filter(Boolean), t.currentCode === '(file content unavailable)', 'thread'));
+      parts.push(...unseenNote([t.file, ...(t.evidenceFiles ?? [])].filter(Boolean), !!t.codeUnread, 'thread'));
       fenced(t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)');
       parts.push('');
     }

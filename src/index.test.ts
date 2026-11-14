@@ -2791,7 +2791,7 @@ describe('runFullReview orchestration', () => {
     const { openThreads, fileContents } = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect([openThreads?.[0].currentCode, fileContents?.has('Cargo.lock')]).toEqual([expect.stringContaining('>>> 5: version = "0.4.3"'), false]);
     // The lockfile is read outside the size budget the prompts' files share, so it can't push a code file out.
-    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[], undefined, undefined, new Set(['Cargo.lock'])], [['Cargo.lock'], 1024 * 1024, Infinity]]);
+    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[], undefined, undefined, ['Cargo.lock']], [['Cargo.lock'], 1024 * 1024, Infinity]]);
     const lockfiles = [{ path: 'Cargo.lock', file, changes: [expect.objectContaining({ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', line: 5 })] }];
     expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
     expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
@@ -5218,6 +5218,8 @@ describe('runFullReview orchestration', () => {
         line: 2,
         severity: 'note',
         currentCode: '(file content unavailable)',
+        // The mocked read returns no file, so the window says it could not be read.
+        codeUnread: true,
       },
     ]);
   });
@@ -5501,9 +5503,9 @@ describe('runFullReview orchestration', () => {
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');
     expect(requestedPaths.filter(p => p === 'src/app.ts')).toHaveLength(1);
-    // Only the files of a blocker or warning thread, with those its finding cited, are read ahead of the rest.
     expect(requestedPaths.filter(p => p === 'src/carried.ts')).toHaveLength(1);
-    expect(fetchCall[7]).toEqual(new Set(['src/other.ts', 'src/caller.ts', 'src/carried.ts']));
+    // Only the file of a blocker or warning thread, then the file of an earlier warning, are read ahead of the rest.
+    expect(fetchCall[7]).toEqual(['src/other.ts', 'src/carried.ts']);
   });
 
   it('skips deleted changed files but still fetches open-thread files', async () => {
@@ -5518,6 +5520,7 @@ describe('runFullReview orchestration', () => {
 
     const previousFindings = [
       { title: 'Live thread', file: 'src/live.ts', line: 1, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_live' },
+      { title: 'Gone thread', file: 'src/gone.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_gone' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
@@ -5528,8 +5531,11 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledTimes(1);
     const requestedPaths = jest.mocked(ghUtils.fetchFileContents).mock.calls[0][4];
-    expect(requestedPaths).not.toContain('src/gone.ts');
+    // The deleted file is read only once, for its thread, and never as a changed file.
+    expect(requestedPaths.filter(p => p === 'src/gone.ts')).toHaveLength(1);
     expect(requestedPaths).toContain('src/live.ts');
+    // A file that could not be read is marked unread, and a file the PR deleted is not.
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads?.map(t => [t.threadId, t.codeUnread])).toEqual([['PRRT_live', true], ['PRRT_gone', undefined]]);
   });
 
   it('includes planner info in dashboard when planner result is available', async () => {

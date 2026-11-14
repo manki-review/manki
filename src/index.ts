@@ -1163,8 +1163,8 @@ async function collectOpenThreads(
   let lockfileContents: Map<string, string> | undefined;
   try {
     [fileContents, lockfileContents] = await Promise.all([
-      // The files of blocker and warning threads and of earlier warnings are read first, so the judge sees a fix however large the rest of the change is.
-      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, new Set([...fixThreadFiles(baseOpenThreads), ...carriedFiles])),
+      // The files of blocker and warning threads, then of earlier warnings, are read first, so the judge sees a fix however large the rest of the change is.
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads), ...carriedFiles]),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
     ]);
   } catch (error) {
@@ -1187,7 +1187,7 @@ async function collectOpenThreads(
       return [commit, new Map<string, string>()] as const;
     }
   })));
-  const openThreads = baseOpenThreads.map((t): OpenThread => {
+  const placed = baseOpenThreads.map((t): OpenThread => {
     const contents = parsed.has(t.file) ? lockfileContents : fileContents;
     const posted = postedAt.get(t.threadId);
     const commit = posted?.commit;
@@ -1217,6 +1217,12 @@ async function collectOpenThreads(
       ...(elsewhere ? { movedTo: elsewhere.file } : now === undefined && { postedCodeGone: true }),
       currentCode: elsewhere ? extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line) : extractCurrentCodeWindow(contents, t.file, near),
     };
+  });
+  // A file the PR deleted has no code to read, which is no failure to read it.
+  const deleted = new Set(diff.files.filter(f => f.changeType === 'deleted').map(f => f.path));
+  const openThreads = placed.map(t => {
+    const unread = !!t.file && !deleted.has(t.file) && (parsed.has(t.file) ? lockfileContents : fileContents)?.get(t.file) === undefined;
+    return unread ? { ...t, codeUnread: true } : t;
   });
   return { openThreads, fileContents };
 }

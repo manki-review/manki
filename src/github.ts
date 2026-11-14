@@ -3365,7 +3365,7 @@ const DEFAULT_MAX_TOTAL_SIZE = 400 * 1024;
 /**
  * Fetch file contents for changed files via the GitHub API.
  * Skips binary files and files exceeding the size limit.
- * If total content exceeds the budget, includes the files in `first`, then the largest of the rest, as many as fit.
+ * If total content exceeds the budget, includes the files in `first` in their order, then the largest of the rest, as many as fit.
  */
 export async function fetchFileContents(
   octokit: Octokit,
@@ -3375,7 +3375,7 @@ export async function fetchFileContents(
   files: string[],
   maxFileSize: number = DEFAULT_MAX_FILE_SIZE,
   maxTotalSize: number = DEFAULT_MAX_TOTAL_SIZE,
-  first: ReadonlySet<string> = new Set(),
+  first: readonly string[] = [],
 ): Promise<Map<string, string>> {
   const results: Array<{ path: string; content: string }> = [];
 
@@ -3420,7 +3420,9 @@ export async function fetchFileContents(
   const kept = new Set<string>();
   let totalSize = 0;
 
-  for (const { path, content } of [...results.filter(r => first.has(r.path)), ...results.filter(r => !first.has(r.path))]) {
+  const byPath = new Map(results.map(r => [r.path, r]));
+  const leading = [...new Set(first)].flatMap(p => byPath.get(p) ?? []);
+  for (const { path, content } of [...leading, ...results.filter(r => !leading.includes(r))]) {
     if (totalSize + content.length > maxTotalSize) {
       core.debug(`Skipping ${path}: would exceed total size budget (${totalSize}/${maxTotalSize})`);
       continue;
