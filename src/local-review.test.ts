@@ -8,6 +8,7 @@ import * as core from '@actions/core';
 import { formatLockfileChanges } from './lockfile';
 import { EarlierFinding, overlayConfig, reviewLocal } from './local-review';
 import { runReview } from './review';
+import { GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { REACH_DOUBT } from './types';
 import type { Finding, ReviewResult, RoundOutcome, ThreadEvaluation } from './types';
 
@@ -199,7 +200,7 @@ describe('reviewLocal', () => {
       { key: 'src/b.ts:5:5:Fifth-value-is-wrong', reason: 'hidden_note' },
     ]);
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   // Each case runs a whole local review over git, which together can pass the default timeout on a CI runner.
   it('holds a local follow-up round for an earlier warning thread as a pull request round does', async () => {

@@ -9,7 +9,7 @@ import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
 import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
-import { expectLinearTime, gitWorkspace } from './test-utils';
+import { expectLinearTime, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
 // Every test here builds a real git workspace or directory, which a loaded runner takes past the default 5 seconds.
@@ -1165,7 +1165,7 @@ describe('listRelatedUses', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('keeps the lines the diff\'s names find when the search for a translated name fails', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-reference-'));

@@ -10,6 +10,9 @@ import { BotIdentity, CodeLinks, titleToSlug } from './github';
 import { parsePRDiff } from './diff';
 import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 
+/** Time limit for a test that starts real `git` processes. Under parallel load each one can take far longer than alone. */
+export const GIT_TEST_TIMEOUT_MS = 30_000;
+
 /** Runs git in `cwd` with a fixed author and returns its trimmed output. */
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
