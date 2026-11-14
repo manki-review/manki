@@ -81,7 +81,7 @@ async function fileOrLink(
 /** Returns the line that replaces a ticked box once the finding is filed, or the unticked box again when filing failed. */
 function filedLine(id: string, filed: { number: number; existing: boolean } | undefined, editor: string): string {
   if (!filed) return issueBoxLine(id);
-  return filed.existing ? `Issue #${filed.number} already tracks this, linked by @${editor}` : `Issue #${filed.number} created by @${editor}`;
+  return filed.existing ? `Issue #${filed.number} already tracks this, linked by \`@${editor}\`` : `Issue #${filed.number} created by \`@${editor}\``;
 }
 
 /**

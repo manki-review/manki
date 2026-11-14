@@ -2476,7 +2476,7 @@ function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threa
   const entries = overrides.map(o => {
     const title = sanitizeMarkdown(o.title || '(untitled)');
     const url = safeThreadUrl(o.threadUrl);
-    return `${url ? `[${title}](${url})` : title} by @${o.login} (\`${o.role}\` role)`;
+    return `${url ? `[${title}](${url})` : title} by \`@${o.login}\` (\`${o.role}\` role)`;
   });
   return `**Findings dismissed by the PR author:** ${entries.join(', ')}.`;
 }

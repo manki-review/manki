@@ -1656,7 +1656,7 @@ describe('runFullReview end to end', () => {
       expect(thread.comments.map(c => c.body).join('\n')).not.toContain('Reopened.');
       // Only the PR author's override leaves a note in the thread, and the reply gets its answer.
       expect(afterResolve).toEqual(overrodeAs
-        ? [`Finding dismissed by @alice, the PR author, who has the \`${overrodeAs}\` role on this repository.\n\n<!-- manki -->\n${securityOverrideMarker('resolve', 'alice')}`]
+        ? [`Finding dismissed by \`@alice\`, the PR author, who has the \`${overrodeAs}\` role on this repository.\n\n<!-- manki -->\n${securityOverrideMarker('resolve', 'alice')}`]
         : []);
       expect(thread.comments.at(-1)?.body).toMatch(/^Kept\. Nothing bounds `b`/);
     });

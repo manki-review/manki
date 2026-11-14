@@ -2108,8 +2108,8 @@ describe('postReview body lead', () => {
       thread('Cleared by a maintainer', 'r2'),
       thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', role: 'maintain', announced: true }),
     ];
-    const line = '**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @owner (`admin` role), '
-      + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by @owner (`maintain` role).';
+    const line = '**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by `@owner` (`admin` role), '
+      + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by `@owner` (`maintain` role).';
 
     const approved = await postedBody(ready, threads);
     expect(approved.body.split('\n')).toContain(line);
