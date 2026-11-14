@@ -3365,7 +3365,7 @@ const DEFAULT_MAX_TOTAL_SIZE = 400 * 1024;
 /**
  * Fetch file contents for changed files via the GitHub API.
  * Skips binary files and files exceeding the size limit.
- * If total content exceeds the budget, includes only the largest files that fit.
+ * If total content exceeds the budget, includes the files in `first`, then the largest of the rest, as many as fit.
  */
 export async function fetchFileContents(
   octokit: Octokit,
@@ -3375,6 +3375,7 @@ export async function fetchFileContents(
   files: string[],
   maxFileSize: number = DEFAULT_MAX_FILE_SIZE,
   maxTotalSize: number = DEFAULT_MAX_TOTAL_SIZE,
+  first: ReadonlySet<string> = new Set(),
 ): Promise<Map<string, string>> {
   const results: Array<{ path: string; content: string }> = [];
 
@@ -3416,17 +3417,19 @@ export async function fetchFileContents(
   // Sort by content size descending so we include the largest files first
   results.sort((a, b) => b.content.length - a.content.length);
 
-  const fileContents = new Map<string, string>();
+  const kept = new Set<string>();
   let totalSize = 0;
 
-  for (const { path, content } of results) {
+  for (const { path, content } of [...results.filter(r => first.has(r.path)), ...results.filter(r => !first.has(r.path))]) {
     if (totalSize + content.length > maxTotalSize) {
       core.debug(`Skipping ${path}: would exceed total size budget (${totalSize}/${maxTotalSize})`);
       continue;
     }
-    fileContents.set(path, content);
+    kept.add(path);
     totalSize += content.length;
   }
+  // The map keeps the largest-first order, so a round where every file fits reads them as before.
+  const fileContents = new Map(results.filter(r => kept.has(r.path)).map(r => [r.path, r.content]));
 
   core.info(`Fetched ${fileContents.size}/${files.length} file contents (${totalSize} bytes)`);
   return fileContents;

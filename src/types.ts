@@ -1632,6 +1632,11 @@ export function threadWarns(t: Parameters<typeof threadBlocks>[0]): boolean {
   return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity));
 }
 
+/** Returns the files of the open threads that block or warn, which the code and diffs a review reads put first. */
+export function fixThreadFiles(threads: ReadonlyArray<Parameters<typeof threadBlocks>[0] & { file: string }>): Set<string> {
+  return new Set(threads.filter(t => t.file && (threadBlocks(t) || threadWarns(t))).map(t => t.file));
+}
+
 
 export interface ReviewStats {
   model: string;

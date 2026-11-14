@@ -14,7 +14,7 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { addedLines, isLineInDiff, newLineNumbers, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { addedLines, cutDiffPerFile, isLineInDiff, newLineNumbers, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -846,6 +846,7 @@ export function buildJudgeUserMessage(
   linkThreads: OpenThread[] | undefined = openThreads,
   unshownFiles: readonly string[] = [],
   carriedWarnings: readonly FindingFingerprintEntry[] = [],
+  lockfilePaths: ReadonlySet<string> = new Set(),
 ): string {
   const parts: string[] = [];
 
@@ -896,10 +897,12 @@ export function buildJudgeUserMessage(
       } else {
         parts.push('Unified diff from the prior round\'s commit to the current head, for the files where the PR\'s own change differs from the prior round. Files only a rebase onto the base branch changed are left out, but a file listed here can still show base branch changes. Use this as the primary signal when judging whether each open thread is addressed.\n');
         parts.push(`${UNTRUSTED_DIFF_NOTE}\n`);
-        if (interRoundDiff.length > MAX_INTER_ROUND_DIFF_CHARS) {
-          parts.push(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${interRoundDiff.length} characters, so changes after the cut are missing. A thread whose file is not shown may still be fixed: judge it from its code region below.\n`);
+        const { text: diffContent, cut, omitted } = cutDiffPerFile(interRoundDiff, MAX_INTER_ROUND_DIFF_CHARS, fixThreadFiles(threads), lockfilePaths);
+        if (diffContent !== interRoundDiff) {
+          parts.push(`The diff has ${interRoundDiff.length} characters, more than the ${MAX_INTER_ROUND_DIFF_CHARS} shown, so each file gets a share, and the files of open blocker and warning threads come first. A thread whose fix is not shown may still be fixed: judge it from its code region below.\n`);
+          if (cut.length > 0) parts.push(`Cut, each ending with a line that says so: ${cut.map(p => `\`${sanitize(p)}\``).join(', ')}.\n`);
+          if (omitted.length > 0) parts.push(`Left out: ${omitted.map(p => `\`${sanitize(p)}\``).join(', ')}.\n`);
         }
-        const diffContent = safeTruncate(interRoundDiff, MAX_INTER_ROUND_DIFF_CHARS);
         const fence = dynamicFence(diffContent);
         parts.push(`${fence}diff`);
         parts.push(diffContent);
@@ -1583,7 +1586,7 @@ export async function runJudgeAgent(
   const citedFiles = (f: Finding) => citedLocations(f).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
   const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...citedFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path) && !listed.has(f.path)).map(shortenLongLines) });
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles, carried);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles, carried, listed);
 
   const effort = input.effort ?? 'high';
   const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({

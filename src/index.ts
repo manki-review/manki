@@ -32,7 +32,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -1161,7 +1161,8 @@ async function collectOpenThreads(
   let lockfileContents: Map<string, string> | undefined;
   try {
     [fileContents, lockfileContents] = await Promise.all([
-      fetchFileContents(octokit, owner, repo, commitSha, filePaths),
+      // A blocker or warning thread's own file is read first, so the judge sees its fix however large the rest of the change is.
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, fixThreadFiles(baseOpenThreads)),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
     ]);
   } catch (error) {
@@ -1268,7 +1269,7 @@ async function collectRoundSignals(
   if (shouldFetchDiff) {
     if (diffResult.status === 'fulfilled' && priorChange && diffResult.value !== undefined) {
       // The two heads also differ by what a rebase brought in, so only the files whose PR change moved are kept.
-      // The judge reads only the start of this diff, so the lockfile hunks go after the code.
+      // The lockfile hunks go after the code, so the judge reads the code first.
       interRoundDiff = lockfilesLast(ownChangeSince(diffResult.value, priorChange, reviewed), lockfiles);
     } else if (diffResult.status === 'fulfilled') {
       core.warning('Without the PR\'s change at the last reviewed commit, the inter-round diff cannot leave out a rebase, so it is not used');

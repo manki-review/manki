@@ -2790,7 +2790,7 @@ describe('runFullReview orchestration', () => {
     const { openThreads, fileContents } = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect([openThreads?.[0].currentCode, fileContents?.has('Cargo.lock')]).toEqual([expect.stringContaining('>>> 5: version = "0.4.3"'), false]);
     // The lockfile is read outside the size budget the prompts' files share, so it can't push a code file out.
-    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[]], [['Cargo.lock'], 1024 * 1024, Infinity]]);
+    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[], undefined, undefined, new Set(['Cargo.lock'])], [['Cargo.lock'], 1024 * 1024, Infinity]]);
     const lockfiles = [{ path: 'Cargo.lock', file, changes: [expect.objectContaining({ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', line: 5 })] }];
     expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
     expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
@@ -5498,6 +5498,8 @@ describe('runFullReview orchestration', () => {
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');
     expect(requestedPaths.filter(p => p === 'src/app.ts')).toHaveLength(1);
+    // Only the file of a blocker or warning thread is read ahead of the rest.
+    expect(fetchCall[7]).toEqual(new Set(['src/other.ts']));
   });
 
   it('skips deleted changed files but still fetches open-thread files', async () => {

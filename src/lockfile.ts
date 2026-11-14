@@ -136,7 +136,7 @@ export function withLockfiles(diff: ParsedDiff, lockfiles: LockfileDiff[]): Pars
   return { ...diff, files: [...diff.files, ...lockfiles.map(l => l.file).filter(f => !diff.files.some(d => d.path === f.path))] };
 }
 
-/** Moves the files of `lockfiles` to the end of a raw diff, so a cut that keeps the start of it keeps the code. */
+/** Moves the files of `lockfiles` to the end of a raw diff, so the code reads first. */
 export function lockfilesLast(rawDiff: string, lockfiles: LockfileDiff[]): string {
   if (lockfiles.length === 0) return rawDiff;
   const paths = new Set(lockfiles.map(l => l.path));

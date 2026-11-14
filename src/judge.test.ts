@@ -2854,18 +2854,24 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('## Open Thread Code Regions');
     expect(userMessage).toContain('PRRT_x');
     expect(userMessage).toContain('>>> 5: flagged()');
-    expect(userMessage).not.toContain('The diff is cut at');
+    expect(userMessage).not.toContain('more than the');
 
-    // A diff past the cap says where it was cut, so the judge does not read a missing file as unchanged.
+    // A diff past the cap is cut per file, with the thread's file first although it sorts last, and the judge is told what is cut.
     mockSendMessage.mockClear();
-    const long = `diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+${'x'.repeat(MAX_INTER_ROUND_DIFF_CHARS)}\n`;
+    const large = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,${MAX_INTER_ROUND_DIFF_CHARS / 10} @@\n${'+abcdefghi\n'.repeat(MAX_INTER_ROUND_DIFF_CHARS / 10)}`;
+    const fix = 'diff --git a/src/z.ts b/src/z.ts\n--- a/src/z.ts\n+++ b/src/z.ts\n@@ -1,1 +1,1 @@\n-old\n+fixed';
+    const long = `${large('src/a.ts')}${large('src/b.ts')}${fix}\n`;
     await runJudgeAgent(mockClient, makeConfig(), {
       findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
-      openThreads: [{ threadId: 'PRRT_x', title: 'Null check', file: 'src/a.ts', line: 5, severity: 'warning' }],
+      openThreads: [{ threadId: 'PRRT_x', title: 'Null check', file: 'src/z.ts', line: 5, severity: 'warning' }],
       priorRounds: priorRounds.map(roundContextFromLegacy),
       interRoundDiff: long,
     });
-    expect(mockSendMessage.mock.calls[0][1]).toContain(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${long.length} characters, so changes after the cut are missing.`);
+    const cutMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(cutMessage).toContain(`The diff has ${long.length} characters, more than the ${MAX_INTER_ROUND_DIFF_CHARS} shown, so each file gets a share, and the files of open blocker and warning threads come first.`);
+    expect(cutMessage).toContain('Cut, each ending with a line that says so: `src/a.ts`, `src/b.ts`.');
+    expect(cutMessage).not.toContain('Left out:');
+    expect(cutMessage).toContain(`diff\n${fix}\ndiff --git a/src/a.ts`);
   });
 
   it('renders OpenThread `description` and `suggestedFix` in the open-thread block', async () => {
