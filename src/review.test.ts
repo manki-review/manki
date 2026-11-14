@@ -39,7 +39,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
-import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -1169,7 +1169,7 @@ describe('buildReviewerUserMessage', () => {
     expect(message).toContain('````\nCargo.lock\n  added ``` ');
     expect(message.indexOf('## Lockfile Changes')).toBeLessThan(message.indexOf('## Pull Request Diff'));
     expect(message.match(/untrusted/g)).toHaveLength(6);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('omits PR context when undefined', () => {
     const message = buildReviewerUserMessage('diff', '');
@@ -2291,7 +2291,7 @@ describe('runReview', () => {
     const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
     expect(finderGuides).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('searches a dependency for the names the change calls, and fetches for those names only when one is configured', async () => {
     // The change declares nothing a search could use, and calls a function of the dependency.

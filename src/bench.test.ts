@@ -11,7 +11,7 @@ import { printableError } from './cli';
 import { cutLegacyCommands, sanitizeLogOutput } from './providers';
 import type { LLMClient } from './providers';
 import { buildLLMClient } from './review-clients';
-import { expectLinearTime } from './test-utils';
+import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { VERDICT_READER_NAME } from './types';
 import type { Doubt, Finding, FindingSeverity, GradeChange, Refutation, RoundContext, RoundOutcome } from './types';
 
@@ -765,7 +765,7 @@ describe('runBench and buildReport', () => {
     expect(splitSummary).toContain('| Metric | opus tuning | opus holdout |\n| --- | --- | --- |\n| Must-catch recall | 33% | 50% |\n');
     expect(splitSummary).toContain('| demo-1 K1 (must blocker) | 2/3, 1 partial |  |\n');
     expect(splitSummary).toContain('| demo-2 K1 (must blocker) |  | 1/1 |\n');
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('tries the matcher again before giving up a finished review, and keeps its findings and cost when it gives up', async () => {
     const review = jest.fn(async () => makeReview('ADDRESS_FIRST', [blocker]));

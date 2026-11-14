@@ -6467,6 +6467,8 @@ interface NoteOrderFixture {
   name: string;
   /** The title of the finding the judge should rank last. */
   formatting: string;
+  /** Titles of notes whose description argues a consequence for callers, so the judge may grade them a warning. */
+  noteOrWarning?: string[];
   findings: Finding[];
   prDiff: string;
 }
@@ -6480,7 +6482,7 @@ describe('judge note order fixture corpus', () => {
     // The judge is shown only the files a finding sits on or cites, so it cannot check a claim about any other file.
     const shown = new Set(fixture.findings.flatMap(shownFiles));
     expect(diff.files.map(f => f.path).filter(path => !shown.has(path))).toEqual([]);
-    expect(fixture.findings.map(f => f.title)).toContain(fixture.formatting);
+    expect(fixture.findings.map(f => f.title)).toEqual(expect.arrayContaining([fixture.formatting, ...fixture.noteOrWarning ?? []]));
   });
 
   // Live replay against a real LLM, gated like the thread-evaluation corpus above.
@@ -6509,7 +6511,9 @@ describe('judge note order fixture corpus', () => {
     const { noteOrder } = JSON.parse(extractJSON(replies.at(-1) ?? '')) as { noteOrder?: unknown };
     const notes = result.findings.filter(f => isNote(f.severity));
     console.log(`[live-judge] ${fixture.name}: noteOrder=${JSON.stringify(noteOrder)} graded=${JSON.stringify(result.findings.map(f => [f.title, f.severity, f.noteRank]))}`);
-    expect(notes.length).toBeGreaterThanOrEqual(3);
+    const sureNotes = fixture.findings.filter(f => isNote(f.severity) && !fixture.noteOrWarning?.includes(f.title)).map(f => f.title);
+    expect(notes.map(f => f.title)).toEqual(expect.arrayContaining(sureNotes));
+    for (const title of fixture.noteOrWarning ?? []) expect(['note', 'warning']).toContain(result.findings.find(f => f.title === title)?.severity);
     // As many entries as notes, and every note at a place of its own, so `noteOrder` names each note once and nothing else.
     expect(noteOrder).toHaveLength(notes.length);
     expect(notes.map(f => f.noteRank).sort()).toEqual(notes.map((_, i) => i));

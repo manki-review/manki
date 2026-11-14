@@ -1,6 +1,9 @@
 {
   "name": "mixed-worth",
   "formatting": "Missing space after the comma in the import",
+  "noteOrWarning": [
+    "The docstring says the function returns None, but it raises"
+  ],
   "findings": [
     {
       "title": "Missing space after the comma in the import",
