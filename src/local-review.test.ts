@@ -95,6 +95,8 @@ describe('reviewLocal', () => {
     expect(review.context.instructions).toEqual({ files: ['AGENTS.md', 'CONTRIBUTING.md', 'guides/conventions.md'] });
     expect(options.prContext).toEqual({ title: 'Change a', body: '', baseBranch: 'main' });
     expect(options.headSha).toBe(head);
+    // Without an earlier round there is no thread, which lets a round with nothing to judge skip the judge.
+    expect(options.openThreads).toEqual([]);
     expect(options).not.toHaveProperty('relatedReposAsOf');
     expect(workspaceSeen?.content).toBe('const a = 1;\nconst b = 3;\n');
     expect(workspaceSeen?.log).not.toContain(later);

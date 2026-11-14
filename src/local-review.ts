@@ -362,8 +362,10 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       lockfiles,
       signal,
       ...(input.relatedReposAsOf && { relatedReposAsOf: input.relatedReposAsOf }),
+      // A local review without an earlier round has no thread, so a round with nothing to judge skips the judge.
+      openThreads: followUp?.openThreads ?? [],
       ...(followUp && {
-        isFollowUp: followUp.previousFindings.length > 0, openThreads: followUp.openThreads, previousFindings: followUp.previousFindings,
+        isFollowUp: followUp.previousFindings.length > 0, previousFindings: followUp.previousFindings,
         priorRounds: followUp.priorRounds, interRoundDiff: followUp.interRoundDiff,
       }),
       onProgress: (event) => {
