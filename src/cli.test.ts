@@ -1,4 +1,7 @@
-import { existsSync, readdirSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import { exitCodeOf, formatReviewJson, formatReviewText, parseReviewArgs, runCliCommand, runReviewCommand } from './cli';
 import type { ApprovalHeld } from './github';
@@ -151,6 +154,31 @@ describe('runReviewCommand', () => {
     expect(stderr).toHaveBeenCalledWith('manki review: Unknown option --bogus\n');
     expect(stdout).not.toHaveBeenCalled();
     expect(process.stdout.write).toBe(write);
+  });
+
+  it('fails without a base when the remote names no default branch', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'manki-cli-'));
+    const cwd = process.cwd();
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]);
+    try {
+      execFileSync('git', ['init', '-q', repo]);
+      process.chdir(repo);
+      process.env = { ...savedEnv, ANTHROPIC_API_KEY: 'test-key' };
+      expect(await runReviewCommand([])).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('Could not tell the remote\'s default branch from origin/HEAD'));
+
+      // With `origin/HEAD` set the base resolves, and the run goes on to read the `--config` file that is missing.
+      git('commit', '-q', '--allow-empty', '-m', 'init');
+      git('update-ref', 'refs/remotes/origin/trunk', 'HEAD');
+      git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk');
+      stderr.mockClear();
+      expect(await runReviewCommand(['--config', join(repo, 'missing.yml')])).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('missing.yml'));
+      expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining('origin/HEAD'));
+    } finally {
+      process.chdir(cwd);
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
