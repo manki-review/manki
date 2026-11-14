@@ -608,7 +608,9 @@ describe('runFullReview end to end', () => {
     });
     // The claims of the PR text are listed while the planner runs, and this PR makes none. The finder found nothing, so no judge is called.
     expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'verdict']);
-    expect(mockGitHub.comments.find(c => c.body.includes('**Judge'))?.body).toContain('**Judge:** skipped, nothing to judge');
+    const progress = mockGitHub.comments.find(c => c.body.includes('**Judge'))?.body;
+    expect(progress).toContain('**Judge:** skipped, nothing to judge');
+    expect(progress).toContain('- Judge: skipped\n');
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
     expect(core.setOutput).toHaveBeenCalledWith('approval_held', '');
     // No finder client has repository tools, so the PR head is not fetched.

@@ -1788,7 +1788,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   const timing = {
     parseMs: parseEndTime - startTime,
     reviewMs: reviewEndTime - parseEndTime,
-    judgeMs: judgeEndTime - reviewEndTime,
+    ...(!dashboard.judgeSkipped && { judgeMs: judgeEndTime - reviewEndTime }),
     totalMs: judgeEndTime - startTime,
   };
 

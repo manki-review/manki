@@ -1767,7 +1767,8 @@ export interface ReviewMetadata {
   timing: {
     parseMs: number;
     reviewMs: number;
-    judgeMs: number;
+    /** Unset on a round that called no judge. */
+    judgeMs?: number;
     totalMs: number;
   };
 }

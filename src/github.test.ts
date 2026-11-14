@@ -3811,6 +3811,10 @@ describe('updateProgressComment', () => {
     expect(body).toContain('Review agents: 12.0s');
     expect(body).toContain('Judge: 5.0s');
     expect(body).toContain('Total: 17.5s');
+    // A round that called no judge shows no judge time.
+    const { judgeMs: _judgeMs, ...withoutJudge } = baseMetadata.timing;
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, { ...baseMetadata, timing: withoutJudge });
+    expect(mockUpdateComment.mock.calls[1][0].body).toContain('- Judge: skipped\n');
   });
 
   it('omits judge decisions section when empty', async () => {

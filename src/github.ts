@@ -1167,7 +1167,7 @@ export async function updateProgressComment(
     parts.push('**Timing:**');
     parts.push(`- Parse: ${(metadata.timing.parseMs / 1000).toFixed(1)}s`);
     parts.push(`- Review agents: ${(metadata.timing.reviewMs / 1000).toFixed(1)}s`);
-    parts.push(`- Judge: ${(metadata.timing.judgeMs / 1000).toFixed(1)}s`);
+    parts.push(`- Judge: ${metadata.timing.judgeMs === undefined ? 'skipped' : `${(metadata.timing.judgeMs / 1000).toFixed(1)}s`}`);
     parts.push(`- Total: ${(metadata.timing.totalMs / 1000).toFixed(1)}s`);
     parts.push('');
     parts.push('</details>');
