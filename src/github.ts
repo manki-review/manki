@@ -214,6 +214,11 @@ const MERGEABLE_RETRY_MS = 1500;
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
 export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread' | 'warnings' | 'refused';
 
+/** Returns the `approval` a round record keeps for a round that would approve: why it was held, and whether warnings hold it too. */
+export function roundApproval(held: ApprovalHeld, warningsHeld: boolean): NonNullable<RoundContext['approval']> {
+  return { held, ...(warningsHeld && { warningsHeld: true as const }) };
+}
+
 /** Why GitHub refused a review event: the repository setting that stops GitHub Actions from approving, or another reason. */
 type EventRefusal = 'setting' | 'other';
 
@@ -2052,7 +2057,7 @@ export async function postReview(
           findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => recordPlace(entry, result.findings[i])) },
         }),
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
-        ...(event === 'APPROVE' && { approval: { held: approvalRefused ? 'refused' : approvalHeld, ...(warningHold && { warningsHeld: true as const }) } }),
+        ...(event === 'APPROVE' && { approval: roundApproval(approvalRefused ? 'refused' : approvalHeld, !!warningHold) }),
         ...(keptReport && { readyReport: keptReport }),
       }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
