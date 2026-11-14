@@ -226,7 +226,7 @@ export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
  * Returns `diff` cut at `MAX_INTER_ROUND_DIFF_CHARS`, with the files in `first` moved ahead of the rest when it is longer.
  * Also names the file the cut runs through and the files wholly past it.
  */
-function cutInterRoundDiff(diff: string, first: readonly string[]): { text: string; cut?: string; omitted: string[] } {
+export function cutInterRoundDiff(diff: string, first: readonly string[]): { text: string; cut?: string; omitted: string[] } {
   if (diff.length <= MAX_INTER_ROUND_DIFF_CHARS) return { text: diff, omitted: [] };
   const sections = orderDiffSections(diff, first);
   let cut: string | undefined;
@@ -238,6 +238,25 @@ function cutInterRoundDiff(diff: string, first: readonly string[]): { text: stri
     start += text.length;
   }
   return { text: safeTruncate(sections.map(s => s.text).join(''), MAX_INTER_ROUND_DIFF_CHARS), cut, omitted };
+}
+
+/**
+ * Returns the files `cutInterRoundDiff` puts first: those of the open blocker and warning threads, then the files their
+ * findings cited, then the files of `carriedWarnings`. A thread's own file goes first, so a large cited file cannot push it past the cut.
+ */
+export function interRoundDiffFirst(threads: readonly OpenThread[], carriedWarnings: readonly FindingFingerprintEntry[]): string[] {
+  return [...fixThreadFiles(threads), ...fixThreadFiles(threads, true), ...carriedWarnings.map(e => e.fingerprint.file)];
+}
+
+/** Names the file the cut of `cutInterRoundDiff` runs through and at most `MAX_UNSHOWN_FILES` of the files wholly past it, one line each. */
+export function cutFilesNote({ cut, omitted }: { cut?: string; omitted: readonly string[] }): string[] {
+  const named = (paths: readonly string[]): string => paths.map(p => `\`${sanitize(p)}\``).join(', ');
+  // A push can change thousands of files, so the list names at most `MAX_UNSHOWN_FILES` of them.
+  const more = omitted.length > MAX_UNSHOWN_FILES ? `, and ${omitted.length - MAX_UNSHOWN_FILES} more files` : '';
+  return [
+    ...(cut ? [`Cut short: ${named([cut])}.`] : []),
+    ...(omitted.length > 0 ? [`Left out: ${named(omitted.slice(0, MAX_UNSHOWN_FILES))}${more}.`] : []),
+  ];
 }
 
 const JUDGE_TIMEOUT_MS = 300_000;
@@ -886,10 +905,7 @@ export function buildJudgeUserMessage(
       : t.evidenceFiles?.length ? 'the push changed neither this file nor a file its finding cited' : 'the push did not change this file';
     const heldOpen = threads.filter(t => guardedThreadStaysOpen(t, pushChangedFiles));
     const hasDiffSection = !!(priorRounds && priorRounds.length > 0);
-    // A thread's own file goes ahead of the files its finding cited, so a large cited file cannot push it past the cut.
-    const shownDiff = hasDiffSection && interRoundDiff?.trim()
-      ? cutInterRoundDiff(interRoundDiff, [...fixThreadFiles(threads), ...fixThreadFiles(threads, true), ...carriedWarnings.map(e => e.fingerprint.file)])
-      : undefined;
+    const shownDiff = hasDiffSection && interRoundDiff?.trim() ? cutInterRoundDiff(interRoundDiff, interRoundDiffFirst(threads, carriedWarnings)) : undefined;
     const named = (paths: string[]): string => paths.map(p => `\`${sanitize(p)}\``).join(', ');
     // Says why the fix of a thread or warning on `files` may not be shown, so the judge does not call it addressed unseen.
     const unseenNote = (files: string[], codeUnread: boolean, what: string): string[] => {
@@ -932,12 +948,10 @@ export function buildJudgeUserMessage(
       } else if (shownDiff) {
         parts.push('Unified diff from the prior round\'s commit to the current head, for the files where the PR\'s own change differs from the prior round. Files only a rebase onto the base branch changed are left out, but a file listed here can still show base branch changes. Use this as the primary signal when judging whether each open thread is addressed.\n');
         parts.push(`${UNTRUSTED_DIFF_NOTE}\n`);
-        const { text: diffContent, cut, omitted } = shownDiff;
+        const diffContent = shownDiff.text;
         if (interRoundDiff.length > MAX_INTER_ROUND_DIFF_CHARS) {
           parts.push(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${interRoundDiff.length} characters, so changes after the cut are missing. The files of open blocker and warning threads, the files their findings cited and the files of earlier warnings come first. A fix this diff does not show may still exist: look for it in the current code shown with its thread, and never call a thread or warning addressed from code you cannot see.\n`);
-          if (cut) parts.push(`Cut short: ${named([cut])}.\n`);
-          // A push can change thousands of files, so the list names at most `MAX_UNSHOWN_FILES` of them.
-          if (omitted.length > 0) parts.push(`Left out: ${named(omitted.slice(0, MAX_UNSHOWN_FILES))}${omitted.length > MAX_UNSHOWN_FILES ? `, and ${omitted.length - MAX_UNSHOWN_FILES} more files` : ''}.\n`);
+          parts.push(...cutFilesNote(shownDiff).map(line => `${line}\n`));
         }
         const fence = dynamicFence(diffContent);
         parts.push(`${fence}diff`);
