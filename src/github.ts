@@ -749,8 +749,8 @@ async function findNearestInstructionFiles(files: RepoFiles, changedPaths: strin
 }
 
 /**
- * Returns the file's content with `@file` references inlined and the `.md` files it links to, or null when it can't be
- * read.
+ * Returns the file's content with `@file` references inlined and the `.md` files it links to, or null when no file is at
+ * `path`. A file that cannot be read is logged and reads as empty, so the guide search stops at it as GitHub would.
  */
 async function readInstructionFile(files: RepoFiles, path: string): Promise<{ content: string; links: string[] } | null> {
   try {
@@ -760,7 +760,7 @@ async function readInstructionFile(files: RepoFiles, path: string): Promise<{ co
     return { content: await resolveReferences(files, content, dirOf(path), links), links };
   } catch (error) {
     core.warning(`Could not read instruction file ${path}: ${error}`);
-    return null;
+    return { content: '', links: [] };
   }
 }
 
