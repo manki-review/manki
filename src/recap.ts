@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainRepoPath, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -38,7 +38,7 @@ export function parseFindingData(body: string): { title?: string; fix?: string; 
     const parsed: unknown = JSON.parse(json);
     if (!parsed || typeof parsed !== 'object') return undefined;
     const { title, fix, howToFix, tags, flaggedBy, file, line, detached, evidenceFiles } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown; evidenceFiles?: unknown };
-    const cited = isStringArray(evidenceFiles) ? [...new Set(evidenceFiles.filter(f => f && f !== file))] : [];
+    const cited = isStringArray(evidenceFiles) ? [...new Set(evidenceFiles.flatMap(f => plainRepoPath(f) ?? []))].filter(f => f !== file) : [];
     return {
       ...(typeof title === 'string' && { title }),
       ...(typeof file === 'string' && file && { file }),

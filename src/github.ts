@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
+import { posix } from 'path';
 
 import * as core from '@actions/core';
 import * as github from '@actions/github';
@@ -1344,6 +1345,16 @@ type LineLink = (file: string, line: number, end?: number) => string | undefined
 /** Whether `path` has a `.` or `..` segment. A browser resolves those, so a link built from it can leave the repository. */
 function hasDotSegment(path: string): boolean {
   return path.split('/').some(segment => segment === '.' || segment === '..');
+}
+
+/**
+ * Returns `path`, as a model or a person wrote it, as a plain repository path: without `./`, `.` segments, repeated
+ * slashes or a `..` that stays inside the repository. Returns nothing for any other path, such as an absolute path, a
+ * URL or one that leaves the repository, so a comparison with a repository path never matches on its spelling.
+ */
+export function plainRepoPath(path: string): string | undefined {
+  const normal = posix.normalize(path.trim());
+  return LINKABLE_PATH_RE.test(normal) && !hasDotSegment(normal) ? normal : undefined;
 }
 
 /** Returns `text` as a Markdown link to `url`, or `text` alone when there is no URL. */
@@ -3095,26 +3106,25 @@ function rulePart(finding: Finding): FoldPart | undefined {
   return { label: 'Repository rule', text, open: `**Repository rule:** ${text}` };
 }
 
-/**
- * Returns how `finding` was checked: the rule it breaks, the check on its own line, a code preview with a sentence for up to
- * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome. A finding that cites nothing
- * says so, unless a tool reported it or it is an earlier round's finding.
- */
 /** Returns the repository paths a finding's cited file names resolve against: the changed files, the files read and its own. */
 function knownFiles(finding: Finding, { files, changed = [] }: CodeLinks): string[] {
   return [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
 }
 
 /**
- * Returns the files other than its own that `finding` cites in its "Checked in the code" links, each a changed file or
- * one read at the head. A later round counts a push to one of them as a push to the thread.
+ * Returns the plain repository paths, other than its own file, that `finding` links in its "Checked in the code"
+ * section. A later round counts a push to one of them as a push to the thread.
  */
 function evidenceFiles(finding: Finding, links: CodeLinks): string[] {
-  const known = knownFiles(finding, links);
-  const cited = findingChecks(finding, known).flatMap(c => c.at?.file ?? []);
-  return [...new Set(cited)].filter(file => file !== finding.file && known.includes(file));
+  const cited = findingChecks(finding, knownFiles(finding, links)).flatMap(c => (c.at && plainRepoPath(c.at.file)) ?? []);
+  return [...new Set(cited)].filter(file => file !== finding.file);
 }
 
+/**
+ * Returns how `finding` was checked: the rule it breaks, the check on its own line, a code preview with a sentence for up to
+ * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome. A finding that cites nothing
+ * says so, unless a tool reported it or it is an earlier round's finding.
+ */
 function checksSection(finding: Finding, links: CodeLinks, ownLine: string): FindingChecks {
   const { linkTo, files, related } = links;
   const known = knownFiles(finding, links);

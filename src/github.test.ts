@@ -218,10 +218,14 @@ describe('formatFindingComment', () => {
       expect(offLine).toContain('**How to fix it**\n```ts\nif (value != null) { use(value); }\n```\n\n**Checked in the code**\nOn the flagged line: Reads `value` unchecked');
       expect(parseFindingData(offLine)).toEqual(expect.objectContaining({ fix: 'if (value != null) { use(value); }', ...(place === 'detached' && { detached: true }) }));
     }
-    // The finding data names the other files the checks link, each once, which a later round counts as the thread's. A
-    // file neither changed nor read is not linked, so it is left out, and so is the finding's own file.
-    const citing = { ...baseFinding, evidence: { checks: ['src/main.ts:42 reads `value`', 'util.ts:5 returns `undefined`', 'lib/nowhere.ts:3 calls it'], proof: ['src/util.ts:9'] } };
-    expect(parseFindingData(render(citing))?.evidenceFiles).toEqual(['src/util.ts']);
+    // The finding data names the other files the checks link, each once and without the finding's own, which a later
+    // round counts as the thread's. That includes a file the review did not read. Only a plain repository path is
+    // linked, so an absolute path, a path out of the repository, a URL or an unresolved bare name is never recorded.
+    const citing = { ...baseFinding, evidence: {
+      checks: ['src/main.ts:42 reads `value`', 'util.ts:5 returns `undefined`', 'lib/unread.ts:3 calls it', '/etc/passwd:1 holds it', '../outside.ts:3 too', 'https://example.com/a.ts:3 too', 'unknown.ts:4 too'],
+      proof: ['src/util.ts:9'],
+    } };
+    expect(parseFindingData(render(citing))?.evidenceFiles).toEqual(['src/util.ts', 'lib/unread.ts']);
     expect(parseFindingData(render(onOwnLine))).not.toHaveProperty('evidenceFiles');
     // A finding with no separate fix keeps the rest of its description as why it matters.
     expect(render({ ...baseFinding, description, evidence })).toContain(`<summary>Why it matters and 1 place read</summary>\n\n**Why it matters**\n${sentence(4)} ${sentence(5)}\n\n**Checked in the code**\n`);

@@ -5,7 +5,7 @@ import { assertWritesAllowed } from './abort';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, plainRepoPath, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -328,11 +328,14 @@ function requireNewProof(reply: string, finding: string, file: string | undefine
 
 /**
  * Returns the files of `proof`, the lines a "Fixed." answer cites, when none of them is the thread's `file` or a file in
- * `evidenceFiles`, and none otherwise. A review confirms a fix on a guarded thread only after a push to one of those.
+ * `evidenceFiles`, and none otherwise. A review confirms a fix on a guarded thread only after a push to one of those. A
+ * cited path that is no plain repository path cannot be compared, so it returns none.
  */
 function uncitedFixFiles(proof: readonly string[], file: string, evidenceFiles: string[] | undefined): string[] {
-  const files = new Set(proof.map(locationFile));
-  return file && files.size > 0 && !pushTouchesThread({ file, evidenceFiles }, files) ? [...files] : [];
+  const paths = proof.map(location => plainRepoPath(locationFile(location)));
+  if (!file || paths.length === 0 || paths.some(path => path === undefined)) return [];
+  const files = new Set(paths as string[]);
+  return pushTouchesThread({ file, evidenceFiles }, files) ? [] : [...files];
 }
 
 /**
