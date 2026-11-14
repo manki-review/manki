@@ -2588,18 +2588,25 @@ describe('runReview', () => {
         };
       };
       const terms = () => JSON.stringify({ 'o/ref': { '1': ['roundAmount'] }, 'o/app': { '1': ['roundTotal'] }, 'o/lib': { '1': ['round_cents'] } });
-      // The 30 s the checks wait for their lines, which the slow run below ends as soon as its term call is asked.
-      const linesLimit = new AbortController();
+      // The 30 s the checks wait for their lines, which the hung and slow runs below end as soon as their fetch or term call starts.
+      let linesLimit = new AbortController();
       const timeout = AbortSignal.timeout.bind(AbortSignal);
       const timeoutSpy = jest.spyOn(AbortSignal, 'timeout').mockImplementation(ms => (ms === 30_000 ? linesLimit.signal : timeout(ms)));
       let claimed;
       let unclaimed;
       let failed;
+      let hung;
       let slow;
       try {
         claimed = await run([quote], terms);
         unclaimed = await run([], terms);
         failed = await run([quote], () => { throw new Error('model down'); });
+        fetchSpy.mockImplementationOnce(() => {
+          linesLimit.abort();
+          return new Promise<never>(() => undefined);
+        });
+        hung = await run([quote], terms);
+        linesLimit = new AbortController();
         slow = await run([quote], () => {
           linesLimit.abort();
           return new Promise<never>(() => undefined);
@@ -2624,16 +2631,22 @@ describe('runReview', () => {
       expect(failed.checks).toHaveLength(1);
       expect(failed.checks[0]).not.toContain('## Lines in the Related Repos');
       expect(failed.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'model down' } });
+      // A related fetch past the limit leaves the check to start without lines, and the record names the fetch.
+      expect(hung.checks).toHaveLength(1);
+      expect(hung.checks[0]).not.toContain('## Lines in the Related Repos');
+      expect(hung.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'the fetch of the related repos took longer than 30 s' } });
+      expect(hung.result.prClaims?.claims?.map(c => [c.status, c.call])).toEqual([['unchecked', undefined]]);
+      expect(hung.result.llmCalls?.filter(c => c.stage === 'claim_terms')).toEqual([]);
       // A term call past its limit leaves the check to start without lines, and the check still gets its whole time.
       expect(slow.checks).toHaveLength(1);
       expect(slow.checks[0]).not.toContain('## Lines in the Related Repos');
-      expect(slow.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'the fetch, the term call or the search took longer than 30 s or ran past the deadline of the checks' } });
+      expect(slow.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'the term call took longer than 30 s' } });
       expect(slow.result.prClaims?.claims?.map(c => [c.status, c.call])).toEqual([['unchecked', undefined]]);
       expect(unclaimed.result.usesOutsideDiff).toBeUndefined();
       expect(unclaimed.result.findings.map(f => f.severity)).toContain('blocker');
       // The finders, the judge and the refuter get the same prompts whatever the claims found.
       expect(claimed.prompts.judge.map(([system]) => system.slice(0, 30))).toEqual([expect.stringMatching(/^You are a code review judge/), expect.stringMatching(/^You check one finding/)]);
-      for (const { prompts, result } of [claimed, failed, slow]) {
+      for (const { prompts, result } of [claimed, failed, hung, slow]) {
         expect(prompts).toEqual(unclaimed.prompts);
         expect(result.findings.map(f => [f.title, f.severity])).toEqual(unclaimed.result.findings.map(f => [f.title, f.severity]));
         expect(result.verdict).toBe(unclaimed.result.verdict);
@@ -3076,7 +3089,7 @@ describe('runReview', () => {
     }
 
     expect(dedup.mock.calls.filter(([system]) => system.startsWith('You name the code'))).toHaveLength(1);
-    expect(result.usesOutsideDiff?.claimTerms).toEqual({ skipped: 'the fetch, the term call or the search took longer than 30 s or ran past the deadline of the checks' });
+    expect(result.usesOutsideDiff?.claimTerms).toEqual({ skipped: 'the term call ran past the deadline of the checks' });
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: pending vs done', at: ['src/queue.ts:6'], status: 'timed_out' }]);
     expect(result.prClaims).toEqual({ claims: [{ quote, source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'timed_out' }] });
     expect(result.findings).toEqual([]);
