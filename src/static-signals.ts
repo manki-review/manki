@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { withDeadline } from './auth';
 import { AstGrepApi, isAstGrepFile, isRustFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOsvScanner, runShellcheck, runTool, runZizmor, ToolRunner } from './binary-analyzers';
-import { loadStaticAnalysisConfig } from './config';
+import { CONFIG_PATH, loadStaticAnalysisConfig } from './config';
 import { holdsLines } from './code-window';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
@@ -72,8 +72,6 @@ export interface StaticSignalRequest {
   prNumber: number;
   headSha: string;
   baseRef: string;
-  /** Path of the Manki config file. Its `static_analysis` block is read from `baseRef`. */
-  configPath: string;
   diff: ParsedDiff;
   /** Every file the PR changes, before `exclude_paths`. `dependencies` reads it, so a lockfile the review skips is still scanned. */
   fullDiff: ParsedDiff;
@@ -111,12 +109,12 @@ const SOURCE_ORDER: readonly RoundSignalSourceRun['source'][] = ['checks', 'code
 export async function collectStaticSignals(
   octokit: Octokit, request: StaticSignalRequest, runtime: StaticAnalysisRuntime = DEFAULT_RUNTIME,
 ): Promise<StaticAnalysisResult> {
-  const { owner, repo, baseRef, configPath, diff, fullDiff } = request;
-  const content = await fetchConfigFile(octokit, owner, repo, baseRef, configPath).catch((error: unknown) => {
-    core.warning(`Static analysis: could not read ${configPath} on the base branch, reading every source: ${error instanceof Error ? error.message : String(error)}`);
+  const { owner, repo, baseRef, diff, fullDiff } = request;
+  const content = await fetchConfigFile(octokit, owner, repo, baseRef, CONFIG_PATH).catch((error: unknown) => {
+    core.warning(`Static analysis: could not read ${CONFIG_PATH} on the base branch, reading every source: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   });
-  const settings = loadStaticAnalysisConfig(content, configPath);
+  const settings = loadStaticAnalysisConfig(content);
   const [checksStillPending, rustPaths] = await Promise.all([
     waitForChecks(octokit, request, settings, runtime),
     rustRulePaths(octokit, request, settings),

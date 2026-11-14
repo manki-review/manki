@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, createOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
-import { fallbackConfig, loadConfig, resolveModel } from './config';
+import { CONFIG_PATH, fallbackConfig, loadConfig, resolveModel } from './config';
 import { BENCH_COMMAND, runBenchCommand } from './bench';
 import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
@@ -455,18 +454,6 @@ async function showAlreadyReviewed(
   });
 }
 
-/**
- * Returns `config_path` as the repo-relative path the contents API takes. A `./` or absolute path is normalised,
- * and a path outside the repository reads `.manki.yml`.
- */
-function repoConfigPath(): string {
-  const cwd = path.resolve(process.cwd());
-  const repoRelative = path.relative(cwd, path.resolve(cwd, core.getInput('config_path') || '.manki.yml'));
-  const outside = repoRelative.startsWith('..') || path.isAbsolute(repoRelative);
-  if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
-  return outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
-}
-
 /** Returns the branch the event names as `what`. Throws when it names none, so a config is never read from a guessed branch. */
 function eventBranch(ref: unknown, what: string): string {
   if (typeof ref !== 'string' || !ref) throw new Error(`The event names no ${what}, so Manki cannot read its config`);
@@ -478,8 +465,7 @@ function eventBranch(ref: unknown, what: string): string {
  * read or loaded. The config is then `fallbackConfig`, and the event must approve nothing.
  */
 async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<{ config: ReviewConfig; held: boolean }> {
-  const configPath = repoConfigPath();
-  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, ref, configPath), configPath, failureReason);
+  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, ref, CONFIG_PATH), CONFIG_PATH, failureReason);
   return { config, held: configFailed(source) };
 }
 
@@ -815,21 +801,21 @@ function cancelDashboardFlush(progress: RunProgress): void {
  * changes are logged as applying after merge. A PR file that does not load gives a warning and `brokenHead`, which says
  * whether the PR changed it.
  */
-async function loadRunConfig(target: RunTarget, repoConfigPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean } }> {
+async function loadRunConfig(target: RunTarget): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean } }> {
   const { octokit, owner, repo, commitSha, baseRef } = target;
   let headContent: string | null | undefined;
   let headConfig: ReviewConfig | undefined;
   try {
-    headContent = await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath);
-    headConfig = loadConfig(headContent ?? undefined, repoConfigPath);
+    headContent = await readConfigFile(octokit, owner, repo, commitSha, CONFIG_PATH);
+    headConfig = loadConfig(headContent ?? undefined, CONFIG_PATH);
   } catch (error) {
-    core.warning(`Could not read or load the PR's ${repoConfigPath}, this round uses the base branch's settings: ${failureReason(error)}`);
+    core.warning(`Could not read or load the PR's ${CONFIG_PATH}, this round uses the base branch's settings: ${failureReason(error)}`);
   }
-  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
-  if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, repoConfigPath, headContent) } };
+  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, CONFIG_PATH), CONFIG_PATH, failureReason);
+  if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, headContent) } };
   const changed = editedKeys(headConfig, { config, source });
   if (changed.length > 0) {
-    core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
+    core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${CONFIG_PATH}. The change applies after merge: this round uses the base branch's settings.`);
   }
   return { config, reviewSource: source };
 }
@@ -838,14 +824,14 @@ async function loadRunConfig(target: RunTarget, repoConfigPath: string): Promise
  * Whether the PR changed its config file: the copy at its head differs from the copy at the merge base. A copy that cannot
  * be read or compared counts as changed, so its approval is held.
  */
-async function changesConfig(target: RunTarget, configPath: string, headContent: string | null | undefined): Promise<boolean> {
+async function changesConfig(target: RunTarget, headContent: string | null | undefined): Promise<boolean> {
   if (headContent === undefined) return true;
   const { octokit, owner, repo, commitSha, baseRef } = target;
   try {
     const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base: baseRef, head: commitSha, per_page: 1 });
-    return await readConfigFile(octokit, owner, repo, data.merge_base_commit.sha, configPath) !== headContent;
+    return await readConfigFile(octokit, owner, repo, data.merge_base_commit.sha, CONFIG_PATH) !== headContent;
   } catch (error) {
-    core.warning(`Could not read ${configPath} at the merge base, so the PR counts as changing it: ${failureReason(error)}`);
+    core.warning(`Could not read ${CONFIG_PATH} at the merge base, so the PR counts as changing it: ${failureReason(error)}`);
     return true;
   }
 }
@@ -1237,7 +1223,7 @@ async function collectOpenThreads(
  * open PRs and issues that may relate to the PR, and the static analysis results.
  */
 async function collectRoundSignals(
-  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, lockfiles: LockfileDiff[], configPath: string, prContext?: PrContext,
+  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, lockfiles: LockfileDiff[], prContext?: PrContext,
 ): Promise<{ interRoundDiff?: string; priorChange?: ParsedDiff; linkedIssues?: LinkedIssue[]; relatedWork?: RelatedWork; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   const prBody = prContext?.body;
@@ -1255,7 +1241,7 @@ async function collectRoundSignals(
 
   // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
   const staticSignalsPromise = collectStaticSignals(await workflowOctokit(), {
-    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff, lockfiles,
+    owner, repo, prNumber, headSha: commitSha, baseRef, diff, fullDiff, lockfiles,
   });
 
   let linkedIssues;
@@ -1869,7 +1855,6 @@ async function runFullReview(
   }
 
   const startTime = Date.now();
-  const configPath = repoConfigPath();
   const { octokit, bot } = await getAuth();
   const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
 
@@ -1881,7 +1866,7 @@ async function runFullReview(
   let checkReport: CheckReport | undefined;
 
   try {
-    const { config, reviewSource, brokenHead } = await loadRunConfig(target, configPath);
+    const { config, reviewSource, brokenHead } = await loadRunConfig(target);
     if (await skipsRound(target, config, trigger, options, configFailed(reviewSource) || brokenHead !== undefined)) return;
 
     const commentId = await postRunProgress(target, progress, options);
@@ -1954,7 +1939,7 @@ async function runFullReview(
     if (diff.files.length === 0 && lockfiles.length === 0) {
       core.info('No reviewable files in diff');
       // Every source reads the skipped files as the diff, so CI, dependency review and the analyzers still check them.
-      const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff: fullDiff, fullDiff });
+      const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, diff: fullDiff, fullDiff });
       const notice = formatUnreviewedNotice(shortSha, { excluded: excludedFiles, binary: fullDiff.binarySkipped ?? [] }, signals);
       checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, notice, unreviewedMetadata());
       return;
@@ -1979,7 +1964,7 @@ async function runFullReview(
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
-      collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, configPath, prContext),
+      collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
     ]);
 

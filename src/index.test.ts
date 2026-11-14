@@ -1,6 +1,5 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import * as path from 'path';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -102,6 +101,7 @@ jest.mock('./config', () => {
   const resolvePairModel = jest.fn().mockImplementation(actual.resolvePairModel);
   return {
     DEFAULT_CONFIG: { instructions: '', reviewers: [], memory: { enabled: false, repo: '' } },
+    CONFIG_PATH: actual.CONFIG_PATH,
     DEFAULT_NOTES: actual.DEFAULT_NOTES,
     loadConfig,
     resolveModel,
@@ -1757,11 +1757,10 @@ describe('main', () => {
     }
   });
 
-  it('approves nothing when the config fetched for a non-review event is invalid, and reads it at the repo-relative `config_path`', async () => {
-    jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'config_path' ? './ci/manki.yml' : ''));
+  it('approves nothing when the config fetched for a non-review event is invalid', async () => {
     jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('auto_approve: [');
     jest.mocked(configModule.loadConfig).mockImplementationOnce(() => {
-      throw new Error('Invalid YAML in ci/manki.yml: bad');
+      throw new Error('Invalid YAML in .manki.yml: bad');
     });
     setContext({
       eventName: 'pull_request_review',
@@ -1774,9 +1773,9 @@ describe('main', () => {
 
     await main();
 
-    expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'main', 'ci/manki.yml');
-    expect(jest.mocked(configModule.loadConfig)).toHaveBeenCalledWith('auto_approve: [', 'ci/manki.yml');
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not load ci/manki.yml on the base branch, using the defaults and no approval: Invalid YAML in ci/manki.yml: bad');
+    expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'main', '.manki.yml');
+    expect(jest.mocked(configModule.loadConfig)).toHaveBeenCalledWith('auto_approve: [', '.manki.yml');
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not load .manki.yml on the base branch, using the defaults and no approval: Invalid YAML in .manki.yml: bad');
     expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     // The role a PR author needs is unknown too, so no thread is read as cleared or reopened.
     expect(jest.mocked(recapModule.fetchRecapState)).not.toHaveBeenCalled();
@@ -2312,20 +2311,6 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: 'base' }));
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining(warning));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
-    });
-
-    it('fetches the base config at the repo-relative path of `config_path`', async () => {
-      for (const [input, expected] of [['./ci/manki.yml', 'ci/manki.yml'], [path.join(process.cwd(), 'ci', 'manki.yml'), 'ci/manki.yml'], ['../outside.yml', '.manki.yml']]) {
-        jest.mocked(ghUtils.readConfigFile).mockClear();
-        jest.mocked(staticSignalsModule.collectStaticSignals).mockClear();
-        jest.mocked(core.getInput).mockImplementation((name: string) => name === 'anthropic_api_key' ? 'test-api-key' : name === 'config_path' ? input : '');
-
-        await callRunFullReview();
-
-        expect([input, jest.mocked(ghUtils.readConfigFile).mock.calls[0]?.[4]]).toEqual([input, expected]);
-        // The static analysis settings are read from the same file.
-        expect([input, jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0]?.[1].configPath]).toEqual([input, expected]);
-      }
     });
   });
 
@@ -4073,7 +4058,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(staticSignalsModule.collectStaticSignals).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        headSha: 'abc123', baseRef: 'main', prNumber: 42, configPath: '.manki.yml',
+        headSha: 'abc123', baseRef: 'main', prNumber: 42,
       }));
       const prContext = jest.mocked(reviewModule.runReview).mock.calls[0][1].prContext;
       expect(prContext?.staticSignals).toEqual([signal]);
@@ -8010,20 +7995,6 @@ describe('runFullReview config and dedupe', () => {
     expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'abc123', '.manki.yml');
     expect(jest.mocked(configModule.loadConfig)).toHaveBeenCalledWith(undefined, '.manki.yml');
     expect(jest.mocked(ghUtils.fetchConfigFile)).not.toHaveBeenCalled();
-  });
-
-  it('warns and reads `.manki.yml` when `config_path` points outside the repository', async () => {
-    jest.mocked(core.getInput).mockImplementation((name: string) => {
-      if (name === 'config_path') return '../../etc/passwd';
-      if (name === 'anthropic_api_key') return 'test-api-key';
-      return '';
-    });
-
-    await callRunFullReview();
-
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('`config_path` points outside the repository, reading `.manki.yml`');
-    expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'abc123', '.manki.yml');
-    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
   });
 
   describe('stale event-SHA bail', () => {

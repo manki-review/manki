@@ -12,6 +12,9 @@ const HAIKU_MODEL = 'claude-haiku-5-5';
 const SONNET_MODEL = 'claude-sonnet-5-5';
 const OPUS_MODEL = 'claude-opus-5-5';
 
+/** The config file Manki reads, at the root of the base branch. */
+export const CONFIG_PATH = '.manki.yml';
+
 /**
  * The known package lockfiles that end in `.lock`: those osv-scanner reads, and others it does not. They are excluded by
  * name, so any other `.lock` file, such as `.github/workflows/actions.lock`, is read as text.
@@ -657,7 +660,7 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
  * Parses and validates a config file's content. Throws on invalid YAML or an invalid schema
  * rather than falling back to defaults, because the defaults include `auto_approve: true`.
  */
-export function loadConfigFromContent(content: string, source = '.manki.yml'): ReviewConfig {
+export function loadConfigFromContent(content: string, source = CONFIG_PATH): ReviewConfig {
   if (!content.trim()) {
     core.info('Empty config, using defaults');
     return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
@@ -713,7 +716,7 @@ function isSemgrepSettings(value: unknown): boolean {
  * Returns the `static_analysis` block of a config file's content, with defaults for missing keys.
  * Falls back to the defaults when the content is missing or invalid, so a broken file never turns sources off.
  */
-export function loadStaticAnalysisConfig(content: string | null, source = '.manki.yml'): StaticAnalysisConfig {
+export function loadStaticAnalysisConfig(content: string | null, source = CONFIG_PATH): StaticAnalysisConfig {
   const defaults = DEFAULT_CONFIG.static_analysis!;
   if (!content) return { ...defaults };
   try {

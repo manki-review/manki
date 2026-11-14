@@ -25,10 +25,6 @@ inputs:
     description: 'GitHub token for reading the dispatched event and CI results, and for posting a note when the Manki token service fails. Defaults to the workflow token. Reviews and comments always use the App token.'
     required: false
     default: '${{ github.token }}'
-  config_path:
-    description: 'Path to .manki.yml config file'
-    required: false
-    default: '.manki.yml'
   memory_repo_token:
     description: 'GitHub token with write access to your own review memory repository in `memory.repo` (learnings, suppressions, fix-rate metrics). The central memory needs no token, and without `memory.repo` this input is unused'
     required: false

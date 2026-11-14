@@ -60,7 +60,7 @@ const RAW_DIFF = [
 function request(): StaticSignalRequest {
   return {
     owner: 'o', repo: 'r', prNumber: 7, headSha: 'head-sha', baseRef: 'main',
-    configPath: '.manki.yml', diff: parsePRDiff(RAW_DIFF), fullDiff: parsePRDiff(RAW_DIFF),
+    diff: parsePRDiff(RAW_DIFF), fullDiff: parsePRDiff(RAW_DIFF),
   };
 }
 

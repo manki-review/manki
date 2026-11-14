@@ -92,7 +92,7 @@ The findings print as Markdown, or as JSON with `--json`. The JSON has `approval
 
 ## Configure
 
-Create `.manki.yml` in your repo root:
+Create `.manki.yml` in your repo root. Manki reads its config from this one file on the base branch:
 
 ```yaml
 auto_review: true

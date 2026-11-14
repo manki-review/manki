@@ -1,5 +1,5 @@
 # Manki configuration
-# Place this file as .manki.yml in your repository root
+# Place this file as .manki.yml in your repository root. Manki reads no other path.
 
 # Automatically review PRs on open/update (default: true)
 # When false, Manki reviews only on request, such as @manki review
