@@ -889,6 +889,10 @@ export function buildDashboard(data: DashboardData): string {
   if (data.phase === 'planning' || data.phase === 'started') {
     judgeLines.push(`**Judge**`);
     judgeLines.push(`${INDENT}pending`);
+  } else if (data.judgeSkipped) {
+    judgeLines.push(`**Judge:** skipped, nothing to judge`);
+    const drops = preJudgeDrops(data);
+    if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
   } else if (data.phase === 'reviewed') {
     judgeLines.push(`**Judge**`);
     const drops = preJudgeDrops(data);
@@ -1163,7 +1167,7 @@ export async function updateProgressComment(
     parts.push('**Timing:**');
     parts.push(`- Parse: ${(metadata.timing.parseMs / 1000).toFixed(1)}s`);
     parts.push(`- Review agents: ${(metadata.timing.reviewMs / 1000).toFixed(1)}s`);
-    parts.push(`- Judge: ${(metadata.timing.judgeMs / 1000).toFixed(1)}s`);
+    parts.push(`- Judge: ${metadata.timing.judgeMs === undefined ? 'skipped' : `${(metadata.timing.judgeMs / 1000).toFixed(1)}s`}`);
     parts.push(`- Total: ${(metadata.timing.totalMs / 1000).toFixed(1)}s`);
     parts.push('');
     parts.push('</details>');

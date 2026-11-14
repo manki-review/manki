@@ -1960,6 +1960,7 @@ jest.mock('./judge', () => ({
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
   foldInto: jest.requireActual('./judge').foldInto,
   capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
+  carriedToJudge: jest.requireActual('./judge').carriedToJudge,
 }));
 
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
@@ -1974,6 +1975,9 @@ jest.mock('./memory', () => ({
 describe('runReview', () => {
   const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
   const mockedApplySuppressions = jest.mocked(applySuppressions);
+
+  /** A finder reply with one finding, so the round has something for the judge. */
+  const RAISED = JSON.stringify([{ severity: 'warning', title: 'Raised', file: 'src/x.ts', line: 1, description: 'd' }]);
 
   function makeClients(reviewerResponse: string = '[]'): ReviewClients {
     return {
@@ -3784,7 +3788,7 @@ describe('runReview', () => {
     );
 
     for (const round of [1, 2, 3]) {
-      const result = await runAtRound(makeClients(), round);
+      const result = await runAtRound(makeClients(RAISED), round);
       expect(result.outcome).toBe('READY');
       expect(result.verdict).toBe('APPROVE');
       expect(result.findings).toEqual([expect.objectContaining({ severity: 'warning', title: 'Unbounded retry', tags: ['follow-up'] })]);
@@ -3794,7 +3798,7 @@ describe('runReview', () => {
     const specialist: Finding = { ...warning, title: 'Token in log', line: 9, reviewers: ['r', 'Security & Safety'] };
     const specialistNit: Finding = { ...warning, severity: 'note', title: 'Log wording', line: 11, reviewers: ['Security & Safety'] };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning, injection, specialist, specialistNit], summary: 'One security warning.' });
-    const secure = await runAtRound(makeClients(), 1);
+    const secure = await runAtRound(makeClients(RAISED), 1);
     expect(secure.outcome).toBe('READY');
     expect(secure.verdict).toBe('APPROVE');
     expect(secure.findings.map(f => [f.title, f.tags])).toEqual([
@@ -3805,7 +3809,7 @@ describe('runReview', () => {
     ]);
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
     const priorSecurity = await runReview(
-      makeClients(), {
+      makeClients(RAISED), {
         config: makeConfig(),
         diff,
         rawDiff: 'raw diff',
@@ -3820,7 +3824,7 @@ describe('runReview', () => {
     expect(priorSecurity.verdictReason).toBe('only_notes');
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
-    const refusing = makeClients();
+    const refusing = makeClients(RAISED);
     jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/a.ts', line: 9, title: 'Tokens leak into logs.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
     });
@@ -3856,7 +3860,7 @@ describe('runReview', () => {
 
     // A rebase with the thread still open and unanswered: the blocker is still open, and points at its thread.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.' });
-    const rebased = await runOn(makeClients(), 'sha2');
+    const rebased = await runOn(makeClients(RAISED), 'sha2');
     expect(rebased.outcome).toBe('ADDRESS_FIRST');
     expect(rebased.needsHuman).toBeUndefined();
     expect(rebased.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
@@ -3873,7 +3877,7 @@ describe('runReview', () => {
       { isSecurity: true, authorReplyText: 'This still leaks the token.', authorReplyLogin: 'maintainer', authorReplyMayClear: true },
     ];
     for (const [status, authorResolved, reply] of [['replied', false, {}], ['open', true, {}], ['replied', true, {}], ...notCleared.map(r => ['replied', false, r] as const)] as const) {
-      const unclaimed = await runOn(makeClients(), 'sha2', [openThread], [{ ...thread(status, authorResolved), ...reply }]);
+      const unclaimed = await runOn(makeClients(RAISED), 'sha2', [openThread], [{ ...thread(status, authorResolved), ...reply }]);
       expect([status, authorResolved, unclaimed.outcome, unclaimed.verdict]).toEqual([status, authorResolved, 'ADDRESS_FIRST', 'REQUEST_CHANGES']);
       expect(unclaimed.needsHuman).toBeUndefined();
       expect(unclaimed.fixClaimedThreadIds).toEqual([]);
@@ -3887,10 +3891,10 @@ describe('runReview', () => {
     // `replied` and stays among the open threads, so the reply of someone who may clear it says so.
     const clearedSecurity = { ...thread('replied'), ...dismissed, authorReplyLogin: 'maintainer', authorReplyMayClear: true };
     for (const [openThreads, previous] of [[[], thread('auto-resolved')], [null, thread('auto-resolved')], [[openThread], clearedSecurity], [null, clearedSecurity]] as const) {
-      const cleared = await runOn(makeClients(), 'sha2', openThreads && [...openThreads], [previous]);
+      const cleared = await runOn(makeClients(RAISED), 'sha2', openThreads && [...openThreads], [previous]);
       expect([cleared.outcome, cleared.needsHuman?.cause, cleared.fixClaimedThreadIds]).toEqual(['NOT_CONVERGING', 'repeated', ['T1']]);
     }
-    const resolved = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
+    const resolved = await runOn(makeClients(RAISED), 'sha2', [], [thread('resolved')]);
     expect(resolved.outcome).toBe('NOT_CONVERGING');
     // The round records the threads where a fix was claimed.
     expect(resolved.fixClaimedThreadIds).toEqual(['T1']);
@@ -3903,19 +3907,19 @@ describe('runReview', () => {
 
     // So is a fix an earlier round confirmed, also when the thread is open again.
     const confirmed: RoundContext = { ...buildPriorRound(2, []), judge: { summary: 'Fixed.', threadEvaluations: [{ threadId: 'T1', status: 'addressed', reason: 'The check is in place.' }] } };
-    const cameBack = await runOn(makeClients(), 'sha3', [openThread], [thread('open')], [prior, confirmed]);
+    const cameBack = await runOn(makeClients(RAISED), 'sha3', [openThread], [thread('open')], [prior, confirmed]);
     expect(cameBack.outcome).toBe('NOT_CONVERGING');
     expect(cameBack.needsHuman).toEqual({
       cause: 'repeated',
       blockers: [expect.objectContaining({ title: 'Old issue', round: 1, threadUrl: 'https://github.com/o/r/pull/1#t1' })],
     });
 
-    const samePush = await runOn(makeClients(), 'sha1', [], [thread('resolved')]);
+    const samePush = await runOn(makeClients(RAISED), 'sha1', [], [thread('resolved')]);
     expect(samePush.outcome).toBe('ADDRESS_FIRST');
     expect(samePush.needsHuman).toBeUndefined();
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, sameAs: undefined }], summary: 'New bug.' });
-    const unrelated = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
+    const unrelated = await runOn(makeClients(RAISED), 'sha2', [], [thread('resolved')]);
     expect(unrelated.outcome).toBe('ADDRESS_FIRST');
     expect(unrelated.findings[0].threadId).toBeUndefined();
 
@@ -3949,8 +3953,8 @@ describe('runReview', () => {
       severity: 'blocker', title: 'Old issue', file: 'src/outside.ts', line: 10, description: 'Two writers interleave.', reviewers: [], tags: ['security'], sameAs: key, raisedIn: 1, relisted: true, ownThread: true,
     }]);
     expect([again.outcome, again.verdictReason, again.verdictTrace?.unresolvedPriors]).toEqual(['ADDRESS_FIRST', 'required_present', []]);
-    // The judge graded nothing, and the round blocks, so the verdict reader does not run either.
-    expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].findings)).toEqual([[]]);
+    // Nothing was left to judge, so no judge was called, and the round blocks, so the verdict reader does not run either.
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
     expect(clients.judge.sendMessage).not.toHaveBeenCalled();
 
     // A record from before descriptions were kept gives the short form, and a title the record cut short is rebuilt from the slug.
@@ -3966,30 +3970,30 @@ describe('runReview', () => {
     // A record from before `reviewers` names only the retired security reviewer, and the blocker stays a security finding.
     expect((await run(makeClients(), [listed({ reviewers: undefined, specialist: 'Security & Safety' })])).findings).toEqual([expect.objectContaining({ reviewers: ['Security & Safety'], ownThread: true })]);
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'blocker', title: 'Writers race', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: key }], summary: 'Still there.' });
-    expect((await run(makeClients(), [listed()])).findings.map(f => f.title)).toEqual(['Writers race']);
+    expect((await run(makeClients(RAISED), [listed()])).findings.map(f => f.title)).toEqual(['Writers race']);
     // A finding that names it at a lower grade lifts nothing. The blocker is listed again and stands for it, so the defect shows once.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'warning', title: 'Writers may race', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: key, raisedIn: 1 }], summary: 'Less bad.' });
-    const lowered = await run(makeClients(), [listed()]);
+    const lowered = await run(makeClients(RAISED), [listed()]);
     expect([lowered.findings.map(f => [f.severity, f.title, f.relisted]), lowered.unposted?.map(f => [f.severity, f.title, f.unpostedReason]), lowered.outcome])
       .toEqual([[['blocker', 'Old issue', true]], [['warning', 'Writers may race', 'listed_earlier']], 'ADDRESS_FIRST']);
     expect(lowered.findings[0]).toMatchObject({ description: expect.stringContaining('did not record its description') });
     expect(lowered.findings[0].tags).toBeUndefined();
     // A blocker with an open thread keeps blocking beside the same lower-grade finding.
-    const beside = await run(makeClients(), [listed({ threadId: 'T1', posted: 'thread' })], { openThreads: [makePriorOpenThread({ threadId: 'T1', file: 'src/outside.ts', severity: 'blocker' })] });
+    const beside = await run(makeClients(RAISED), [listed({ threadId: 'T1', posted: 'thread' })], { openThreads: [makePriorOpenThread({ threadId: 'T1', file: 'src/outside.ts', severity: 'blocker' })] });
     expect([beside.outcome, beside.verdictReason, beside.verdictTrace?.unresolvedPriors.map(p => p.threadId)]).toEqual(['ADDRESS_FIRST', 'prior_unaddressed', ['T1']]);
     // A security finding left out that way makes the blocker a security finding, with its text where the record has none.
     const restating: Finding = { severity: 'warning', title: 'Writers may race', file: 'src/x.ts', line: 30, description: 'Any caller can interleave two writers.', reviewers: ['r'], tags: ['security'], sameAs: key, raisedIn: 1 };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [restating], summary: 'Less bad.' });
-    const secured = await run(makeClients(), [listed()]);
+    const secured = await run(makeClients(RAISED), [listed()]);
     expect([secured.findings, secured.unposted?.map(f => [f.title, f.tags, f.unpostedReason])]).toEqual([
       [expect.objectContaining({ severity: 'blocker', title: 'Old issue', description: 'Any caller can interleave two writers.', tags: ['security'], relisted: true, ownThread: true })],
       [['Writers may race', expect.arrayContaining(['security']), 'listed_earlier']],
     ]);
-    expect((await run(makeClients(), [listed({ description: 'Two writers interleave.' })])).findings).toEqual([expect.objectContaining({ description: 'Two writers interleave.', tags: ['security'] })]);
+    expect((await run(makeClients(RAISED), [listed({ description: 'Two writers interleave.' })])).findings).toEqual([expect.objectContaining({ description: 'Two writers interleave.', tags: ['security'] })]);
     // A blocker of this round that carries an earlier security blocker is a security finding too.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...restating, severity: 'blocker', tags: undefined }], summary: 'Still there.' });
-    expect((await run(makeClients(), [listed({ tags: ['security'] })])).findings).toEqual([expect.objectContaining({ title: 'Writers may race', tags: ['security'], ownThread: true })]);
-    expect((await run(makeClients(), [listed()])).findings[0].tags).toBeUndefined();
+    expect((await run(makeClients(RAISED), [listed({ tags: ['security'] })])).findings).toEqual([expect.objectContaining({ title: 'Writers may race', tags: ['security'], ownThread: true })]);
+    expect((await run(makeClients(RAISED), [listed()])).findings[0].tags).toBeUndefined();
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
 
     // When the threads could not be read, a thread may carry it, so it is not listed again and keeps blocking as an earlier blocker.
@@ -4383,7 +4387,7 @@ describe('runReview', () => {
     expect(elsewhere.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
     // It keeps no link to a plain thread at all: here `answeredIn` and `sameAs` name two different closed plain threads.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:30:30:cache-leaks', answeredIn: { threadId: 'T9', answer: 'Agreed.', grade: { severity: 'warning' } } })] });
-    const closed = await runReview(makeClients(), {
+    const closed = await runReview(makeClients(RAISED), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3', openThreads: [],
       previousFindings: [
         { title: 'Token logged', file: 'src/x.ts', line: 80, severity: 'warning', status: 'resolved', threadId: 'T9', answer: 'Agreed.' },
@@ -4432,7 +4436,7 @@ describe('runReview', () => {
     info.mockRestore();
     // A closed answered thread is read from the recap, so a security thread among them keeps its repeat.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged', 'src/x.ts', 50, { tags: ['security'], answeredIn: { threadId: 'T9', answer: 'Agreed.', grade: { severity: 'blocker' } } })] });
-    const answered = (isSecurity: boolean) => runReview(makeClients(), {
+    const answered = (isSecurity: boolean) => runReview(makeClients(RAISED), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, openThreads: [],
       previousFindings: [{ title: 'Token logged', file: 'src/x.ts', line: 50, severity: 'blocker', status: 'resolved', threadId: 'T9', answer: 'Agreed.', isSecurity }],
       priorRounds: [prior], headSha: 'sha3',
@@ -4443,7 +4447,7 @@ describe('runReview', () => {
     // suggestion thread no longer takes it, and it is posted on its own.
     const answeredSuggestion = { threadId: 'T8', answer: 'Agreed.', grade: { severity: 'note' as const } };
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('warning', 'Retry log is noisy', 'src/x.ts', 20, { answeredIn: answeredSuggestion }), finding('note', 'Retry log could be shorter', 'src/x.ts', 21, { answeredIn: answeredSuggestion })] });
-    const raised = await runReview(makeClients(), {
+    const raised = await runReview(makeClients(RAISED), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, openThreads: [],
       previousFindings: [{ title: 'Retry log is noisy', file: 'src/x.ts', line: 20, severity: 'note', status: 'resolved', threadId: 'T8', answer: 'Agreed.' }],
       priorRounds: [prior], headSha: 'sha3',
@@ -4470,7 +4474,7 @@ describe('runReview', () => {
     );
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
-    const clean = await runFinal(makeClients());
+    const clean = await runFinal(makeClients(RAISED));
     expect(clean.outcome).toBe('READY');
     expect(clean.verdict).toBe('APPROVE');
     expect(clean.needsHuman).toBeUndefined();
@@ -4478,10 +4482,10 @@ describe('runReview', () => {
     expect(clean.verdictReport?.whatThisDoes).toBe('Adds a feature.');
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warning, tags: ['security'] }], summary: 'One security warning.' });
-    expect((await runFinal(makeClients())).outcome).toBe('READY');
+    expect((await runFinal(makeClients(RAISED))).outcome).toBe('READY');
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warning, severity: 'blocker', title: 'Real bug' }], summary: 'One blocker.' });
-    const stuck = await runFinal(makeClients());
+    const stuck = await runFinal(makeClients(RAISED));
     expect(stuck.outcome).toBe('NOT_CONVERGING');
     expect(stuck.verdict).toBe('REQUEST_CHANGES');
     expect(stuck.needsHuman).toEqual({ cause: 'budget', blockers: [expect.objectContaining({ title: 'Real bug', file: 'src/a.ts' })] });
@@ -4493,7 +4497,7 @@ describe('runReview', () => {
       summary: 'One warning.',
     });
     const result = await runReview(
-      makeClients(), {
+      makeClients(RAISED), {
         config: makeConfig(),
         diff: diffChanging('src/a.ts'),
         rawDiff: 'raw diff',
@@ -4506,6 +4510,58 @@ describe('runReview', () => {
     );
     expect(result.outcome).toBe('READY');
     expect(result.findings[0].tags).toEqual(['follow-up']);
+  });
+
+  it('skips the judge only when a round has nothing to judge, and the verdict reader still reads the diff', async () => {
+    const changed = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-a\n+b\n`;
+    const run = (clients: ReviewClients, extra: Partial<Parameters<typeof runReview>[1]> = {}) => runReview(clients, {
+      config: makeConfig(), diff: diffChanging('src/a.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, openThreads: [], previousFindings: [],
+      priorRounds: [buildPriorRound(1, [])], interRoundDiff: changed('src/a.ts'), ...extra,
+    });
+    const info = jest.spyOn(core, 'info').mockImplementation(() => {});
+    const onProgress = jest.fn();
+    const clients = makeClients();
+    const skipped = await run(clients, { onProgress });
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+    expect(skipped).toMatchObject({ outcome: 'READY', verdict: 'APPROVE', judgeSkipped: true, summary: 'No new problems found.', allJudgedFindings: [], findings: [] });
+    // The one model call after the finders is the verdict reader's.
+    expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
+    expect(skipped.verdictReport?.verdict).toBe('READY');
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: 'judging', judgeInputCount: 0, judgeSkipped: true }));
+    expect(info).toHaveBeenCalledWith('No finding, open thread or carried warning to judge, so the judge is skipped');
+    info.mockRestore();
+
+    // The verdict reader can still request changes.
+    const refusing = makeClients();
+    jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/a.ts', line: 1, title: 'Tokens leak into logs.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+    });
+    const blocked = await run(refusing);
+    expect([blocked.outcome, blocked.verdictReason, blocked.judgeSkipped, blocked.findings.map(f => f.title)]).toEqual(['ADDRESS_FIRST', 'verdict_reader', true, ['Tokens leak into logs.']]);
+
+    // A warning the last review body listed is asked about only after a change since that round, so without one it calls no judge.
+    const listed = { ...makeFindingFingerprintEntry({ title: 'Retry never ends', file: 'src/a.ts', lineStart: 4 }), posted: 'body' as const, citedLine: { hash: 'abcdefabcdef', count: 1 } };
+    const carrying = [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [listed] } })];
+    expect((await run(makeClients(), { priorRounds: carrying, interRoundDiff: '' })).judgeSkipped).toBe(true);
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+
+    // Each thing the judge answers keeps the call, and so do threads or round records that could not be read.
+    const withLead = buildPriorRound(1, []);
+    withLead.leads = [{ title: 'The sum may overflow', file: 'src/a.ts', line: 1, severity: 'blocker', reviewers: ['r'], description: 'd', lead: { checked: 'the file', left: 'the caller' }, outcome: 'unsettled', since: 1 }];
+    const keeping: Array<[string, ReviewClients, Partial<Parameters<typeof runReview>[1]>]> = [
+      ['a finding', makeClients(RAISED), {}],
+      ['an open thread', makeClients(), { openThreads: [makePriorOpenThread()] }],
+      ['a carried warning', makeClients(), { priorRounds: carrying }],
+      ['a carried lead', makeClients(), { priorRounds: [withLead], interRoundDiff: changed('src/b.ts') }],
+      ['unread threads', makeClients(), { openThreads: null }],
+      ['threads not given', makeClients(), { openThreads: undefined }],
+      ['unread round records', makeClients(), { priorRoundsIncomplete: true }],
+    ];
+    for (const [label, made, extra] of keeping) {
+      mockedRunJudgeAgent.mockClear();
+      const result = await run(made, extra);
+      expect([label, mockedRunJudgeAgent.mock.calls.length, result.judgeSkipped, result.summary]).toEqual([label, 1, undefined, 'All clear.']);
+    }
   });
 
   it.each([
@@ -5582,7 +5638,7 @@ describe('runReview', () => {
     // from `previousFindings` and passes it both to the judge and to the
     // post-judge `determineOutcome`. Regressions in the plumbing would let an
     // author-resolved-via-fix thread re-block APPROVE.
-    const clients = makeClients('[]');
+    const clients = makeClients(RAISED);
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 

@@ -305,6 +305,11 @@ export interface JudgeInput {
   carriedWarnings?: FindingFingerprintEntry[];
 }
 
+/** Returns the carried warnings the judge is asked about. Only a change since the last round can fix one, so without one it gets none. */
+export function carriedToJudge({ interRoundDiff, carriedWarnings }: Pick<JudgeInput, 'interRoundDiff' | 'carriedWarnings'>): FindingFingerprintEntry[] {
+  return interRoundDiff?.trim() ? carriedWarnings ?? [] : [];
+}
+
 export interface JudgedFinding {
   /** Number of the "Finding N" this entry judges. */
   id?: number;
@@ -1535,8 +1540,7 @@ export async function runJudgeAgent(
   // and must not trigger the override. Falling through lets the LLM evaluate
   // each thread on whatever evidence it does have.
   const interRoundDiffEmpty = hasPriorRounds && isEmptyInterRoundDiff(interRoundDiff);
-  // Only a change since the last round can fix a carried warning, so without one the judge is not asked about them.
-  const carried = interRoundDiff?.trim() ? input.carriedWarnings ?? [] : [];
+  const carried = carriedToJudge(input);
 
   // A lockfile's hunks can run to thousands of lines, so its package list stands in for them.
   const listed = new Set(lockfiles.map(l => l.path));

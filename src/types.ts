@@ -1133,6 +1133,8 @@ export interface ReviewResult {
   /** Why each failed attempt of an agent failed, in order, kept when a retry then succeeded. */
   agentWarnings?: Map<string, string[]>;
   plannerDurationMs?: number;
+  /** Set when the round had no finding, open thread or carried warning to judge, so no judge was called. */
+  judgeSkipped?: true;
   judgeDurationMs?: number;
   judgeRetryCount?: number;
   dedupDurationMs?: number;
@@ -1691,6 +1693,8 @@ export interface DashboardData {
   agentCount: number;
   rawFindingCount?: number;
   judgeInputCount?: number;
+  /** Set when the round had nothing to judge, so no judge was called. */
+  judgeSkipped?: true;
   suppressionCount?: number;
   staticDedupCount?: number;
   llmDedupCount?: number;
@@ -1755,7 +1759,8 @@ export interface ReviewMetadata {
   timing: {
     parseMs: number;
     reviewMs: number;
-    judgeMs: number;
+    /** Unset on a round that called no judge. */
+    judgeMs?: number;
     totalMs: number;
   };
 }
@@ -2227,6 +2232,8 @@ export interface RoundAgentMetric {
 export interface RoundJudge {
   /** Narrative summary written by the judge. */
   summary: string;
+  /** Why no judge was called: the round had no finding, open thread or carried warning for it. */
+  skipped?: 'nothing_to_judge';
   /** The effort the judge ran at, set or picked by the planner. */
   effort?: EffortLevel;
   /** Findings the judge dropped. The kept ones are in `RoundFindings.entries`. */
