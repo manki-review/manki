@@ -788,13 +788,16 @@ function cappedGrade(entry: Pick<FindingFingerprintEntry, 'severity' | 'gradeIfC
 
 /**
  * Returns the doubts of an earlier finding for the judge, each with how its check came out. `REACH_DOUBT` on a finding
- * that `isRareClaim` is left out. Its answer changes no cell, so a later judge is not asked to settle it. On a finding
- * with a `consequence` premise a premise shows `confirmed` only when every check `confirmsAll`, as only that raises it.
+ * that `isRareClaim` is left out. Its answer changes no cell, so a later judge is not asked to settle it. A finding with
+ * a `consequence` premise rises only when every check `confirmsAll`. Short of that, a confirmed premise shows `unsettled`
+ * when not every check confirmed the defect, and so does a consequence that not every check confirmed.
  */
 function priorDoubts(f: FindingFingerprintEntry): Array<{ premise: string; decides: Doubt['decides'] | 'consequence'; check: string }> | undefined {
   const checks = [f.refutation, f.pairRefutation].filter((r): r is Refutation => !!r);
   const open = !!f.doubts?.some(d => d.consequence) && !confirmsAll(checks);
-  const check = (i: number): string => (open && premiseCheck(checks, i) === 'confirmed' ? 'unsettled' : premiseCheck(checks, i));
+  const defectHolds = checks.every(r => r.defect === 'confirmed');
+  const settled = (i: number): boolean => defectHolds && (!f.doubts?.[i]?.consequence || checks.every(r => r.premises?.[i]?.outcome === 'confirmed'));
+  const check = (i: number): string => (open && premiseCheck(checks, i) === 'confirmed' && !settled(i) ? 'unsettled' : premiseCheck(checks, i));
   const shown = (f.doubts ?? []).flatMap((d, i) => (isRareClaim(f.cell) && d.premise === REACH_DOUBT.premise ? [] : [{
     premise: d.premise.replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, MAX_DOUBT_CHARS),
     decides: d.consequence ? 'consequence' as const : d.decides,

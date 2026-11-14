@@ -2149,6 +2149,16 @@ describe('runJudgeAgent', () => {
       const openEntry = { ...makeFindingFingerprintEntry({ title: open.title, severity: open.severity, file: open.file, lineStart: open.line }), cell: open.cell, doubts: open.doubts, gradeIfConfirmed: open.gradeIfConfirmed, refutation: open.refutation };
       const reopened = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [openEntry] } })]);
       expect(reopened).toContain('"decides": "consequence",\n            "check": "unsettled"');
+      // The check confirmed the defect, so the defect premise shows confirmed beside the consequence it left open or disproved.
+      expect(reopened.match(/"check": "\w+"/g)).toEqual(['"check": "confirmed"', '"check": "unsettled"']);
+      const [defectPremise, consequence] = open.refutation!.premises!;
+      const disprovedEntry = { ...openEntry, refutation: { ...open.refutation!, outcome: 'disproved' as const, premises: [defectPremise, { ...consequence, outcome: 'disproved' as const }] } };
+      const disproved = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [disprovedEntry] } })]);
+      expect(disproved.match(/"check": "\w+"/g)).toEqual(['"check": "confirmed"', '"check": "disproved"']);
+      // A consequence one check confirmed and its pair left open is not confirmed by every check, so it shows unsettled.
+      const pairEntry = { ...openEntry, refutation: { ...open.refutation!, outcome: 'confirmed' as const, premises: [defectPremise, { ...consequence, outcome: 'confirmed' as const }] }, pairRefutation: open.refutation };
+      const paired = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [pairEntry] } })]);
+      expect(paired.match(/"check": "\w+"/g)).toEqual(['"check": "confirmed"', '"check": "unsettled"']);
       // Only a check that confirms the defect and every premise raises it, so a premise confirmed beside an open defect is shown open.
       const defectOpen = { ...openEntry, refutation: { ...open.refutation!, outcome: 'confirmed' as const, defect: 'unsettled' as const, premises: open.refutation!.premises!.map(p => ({ ...p, outcome: 'confirmed' as const })) } };
       const shown = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [defectOpen] } })]);
