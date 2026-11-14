@@ -810,11 +810,15 @@ export async function runReview(
   });
   const checkWorkspace = quickCheckOnly(team) ? undefined : workspace;
   // Lines of the related repos for the claims' own checks. A repo is fetched for them also when the diff's names start no search of their own.
-  const claimLines = async (claims: PrClaim[], signal: AbortSignal): ReturnType<typeof listClaimLines> => {
+  // `progress.step` names the step running, for the record when the lines are not waited for.
+  const claimLines = async (claims: PrClaim[], signal: AbortSignal, progress: { step: string }): ReturnType<typeof listClaimLines> => {
     if (!related || !checkWorkspace || !pickReviewerClient(clients, comparisonModel).client.repoTools || claims.length === 0) return { lines: new Map() };
     const fetched = await fetchRelatedRepos(related);
+    progress.step = 'the term call';
     const termClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claim_terms'), signal);
-    return listClaimLines(fetched, await guessClaimTerms(termClient, claims.map(c => c.quote), fetched));
+    const terms = await guessClaimTerms(termClient, claims.map(c => c.quote), fetched);
+    progress.step = 'the search';
+    return listClaimLines(fetched, terms);
   };
   // Each claim of the PR text gets a check of its own beside the finders, under the comparisons' deadline. No finder waits for it or
   // is shown it or its lines. When the quick check alone reads the change, its claims are recorded without a check.
@@ -822,12 +826,15 @@ export async function runReview(
     // The lines are waited for at most `CLAIM_LINES_LIMIT_MS`, so a slow fetch or term call costs the checks their lines and
     // not their time. The fetch and the search take no signal and finish in the background.
     const linesLimit = AbortSignal.any([comparisonDeadline.signal, AbortSignal.timeout(CLAIM_LINES_LIMIT_MS)]);
+    const progress = { step: 'the fetch of the related repos' };
     const cut = new Promise<Awaited<ReturnType<typeof listClaimLines>>>(resolve => {
-      const stop = () => resolve({ lines: new Map(), record: { skipped: `the fetch, the term call or the search took longer than ${CLAIM_LINES_LIMIT_MS / 1000} s or ran past the deadline of the checks` } });
+      const stop = () => resolve({ lines: new Map(), record: {
+        skipped: `${progress.step} ${comparisonDeadline.signal.aborted ? 'ran past the deadline of the checks' : `took longer than ${CLAIM_LINES_LIMIT_MS / 1000} s`}`,
+      } });
       if (linesLimit.aborted) stop();
       else linesLimit.addEventListener('abort', stop, { once: true });
     });
-    const { lines, record: terms } = await Promise.race([claimLines(claims, linesLimit).catch((error: unknown) => {
+    const { lines, record: terms } = await Promise.race([claimLines(claims, linesLimit, progress).catch((error: unknown) => {
       core.warning(`Could not search the related repos for the claims of the PR text, so their checks start without lines of them: ${error instanceof Error ? error.message : String(error)}`);
       return { lines: new Map<number, string[]>(), record: undefined };
     }), cut]);
