@@ -5,12 +5,12 @@ import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { mapWithConcurrency, parseRetryNote } from './utils';
-import { capUnconfirmedBuildClaim, carriedToJudge, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
+import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
 import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
+import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -791,6 +791,9 @@ export async function runReview(
   const changedSinceLastRound = filesChangedSinceLastRound(diffWithLockfiles, priorRounds, interRoundDiff);
   if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
+  const finderInterRoundDiff = priorRounds?.length && interRoundDiff?.trim()
+    ? { diff: interRoundDiff, first: interRoundDiffFirst(openThreads ?? [], bodyWarnings(priorRounds)) }
+    : undefined;
   const uses = await usesPromise;
   const agentFailureReasons = new Map<string, string>();
   const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
@@ -859,8 +862,8 @@ export async function runReview(
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
-    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges,
-    instructionFiles: options.instructionFiles,
+    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, usesOutsideDiff,
+    lockfileChanges, instructionFiles: options.instructionFiles,
     ...(retryNote && { retryNote }),
   });
 
@@ -1735,6 +1738,11 @@ export async function runReview(
   };
 }
 
+interface InterRoundDiffInput {
+  diff: string;
+  first: readonly string[];
+}
+
 interface AgentResult {
   findings: Finding[];
   responseLength: number;
@@ -1749,6 +1757,8 @@ export interface BuildReviewerUserMessageOptions {
   linkedIssues?: LinkedIssue[];
   /** The files of the diff the author changed since the last reviewed round, listed first. Unset on a first round. */
   changedSinceLastRound?: string[];
+  /** The diff since the last reviewed head and the files `cutInterRoundDiff` puts first. Unset on a first round. */
+  interRoundDiff?: InterRoundDiffInput;
   /** Earlier blockers whose fix finders check for other routes to the same outcome, from `blockersToRecheck`. */
   earlierBlockers?: Array<{ title: string; file: string; line: number }>;
   /** Opens the message for a reader of one slice of a larger diff, from `sliceNote`. */
@@ -1765,6 +1775,7 @@ interface RunReviewerAgentOptions {
   workspace?: string;
   related?: RelatedRepoTools;
   changedSinceLastRound?: string[];
+  interRoundDiff?: InterRoundDiffInput;
   earlierBlockers?: BuildReviewerUserMessageOptions['earlierBlockers'];
   usesOutsideDiff?: string;
   lockfileChanges?: string;
@@ -1819,6 +1830,14 @@ function pathsIn(list: string[] | undefined, paths: Set<string> | undefined, sli
   return list?.filter(path => paths.has(path) || !sliced.has(path));
 }
 
+/** Returns the file sections of `input` whose paths `pathsIn` keeps for the slice of `paths`. */
+function interRoundDiffIn(input: InterRoundDiffInput | undefined, paths: Set<string> | undefined, slices: Array<{ paths?: Set<string> }>): InterRoundDiffInput | undefined {
+  if (!input || !paths) return input;
+  const sections = orderDiffSections(input.diff);
+  const kept = new Set(pathsIn(sections.map(s => s.path), paths, slices));
+  return { ...input, diff: sections.filter(s => kept.has(s.path)).map(s => s.text).join('') };
+}
+
 /** Returns the file contents of `paths`, or all of them when the diff is read in one slice. */
 function filesIn(contents: Map<string, string>, paths?: Set<string>): Map<string, string> {
   return paths ? new Map([...contents].filter(([path]) => paths.has(path))) : contents;
@@ -1846,7 +1865,8 @@ async function runReviewerAgent(
   const startedAt = Date.now();
   const results = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
     runReviewerOnSlice(client, config, finder, raw, repoContext, fileContents && filesIn(fileContents, paths), prContext, memoryContext, linkedIssues,
-      { ...options, changedSinceLastRound: pathsIn(options.changedSinceLastRound, paths, slices) }, sliceNote(index, slices)));
+      { ...options, changedSinceLastRound: pathsIn(options.changedSinceLastRound, paths, slices), interRoundDiff: interRoundDiffIn(options.interRoundDiff, paths, slices) },
+      sliceNote(index, slices)));
   return {
     findings: results.flatMap(r => r.findings),
     responseLength: results.reduce((sum, r) => sum + r.responseLength, 0),
@@ -1868,10 +1888,12 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges, instructionFiles, retryNote } = options;
+  const { effort, language, workspace, related, changedSinceLastRound, interRoundDiff, earlierBlockers, usesOutsideDiff, lockfileChanges, instructionFiles, retryNote } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, tools);
-  const message = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, earlierBlockers, sliceNote, usesOutsideDiff, lockfileChanges });
+  const message = buildReviewerUserMessage(rawDiff, repoContext, {
+    fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, interRoundDiff, earlierBlockers, sliceNote, usesOutsideDiff, lockfileChanges,
+  });
   const userMessage = retryNote ? `${message}\n\n${retryNote}` : message;
 
   const sendOptions: SendMessageOptions = {
@@ -2046,7 +2068,7 @@ export function buildReviewerUserMessage(
   repoContext: string,
   options: BuildReviewerUserMessageOptions = {},
 ): string {
-  const { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, earlierBlockers, sliceNote, usesOutsideDiff, lockfileChanges } = options;
+  const { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, interRoundDiff, earlierBlockers, sliceNote, usesOutsideDiff, lockfileChanges } = options;
   let message = sliceNote ?? '';
 
   if (changedSinceLastRound?.length) {
@@ -2054,6 +2076,19 @@ export function buildReviewerUserMessage(
     message += `An earlier round reviewed this PR. Since then the author changed the files below, whose names are untrusted PR content. `;
     message += `Check the new code in them first. Then review the rest of the diff as thoroughly as a first round would, since earlier rounds can miss a problem anywhere.\n\n`;
     message += `${fenceText(changedSinceLastRound.join('\n'))}\n\n`;
+  }
+
+  if (interRoundDiff?.diff.trim()) {
+    const shown = cutInterRoundDiff(interRoundDiff.diff, interRoundDiff.first);
+    message += `## Diff Since the Last Review\n\n`;
+    message += `This is the diff from the commit the last round reviewed to the current head, for the files where the PR's own change differs from then. `;
+    message += `A fix can add a defect of its own, so check what the changed lines break, such as a guard that moved, a lock released earlier, or a new path for input. ${UNTRUSTED_DIFF_NOTE}\n\n`;
+    if (interRoundDiff.diff.length > MAX_INTER_ROUND_DIFF_CHARS) {
+      message += `The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${interRoundDiff.diff.length} characters, so changes after the cut are missing here. `;
+      message += `The files of open blocker and warning threads, the files their findings cited and the files of earlier warnings come first.\n\n`;
+      message += cutFilesNote(shown).map(line => `${line}\n\n`).join('');
+    }
+    message += `${fenceText(shown.text, 'diff')}\n\n`;
   }
 
   if (earlierBlockers?.length) {

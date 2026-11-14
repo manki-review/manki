@@ -1070,6 +1070,27 @@ describe('buildReviewerUserMessage', () => {
     expect(buildReviewerUserMessage('diff content', 'repo', { changedSinceLastRound: [] })).toBe(buildReviewerUserMessage('diff content', 'repo'));
   });
 
+  it('shows the diff since the last review after the changed files, with the fixed files first when it is cut', () => {
+    const section = (path: string, size: number) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+${'x'.repeat(size)}\n`;
+    const small = section('src/fix.ts', 10);
+    const message = buildReviewerUserMessage('diff content', 'repo', { changedSinceLastRound: ['src/fix.ts'], interRoundDiff: { diff: small, first: [] } });
+    expect(message).toMatch(/^## Changed Since the Last Review\n[\s\S]*\n## Diff Since the Last Review\n\n.*A fix can add a defect of its own, so check what the changed lines break/);
+    expect(message).toContain(`\`\`\`diff\n${small}`);
+    expect(message).not.toContain('The diff is cut at');
+    expect(message.indexOf('## Pull Request Diff')).toBeGreaterThan(message.indexOf('+++ b/src/fix.ts'));
+
+    // The open thread's file moves ahead of a larger file, and the cut note names the files past the cut.
+    const large = section('src/big.ts', 15_000) + section('src/other.ts', 10_000) + section('src/fix.ts', 10);
+    const cut = buildReviewerUserMessage('diff content', 'repo', { interRoundDiff: { diff: large, first: ['src/fix.ts'] } });
+    expect(cut).toContain(`The diff is cut at 20000 of its ${large.length} characters`);
+    expect(cut).toContain('Cut short: `src/other.ts`.');
+    expect(cut.indexOf('+++ b/src/fix.ts')).toBeLessThan(cut.indexOf('+++ b/src/big.ts'));
+
+    for (const diff of ['', '\n']) {
+      expect(buildReviewerUserMessage('diff content', 'repo', { interRoundDiff: { diff, first: [] } })).toBe(buildReviewerUserMessage('diff content', 'repo'));
+    }
+  });
+
   it('asks for other routes to the outcome of each fixed blocker, after the files changed since the last round', () => {
     const earlierBlockers = [
       { title: 'Expired token\nstill passes `verify`', file: 'src/auth.ts', line: 42 },
@@ -1964,6 +1985,10 @@ jest.mock('./judge', () => ({
   foldInto: jest.requireActual('./judge').foldInto,
   capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
   carriedToJudge: jest.requireActual('./judge').carriedToJudge,
+  cutFilesNote: jest.requireActual('./judge').cutFilesNote,
+  cutInterRoundDiff: jest.requireActual('./judge').cutInterRoundDiff,
+  interRoundDiffFirst: jest.requireActual('./judge').interRoundDiffFirst,
+  MAX_INTER_ROUND_DIFF_CHARS: jest.requireActual('./judge').MAX_INTER_ROUND_DIFF_CHARS,
 }));
 
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
@@ -6003,21 +6028,34 @@ describe('runReview', () => {
     expect(result.slicing).toEqual({ files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'READY', blockers: 0 }] });
   });
 
-  it('lists a lockfile the push changed in every slice, since no slice holds a lockfile read as a package list', async () => {
+  it('lists a lockfile the push changed in every slice, and gives each finder slice only its own files of the diff since the last review', async () => {
     const fileDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,5 @@\n ctx\n${Array.from({ length: 4 }, (_, i) => `+line ${i}`).join('\n')}`;
     const rawDiff = [fileDiff('src/a.ts'), fileDiff('src/b.ts')].join('\n');
     const lockfile = parsePRDiff('diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -5,1 +5,1 @@\n-version = "0.4.2"\n+version = "0.4.3"').files[0];
+    const pushed = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -2,1 +2,1 @@\n-line 0\n+fixed in ${path}\n`;
     const clients = makeClients();
 
     await runReview(clients, {
       config: makeConfig({ slice_lines: 5 }), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '',
       lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }] }],
-      priorRounds: [buildPriorRound(1, [])], interRoundDiff: rebuildRawDiff({ files: [lockfile], totalAdditions: 1, totalDeletions: 1 }),
+      priorRounds: [buildPriorRound(1, [])],
+      interRoundDiff: `${pushed('src/a.ts')}${pushed('src/b.ts')}${rebuildRawDiff({ files: [lockfile], totalAdditions: 1, totalDeletions: 1 })}`,
     });
 
-    const messages = [...jest.mocked(clients.reviewer.sendMessage).mock.calls, ...jest.mocked(clients.judge.sendMessage).mock.calls].map(([, user]) => user as string);
-    expect(messages.length).toBeGreaterThanOrEqual(4);
-    for (const message of messages) expect(message).toMatch(/## Changed Since the Last Review\n[\s\S]*```\nCargo\.lock\n```/);
+    const finderMessages = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(([, user]) => user as string);
+    const readerMessages = jest.mocked(clients.judge.sendMessage).mock.calls.map(([, user]) => user as string);
+    expect(finderMessages.length).toBeGreaterThanOrEqual(2);
+    expect(readerMessages.length).toBe(2);
+    for (const message of [...finderMessages, ...readerMessages]) expect(message).toMatch(/## Changed Since the Last Review\n[\s\S]*```\nsrc\/[ab]\.ts\nCargo\.lock\n```/);
+    for (const message of finderMessages) {
+      const own = message.includes('+++ b/src/a.ts\n@@ -1,1') ? 'src/a.ts' : 'src/b.ts';
+      const other = own === 'src/a.ts' ? 'src/b.ts' : 'src/a.ts';
+      expect(message).toContain(`## Diff Since the Last Review`);
+      expect(message).toContain(`+fixed in ${own}`);
+      expect(message).not.toContain(`+fixed in ${other}`);
+      expect(message).toContain('+version = "0.4.3"');
+    }
+    for (const message of readerMessages) expect(message).not.toContain('## Diff Since the Last Review');
   });
 
   it('shows the verdict reader every changed line of a diff over the character budget, and needs every slice READY', async () => {
@@ -6342,12 +6380,14 @@ describe('runReview', () => {
       expect(userMessage).toContain('```\nsrc/x.ts\n```');
       expect(userMessage.endsWith(round1Calls[i][1])).toBe(true);
       expect(userMessage).not.toContain(priorTitle);
-      expect(userMessage).not.toContain(delta);
+      expect(userMessage).toMatch(/\n## Diff Since the Last Review\n\n.*A fix can add a defect of its own[\s\S]*```diff\n--- a\/src\/x\.ts\n\+\+\+ b\/src\/x\.ts\n@@ -1 \+1 @@\n-old\n\+new\n\n```/);
     }
+    expect(round1Calls.every(([, userMessage]) => !userMessage.includes('## Diff Since the Last Review'))).toBe(true);
 
-    // The verdict reader also gets the list ahead of the whole diff.
+    // The verdict reader also gets the list ahead of the whole diff, but never the diff since the last review.
     const [[, readerMessage]] = (round2Clients.judge.sendMessage as jest.Mock).mock.calls as [string, string][];
     expect(readerMessage).toMatch(/^## Changed Since the Last Review\n[\s\S]*```\nsrc\/x\.ts\n```[\s\S]*## Pull Request Diff/);
+    expect(readerMessage).not.toContain('## Diff Since the Last Review');
 
     // Each finder gets the blockers a judge confirmed fixed, and the open ones on or citing a file the push changed.
     const blocker = { severity: 'blocker' as const, threadId: 'T2' };
