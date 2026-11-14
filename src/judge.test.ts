@@ -2872,6 +2872,25 @@ describe('runJudgeAgent', () => {
     expect(cutMessage).toContain('Cut, each ending with a line that says so: `src/a.ts`, `src/b.ts`.');
     expect(cutMessage).not.toContain('Left out:');
     expect(cutMessage).toContain(`diff\n${fix}\ndiff --git a/src/a.ts`);
+    expect(cutMessage).not.toContain('The fix may not be shown');
+
+    // A file a thread's finding cited goes first too, and a thread whose fix may not be shown is told so in its own region.
+    mockSendMessage.mockClear();
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
+      openThreads: [
+        { threadId: 'PRRT_x', title: 'Null check', file: 'src/z.ts', evidenceFiles: ['src/b.ts'], line: 5, severity: 'warning' },
+        { threadId: 'PRRT_y', title: 'Naming', file: 'src/a.ts', line: 5, severity: 'note', currentCode: '(file content unavailable)' },
+      ],
+      priorRounds: priorRounds.map(roundContextFromLegacy),
+      interRoundDiff: long,
+    });
+    const notedMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(notedMessage).toContain('Cut, each ending with a line that says so: `src/b.ts`.');
+    expect(notedMessage).toContain('Left out: `src/a.ts`.');
+    expect(notedMessage).toContain(`${fix}\n${'`'.repeat(3)}`);
+    expect(notedMessage).toContain('- **The fix may not be shown**: The inter-round diff above leaves out `src/a.ts`. The file could not be read in full this round, as it is too large or could not be fetched. Do not call this thread addressed from code you cannot see.');
+    expect(notedMessage).toContain('### PRRT_x — src/z.ts:5\n- **The fix may not be shown**: The inter-round diff above shows only the start of `src/b.ts`. Do not call this thread addressed from code you cannot see.');
   });
 
   it('renders OpenThread `description` and `suggestedFix` in the open-thread block', async () => {

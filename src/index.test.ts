@@ -5477,7 +5477,7 @@ describe('runFullReview orchestration', () => {
     // an unchanged file (must be added to the fetch list).
     const previousFindings = [
       { title: 'Issue in changed', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_dup' },
-      { title: 'Issue in unchanged', file: 'src/other.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
+      { title: 'Issue in unchanged', file: 'src/other.ts', evidenceFiles: ['src/caller.ts'], line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
       // A thread tied to no file has no code to fetch, at the head or on the commit it was posted on.
       { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
       { title: 'Outdated design issue', file: '', line: 0, originalLine: 1, originalCommit: 'c0ffee', severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile_old' },
@@ -5498,8 +5498,8 @@ describe('runFullReview orchestration', () => {
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');
     expect(requestedPaths.filter(p => p === 'src/app.ts')).toHaveLength(1);
-    // Only the file of a blocker or warning thread is read ahead of the rest.
-    expect(fetchCall[7]).toEqual(new Set(['src/other.ts']));
+    // Only the files of a blocker or warning thread, with those its finding cited, are read ahead of the rest.
+    expect(fetchCall[7]).toEqual(new Set(['src/other.ts', 'src/caller.ts']));
   });
 
   it('skips deleted changed files but still fetches open-thread files', async () => {

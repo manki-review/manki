@@ -1161,7 +1161,7 @@ async function collectOpenThreads(
   let lockfileContents: Map<string, string> | undefined;
   try {
     [fileContents, lockfileContents] = await Promise.all([
-      // A blocker or warning thread's own file is read first, so the judge sees its fix however large the rest of the change is.
+      // The files of blocker and warning threads are read first, so the judge sees a fix however large the rest of the change is.
       fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, fixThreadFiles(baseOpenThreads)),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
     ]);

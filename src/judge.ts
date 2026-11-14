@@ -868,6 +868,10 @@ export function buildJudgeUserMessage(
     const staysOpenReason = (t: OpenThread): string => interRoundDiff === undefined ? 'the fix cannot be confirmed without the inter-round diff'
       : t.evidenceFiles?.length ? 'the push changed neither this file nor a file its finding cited' : 'the push did not change this file';
     const heldOpen = threads.filter(t => guardedThreadStaysOpen(t, pushChangedFiles));
+    const hasDiffSection = !!(priorRounds && priorRounds.length > 0);
+    const shownDiff = hasDiffSection && interRoundDiff?.trim()
+      ? cutDiffPerFile(interRoundDiff, MAX_INTER_ROUND_DIFF_CHARS, fixThreadFiles(threads), lockfilePaths)
+      : undefined;
     for (const t of threads) {
       const linkSuffix = t.threadUrl ? ` ([view](${t.threadUrl}))` : '';
       const stays = `stays open: ${t.file ? staysOpenReason(t) : 'only a person can clear a thread that is not tied to a file'}`;
@@ -888,16 +892,16 @@ export function buildJudgeUserMessage(
       parts.push('');
     }
 
-    if (priorRounds && priorRounds.length > 0) {
+    if (hasDiffSection) {
       parts.push(`## Inter-Round Diff\n`);
       if (interRoundDiff === undefined) {
         parts.push('_Inter-round diff unavailable (compare API error). Evaluate threads based on the open-thread code regions and prior-round context only._');
       } else if (interRoundDiff.trim().length === 0) {
         parts.push('_No code changes since prior review: the PR changes the same code as at the prior round (commit SHA unchanged, identical tree, or only a rebase onto the base branch)._');
-      } else {
+      } else if (shownDiff) {
         parts.push('Unified diff from the prior round\'s commit to the current head, for the files where the PR\'s own change differs from the prior round. Files only a rebase onto the base branch changed are left out, but a file listed here can still show base branch changes. Use this as the primary signal when judging whether each open thread is addressed.\n');
         parts.push(`${UNTRUSTED_DIFF_NOTE}\n`);
-        const { text: diffContent, cut, omitted } = cutDiffPerFile(interRoundDiff, MAX_INTER_ROUND_DIFF_CHARS, fixThreadFiles(threads), lockfilePaths);
+        const { text: diffContent, cut, omitted } = shownDiff;
         if (diffContent !== interRoundDiff) {
           parts.push(`The diff has ${interRoundDiff.length} characters, more than the ${MAX_INTER_ROUND_DIFF_CHARS} shown, so each file gets a share, and the files of open blocker and warning threads come first. A thread whose fix is not shown may still be fixed: judge it from its code region below.\n`);
           if (cut.length > 0) parts.push(`Cut, each ending with a line that says so: ${cut.map(p => `\`${sanitize(p)}\``).join(', ')}.\n`);
@@ -913,7 +917,6 @@ export function buildJudgeUserMessage(
 
     if (threads.length > 0) {
       parts.push(`## Open Thread Code Regions\n`);
-      const hasDiffSection = !!(priorRounds && priorRounds.length > 0);
       parts.push(
         hasDiffSection
           ? 'Current source around each open thread\'s flagged line. Use this together with the inter-round diff above to verify whether the concern still applies. The flagged line is GitHub-anchored from when the thread was created and may be stale relative to the current head — the actual fix can land anywhere within the surrounding window.\n'
@@ -955,6 +958,16 @@ export function buildJudgeUserMessage(
         fenced(t.postedCode);
         parts.push(t.postedCodeGone ? '- **Now**: that code is not found in the file any more. The head\'s code near the same line:' : t.movedTo ? `- **Now**: that code is not found in the file any more. The same code sits in \`${sanitize(t.movedTo)}\` at the head:` : '- **Now**: where that code sits at the head:');
       }
+      const own = [t.file, ...(t.evidenceFiles ?? [])].filter(Boolean);
+      const named = (paths: string[]): string => paths.map(p => `\`${sanitize(p)}\``).join(', ');
+      const leftOut = own.filter(p => shownDiff?.omitted.includes(p));
+      const cutShort = own.filter(p => shownDiff?.cut.includes(p));
+      const unseen = [
+        ...(leftOut.length > 0 ? [`The inter-round diff above leaves out ${named(leftOut)}.`] : []),
+        ...(cutShort.length > 0 ? [`The inter-round diff above shows only the start of ${named(cutShort)}.`] : []),
+        ...(t.currentCode === '(file content unavailable)' ? ['The file could not be read in full this round, as it is too large or could not be fetched.'] : []),
+      ];
+      if (unseen.length > 0) parts.push(`- **The fix may not be shown**: ${unseen.join(' ')} Do not call this thread addressed from code you cannot see.`);
       fenced(t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)');
       parts.push('');
     }

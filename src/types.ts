@@ -1632,9 +1632,12 @@ export function threadWarns(t: Parameters<typeof threadBlocks>[0]): boolean {
   return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity));
 }
 
-/** Returns the files of the open threads that block or warn, which the code and diffs a review reads put first. */
-export function fixThreadFiles(threads: ReadonlyArray<Parameters<typeof threadBlocks>[0] & { file: string }>): Set<string> {
-  return new Set(threads.filter(t => t.file && (threadBlocks(t) || threadWarns(t))).map(t => t.file));
+/**
+ * Returns the files of the open threads that block or warn, with the files their findings cited, which the code and
+ * diffs a review reads put first. A push to any of them can fix the thread.
+ */
+export function fixThreadFiles(threads: ReadonlyArray<Parameters<typeof threadBlocks>[0] & { file: string; evidenceFiles?: string[] }>): Set<string> {
+  return new Set(threads.filter(t => t.file && (threadBlocks(t) || threadWarns(t))).flatMap(t => [t.file, ...(t.evidenceFiles ?? [])]));
 }
 
 
