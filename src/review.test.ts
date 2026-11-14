@@ -5136,15 +5136,20 @@ describe('runReview', () => {
     expect(judgeInput.inPrSuppressions ?? []).toEqual([]);
   });
 
-  it('propagates inPrSuppressedCount from judgeResult to ReviewResult', async () => {
+  it('propagates inPrSuppressedCount and the carried warnings found fixed from judgeResult to ReviewResult', async () => {
     const clients = makeClients();
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const previousFindings = [
       { title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'note' as const, status: 'resolved' as const },
     ];
+    // The judge is asked about the warning the last review body listed, and not about the one in a thread.
+    const cited = { hash: 'abcdefabcdef', count: 1 };
+    const listed = { ...makeFindingFingerprintEntry({ title: 'Retry never ends', file: 'src/a.ts', lineStart: 4 }), posted: 'body' as const, citedLine: cited };
+    const inThread = { ...makeFindingFingerprintEntry({ title: 'Cache never cleared', file: 'src/a.ts', lineStart: 8 }), threadId: 'T1', citedLine: cited };
+    const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: {}, entries: [listed, inThread] } })];
 
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.', inPrSuppressedCount: 1 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.', inPrSuppressedCount: 1, carriedFixed: ['key'] });
 
     const result = await runReview(
       clients, {
@@ -5153,10 +5158,13 @@ describe('runReview', () => {
         rawDiff: 'raw diff',
         repoContext: 'repo context',
         previousFindings,
+        priorRounds,
       },
     );
 
     expect(result.inPrSuppressedCount).toBe(1);
+    expect(result.carriedFixed).toEqual(['key']);
+    expect(mockedRunJudgeAgent.mock.calls[0][2].carriedWarnings).toEqual([listed]);
     expect(mockedRunJudgeAgent).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -7333,6 +7341,12 @@ describe('carryBodyWarnings', () => {
     const unprovenAgain = finding('Retry never ends', 2, { unpostedReason: 'unsettled_check' });
     const unproven = await carry([first], then, { unposted: [unprovenAgain], allJudgedFindings: [finding('Retry never ends', 2)] });
     expect([unproven.titles, unproven.ended]).toEqual([all, undefined]);
+    // A warning the judge found fixed ends as `fixed`, and a finding that names it or an edit to its line keeps its own reason.
+    const fixed = await carry([first], then, { carriedFixed: [keyOf(retry), keyOf(nothing)], findings: [finding('Nothing is returned', 3)] });
+    expect([fixed.titles, fixed.ended]).toEqual([['Check runs twice (round 1)'], ['fixed', 'restated']]);
+    expect(fixed.result.carriedEnded?.[0]).toEqual({ key: keyOf(retry), reason: 'fixed' });
+    const editedFixed = await carry([first], withX(then['src/x.ts'].map((line, i) => i === 1 ? '  retry(3);' : line)), { carriedFixed: [keyOf(retry)] });
+    expect([editedFixed.titles, editedFixed.ended]).toEqual([['Check runs twice (round 1)'], ['line_changed', 'line_changed']]);
     // Neither does a warning on unchanged code that no check confirmed. A note there is a grade of the judge, so it ends the warning.
     const old = (severity: Finding['severity']) => finding('Retry never ends', 2, { severity, tags: ['pre-existing'], preExistingCheck: 'pre_existing' });
     const unconfirmed = await carry([first], then, { unpostedPreExisting: [old('warning')], allJudgedFindings: [finding('Retry never ends', 2)] });

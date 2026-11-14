@@ -1096,10 +1096,12 @@ export interface ReviewResult {
   unposted?: Finding[];
   /**
    * The warnings an earlier round listed only in its review body, which this round lists again in one short list. No
-   * finding of this round names them, and the line each points at still reads as it did. They are no findings of the
-   * round, so they never change its verdict.
+   * finding of this round names them, the line each points at still reads as it did, and the judge did not find them
+   * fixed. They are no findings of the round, so they never change its verdict.
    */
   carried?: FindingFingerprintEntry[];
+  /** The fingerprint keys of the warnings `carried` would list that the judge found fixed this round. */
+  carriedFixed?: string[];
   /** The warnings an earlier round carried or listed in its body that this round no longer lists, each with the reason. */
   carriedEnded?: CarriedEnd[];
   /** Set when a later round tagged `origin` without the PR's change at the last reviewed round, so no finding reads `reviewed`. */
@@ -2520,7 +2522,7 @@ export interface FindingFingerprintEntry {
    * thread falls back to the body and is recorded as `body`.
    */
   posted?: PostedPlace;
-  /** The description of a blocker recorded as `body`, which a later round posts as a thread. */
+  /** The description of a blocker recorded as `body`, which a later round posts as a thread, or of a warning with `citedLine`, which a later judge is shown. */
   description?: string;
   /**
    * Set on a warning the round listed only in its review body, so a later round can tell whether the place still reads
@@ -2548,9 +2550,9 @@ export interface CitedLine {
  * Why a warning carried from an earlier review body is no longer listed: its line reads differently or its file is gone
  * (`line_changed`), or a finding the judge graded this round names it. That finding is listed (`restated`), a note the
  * review leaves out (`hidden_note`), dropped by the judge (`judge_dropped`) or left out by a later step (`left_out`).
- * A warning left out because nothing proves it ends none.
+ * A warning left out because nothing proves it ends none. A warning the judge evaluated as addressed ends as `fixed`.
  */
-export type CarriedEndReason = 'line_changed' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out';
+export type CarriedEndReason = 'line_changed' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out' | 'fixed';
 
 export interface CarriedEnd {
   /** The fingerprint key of the warning. */

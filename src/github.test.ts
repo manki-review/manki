@@ -5715,7 +5715,7 @@ describe('postReview non-blocking findings', () => {
     expect(await carriedBody([carriedEntry('Retry never ends', 10, 1, 10)])).toContain('### Earlier warnings, code unchanged · 1 warning\n\nAn earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.\n\n- `src/a.ts:10`: Retry never ends (round 1)');
     expect(await carriedBody(undefined)).not.toContain('Earlier warnings');
     // The record keeps a hash of the line a warning listed only in the body points at, with the lines around it, and how
-    // many places of its file read the same. A line the file does not have gives none.
+    // many places of its file read the same, and the warning's description for a later judge. A line the file does not have gives none.
     const recording = makeOctokit({ 'src/a.ts': 'load();\n  retry();\nend();\n\nload();\nretry();\nend();\n' });
     const listed = [
       nonBlocking('warning', 'Listed before', 2, { origin: 'earlier', raisedIn: 1, tags: ['follow-up', 'pre-existing'] }), nonBlocking('warning', 'Past the end', 9, { origin: 'earlier', raisedIn: 1, tags: ['follow-up', 'pre-existing'] }),
@@ -5725,8 +5725,9 @@ describe('postReview non-blocking findings', () => {
     const entries = listed.map(f => makeFindingFingerprintEntry({ title: f.title, severity: f.severity, lineStart: f.line }));
     await postReview(recording.octokit, 'owner', 'repo', 1, 'sha', buildResult(listed), diff, makeContext({ findings: { count: listed.length, severityCounts: {}, entries } }), 1000);
     const record = JSON.parse(extractReviewRecords(recording.createReview.mock.calls[0][0].body).records[0]);
-    expect(record.findings.entries.map((e: FindingFingerprintEntry) => [e.posted, e.citedLine])).toEqual([
-      ['body', { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 2 }], ['body', undefined], ['thread', undefined], ['thread', undefined], ['thread', undefined],
+    expect(record.findings.entries.map((e: FindingFingerprintEntry) => [e.posted, e.citedLine, e.description])).toEqual([
+      ['body', { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 2 }, 'It goes wrong. Second sentence. Third sentence.'], ['body', undefined, undefined],
+      ['thread', undefined, undefined], ['thread', undefined, undefined], ['thread', undefined, undefined],
     ]);
     // A security finding on unchanged code still blocks, and its header says where it sits.
     expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');

@@ -28,7 +28,7 @@ import { repoToolsPrompt } from './providers/cli-utils';
 import * as mcpServer from './mcp-server';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { parseProof, preExistingCheck, truncateDiff } from './review';
+import { parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
 import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
@@ -2002,7 +2002,7 @@ describe('runJudgeAgent', () => {
     const findings = [
       makeFinding({ title: 'Deadlock on stop', severity: 'blocker', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30', 'src/lock.ts:60', 'src/lock.ts:90', 'src/lock.ts:120', 'src/lock.ts:150', 'src/lock.ts:180'] } }),
       makeFinding({ title: 'Missing bound', severity: 'warning', line: 5, evidence: { checks: [], proof: ['src/index.ts:5', 'src/bundle.js:2'] } }),
-      makeFinding({ title: 'Slow path', severity: 'blocker', line: 6, evidence: { checks: [], proof: ['src/index.ts:6'] } }),
+      makeFinding({ title: 'Slow path', severity: 'blocker', line: 6, evidence: { checks: ['src/lock.ts:100 runs the loop once per entry'], proof: ['src/index.ts:6'] } }),
       makeFinding({ title: 'Unseen kept', severity: 'warning', line: 7 }),
       makeFinding({ title: 'Unseen dropped', severity: 'warning', line: 8 }),
       makeFinding({ title: 'No entry', severity: 'warning', line: 9 }),
@@ -2128,6 +2128,8 @@ describe('runJudgeAgent', () => {
       expect(userMessage).toContain('(src/lock.ts:150)');
       expect(userMessage).not.toContain('(src/lock.ts:180)');
       expect(userMessage).not.toContain('(src/bundle.js:2)');
+      // A line cited only in a finding's evidence gets its window too.
+      expect(userMessage).toContain("- **Cited code outside the diff** (src/lock.ts:100), at the PR's head.");
 
       // The record keeps the blocker cell beside the `warning` a confirmation leaves, whether the judge stated it or no finder had filed
       // a blocker. The next round's judge is shown the grade without that cell, in both lists, so Grade Stability asks for a cell that
@@ -2708,6 +2710,58 @@ describe('runJudgeAgent', () => {
       { threadId: 'PRRT_b', status: 'not_addressed', reason: 'No code changes since prior review' },
     ]);
     expect(result.interRoundDiffEmptyOverride).toEqual({ applied: true, affectedThreadCount: 2 });
+  });
+
+  it('asks the judge whether each carried warning is fixed, and reports only the ones every answer finds addressed', async () => {
+    const priorRounds = ([{ round: 1, commitSha: 'abc', timestamp: 't', findings: [] }] as LegacyHandoverRoundFixture[]).map(roundContextFromLegacy);
+    const carried = (title: string, lineStart: number, more: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry => ({
+      ...makeFindingFingerprintEntry({ title, file: 'src/auth.ts', lineStart }), posted: 'body', raisedIn: 1, citedLine: { hash: 'abcdefabcdef', count: 1 }, ...more,
+    });
+    const carriedWarnings = [
+      carried('Wait ignores the limit', 16, { description: 'The handler\nwaits forever.', currentLine: 20 }),
+      carried('Token kept after logout', 30),
+      carried('Retry has no cap', 40),
+      carried('Cache never cleared', 50),
+    ];
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [], carriedEvaluations: [
+      { id: 'C1', status: 'addressed', reason: 'No client uses the handler any more.' },
+      { id: 'C2', status: 'uncertain', reason: 'r' },
+      // Two answers on one warning end it only when both say `addressed`, and an answer on no listed warning counts for nothing.
+      { id: 3, status: 'addressed', reason: 'r' },
+      { id: 'C3', status: 'partly_addressed', reason: 'r' },
+      { id: 'C9', status: 'addressed', reason: 'r' },
+    ] }) });
+    const input: JudgeInput = {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, priorRounds,
+      interRoundDiff: 'diff --git a/src/auth.ts b/src/auth.ts\n@@ -1 +1 @@\n-old\n+new\n', carriedWarnings,
+    };
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    // C4 got no answer, so it stays listed like C2 and C3.
+    expect(result.carriedFixed).toEqual([stringifyFindingFingerprint(carriedWarnings[0].fingerprint)]);
+    const [systemPrompt, userMessage] = mockSendMessage.mock.calls[0];
+    expect(systemPrompt).toContain('## Earlier Warnings Evaluation');
+    expect(systemPrompt).toContain('"carriedEvaluations": [');
+    expect(userMessage).toContain('## Earlier Warnings in the Review Body');
+    expect(userMessage).toContain('- **C1**: "Wait ignores the limit" at src/auth.ts:20. The handler waits forever.');
+    expect(userMessage).toContain('- **C2**: "Token kept after logout" at src/auth.ts:30.\n');
+    // Without open threads the round still shows the diff since the last round, and no thread sections.
+    expect(userMessage).toContain('## Inter-Round Diff');
+    expect(userMessage).toContain('+new');
+    expect(userMessage).not.toMatch(/## Open Review Threads|## Open Thread Code Regions/);
+
+    // A reply without answers ends none.
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [] }) });
+    expect((await runJudgeAgent(mockClient, makeConfig(), input)).carriedFixed).toBeUndefined();
+
+    // Without a change since the last round, or without the diff, the judge is not asked, and an answer counts for nothing.
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [], carriedEvaluations: [{ id: 'C1', status: 'addressed', reason: 'r' }] }) });
+    for (const interRoundDiff of ['', undefined]) {
+      mockSendMessage.mockClear();
+      expect((await runJudgeAgent(mockClient, makeConfig(), { ...input, interRoundDiff })).carriedFixed).toBeUndefined();
+      const [prompt, message] = mockSendMessage.mock.calls[0];
+      expect(prompt).not.toContain('carriedEvaluations');
+      expect(message).not.toContain('Earlier Warnings');
+    }
   });
 
   it('does not override threadEvaluations when interRoundDiff is empty but no prior rounds exist', async () => {

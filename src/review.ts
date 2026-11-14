@@ -1314,6 +1314,7 @@ export async function runReview(
   let allJudgedFindings: Finding[] | undefined;
   let judgeSummary = 'Review complete.';
   let judgeThreadEvaluations: ThreadEvaluation[] | undefined;
+  let carriedFixed: string[] | undefined;
   let judgeCrossRoundSuppressed: number | undefined;
   let judgeCrossRoundDemoted: number | undefined;
   let judgeInterRoundDiffEmptyOverride: { applied: boolean; affectedThreadCount: number } | undefined;
@@ -1358,6 +1359,7 @@ export async function runReview(
     ...(refutation && { refutation }),
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
+    carriedWarnings: bodyWarnings(priorRounds ?? []),
   };
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
@@ -1371,6 +1373,7 @@ export async function runReview(
     judgeSummary = judgeResult.summary;
     allJudgedFindings = judgeResult.findings;
     judgeThreadEvaluations = judgeResult.threadEvaluations;
+    carriedFixed = judgeResult.carriedFixed;
     judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
     judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
     judgeInterRoundDiffEmptyOverride = judgeResult.interRoundDiffEmptyOverride;
@@ -1447,7 +1450,7 @@ export async function runReview(
         // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
         const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
         // A rank only compares the notes of one judge call, so only the first call's ranks order the notes.
-        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads })).findings
+        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads, carriedWarnings: undefined })).findings
           .map(({ noteRank: _, ...f }): Finding => f);
         allJudgedFindings = [...(allJudgedFindings ?? []), ...judged];
         const kept = judged.filter(f => f.severity !== 'ignore');
@@ -1669,6 +1672,7 @@ export async function runReview(
     ...(openLeads.length > 0 && { openLeads }),
     ...(leads.length > 0 && { leads }),
     threadEvaluations,
+    ...(carriedFixed && { carriedFixed }),
     plannerResult: plannerResult ?? undefined,
     judgeEffort,
     staticDedupCount,
@@ -2818,11 +2822,17 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
   });
 }
 
+/** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself, each with a `citedLine`. */
+export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEntry[] {
+  const last = priorRounds.at(-1);
+  return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId) : [];
+}
+
 /**
- * Sets `result.carried` to the warnings the last of `priorRounds` listed only in its review body or carried itself, so a
- * warning does not vanish because no finder raised it again. Only an entry with `citedLine` is carried. A warning leaves
- * the list only for certain, and `result.carriedEnded` says why: a finding the judge graded this round names its problem,
- * kept or not, or the file at the head has fewer places reading like its `citedLine` than when it was listed, or is gone.
+ * Sets `result.carried` to the `bodyWarnings` of `priorRounds`, so a warning does not vanish because no finder raised
+ * it again. A warning leaves the list only for certain, and `result.carriedEnded` says why: a finding the judge graded
+ * this round names its problem, kept or not, or the file at the head has fewer places reading like its `citedLine` than
+ * when it was listed, or is gone, or the judge found it fixed (`result.carriedFixed`).
  * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a warning on
  * code the PR did not change that no check confirmed.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
@@ -2832,7 +2842,8 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
 export async function carryBodyWarnings(result: ReviewResult, priorRounds: RoundContext[], head: Pick<RepoFiles, 'read'>): Promise<void> {
   const last = priorRounds.at(-1);
   if (!last) return;
-  const warnings = [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId);
+  const warnings = bodyWarnings(priorRounds);
+  const fixed = new Set(result.carriedFixed);
   // A warning left out because nothing proves or confirms it withdraws nothing, so the warning an earlier round listed stays listed.
   const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning');
   const unproven = new Set([...(result.unposted ?? []).filter(leftOutUnproven), ...unconfirmed].map(findingKey));
@@ -2856,7 +2867,7 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
     const currentLine = places?.length === 1 ? places[0] : undefined;
     const located: Located = { title: entry.title ?? '', file, line: currentLine ?? entry.fingerprint.lineStart, evidence: entry.evidence };
     const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
-    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < count ? 'line_changed' : undefined);
+    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < count ? 'line_changed' : fixed.has(key) ? 'fixed' : undefined);
     if (reason) {
       core.info(`No longer carrying the warning "${entry.title}" on ${file}:${located.line}: ${reason}`);
       ended.push({ key, reason });

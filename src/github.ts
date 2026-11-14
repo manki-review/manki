@@ -2014,7 +2014,7 @@ export async function postReview(
       // A finding with a thread of its own records no earlier thread, which its record entry would otherwise raise.
       const { threadId: linked, ...unlinked } = entry;
       const threadId = posted === 'thread' ? undefined : linked ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
-      const description = posted === 'body' && f.severity === 'blocker' && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
+      const description = posted === 'body' && (f.severity === 'blocker' || cited) && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
       const holds = holdsApproval(f);
       return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(holds && { holds }), ...(description && { description }) };
     };

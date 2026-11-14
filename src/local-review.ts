@@ -300,10 +300,10 @@ async function followUpInputs(
   // A pull request round records the line of a warning it lists only in the review body, which a later round compares.
   const earlierLines = cachedFileLines(gitRepoFiles(repoRoot, earlierHead), 'so its earlier warnings are not carried');
   const entries = await Promise.all(record.findings.entries.map(async (entry, i) => {
-    const { thread, severity, file, line } = earlier.findings[i];
+    const { thread, severity, file, line, description } = earlier.findings[i];
     if (thread || severity !== 'warning') return entry;
     const cited = file && line > 0 ? citedLine(await earlierLines(file), line) : undefined;
-    return { ...entry, posted: 'body' as const, ...(cited && { citedLine: cited }) };
+    return { ...entry, posted: 'body' as const, ...(cited && { citedLine: cited }), ...(cited && description && { description }) };
   }));
   return { previousFindings, openThreads, priorRounds: [{ ...record, findings: { ...record.findings, entries } }], priorChange, interRoundDiff };
 }
