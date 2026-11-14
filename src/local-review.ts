@@ -5,7 +5,7 @@ import { pathToFileURL } from 'url';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import { extractCurrentCodeWindow } from './code-window';
-import { loadConfig, validateConfig } from './config';
+import { CONFIG_PATH, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
 import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, skippedFiles, titleToSlug } from './github';
@@ -21,7 +21,6 @@ import { SECURITY_TAG, threadWarns } from './types';
 import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
 import { fetchWorkspace, gitEnv, runGit } from './workspace';
 
-const DEFAULT_CONFIG_PATH = '.manki.yml';
 
 /** Config keys and their values, as a `.manki.yml` holds them. */
 export type ConfigOverrides = Record<string, unknown>;
@@ -193,7 +192,7 @@ async function loadLocalConfig(
  * read in place of the file the repository holds, and may name no key the config does not know. Throws when the config
  * does not load.
  */
-export async function loadConfigWithOverrides(repoRoot: string, base: string, overrides: ConfigOverrides, own?: ConfigOverrides, configPath = DEFAULT_CONFIG_PATH): Promise<ReviewConfig> {
+export async function loadConfigWithOverrides(repoRoot: string, base: string, overrides: ConfigOverrides, own?: ConfigOverrides, configPath = CONFIG_PATH): Promise<ReviewConfig> {
   if (own) rejectUnknownKeys(own, 'The config given names');
   const content = own ? stringifyYaml(own) : await gitRepoFiles(repoRoot, base).read(configPath);
   return loadOverlaidConfig(content, own ? 'the config given' : configPath, overrides).config;
@@ -314,7 +313,7 @@ async function followUpInputs(
  */
 export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview> {
   const { repoRoot, patch, providerInputs, signal } = input;
-  const configPath = input.configPath ?? DEFAULT_CONFIG_PATH;
+  const configPath = input.configPath ?? CONFIG_PATH;
   const head = (await runGit(repoRoot, ['rev-parse', '--verify', `${input.head}^{commit}`])).trim();
   const base = patch === undefined ? (await runGit(repoRoot, ['merge-base', input.base, head])).trim() : head;
   // The head's copy of the config is the one the change leaves: the commit's, or the patched one.

@@ -277,7 +277,7 @@ class FakeGitHub {
     }
     if (method === 'GET' && (match = route.match(/^\/commits\/(\w+)$/)) && headers.get('accept')?.includes('diff')) return text(this.commitDiffs[match[1]] ?? '');
     const config = this.configs[searchParams.get('ref') ?? ''];
-    if (method === 'GET' && route === `/contents/${INPUTS.config_path}` && config) {
+    if (method === 'GET' && route === '/contents/.manki.yml' && config) {
       return json({ type: 'file', encoding: 'base64', size: config.length, content: Buffer.from(config).toString('base64') });
     }
     if (method === 'GET' && route === `/contents/src/math.ts`) {
@@ -483,7 +483,6 @@ let mockThrottling: boolean;
 const INPUTS: Record<string, string> = {
   github_token: 'ghs_workflow',
   anthropic_api_key: 'sk-ant-test',
-  config_path: 'manki-e2e-absent.yml',
   manki_token_url: TOKEN_URL,
 };
 
@@ -1603,8 +1602,7 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.comments.filter(c => /Auto-approv/.test(c.body))).toEqual([]);
     });
 
-    it('reads the config at the repo-relative `config_path` on a thread event, so an absolute path does not hide `author_clear_role: admin`', async () => {
-      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'config_path' ? join(process.cwd(), INPUTS.config_path) : INPUTS[name] ?? ''));
+    it('reads the base branch\'s `.manki.yml` on a thread event, so `author_clear_role: admin` holds', async () => {
       mockGitHub.configs = { main: 'author_clear_role: admin\n' };
       mockGitHub.role = 'maintain';
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
