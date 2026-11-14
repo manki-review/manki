@@ -58,7 +58,7 @@ jest.mock('./github', () => ({
   findingLocation: jest.requireActual('./github').findingLocation,
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
   inline: jest.requireActual('./github').inline,
-  plainRepoPath: jest.requireActual('./github').plainRepoPath,
+  plainCitedFiles: jest.requireActual('./github').plainCitedFiles,
   isBotLogin: jest.requireActual('./github').isBotLogin,
   isBotUser: jest.requireActual('./github').isBotUser,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
