@@ -11,7 +11,7 @@ import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, 
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
-export { sanitizeLogOutput, STALE_TIMEOUT_MS };
+export { STALE_TIMEOUT_MS };
 
 const execFileAsync = promisify(execFile);
 

@@ -25,11 +25,13 @@ export function cutLegacyCommands(text: string): string {
   return text.replace(/##\[[a-z].*$/gim, '[redacted-workflow-cmd]');
 }
 
-/** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
+/**
+ * Cuts the GitHub Actions workflow commands in `text`, so logging it runs none. A runner reads `::name::` only where it
+ * starts a line after whitespace, and a bare `\r` ends a line as `\n` does. A control character counts as whitespace
+ * here to stay on the safe side. `::` in the middle of a line, as in `std::fmt`, is kept.
+ */
 export function sanitizeLogOutput(text: string): string {
-  // Matches any line segment starting with :: followed by a letter — covers all workflow commands
-  // regardless of parameter format (e.g. ::error file=foo.ts,line=5::message)
-  return cutLegacyCommands(text).replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
+  return cutLegacyCommands(text).replace(/^((?:(?![\r\n])[\s\p{Cc}])*)::[a-z].*$/gimu, '$1[redacted-workflow-cmd]');
 }
 
 /**
