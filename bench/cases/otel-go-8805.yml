@@ -27,6 +27,11 @@ body: |
 
   Followup
   * Check `otlpmetricgrpc` and `otlploggrpc` for same issue.
+# The repository has no `.manki.yml` at the base, so this block keeps the defaults. It pins `review.rules` to `warn`,
+# the setting the key was written for, since the default `auto` grades a broken rule by its damage alone.
+config:
+  review:
+    rules: warn
 key_version: 1
 must_catch:
   - id: K1
