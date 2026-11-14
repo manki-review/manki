@@ -834,6 +834,12 @@ describe('buildJudgeUserMessage', () => {
     const pushedAll = ['src/baz.ts', 'src/log.ts'].reduce((diff, file) => diff + pushed.replace(/src\/foo\.ts/g, file), pushed);
     expect(followUp(pushedAll)).toMatch(/"Token logged" at src\/log\.ts:7\n/);
     expect(followUp(pushedAll)).not.toContain('stays open');
+    // A push to a file the finding cited counts as a push to the thread, for a blocker and a security thread alike, and
+    // a thread that names cited files says so when the push changed none of them.
+    const citing = (interRoundDiff: string) => buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined,
+      [{ ...openThreads[0], evidenceFiles: ['src/cited.ts'] }, { ...security, evidenceFiles: ['src/cited.ts'] }], rounds, interRoundDiff);
+    expect(citing(pushed.replace(/src\/foo\.ts/g, 'src/cited.ts'))).not.toContain('stays open');
+    expect(citing(pushed.replace(/src\/foo\.ts/g, 'src/other.ts'))).toContain('"Token logged" at src/log.ts:7 (stays open: the push changed neither this file nor a file its finding cited)\n');
     expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads, rounds))
       .toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the fix cannot be confirmed without the inter-round diff)');
   });

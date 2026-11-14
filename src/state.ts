@@ -288,9 +288,12 @@ async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<v
   await octokit.graphql('mutation($id: ID!) { deletePullRequestReviewComment(input: { id: $id }) { clientMutationId } }', { id: commentId });
 }
 
-/** Returns the reply that says why a thread is reopened. */
-function reopenReply(isSecurity: boolean): string {
-  return `Reopened. A ${isSecurity ? 'security' : 'blocking'} finding needs a maintainer or a fix: the PR author cannot resolve it. A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. ${AFTER_PUSH_LINE}`;
+/** Returns the reply that says why a thread is reopened. A review never clears a thread tied to no `file`, so its reply names no fix. */
+function reopenReply(isSecurity: boolean, file: string): string {
+  const kind = isSecurity ? 'security' : 'blocking';
+  return file
+    ? `Reopened. A ${kind} finding needs a maintainer or a fix: the PR author cannot resolve it. A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. ${AFTER_PUSH_LINE}`
+    : `Reopened. A ${kind} finding that is not tied to a file needs a maintainer: the PR author cannot resolve it, and no review can confirm a fix for it. A reviewer with write access can resolve it.`;
 }
 
 /**
@@ -302,7 +305,7 @@ async function authorResolvedNote(
 ): Promise<string | undefined> {
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
   const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
-  return finding && reopenReply(!!finding.isSecurity);
+  return finding && reopenReply(!!finding.isSecurity, finding.file);
 }
 
 /** Reopens each guarded thread of `recap` that the PR author resolved, and replies once to say why. */
@@ -312,7 +315,7 @@ async function reopenAuthorResolvedThreads(octokit: Octokit, recap: RecapState):
     // The thread opens first. The reply's marker stops every later reopen, so it must never sit on a thread that stayed resolved.
     if (!await reopenThread(octokit, f.threadId)) continue;
     try {
-      await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity), REOPENED_MARKER);
+      await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity, f.file), REOPENED_MARKER);
     } catch (error) {
       core.warning(`Reopened thread ${f.threadId}, but failed to say why: ${error}`);
     }

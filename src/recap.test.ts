@@ -1366,9 +1366,9 @@ describe('fetchRecapState', () => {
         comments: { nodes: [{ body: `\u{1F6AB} **Blocker**: ${title}\n\nDesc.\n\n<!-- manki:blocker:${titleToSlug(title)} -->${data ? `\n<!-- manki-finding: ${JSON.stringify({ ...data, severity: 'blocker', title })} -->` : ''}`, author: { login: BOT_LOGIN } }] },
       });
       const octokit = mockOctokit([
-        posted('T_FILE', 'Persisters miss the lock', { file: 'src/store.ts', line: 30, detached: true }),
+        posted('T_FILE', 'Persisters miss the lock', { file: 'src/store.ts', line: 30, detached: true, evidenceFiles: ['src/lock.ts', 'src/store.ts', './src/lock.ts', '../secret.ts', '/etc/passwd', 'https://example.com/a.ts', 'src/a/../../../b.ts'] }),
         posted('T_NONE', 'The design drops retries', { file: '', line: 0, detached: true }),
-        posted('T_OLD', 'Named without the flag', { file: 'src/old.ts', line: 7 }),
+        posted('T_OLD', 'Named without the flag', { file: 'src/old.ts', line: 7, evidenceFiles: ['src/lock.ts', 7] }),
         // On the finding's own file: a file-level thread for a finding without a line, a line thread whose code moved
         // down by four lines, and a thread from before the finding data.
         posted('T_WHOLE', 'The file has no owner', { file: 'src/first.ts', line: 0 }),
@@ -1391,6 +1391,10 @@ describe('fetchRecapState', () => {
       expect(state.previousFindings.map(f => [f.line, f.originalLine, f.detached])).toEqual([
         [30, undefined, true], [0, undefined, true], [1, 1, undefined], [0, undefined, undefined], [44, 40, undefined], [1, 1, undefined],
       ]);
+      // The finding data names the other files the finding cited, each once, as plain repository paths and without its
+      // own. A path that leaves the repository, an absolute path or a URL is dropped. A list that is not all names is not
+      // read, so that thread counts only its own file.
+      expect(state.previousFindings.map(f => f.evidenceFiles)).toEqual([['src/lock.ts'], undefined, undefined, undefined, undefined, undefined]);
       // So the round record's blocker finds its thread, and the thread from before the flag stays on GitHub's path.
       expect(state.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual(['T_FILE', 'T_NONE', undefined]);
     });

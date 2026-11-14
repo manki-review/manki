@@ -22,7 +22,7 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
-import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
 import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
@@ -1134,6 +1134,7 @@ async function collectOpenThreads(
         threadUrl: f.threadUrl,
         title: f.title,
         file: f.file,
+        ...(f.evidenceFiles && { evidenceFiles: f.evidenceFiles }),
         // A thread posted on a fallback line sits away from its finding, and the judge has to look at the finding.
         line: currentFindingLine(f),
         severity: f.severity,
@@ -1510,8 +1511,8 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 /**
  * Tells each thread whose grade a partial fix sets or changes what happened. The round record keeps the grade, so a
  * reply that fails loses only the note. A partly fixed thread hears what remains, but not again while it already
- * carries that grade and the push leaves its file unchanged. A thread an earlier partial fix lowered hears that it is
- * open again at its own grade.
+ * carries that grade and the push changes neither its file nor a file its finding cited. A thread an earlier partial
+ * fix lowered hears that it is open again at its own grade.
  */
 async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
   const changed = filesChangedByPush(run.interRoundDiff);
@@ -1522,7 +1523,7 @@ async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Pr
     const carried = thread.recordedGrade ?? (thread.severity === 'unknown' ? 'blocker' : thread.severity);
     let body: string;
     if (status === 'partly_addressed' && remaining) {
-      if (thread.recordedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) continue;
+      if (thread.recordedGrade === grade && run.interRoundDiff !== undefined && !pushTouchesThread(thread, changed)) continue;
       const regraded = grade === carried ? '' : ` What remains is a ${SEVERITY_NAME[grade]}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
       body = `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${regraded}`;
     } else if (grade !== carried) {
