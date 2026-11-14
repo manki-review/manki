@@ -1113,8 +1113,8 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
 
 /** Collects the open review threads with the code now at each, and the contents of the files the review reads. */
 async function collectOpenThreads(
-  target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[], prAuthorLogin: string | undefined,
-): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string> }> {
+  target: RunTarget, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, lockfiles: LockfileDiff[], prAuthorLogin: string | undefined,
+): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string>; carriedFileContents?: Map<string, string>; unreadFiles: Set<string> }> {
   const { octokit, owner, repo, commitSha } = target;
   const baseOpenThreads = recap.previousFindings
     .filter((f): f is PreviousFinding & { threadId: string } =>
@@ -1157,15 +1157,19 @@ async function collectOpenThreads(
   const parsed = new Set(lockfiles.map(l => l.path));
   // The judge reads the code around each warning an earlier review body listed when the push may have fixed it.
   const carriedFiles = [...new Set(bodyWarnings(recap.priorRounds).map(e => e.fingerprint.file))];
-  const filePaths = [...changedFilePaths, ...threadFilePaths, ...carriedFiles.filter(p => !changedFilePaths.includes(p) && !threadFiles.includes(p))].filter(p => !parsed.has(p));
+  const filePaths = [...changedFilePaths, ...threadFilePaths].filter(p => !parsed.has(p));
+  // Only the judge reads a carried warning's file that the review does not read anyway, so it gets a budget of its own.
+  const carriedOnly = carriedFiles.filter(p => !filePaths.includes(p) && !parsed.has(p));
   const lockfileThreadPaths = [...new Set(threadFiles.filter(p => parsed.has(p)))];
   let fileContents: Map<string, string> | undefined;
   let lockfileContents: Map<string, string> | undefined;
+  let carriedFileContents: Map<string, string> | undefined;
   try {
-    [fileContents, lockfileContents] = await Promise.all([
+    [fileContents, lockfileContents, carriedFileContents] = await Promise.all([
       // The files of blocker and warning threads, then of earlier warnings, are read first, so the judge sees a fix however large the rest of the change is.
       fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads), ...carriedFiles]),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
+      carriedOnly.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, carriedOnly) : new Map<string, string>(),
     ]);
   } catch (error) {
     core.warning(`Failed to fetch file contents: ${error}`);
@@ -1218,13 +1222,33 @@ async function collectOpenThreads(
       currentCode: elsewhere ? extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line) : extractCurrentCodeWindow(contents, t.file, near),
     };
   });
-  // A file the PR deleted has no code to read, which is no failure to read it.
-  const deleted = new Set(diff.files.filter(f => f.changeType === 'deleted').map(f => f.path));
-  const openThreads = placed.map(t => {
-    const unread = !!t.file && !deleted.has(t.file) && (parsed.has(t.file) ? lockfileContents : fileContents)?.get(t.file) === undefined;
-    return unread ? { ...t, codeUnread: true } : t;
-  });
-  return { openThreads, fileContents };
+  const gone = goneFromHead(fullDiff);
+  const read = (path: string): boolean => !!(parsed.has(path) ? lockfileContents : carriedOnly.includes(path) ? carriedFileContents : fileContents)?.has(path);
+  const unreadFiles = new Set([...filePaths, ...lockfileThreadPaths, ...carriedOnly].filter(p => !gone.has(p) && !read(p)));
+  const openThreads = placed.map(t => (unreadFiles.has(t.file) ? { ...t, codeUnread: true } : t));
+  return { openThreads, fileContents, carriedFileContents, unreadFiles };
+}
+
+/**
+ * Returns the paths the PR deleted or renamed away, excluded files included. Such a file has no code at the head, which
+ * is no failure to read it.
+ */
+function goneFromHead(fullDiff: ParsedDiff): Set<string> {
+  // `parsePRDiff` writes a skipped file's header as the JSON of its paths, ids and modes. Any other header names no rename.
+  const renamedFrom = (header: string): string[] => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(header);
+    } catch {
+      return [];
+    }
+    const [from, to] = Array.isArray(parsed) ? parsed : [];
+    return typeof from === 'string' && from !== to && from !== '/dev/null' ? [from] : [];
+  };
+  return new Set([
+    ...fullDiff.files.flatMap(f => (f.changeType === 'deleted' ? [f.path] : f.changeType === 'renamed' && f.oldPath ? [f.oldPath] : [])),
+    ...(fullDiff.binarySkipped ?? []).flatMap(b => (b.deleted ? [b.path] : renamedFrom(b.header))),
+  ]);
 }
 
 /**
@@ -1972,7 +1996,7 @@ async function runFullReview(
     const digest = changeDigest(fullDiff);
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
-    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin);
+    const { openThreads, fileContents, carriedFileContents, unreadFiles } = await collectOpenThreads(target, recap, diff, fullDiff, lockfiles, prAuthorLogin);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
@@ -1998,6 +2022,8 @@ async function runFullReview(
       instructionFiles: repoContext.files,
       memory,
       fileContents,
+      carriedFileContents,
+      unreadFiles,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,
       linkedIssues,
       relatedWork,

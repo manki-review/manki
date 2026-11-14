@@ -927,8 +927,10 @@ export function buildJudgeUserMessage(
         const { text: diffContent, cut, omitted } = shownDiff;
         if (diffContent !== interRoundDiff) {
           parts.push(`The diff has ${interRoundDiff.length} characters, more than the ${MAX_INTER_ROUND_DIFF_CHARS} shown, so each file gets a share, and the files of open blocker and warning threads and of earlier warnings come first. A fix this diff does not show may still exist: look for it in the current code shown with its thread or warning, and never call one addressed from code you cannot see.\n`);
-          if (cut.length > 0) parts.push(`Cut, each ending with a line that says so: ${cut.map(p => `\`${sanitize(p)}\``).join(', ')}.\n`);
-          if (omitted.length > 0) parts.push(`Left out: ${omitted.map(p => `\`${sanitize(p)}\``).join(', ')}.\n`);
+          // A push can change thousands of files, so each list names at most `MAX_UNSHOWN_FILES` of them.
+          const listed = (paths: string[]): string => `${named(paths.slice(0, MAX_UNSHOWN_FILES))}${paths.length > MAX_UNSHOWN_FILES ? `, and ${paths.length - MAX_UNSHOWN_FILES} more files` : ''}`;
+          if (cut.length > 0) parts.push(`Cut, each ending with a line that says so: ${listed(cut)}.\n`);
+          if (omitted.length > 0) parts.push(`Left out: ${listed(omitted)}.\n`);
         }
         const fence = dynamicFence(diffContent);
         parts.push(`${fence}diff`);

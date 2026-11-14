@@ -2910,6 +2910,18 @@ describe('runJudgeAgent', () => {
     const carriedMessage: string = mockSendMessage.mock.calls[0][1];
     expect(carriedMessage).toContain('Cut, each ending with a line that says so: `src/b.ts`.');
     expect(carriedMessage).toContain('Left out: `src/a.ts`, `src/z.ts`.');
+
+    // A list names at most 200 files and counts the rest.
+    mockSendMessage.mockClear();
+    const many = Array.from({ length: 205 }, (_, i) => `diff --git a/gen/${i}.ts b/gen/${i}.ts\n--- a/gen/${i}.ts\n+++ b/gen/${i}.ts\n@@ -1,1 +1,1 @@\n-a\n+b`).join('\n');
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, carriedWarnings: [warning],
+      priorRounds: priorRounds.map(roundContextFromLegacy),
+      interRoundDiff: `${large('src/b.ts')}${many}\n`,
+    });
+    const manyMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(manyMessage).toContain('`gen/199.ts`, and 5 more files.\n');
+    expect(manyMessage).not.toContain('`gen/200.ts`');
     expect(carriedMessage).toContain('\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this warning addressed from code you cannot see.\n```\n>>> 3: retry();');
   });
 

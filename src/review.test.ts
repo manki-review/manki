@@ -5244,6 +5244,17 @@ describe('runReview', () => {
         severity: 'note',
       },
     ]);
+
+    // A file only the judge reads gives the window. A file the review tried and failed to read is marked unread, and
+    // without the list of such files, as in a local review, none is.
+    for (const unreadFiles of [new Set(['src/a.ts']), undefined]) {
+      mockedRunJudgeAgent.mockClear();
+      await runReview(clients, {
+        config, diff, rawDiff: 'raw diff', repoContext: 'repo context', previousFindings, priorRounds,
+        carriedFileContents: new Map([['src/a.ts', 'one\ntwo\nthree\nretry();\nfive']]), unreadFiles,
+      });
+      expect(mockedRunJudgeAgent.mock.calls[0][2].carriedWarnings).toEqual([{ ...listed, currentCode: expect.stringContaining('>>> 4: retry();'), ...(unreadFiles && { codeUnread: true }) }]);
+    }
   });
 
   it('propagates agree-reply inPrSuppression when prAuthorLogin matches reply author', async () => {
