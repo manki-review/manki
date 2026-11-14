@@ -137,8 +137,10 @@ describe('collectStaticSignals', () => {
   it('keeps results on lines in the diff and fences them in the reviewer prompt', async () => {
     const octokit = makeOctokit();
 
-    const { signals, record } = await collectStaticSignals(octokit, request());
+    const { signals, record, offDiffResults } = await collectStaticSignals(octokit, request());
 
+    // The two annotations on no line of the diff are counted, but left out of the signals.
+    expect(offDiffResults).toBe(2);
     // Each source is recorded with its results on lines in the diff.
     expect(record).toEqual({ sources: [
       { source: 'checks', status: 'ran', results: 1 },

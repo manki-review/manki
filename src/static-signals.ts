@@ -98,6 +98,8 @@ export interface StaticAnalysisResult {
   signals: StaticSignal[];
   /** Set when the run waited for checks or ran an analyzer. */
   record?: RoundStaticAnalysis;
+  /** How many results the sources returned on no line of the diff, which `signals` leaves out. Unset when none. */
+  offDiffResults?: number;
 }
 
 /**
@@ -173,6 +175,7 @@ export async function collectStaticSignals(
   const allFiles = new Map(fullDiff.files.map(f => [f.path, f]));
   const runs: RoundAnalyzerRun[] = [];
   const sourceRuns: RoundSignalSourceRun[] = [];
+  let offDiffResults = 0;
   const collected = await Promise.all(sources.map(async ([source, fetch]) => {
     const analyzer = analyzers.find(a => a === source);
     try {
@@ -185,6 +188,7 @@ export async function collectStaticSignals(
         const added = onlyAdded || (source === 'ast_grep' && isRustFile(s.file));
         return file !== undefined && (added ? addedLines(file).has(s.line) : isLineInDiff(file, s.line));
       }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
+      offDiffResults += results.length - onDiff.length;
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
       else sourceRuns.push({ source: source as RoundSignalSourceRun['source'], status: 'ran', results: onDiff.length });
       return onDiff;
@@ -213,7 +217,11 @@ export async function collectStaticSignals(
     ...(hidden.length > 0 && { hiddenCharacters: hidden.length }),
     ...(checksStillPending.length > 0 && { checksStillPending }),
   };
-  return { signals: onDiff.slice(0, hidden.length + lockfile.length + MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
+  return {
+    signals: onDiff.slice(0, hidden.length + lockfile.length + MAX_SIGNALS),
+    ...(Object.keys(record).length > 0 && { record }),
+    ...(offDiffResults > 0 && { offDiffResults }),
+  };
 }
 
 /** Whether Manki itself reported the result. Nobody sees those results unless the review posts them. */

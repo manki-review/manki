@@ -992,16 +992,17 @@ async function postUnreviewedRound(
 
 /**
  * Whether a diff no model reads can be approved without one. Every changed file must be a deleted binary, LFS file or
- * submodule, every static source must have run and found nothing, and no earlier round may have recorded a finding,
- * since no model reads whether the change settled it.
+ * submodule, and every static source must have run and found nothing anywhere on the head. No earlier round may have
+ * recorded a finding, since no model reads whether the change settled it.
  */
 function approvesUnread(
-  fullDiff: ParsedDiff, excludedFiles: RoundDiffExcludedFile[], lockfiles: LockfileDiff[], { signals, record }: StaticAnalysisResult, recap: RecapState,
+  fullDiff: ParsedDiff, excludedFiles: RoundDiffExcludedFile[], lockfiles: LockfileDiff[], { signals, record, offDiffResults }: StaticAnalysisResult, recap: RecapState,
 ): boolean {
   const skipped = skippedFiles(excludedFiles, lockfiles, fullDiff);
   const runs = [...record?.analyzers ?? [], ...record?.sources ?? []];
   return (fullDiff.binarySkipped?.length ?? 0) > 0 && skipped.excluded.length === 0 && skipped.binary.length === 0
-    && signals.length === 0 && runs.every(r => r.status === 'ran') && !record?.checksStillPending
+    // Such a diff has no line a result can sit on, so a result anywhere on the head counts.
+    && signals.length === 0 && !offDiffResults && runs.every(r => r.status === 'ran') && !record?.checksStillPending
     && !recap.priorRoundsIncomplete && recap.openThreadsState !== 'fetch_failed'
     && recap.previousFindings.length === 0 && recap.priorRounds.every(r => r.findings.count === 0);
 }
@@ -1013,6 +1014,7 @@ function approvesUnread(
 async function postUnreadApproval(run: ReviewRun, summary: string, metadata: ReviewMetadata): Promise<CheckReport> {
   const { octokit, bot, owner, repo, prNumber, commitSha, recap, config, commentId, dashboard, progress } = run;
   const totalMs = metadata.timing.totalMs;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result: ReviewResult = { verdict: 'APPROVE', outcome: 'READY', verdictReason: 'only_notes', summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] };
   const context = buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls(), runner: runnerDiagnostics() }, result, { judgeDurationMs: 0, wallClockMs: totalMs });
   const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);

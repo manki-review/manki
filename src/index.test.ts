@@ -301,7 +301,8 @@ jest.mock('./related-work', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { buildRoundRecap } from './round-context';
-import type { Finding, ParsedDiff, PrState, ReviewConfig, RoundStaticAnalysis, RunMode, ThreadEvaluation } from './types';
+import type { Finding, ParsedDiff, PrState, ReviewConfig, RunMode, ThreadEvaluation } from './types';
+import type { StaticAnalysisResult } from './static-signals';
 import { SettingsView, withSettingsBlock } from './settings';
 import { registerSecret, withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec, removeSeededAuthFiles } from './providers';
@@ -2739,11 +2740,12 @@ describe('runFullReview orchestration', () => {
     ['a committed `dist/` build', { path: 'dist/index.js', changeType: 'modified' as const, hunks: [] }, 'dist/**', [], undefined],
     ['a binary', undefined, undefined, [{ path: 'gradle/wrapper/gradle-wrapper.jar', header: '' }], undefined],
     ['a deleted binary next to an added one', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }, { path: 'new.png', header: '' }], undefined],
-    ['deleted binaries whose code scanning could not be read', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { sources: [{ source: 'code_scanning' as const, status: 'skipped' as const, reason: 'the token cannot read it (HTTP 403)' }] }],
-    ['deleted binaries while a check still runs', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { checksStillPending: ['build'] }],
-  ])('never approves a PR that changes only %s, and runs the analyzers on it first', async (_label, file, matchedPattern, binarySkipped, record: RoundStaticAnalysis | undefined) => {
+    ['deleted binaries whose code scanning could not be read', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { record: { sources: [{ source: 'code_scanning' as const, status: 'skipped' as const, reason: 'the token cannot read it (HTTP 403)' }] } }],
+    ['deleted binaries while a check still runs', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { record: { checksStillPending: ['build'] } }],
+    ['deleted binaries while a check reports a result on another file', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { offDiffResults: 1 }],
+  ])('never approves a PR that changes only %s, and runs the analyzers on it first', async (_label, file, matchedPattern, binarySkipped, analysis: Omit<StaticAnalysisResult, 'signals'> | undefined) => {
     const signal = { tool: 'osv-scanner', ruleId: 'GHSA-1234', severity: 'error' as const, file: 'yarn.lock', line: 12, message: 'left-pad 1.0.0 is vulnerable', source: 'dependencies' as const };
-    jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce({ signals: file?.path === 'yarn.lock' ? [signal] : [], ...(record && { record }) });
+    jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce({ signals: file?.path === 'yarn.lock' ? [signal] : [], ...analysis });
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: file ? [file] : [], totalAdditions: 10, totalDeletions: 5, binarySkipped });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: file && matchedPattern ? [{ path: file.path, matchedPattern }] : [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);
@@ -2797,6 +2799,25 @@ describe('runFullReview orchestration', () => {
     expect(call[9]).toMatchObject({ skipped: { excluded: [], binary: [] } });
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ ...check, output: expect.objectContaining({ summary: expect.stringContaining('without a model read') }) }));
     expect(reviewModule.runReview).not.toHaveBeenCalled();
+  });
+
+  it('posts no unread approval once the head moved past the commit under review', async () => {
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [{ path: 'old.png', header: '', deleted: true }] });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
+    const moved = { data: { title: 'Test PR', body: 'body', head: { sha: 'def456' }, base: { ref: 'main' } } };
+    jest.mocked(staticSignalsModule.collectStaticSignals).mockImplementationOnce(async () => {
+      mockPullsGet.mockResolvedValue(moved);
+      return { signals: [] };
+    });
+
+    try {
+      await callRunFullReview();
+    } finally {
+      mockPullsGet.mockResolvedValue({ data: { ...moved.data, head: { sha: 'abc123' } } });
+    }
+
+    expect(ghUtils.postReview).not.toHaveBeenCalled();
+    expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'cancelled', output: expect.objectContaining({ title: 'Superseded' }) }));
   });
 
   it('keeps a PR that only deletes binaries unreviewed when an earlier round left a finding', async () => {
