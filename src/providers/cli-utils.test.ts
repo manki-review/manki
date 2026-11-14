@@ -62,6 +62,7 @@ describe('sanitizeLogOutput', () => {
     expect(sanitizeLogOutput('ok\n\t ::add-mask::secret')).toBe('ok\n\t [redacted-workflow-cmd]');
     expect(sanitizeLogOutput('\u00a0\u0085\u0000\u2003::set-output name=a::b')).toBe('\u00a0\u0085\u0000\u2003[redacted-workflow-cmd]');
     expect(sanitizeLogOutput('a\n\n  ::error::x')).toBe('a\n\n  [redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('a\n \u2028 ::error::x')).toBe('a\n \u2028 [redacted-workflow-cmd]');
   });
 
   it('counts a bare `\\r` as a line break, as a runner does', () => {

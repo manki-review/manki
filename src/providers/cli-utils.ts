@@ -28,10 +28,11 @@ export function cutLegacyCommands(text: string): string {
 /**
  * Cuts the GitHub Actions workflow commands in `text`, so logging it runs none. A runner reads `::name::` only where it
  * starts a line after whitespace, and a bare `\r` ends a line as `\n` does. A control character counts as whitespace
- * here to stay on the safe side. `::` in the middle of a line, as in `std::fmt`, is kept.
+ * here to stay on the safe side. `::` in the middle of a line, as in `std::fmt`, is kept. The prefix stops at every
+ * line break `^` knows, so a long run of them takes linear time.
  */
 export function sanitizeLogOutput(text: string): string {
-  return cutLegacyCommands(text).replace(/^((?:(?![\r\n])[\s\p{Cc}])*)::[a-z].*$/gimu, '$1[redacted-workflow-cmd]');
+  return cutLegacyCommands(text).replace(/^((?:(?![\r\n\u2028\u2029])[\s\p{Cc}])*)::[a-z].*$/gimu, '$1[redacted-workflow-cmd]');
 }
 
 /**
