@@ -27,12 +27,13 @@ import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
+import type { StaticAnalysisResult } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundDiffExcludedFile, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -989,6 +990,44 @@ async function postUnreviewedRound(
   return { conclusion: 'action_required', title: 'Not reviewed', summary };
 }
 
+/**
+ * Whether a diff no model reads can be approved without one. Every changed file must be a deleted binary, LFS file or
+ * submodule, every static source must have run and found nothing, and no earlier round may have recorded a finding,
+ * since no model reads whether the change settled it.
+ */
+function approvesUnread(
+  fullDiff: ParsedDiff, excludedFiles: RoundDiffExcludedFile[], lockfiles: LockfileDiff[], { signals, record }: StaticAnalysisResult, recap: RecapState,
+): boolean {
+  const skipped = skippedFiles(excludedFiles, lockfiles, fullDiff);
+  const runs = [...record?.analyzers ?? [], ...record?.sources ?? []];
+  return (fullDiff.binarySkipped?.length ?? 0) > 0 && skipped.excluded.length === 0 && skipped.binary.length === 0
+    && signals.length === 0 && runs.every(r => r.status === 'ran') && !record?.checksStillPending
+    && !recap.priorRoundsIncomplete && recap.openThreadsState !== 'fetch_failed'
+    && recap.previousFindings.length === 0 && recap.priorRounds.every(r => r.findings.count === 0);
+}
+
+/**
+ * Approves a diff `approvesUnread` allows, without a model call. The review posts like any other round's, so the round
+ * record, the `Manki` check and every approval hold apply. Returns the report for the PR check.
+ */
+async function postUnreadApproval(run: ReviewRun, summary: string, metadata: ReviewMetadata): Promise<CheckReport> {
+  const { octokit, bot, owner, repo, prNumber, commitSha, recap, config, commentId, dashboard, progress } = run;
+  const totalMs = metadata.timing.totalMs;
+  const result: ReviewResult = { verdict: 'APPROVE', outcome: 'READY', verdictReason: 'only_notes', summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] };
+  const context = buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls(), runner: runnerDiagnostics() }, result, { judgeDurationMs: 0, wallClockMs: totalMs });
+  const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
+  const posted = await postRound(run, result, context, totalMs, pauseAfter.restart);
+  await reportPrState(owner, repo, prNumber, {
+    reviewed: { commit: commitSha },
+    approval: { commit: commitSha, held: !!posted.approvalHeld },
+    pause: pauseReport(pauseAfter),
+  });
+  await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: totalMs }, metadata, progressSettings(run, progress, 'up to date', { reviewed: true }));
+  await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, { pauseLifted: !pauseAfter.paused });
+  setReviewOutputs(posted, context, result);
+  return outcomeReport('READY', summary, posted.approvalHeld);
+}
+
 async function loadRunMemory(
   octokit: Octokit, config: ReviewConfig, owner: string, repo: string, prNumber: number,
 ): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string; memorySkip?: MemorySkip }> {
@@ -1937,10 +1976,26 @@ async function runFullReview(
 
     core.info(`Reviewing ${diff.files.length} files (${fullDiff.files.length} total, ${excludedFiles.length} filtered out)`);
 
+    const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
+    const pause = pauseState(recap, config);
+    const configHold = brokenConfig(reviewSource, brokenHead?.changed ?? false);
     if (diff.files.length === 0 && lockfiles.length === 0) {
       core.info('No reviewable files in diff');
       // Every source reads the skipped files as the diff, so CI, dependency review and the analyzers still check them.
-      const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, diff: fullDiff, fullDiff });
+      const analysis = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, diff: fullDiff, fullDiff });
+      const { signals } = analysis;
+      if (approvesUnread(fullDiff, excludedFiles, lockfiles, analysis, recap) && (!pause.paused || skipCap || forceReview)) {
+        core.info('Every changed file is a deleted binary, LFS file or submodule, and no static check found anything');
+        const run: ReviewRun = {
+          ...target, options, trigger, config, reviewSource, configHold, models, plannerEnabled: !!clients.planner,
+          recap, priorRoundCount: recap.priorRounds.length, maxAutoRounds,
+          diff, changeDigest: changeDigest(fullDiff), excludedFiles, lockfiles, openThreads: [],
+          memoryLoadStatus: config.memory?.enabled ? 'skipped' : 'disabled', staticAnalysis: analysis.record,
+          commentId, dashboard, progress, startTime, parseEndTime,
+        };
+        checkReport = await postUnreadApproval(run, 'This PR only deletes files with nothing to read, such as binaries, LFS files or submodules, so Manki approves it without a model read. No static check found anything.', unreviewedMetadata());
+        return;
+      }
       const notice = formatUnreviewedNotice(shortSha, { excluded: excludedFiles, binary: fullDiff.binarySkipped ?? [] }, signals);
       checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, notice, unreviewedMetadata());
       return;
@@ -1953,8 +2008,6 @@ async function runFullReview(
     const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
-    const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    const pause = pauseState(recap, config);
     const { roundsLeft, paused } = pause;
     if (paused && !skipCap && !forceReview) {
       checkReport = await postPauseNotice(target, progress, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
@@ -1970,7 +2023,7 @@ async function runFullReview(
     ]);
 
     const run: ReviewRun = {
-      ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models, plannerEnabled: !!clients.planner,
+      ...target, options, trigger, config, reviewSource, configHold, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
       diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis, instructions: repoContext,
       commentId, dashboard, progress, startTime, parseEndTime,
