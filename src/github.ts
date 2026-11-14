@@ -1366,9 +1366,14 @@ function hasDotSegment(path: string): boolean {
  * slashes or a `..` that stays inside the repository. Returns nothing for any other path, such as an absolute path, a
  * URL or one that leaves the repository, so a comparison with a repository path never matches on its spelling.
  */
-export function plainRepoPath(path: string): string | undefined {
+function plainRepoPath(path: string): string | undefined {
   const normal = posix.normalize(path.trim());
   return LINKABLE_PATH_RE.test(normal) && !hasDotSegment(normal) ? normal : undefined;
+}
+
+/** Returns each of `paths` that is a plain repository path, as `plainRepoPath` gives it, once and without `ownFile`. */
+export function plainCitedFiles(paths: readonly string[], ownFile: string | undefined): string[] {
+  return [...new Set(paths.flatMap(path => plainRepoPath(path) ?? []))].filter(path => path !== ownFile);
 }
 
 /** Returns `text` as a Markdown link to `url`, or `text` alone when there is no URL. */
@@ -3137,8 +3142,7 @@ function knownFiles(finding: Finding, { files, changed = [] }: CodeLinks): strin
  * section. A later round counts a push to one of them as a push to the thread.
  */
 function evidenceFiles(finding: Finding, links: CodeLinks): string[] {
-  const cited = findingChecks(finding, knownFiles(finding, links)).flatMap(c => (c.at && plainRepoPath(c.at.file)) ?? []);
-  return [...new Set(cited)].filter(file => file !== finding.file);
+  return plainCitedFiles(findingChecks(finding, knownFiles(finding, links)).flatMap(c => c.at ? [c.at.file] : []), finding.file);
 }
 
 /**

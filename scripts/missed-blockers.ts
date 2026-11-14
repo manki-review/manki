@@ -110,7 +110,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
   const byBot = comments.filter(c => c.user?.type === 'Bot' && c.body);
   const threads = byBot.filter(c => !c.in_reply_to_id).flatMap((root) => {
     const data = parseFindingData(root.body!);
-    return data?.title && data.file ? [{ root, title: data.title, file: data.file, replies: byBot.filter(c => c.in_reply_to_id === root.id) }] : [];
+    return data?.title && data.file ? [{ root, title: data.title, file: data.file, evidenceFiles: data.evidenceFiles, replies: byBot.filter(c => c.in_reply_to_id === root.id) }] : [];
   });
   const before = (c: ThreadComment, time: string) => (c.created_at ?? '') < time;
   const followUps = new Map<number, FollowUp>();
@@ -149,6 +149,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
         ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : fixed ? 'fixed' : 'resolved' }),
+        ...(thread?.evidenceFiles && { evidenceFiles: thread.evidenceFiles }),
       });
       if (open) {
         const evaluation = evaluations(round).at(-1);
@@ -252,7 +253,7 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string, f
           ...(f.cell && { cell: { row: f.cell.row, column: f.cell.column } }), ...(f.doubts && { doubts: f.doubts.map(d => ({ premise: plain(d.premise), decides: d.decides, ...(d.consequence && { consequence: true }) })) }),
           posted: f.thread ? 'thread' : 'body', ...(f.thread && { state: f.thread }),
           ...(f.description && { description: plain(f.description) }), ...(f.howToFix && { how_to_fix: plain(f.howToFix) }),
-          ...(f.suggestedFix && { suggested_fix: f.suggestedFix }), ...(f.security && { security: true }),
+          ...(f.suggestedFix && { suggested_fix: f.suggestedFix }), ...(f.security && { security: true }), ...(f.evidenceFiles && { evidence_files: f.evidenceFiles }),
         })),
       },
       must_resolve: followUp.mustResolve,

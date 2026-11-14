@@ -8,7 +8,7 @@ import { extractCurrentCodeWindow } from './code-window';
 import { CONFIG_PATH, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
-import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, skippedFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, plainCitedFiles, RepoFiles, skippedFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
@@ -80,6 +80,8 @@ export interface EarlierFinding {
   security?: boolean;
   /** A pre-existing defect, whose thread never holds an approval. */
   preExisting?: boolean;
+  /** The other files the finding cited, as a posted finding records them. A push to one counts as a push to its thread. */
+  evidenceFiles?: string[];
   /**
    * How its review thread stands before the round: `fixed` when an earlier round resolved it as fixed, and `resolved`
    * when a person resolved it. Unset for a finding posted only in the review body.
@@ -263,9 +265,15 @@ async function followUpInputs(
   const interRoundDiff = lockfilesLast(ownChangeSince(sinceEarlier, priorChange, reviewed), lockfiles);
 
   const threads = earlier.findings.filter(f => f.thread);
+  // Cleaned as a pull request round reads them back, so a case file cannot cite the thread's own file or a path outside the repository.
+  const cited = (f: EarlierFinding) => {
+    const evidenceFiles = plainCitedFiles(f.evidenceFiles ?? [], f.file);
+    return evidenceFiles.length > 0 ? { evidenceFiles } : {};
+  };
   const previousFindings: PreviousFinding[] = threads.map(f => ({
     title: f.title, file: f.file, line: f.line, severity: f.severity, status: f.thread === 'open' ? 'open' : 'resolved', ...(f.thread === 'fixed' && { fixed: true }), threadId: f.id,
     markerSlug: titleToSlug(f.title), description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix, ...(f.security && { isSecurity: true }),
+    ...cited(f),
   }));
   const open = threads.filter(f => f.thread === 'open');
   const files = gitRepoFiles(repoRoot, head);
@@ -276,7 +284,7 @@ async function followUpInputs(
   }
   const openThreads: OpenThread[] = open.map(f => ({
     threadId: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix,
-    currentCode: extractCurrentCodeWindow(contents, f.file, f.line),
+    ...cited(f), currentCode: extractCurrentCodeWindow(contents, f.file, f.line),
   }));
 
   const posted: Finding[] = earlier.findings.map(f => ({

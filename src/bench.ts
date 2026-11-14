@@ -133,6 +133,10 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       throw caseError(where, '`state` must be open, resolved or fixed for a thread, and unset for a body finding');
     }
     if (f.security !== undefined && typeof f.security !== 'boolean') throw caseError(where, '`security` must be true or false');
+    const evidenceFiles = f.evidence_files;
+    if (evidenceFiles !== undefined && !(Array.isArray(evidenceFiles) && evidenceFiles.every(file => typeof file === 'string' && file.trim()))) {
+      throw caseError(where, '`evidence_files` must be a list of file paths');
+    }
     const cell = f.cell as GradeCell | undefined;
     if (cell !== undefined && !isGradeCell(cell)) {
       throw caseError(where, `\`cell\` must have a \`row\` of ${Object.keys(CELL_GRADES).join(', ')} and a \`column\` of normal or rare`);
@@ -154,6 +158,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'], ...(d.consequence === true && { consequence: true }) })) }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
       ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
+      ...(evidenceFiles && { evidenceFiles: evidenceFiles as string[] }),
     };
   });
   return { head, findings };
