@@ -91,6 +91,7 @@ const FOLLOW_UP_YAML = `${CASE_YAML}prior_round:
       line: 40
       posted: thread
       state: open
+      evidence_files: [src/timeout.rs]
     - id: P3
       severity: suggestion
       title: The retry loop has no test
@@ -175,7 +176,7 @@ describe('parseCase', () => {
           cell: { row: 'severe', column: 'normal' }, doubts: [{ premise: 'A peer can send the length.', decides: 'defect' }, { premise: 'The reader aborts the process.', decides: 'grade', consequence: true }],
           description: 'A peer picks the size.', howToFix: 'Cap the length.', suggestedFix: 'let len = len.min(MAX);', security: true,
         },
-        { id: 'P2', severity: 'warning', title: 'No timeout on the connection', file: 'src/conn.rs', line: 40, thread: 'open' },
+        { id: 'P2', severity: 'warning', title: 'No timeout on the connection', file: 'src/conn.rs', line: 40, thread: 'open', evidenceFiles: ['src/timeout.rs'] },
         { id: 'P3', severity: 'note', title: 'The retry loop has no test', file: 'src/conn.rs', line: 70 },
         { id: 'P4', severity: 'warning', title: 'Stale comment', file: 'src/conn.rs', line: 90, thread: 'resolved' },
       ],
@@ -198,6 +199,7 @@ describe('parseCase', () => {
     ['row: severe', 'row: serious', '`cell` must have a `row` of severe, wrong, degraded, improvement, style and a `column` of normal or rare'],
     ['decides: defect', 'decides: maybe', '`doubts` must be a list of mappings with a `premise`, a `decides` of defect or grade, and `consequence: true` only beside `decides: grade`'],
     ['decides: defect', 'decides: defect\n          consequence: true', '`doubts` must be a list of mappings with a `premise`, a `decides` of defect or grade, and `consequence: true` only beside `decides: grade`'],
+    ['evidence_files: [src/timeout.rs]', 'evidence_files: src/timeout.rs', '`evidence_files` must be a list of file paths'],
     [`  head: ${SHA_C}`, '  head: abc', '`prior_round.head` must be a full commit SHA'],
     ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: K1\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names K1, which is no earlier finding'],
     ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: P4\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names P4, which is no open earlier thread'],

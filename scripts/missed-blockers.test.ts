@@ -41,14 +41,14 @@ describe('collectMisses', () => {
 
 describe('collectFollowUps', () => {
   const bot = { login: 'manki-review[bot]', type: 'Bot' };
-  const root = (id: number, title: string, file: string, tags: string[] = []) => ({
+  const root = (id: number, title: string, file: string, tags: string[] = [], evidenceFiles?: string[]) => ({
     id, user: bot, created_at: '2025-01-01T00:00:05Z',
-    body: `🚫 **Blocker** · Correctness\n\n**${title}**\n\n**What goes wrong:** ${title} breaks.\n\n<!-- manki-finding: ${JSON.stringify({ file, line: 3, title, howToFix: 'Fix it.', tags })} -->`,
+    body: `🚫 **Blocker** · Correctness\n\n**${title}**\n\n**What goes wrong:** ${title} breaks.\n\n<!-- manki-finding: ${JSON.stringify({ file, line: 3, title, howToFix: 'Fix it.', tags, evidenceFiles })} -->`,
   });
   const reply = (to: number, at: string, body: string) => ({ id: to * 100 + Number(at.slice(8, 10)), user: bot, created_at: at, in_reply_to_id: to, body });
   const at = (round: number) => `2025-01-0${round}T00:00:05Z`;
   const comments = [
-    root(1, 'Lock order', 'src/a.go', ['security']), root(2, 'Missing timeout', 'src/b.go'), root(4, 'Old style', 'src/d.go'), root(5, 'Overflow', 'src/e.go'),
+    root(1, 'Lock order', 'src/a.go', ['security']), root(2, 'Missing timeout', 'src/b.go', [], ['src/timeouts.go', 'src/b.go']), root(4, 'Old style', 'src/d.go'), root(5, 'Overflow', 'src/e.go'),
     root(6, 'Stale cache', 'src/g.go'), root(7, 'Unbounded retry', 'src/h.go'), root(8, 'Old lock', 'src/i.go'), root(10, 'Leaked handle', 'src/j.go'),
     reply(10, at(3), `This came up again.\n${FOUND_AGAIN_MARKER}`),
     reply(10, at(4), '**Partly fixed.** Still open: the handle leaks on the error path.'),
@@ -100,7 +100,7 @@ describe('collectFollowUps', () => {
       priorHead: 'sha1',
       findings: [
         { id: 'P1', severity: 'blocker', title: 'Lock order', file: 'src/a.go', line: 1, description: 'Lock order breaks.', howToFix: 'Fix it.', security: true, thread: 'open' },
-        { id: 'P2', severity: 'warning', title: 'Missing timeout', file: 'src/b.go', line: 10, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }, { premise: 'The request hangs forever', decides: 'grade', consequence: true }], description: 'Missing timeout breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P2', severity: 'warning', title: 'Missing timeout', file: 'src/b.go', line: 10, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }, { premise: 'The request hangs forever', decides: 'grade', consequence: true }], description: 'Missing timeout breaks.', howToFix: 'Fix it.', thread: 'open', evidenceFiles: ['src/timeouts.go'] },
         { id: 'P3', severity: 'note', title: 'Name the helper', file: 'src/c.go', line: 10, suggestedFix: 'func name() {}' },
         { id: 'P4', severity: 'note', title: 'Old style', file: 'src/d.go', line: 10, description: 'Old style breaks.', howToFix: 'Fix it.', thread: 'resolved' },
         { id: 'P5', severity: 'blocker', title: 'Overflow', file: 'src/e.go', line: 10, description: 'Overflow breaks.', howToFix: 'Fix it.', thread: 'open' },

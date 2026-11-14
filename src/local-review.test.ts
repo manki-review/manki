@@ -7,7 +7,8 @@ import * as core from '@actions/core';
 
 import { formatLockfileChanges } from './lockfile';
 import { EarlierFinding, overlayConfig, reviewLocal } from './local-review';
-import { runReview } from './review';
+import { pushTouchesThread } from './recap';
+import { filesChangedByPush, runReview } from './review';
 import { GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { REACH_DOUBT } from './types';
 import type { Finding, ReviewResult, RoundOutcome, ThreadEvaluation } from './types';
@@ -231,6 +232,25 @@ describe('reviewLocal', () => {
     // A pre-existing defect never holds, as its thread does not in a pull request round.
     expect(await heldBy([thread({ preExisting: true })])).toBe(false);
   }, 30_000);
+
+  it('counts a push to a file an earlier finding cited as a push to its thread, as a pull request round does', async () => {
+    git(repo, 'checkout', '-q', 'feature');
+    const reviewed = commit(repo, 'Add b', { 'src/b.ts': 'retry(MAX);\n', 'src/limits.ts': 'export const MAX = Infinity;\n' });
+    const fixed = commit(repo, 'Bound the retries', { 'src/limits.ts': 'export const MAX = 3;\n' });
+    git(repo, 'checkout', '-q', 'main');
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    const thread: EarlierFinding = { id: 'B1', severity: 'blocker', title: 'Retry never stops', file: 'src/b.ts', line: 1, thread: 'open' };
+    const read = async (evidenceFiles?: string[]) => {
+      await reviewLocal({ repoRoot: repo, base: later, head: fixed, earlier: { head: reviewed, findings: [{ ...thread, ...(evidenceFiles && { evidenceFiles }) }] }, providerInputs: inputs });
+      const { openThreads, previousFindings, interRoundDiff } = jest.mocked(runReview).mock.calls.at(-1)![1];
+      return [previousFindings![0].evidenceFiles, openThreads![0].evidenceFiles, pushTouchesThread(openThreads![0], filesChangedByPush(interRoundDiff))];
+    };
+
+    // The cited files are cleaned as a pull request round reads them back: the thread's own file and a path outside the repository are left out.
+    expect(await read(['src/limits.ts', 'src/b.ts', '../outside.ts'])).toEqual([['src/limits.ts'], ['src/limits.ts'], true]);
+    // Without cited files, as in a case written before they were recorded, only the thread's own file counts.
+    expect(await read()).toEqual([undefined, undefined, false]);
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
     let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean } | undefined;
