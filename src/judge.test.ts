@@ -2854,9 +2854,9 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('## Open Thread Code Regions');
     expect(userMessage).toContain('PRRT_x');
     expect(userMessage).toContain('>>> 5: flagged()');
-    expect(userMessage).not.toContain('more than the');
+    expect(userMessage).not.toContain('The diff is cut at');
 
-    // A diff past the cap is cut per file, with the thread's file first although it sorts last, and the judge is told what is cut.
+    // A diff past the cap is cut from the start after the thread's file moves first, and the judge is told what the cut reached.
     mockSendMessage.mockClear();
     const large = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,${MAX_INTER_ROUND_DIFF_CHARS / 10} @@\n${'+abcdefghi\n'.repeat(MAX_INTER_ROUND_DIFF_CHARS / 10)}`;
     const fix = 'diff --git a/src/z.ts b/src/z.ts\n--- a/src/z.ts\n+++ b/src/z.ts\n@@ -1,1 +1,1 @@\n-old\n+fixed';
@@ -2868,9 +2868,9 @@ describe('runJudgeAgent', () => {
       interRoundDiff: long,
     });
     const cutMessage: string = mockSendMessage.mock.calls[0][1];
-    expect(cutMessage).toContain(`The diff has ${long.length} characters, more than the ${MAX_INTER_ROUND_DIFF_CHARS} shown, so each file gets a share, and the files of open blocker and warning threads and of earlier warnings come first.`);
-    expect(cutMessage).toContain('Cut, each ending with a line that says so: `src/a.ts`, `src/b.ts`.');
-    expect(cutMessage).not.toContain('Left out:');
+    expect(cutMessage).toContain(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${long.length} characters, so changes after the cut are missing. The files of open blocker and warning threads, the files their findings cited and the files of earlier warnings come first.`);
+    expect(cutMessage).toContain('Cut short: `src/a.ts`.');
+    expect(cutMessage).toContain('Left out: `src/b.ts`.');
     expect(cutMessage).toContain(`diff\n${fix}\ndiff --git a/src/a.ts`);
     expect(cutMessage).not.toContain('The fix may not be shown');
 
@@ -2888,9 +2888,9 @@ describe('runJudgeAgent', () => {
       interRoundDiff: long,
     });
     const notedMessage: string = mockSendMessage.mock.calls[0][1];
-    expect(notedMessage).toContain('Cut, each ending with a line that says so: `src/b.ts`.');
+    expect(notedMessage).toContain('Cut short: `src/b.ts`.');
     expect(notedMessage).toContain('Left out: `src/a.ts`.');
-    expect(notedMessage).toContain(`${fix}\n${'`'.repeat(3)}`);
+    expect(notedMessage).toContain(`diff\n${fix}\ndiff --git a/src/b.ts`);
     expect(notedMessage).toContain('- **The fix may not be shown**: The inter-round diff leaves out `src/a.ts`. The current code of `src/a.ts` is not shown, as the file could not be read in full this round. Do not call this thread addressed from code you cannot see.');
     expect(notedMessage).toContain('### PRRT_d — src/dead.ts:5\n```\n(file content unavailable)');
     expect(notedMessage).toContain('### PRRT_x — src/z.ts:5\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this thread addressed from code you cannot see.');
@@ -2904,7 +2904,7 @@ describe('runJudgeAgent', () => {
       interRoundDiff: long,
     });
     const carriedMessage: string = mockSendMessage.mock.calls[0][1];
-    expect(carriedMessage).toContain('Cut, each ending with a line that says so: `src/b.ts`.');
+    expect(carriedMessage).toContain('Cut short: `src/b.ts`.');
     expect(carriedMessage).toContain('Left out: `src/a.ts`, `src/z.ts`.');
 
     // A list names at most 200 files and counts the rest.

@@ -9,8 +9,7 @@ import {
   isLineInDiff,
   sliceDiff,
   compareChanges,
-  cutDiffPerFile,
-  FILE_DIFF_CUT_LINE,
+  orderDiffSections,
   ownChangeSince,
   overlongChangedLines,
   MAX_LINE_CHARS,
@@ -583,42 +582,19 @@ describe('rebuildRawDiff', () => {
   });
 });
 
-describe('cutDiffPerFile', () => {
-  const fileDiff = (path: string, lines: number): string => rebuildRawDiff({
-    files: [{ path, changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: lines, content: Array.from({ length: lines }, (_, i) => `+${path} line ${i}`).join('\n') }] }],
-    totalAdditions: lines, totalDeletions: 0,
-  });
-  const order = (text: string): string[] => [...text.matchAll(/^diff --git a\/(\S+)/gm)].map(m => m[1]);
-  const small = fileDiff('src/z.ts', 20);
-  const raw = [fileDiff('src/a.ts', 2000), fileDiff('src/b.ts', 2000), small].join('\n');
+describe('orderDiffSections', () => {
+  const fileDiff = (path: string): string => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new\n`;
+  const binary = 'diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\n';
+  const raw = [fileDiff('src/a.ts'), binary, fileDiff('src/b.ts'), fileDiff('Cargo.lock'), fileDiff('src/z.ts').trimEnd()].join('');
 
-  it('gives each file a fair share, so a small file that sorts last is shown whole', () => {
-    expect(cutDiffPerFile(small, small.length)).toEqual({ text: small, cut: [], omitted: [] });
-    const { text, cut, omitted } = cutDiffPerFile(raw, 20000);
-    expect(text.length).toBeLessThanOrEqual(20000);
-    expect(text.length).toBeGreaterThan(19000);
-    expect(text).toContain(small);
-    expect(order(text)).toEqual(['src/a.ts', 'src/b.ts', 'src/z.ts']);
-    expect([cut, omitted]).toEqual([['src/a.ts', 'src/b.ts'], []]);
-    // A cut file keeps whole lines and says where it was cut.
-    const lines = text.split('\n');
-    const at = lines.indexOf(FILE_DIFF_CUT_LINE);
-    expect([lines[at - 1], lines[at + 1]]).toEqual([expect.stringMatching(/^\+src\/a\.ts line \d+$/), 'diff --git a/src/b.ts b/src/b.ts']);
-    expect(lines.filter(l => l === FILE_DIFF_CUT_LINE)).toHaveLength(2);
-  });
-
-  it('shows the files in `first` ahead of the rest and the files in `last` after them', () => {
-    const thread = cutDiffPerFile(raw, 20000, new Set(['src/z.ts']));
-    expect(order(thread.text)).toEqual(['src/z.ts', 'src/a.ts', 'src/b.ts']);
-    expect(thread.text.startsWith(`${small}\n`)).toBe(true);
-    // A file in `first` takes its share before the others share the rest, so a large one can leave no room for them.
-    const large = cutDiffPerFile(raw, 20000, new Set(['src/b.ts']));
-    expect([order(large.text), large.cut, large.omitted]).toEqual([['src/b.ts'], ['src/b.ts'], ['src/a.ts', 'src/z.ts']]);
-    expect(large.text.length).toBeLessThanOrEqual(20000);
-    // A file in `last` gets only what the others leave.
-    const lockfile = cutDiffPerFile([fileDiff('Cargo.lock', 2000), fileDiff('src/main.rs', 500)].join('\n'), 20000, new Set(), new Set(['Cargo.lock']));
-    expect([order(lockfile.text), lockfile.cut]).toEqual([['src/main.rs', 'Cargo.lock'], ['Cargo.lock']]);
-    expect(lockfile.text).toContain(fileDiff('src/main.rs', 500));
+  it('moves the files in `first` to the front in its order and keeps the rest in order', () => {
+    const paths = (first: string[]) => orderDiffSections(raw, first).map(s => s.path);
+    expect(paths([])).toEqual(['src/a.ts', 'img.png', 'src/b.ts', 'Cargo.lock', 'src/z.ts']);
+    expect(paths(['src/z.ts', 'gone.ts', 'src/b.ts', 'src/z.ts'])).toEqual(['src/z.ts', 'src/b.ts', 'src/a.ts', 'img.png', 'Cargo.lock']);
+    // Each section keeps its text, and a last section without a line break gets one so a reordered diff stays valid.
+    const ordered = orderDiffSections(raw, ['src/z.ts']);
+    expect(ordered.map(s => s.text)).toEqual([fileDiff('src/z.ts'), fileDiff('src/a.ts'), binary, fileDiff('src/b.ts'), fileDiff('Cargo.lock')]);
+    expect(orderDiffSections('')).toEqual([]);
   });
 });
 

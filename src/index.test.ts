@@ -2790,7 +2790,7 @@ describe('runFullReview orchestration', () => {
     const { openThreads, fileContents } = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect([openThreads?.[0].currentCode, fileContents?.has('Cargo.lock')]).toEqual([expect.stringContaining('>>> 5: version = "0.4.3"'), false]);
     // The lockfile is read outside the size budget the prompts' files share, so it can't push a code file out.
-    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[], undefined, undefined, ['Cargo.lock'], new Set()], [['Cargo.lock'], 1024 * 1024, Infinity, [], new Set()]]);
+    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[], undefined, undefined, [], new Set()], [['Cargo.lock'], 1024 * 1024, Infinity, [], new Set()]]);
     const lockfiles = [{ path: 'Cargo.lock', file, changes: [expect.objectContaining({ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', line: 5 })] }];
     expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
     expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
@@ -5470,15 +5470,17 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
+    const fixedFile = { ...changedFile, path: 'src/fix.ts' };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [changedFile], totalAdditions: 10, totalDeletions: 5,
+      files: [changedFile, fixedFile], totalAdditions: 20, totalDeletions: 10,
     });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile], excluded: [] });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile, fixedFile], excluded: [] });
 
     // Two open threads: one in a changed file (must not duplicate) and one in
     // an unchanged file (must be added to the fetch list).
     const previousFindings = [
       { title: 'Issue in changed', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_dup' },
+      { title: 'Issue in fixed', file: 'src/fix.ts', line: 3, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_fix' },
       { title: 'Issue in unchanged', file: 'src/other.ts', evidenceFiles: ['src/caller.ts'], line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
       // A thread tied to no file has no code to fetch, at the head or on the commit it was posted on.
       { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
@@ -5500,8 +5502,8 @@ describe('runFullReview orchestration', () => {
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');
     expect(requestedPaths.filter(p => p === 'src/app.ts')).toHaveLength(1);
-    // Only the file of a blocker or warning thread is read ahead of the rest.
-    expect(fetchCall[7]).toEqual(['src/other.ts']);
+    // Only the changed file of a blocker or warning thread is read ahead of the rest, never a file outside the diff.
+    expect(fetchCall[7]).toEqual(['src/fix.ts']);
   });
 
   it('skips deleted changed files but still fetches open-thread files', async () => {

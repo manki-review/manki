@@ -1163,8 +1163,9 @@ async function collectOpenThreads(
   const notFound = new Set<string>();
   try {
     [fileContents, lockfileContents] = await Promise.all([
-      // The files of blocker and warning threads are read first, so the judge sees a fix however large the rest of the change is.
-      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads)], notFound),
+      // The changed files of blocker and warning threads are read first, so the judge sees a fix however large the rest of the change is.
+      // A thread file outside the diff keeps its place, since the finders read the same files and need the changed ones.
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads)].filter(p => changedFilePaths.includes(p)), notFound),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity, [], notFound) : new Map<string, string>(),
     ]);
   } catch (error) {

@@ -116,61 +116,23 @@ export function rebuildRawDiff(diff: ParsedDiff): string {
   }).join('\n');
 }
 
-/** The line that ends a file's diff `cutDiffPerFile` cut. */
-export const FILE_DIFF_CUT_LINE = '[the rest of this file\'s diff is cut]';
-
-/** Returns the share of `budget` each of `sizes` gets: a size within an even split keeps all of it, and the larger ones split the rest evenly. */
-function fairShares(sizes: readonly number[], budget: number): number[] {
-  const shares = sizes.map(() => 0);
-  let left = budget;
-  sizes.map((size, i) => ({ size, i })).sort((a, b) => a.size - b.size).forEach(({ size, i }, k) => {
-    shares[i] = Math.min(size, Math.floor(left / (sizes.length - k)));
-    left -= shares[i];
-  });
-  return shares;
+/** One file's part of a raw diff, from its `diff --git` line up to the next file's. */
+export interface DiffSection {
+  path: string;
+  text: string;
 }
 
 /**
- * Returns `rawDiff` cut to at most `maxChars` characters: the files in `first`, then the rest, then the files in `last`.
- * The files of each group share fairly what the groups before them leave. A file over its share keeps the lines that
- * fit and ends with `FILE_DIFF_CUT_LINE`, so one large file cannot push the others out. A diff within `maxChars` is
- * returned unchanged.
+ * Returns the file sections of `rawDiff` with the files in `first` at the front, in its order. The other files keep
+ * their order. Each text ends with a line break, so joining them gives a valid diff.
  */
-export function cutDiffPerFile(
-  rawDiff: string, maxChars: number, first: ReadonlySet<string> = new Set(), last: ReadonlySet<string> = new Set(),
-): { text: string; cut: string[]; omitted: string[] } {
-  if (rawDiff.length <= maxChars) return { text: rawDiff, cut: [], omitted: [] };
-  const files = parsePRDiff(rawDiff).files.map(f => ({ path: f.path, text: rebuildRawDiff({ files: [f], totalAdditions: 0, totalDeletions: 0 }) }));
-  const group = (path: string): number => first.has(path) ? 0 : last.has(path) ? 2 : 1;
-  const pieces: string[] = [];
-  const cut: string[] = [];
-  const omitted: string[] = [];
-  // Each piece costs its length plus the line break that joins it, so the budget gets one more for the last piece.
-  let left = maxChars + 1;
-  for (const tier of [0, 1, 2].map(g => files.filter(f => group(f.path) === g))) {
-    const shares = fairShares(tier.map(f => f.text.length + 1), left);
-    tier.forEach(({ path, text }, i) => {
-      if (text.length + 1 <= shares[i]) {
-        pieces.push(text);
-        left -= text.length + 1;
-        return;
-      }
-      const room = shares[i] - FILE_DIFF_CUT_LINE.length - 2;
-      const lines = text.split('\n');
-      let kept = 0;
-      let length = -1;
-      while (kept < lines.length && length + 1 + lines[kept].length <= room) length += 1 + lines[kept++].length;
-      if (kept === 0) {
-        omitted.push(path);
-        return;
-      }
-      const piece = `${lines.slice(0, kept).join('\n')}\n${FILE_DIFF_CUT_LINE}`;
-      pieces.push(piece);
-      cut.push(path);
-      left -= piece.length + 1;
-    });
-  }
-  return { text: pieces.join('\n'), cut, omitted };
+export function orderDiffSections(rawDiff: string, first: readonly string[] = []): DiffSection[] {
+  const sections = rawDiff.split(/(?=^diff --git )/m).filter(text => text.length > 0).map(text => {
+    const parsed = parsePRDiff(text);
+    return { path: parsed.files[0]?.path ?? parsed.binarySkipped?.[0]?.path ?? '', text: text.endsWith('\n') ? text : `${text}\n` };
+  });
+  const front = [...new Set(first)].flatMap(path => sections.filter(s => s.path === path));
+  return [...front, ...sections.filter(s => !front.includes(s))];
 }
 
 /** A changed file as GitHub lists it for a pull request. */
