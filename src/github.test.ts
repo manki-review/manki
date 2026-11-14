@@ -1915,7 +1915,7 @@ describe('postReview body lead', () => {
     expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n${approved.body}`);
   });
 
-  it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, without reading the PR, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
+  it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, shows a draft beside it, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
     for (const [configHold, line] of [
@@ -1928,7 +1928,16 @@ describe('postReview body lead', () => {
       expect(body.replace('\n\n<!-- manki-held-for-person -->', '')).toBe(`${line}\n\n${approved.body}`);
       expect(body).toContain('<!-- manki-held-for-person -->');
     }
-    expect(mockGet).not.toHaveBeenCalled();
+    // A draft shows its line after the config line, while the config hold stays the one the decision names.
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
+    const drafted = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configHold: 'base' });
+    const draftBody = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
+    expect(drafted.approvalHeld).toBe('config');
+    expect(draftBody.split('\n\n').slice(0, 3)).toEqual([
+      '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
+      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.',
+      approved.body.split('\n\n')[0],
+    ]);
 
     // A round that requests changes over an unread earlier review record says so first, and names the review.
     const url = 'https://github.com/owner/repo/pull/1#pullrequestreview-7';
@@ -2001,7 +2010,7 @@ describe('postReview body lead', () => {
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('> **Plan  @\u200Boctocat has used 99% of its weekly limit**, past the 90% mark.');
   });
 
-  it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
+  it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, marks it so, and shows a conflict beside it', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
     const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'app.jar', header: '' }, { path: 'vendor/lib', header: '', kind: 'submodule' as const }] };
@@ -2014,7 +2023,15 @@ describe('postReview body lead', () => {
     expect(body).toContain(approved.body.split('\n\n').find(p => p.startsWith('**What this does:**'))!);
     expect(body).not.toContain('**Approval held:**');
     expect(body).toContain('<!-- manki-held-for-person -->');
-    expect(mockGet).not.toHaveBeenCalled();
+    // A conflict gets its line above the verdict line, while the unread files stay the hold the decision names.
+    mockGet.mockResolvedValueOnce({ data: { draft: false, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
+    const conflicting = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped });
+    const conflictBody = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
+    expect(conflicting.approvalHeld).toBe('unread');
+    expect(conflictBody.split('\n\n').slice(0, 2)).toEqual([
+      '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.',
+      '\u2705 **Approved, but a person must approve:** no model read 3 of the changed files.',
+    ]);
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { skipped });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('<!-- manki-held-for-person -->');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped: { excluded: [], binary: [] } });
