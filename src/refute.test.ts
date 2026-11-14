@@ -5,9 +5,9 @@ import { join } from 'path';
 import * as core from '@actions/core';
 
 import { LLMClient, SendMessageOptions } from './providers';
-import { checkStatus, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, RoundContext, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, RoundContext, RulesMode, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -293,7 +293,7 @@ describe('refuteBlockers', () => {
       ['Same as an earlier warning', { ...raised(), sameAs: 'src/old.ts:3:3:old-warning' }],
       // When finders disagree the highest grade counts, and a merged duplicate a finder filed as a blocker makes it a finder's blocker.
       ['Highest finder grade', { ...raised('note'), reviewerSeverity: 'warning' }],
-      // A confirmed rule alone gives a warning, so the finding goes no lower than that, whatever its finder filed.
+      // With `review.rules: warn` a confirmed rule alone gives a warning, so the finding goes no lower than that, whatever its finder filed.
       ['Breaks a rule', { ...raised('note'), rule: { file: 'AGENTS.md', quote: 'Every bound must be checked.', verdict: 'confirmed' } }],
       ['Merged finder blocker', { ...raised(), reviewerSeverity: 'blocker' }],
       ['Finder blocker', {}],
@@ -320,7 +320,7 @@ describe('refuteBlockers', () => {
     const earlier = (line: number, slug: string, severity: Finding['severity'], threadId?: string) => ({ fingerprint: { file: 'src/old.ts', lineStart: line, lineEnd: line, slug }, severity, threadId });
     const priorRounds = [{ findings: { entries: [earlier(1, 'old-blocker', 'blocker'), earlier(2, 'in-thread', 'warning', 'T1'), earlier(3, 'old-warning', 'warning', 'T2')] }, judge: {} }] as unknown as RoundContext[];
     const blocking = (file: string) => [{ threadId: 'T1', file, line: 4, severity: 'blocker' }] as OpenThread[];
-    const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts'), rules?: 'block') =>
+    const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts'), rules?: RulesMode) =>
       refuteBlockers(first, picked.map(([title, overrides]) => finding(title, overrides)), { workspace, diff, pair, priorRounds, blockingThreads, rules });
 
     const result = await run(fakeClient(replies, 'gpt-6.1-sol'));
@@ -329,10 +329,12 @@ describe('refuteBlockers', () => {
     // what is left to check.
     expect(first.messages.find(([, user]) => user.includes(': Open lead\n'))?.[1]).toContain('- **Checked so far**: read src/math.ts:2\n- **Left to check**: find the callers');
     expect(result.map(f => [f.title, f.severity])).toEqual([
-      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'warning'], ...cases.slice(4).map(([title]) => [title, 'blocker']),
+      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'note'], ...cases.slice(4).map(([title]) => [title, 'blocker']),
     ]);
-    // With `review.rules: block` the rule alone gives a blocker, so that finding stays one.
-    expect((await run(fakeClient(replies, 'gpt-6.1-sol'), cases.slice(2, 4), undefined, 'block')).map(f => f.severity)).toEqual(['warning', 'blocker']);
+    // With `auto`, the default, the rule gives no grade, so the finding goes back to its finder's note. With `warn` it
+    // goes no lower than a warning, and with `block` the rule alone gives a blocker, so it stays one.
+    const byRules = async (rules: RulesMode) => (await run(fakeClient(replies, 'gpt-6.1-sol'), cases.slice(2, 4), undefined, rules)).map(f => f.severity);
+    expect([await byRules('auto'), await byRules('warn'), await byRules('block')]).toEqual([['warning', 'note'], ['warning', 'warning'], ['warning', 'blocker']]);
     const [lowered, , , , merged] = result;
     const reason = 'claude-opus-5-5 and gpt-6.1-sol both disproved it, and no finder graded it a blocker';
     expect(lowered.gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation', reason }]);
@@ -693,9 +695,11 @@ describe('refuteBlockers', () => {
     ]);
     // The check finished the lead, so it is a finding to post and no longer one listed as not finished checking.
     expect([alone[9].lead, alone[9].notChecked, alone[9].cell]).toEqual([undefined, undefined, undefined]);
-    // The setting plays no part in that: without `block` the same lead comes back the same way.
+    // With `warn` the same lead comes back the same way. With `auto`, the default, the rule keeps nothing, so the
+    // disproof drops the lead and the rule warning like any finding below blocker.
     const ruleLead = finding('Rule lead', { ...doubtedRule('confirmed'), notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } });
-    expect((await refuteRound(client, [ruleLead], { workspace, diff })).map(f => [f.severity, f.lead, !!disproof(f)])).toEqual([['warning', undefined, true]]);
+    expect((await refuteRound(client, [ruleLead], { workspace, diff, rules: 'warn' })).map(f => [f.severity, f.lead, !!disproof(f)])).toEqual([['warning', undefined, true]]);
+    expect((await refuteRound(client, [ruleLead, finding('Rule confirmed', doubtedRule('confirmed'))], { workspace, diff })).map(f => f.severity)).toEqual(['ignore', 'ignore']);
     // The kept rule warning loses the cell and the grade that stated the damage. A security finding changes only when confirmed, so it keeps them.
     expect(alone.slice(5, 9).map(f => [f.cell, f.gradeIfConfirmed, f.doubts?.length])).toEqual([[undefined, undefined, undefined], [undefined, undefined, undefined], [rare, 'blocker', 1], [rare, 'blocker', 1]]);
     expect(alone[0].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);
@@ -777,8 +781,9 @@ describe('refuteBlockers', () => {
       // A warning no cited line proves is checked like a doubted one, and a note is not.
       finding('Warning without proof', { severity: 'warning', ...noProof }),
       finding('Note without proof', { severity: 'note', ...noProof }),
-      // A tool alert is posted whatever a check says, and so are a security finding and a finding that breaks a confirmed rule.
-      // A check of one the judge doubts only settles its status, so it comes after every other warning, which here is past the limit.
+      // A tool alert is posted whatever a check says, and so are a security finding and, with `review.rules: warn`, a finding
+      // that breaks a confirmed rule. A check of one the judge doubts only settles its status, so it comes after every other
+      // warning, which here is past the limit.
       finding('Tool alert without proof', { severity: 'warning', toolSource: 'CodeQL', ...noProof }),
       finding('Security warning without proof', { severity: 'warning', tags: ['security'], ...noProof }),
       finding('Rule warning without proof', { severity: 'warning', rule: { file: 'AGENTS.md', quote: 'Every sum must be checked.', verdict: 'confirmed' }, ...noProof }),
@@ -798,7 +803,7 @@ describe('refuteBlockers', () => {
 
     // The caller says which warnings an earlier finding keeps posted, whether the judge linked them or not.
     const restatesEarlier = (f: Finding) => ['Linked to an open thread', 'Matches an earlier finding'].includes(f.title);
-    const options = { workspace, diff, unpostedLater: (f: Finding) => f.title.startsWith('Left out later'), restatesEarlier, doubtBudget: { left: 8 } };
+    const options = { workspace, diff, unpostedLater: (f: Finding) => f.title.startsWith('Left out later'), restatesEarlier, doubtBudget: { left: 8 }, rules: 'warn' as const };
     const judged = await refuteBlockers(client, findings, options);
     // A judge call marks none of the warnings whose check waits for the round's end, since a check may be left for them then.
     expect(judged.filter(f => f.overCheckLimit).map(f => f.title)).toEqual(['Doubted warning 8', 'Second warning without proof', 'Blocker cell no finder filed']);
@@ -825,6 +830,9 @@ describe('refuteBlockers', () => {
       'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': 'not_checked',
       'Rule warning without proof': 'no_proof',
     });
+    // With `auto`, the default, the rule gives no grade, so the rule warning needs proof like any other warning.
+    const ruleWarning = findings.find(f => f.title === 'Rule warning without proof')!;
+    expect([needsProof(ruleWarning), needsProof(ruleWarning, 'auto'), needsProof(ruleWarning, 'warn'), needsProof(ruleWarning, 'block')]).toEqual([true, true, false, false]);
     // The calls of one round share the eight, so a later call checks only what an earlier one left.
     const doubtBudget = { left: 3 };
     const pairOf = (name: string) => [doubted(`${name} 1`, 'warning'), doubted(`${name} 2`, 'warning')];

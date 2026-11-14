@@ -1,5 +1,6 @@
 {
   "name": "flag-docs-and-unseen-file",
+  "rules": "warn",
   "repoContext": "## AGENTS.md\n\n# fetchq agent guide\n\n## Rules for changes\n\n- Every new command-line flag must be listed in `docs/cli.md`, with its default.\n- Every environment variable the binary reads must be listed in `.env.example`.\n\n## Tests\n\nFlag parsing is covered by the tests in `tests/cli.rs`, which run the binary with `assert_cmd`.\n",
   "findings": [
     {

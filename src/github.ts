@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
@@ -1763,8 +1763,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [] }: {
+  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [], rules }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
+    /** The `review.rules` setting, which decides whether a confirmed rule keeps a finding a check disproved. */
+    rules?: RulesMode;
     /** The earlier warning threads that still hold the approval, or `unread` when they could not be read, which holds it too. */
     openWarnings?: ReadonlyArray<{ isSecurity?: boolean }> | 'unread';
     /** The `auto_approve` setting, which decides what the lines for a held draft and for warnings tell the reader to do. */
@@ -1817,7 +1819,7 @@ export async function postReview(
   const anchor = changed.at(0);
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
-  const links: CodeLinks = { linkTo, files, changed, related: relatedCommits(result.relatedRepos) };
+  const links: CodeLinks = { linkTo, files, changed, related: relatedCommits(result.relatedRepos), rules };
 
   /**
    * Posts a blocker or a holding warning as a thread of its own: a line comment on a changed line, a file-level comment
@@ -2740,7 +2742,7 @@ const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }> = {
   confirmed: { label: 'Double-checked', text: 'Manki tried to disprove this by reading the code and could not.' },
   unsettled: { label: 'Not settled', text: 'Manki tried to disprove this by reading the code and could not decide.' },
-  // A posted disproved finding is a blocker, a security finding, one a second check confirmed, one `isDisprovedRaise` names or one that `breaksRule`, since a disproof drops any other.
+  // A posted disproved finding is a blocker, a security finding, one a second check confirmed, one `isDisprovedRaise` names or one that `gradedByRule`, since a disproof drops any other.
   disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.' },
 };
 const DISPROVED_RAISE_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
@@ -2903,7 +2905,7 @@ function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits
  * inside its file. With `changed`, the PR's changed files, they give a cited file name its directories. `related`
  * holds the related repos whose lines a check may show.
  */
-interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related: RelatedCommits }
+interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related: RelatedCommits; rules?: RulesMode }
 
 /**
  * Returns `path` as the repository path it names. A file name with no directories gets those of the one known file
@@ -3047,7 +3049,7 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
     (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && check.defect !== 'confirmed' ? 'unsettled' : outcomeOf(check));
   const pairLead = pairRefutation && REFUTATION_SUMMARY[shown(pairRefutation)];
   // A blocker two disproofs lowered says so on its first check, and its rule only set how far it went down.
-  const keptByRule = !isDisprovedRaise(finding) && !!overruledDisproof(finding);
+  const keptByRule = !isDisprovedRaise(finding) && !!overruledDisproof(finding, links.rules);
   // Each check that disproved a finding its rule keeps says why the finding stays.
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
   const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[shown(refutation)].text));

@@ -171,9 +171,10 @@
 #   sweep: off                       # search the diff for other instances of a kept finding's defect class.
 #                                    # `blockers`, `warnings` or `notes` names the lowest grade that starts a search
 #   notes: 3                         # how many notes a review posts as suggestions at most. 0 posts none
-#   rules: warn                      # a broken required rule of your instruction files, such as
-#                                    # "every migration needs a rollback", is at least a warning. `block` makes it
-#                                    # a blocker, so the PR is not approved until the rule is followed
+#   rules: auto                      # a broken required rule of your instruction files, such as
+#                                    # "every migration needs a rollback", is graded by the damage it can do.
+#                                    # `warn` makes it at least a warning. `block` makes it a blocker, so the PR
+#                                    # is not approved until the rule is followed
 
 # CI results the reviewers read as evidence (default: all on), and the
 # analyzers Manki runs itself.

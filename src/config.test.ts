@@ -199,6 +199,8 @@ describe('config', () => {
         rules: 'block',
       });
       expect(core.warning).not.toHaveBeenCalled();
+      // `auto`, the default, grades a broken rule by its damage alone, and stays unset in the config when left out.
+      expect(['auto', 'warn'].map(mode => loadConfigFromContent(`review:\n  rules: ${mode}\n`).review?.rules)).toEqual(['auto', 'warn']);
     });
 
     it.each([
@@ -228,8 +230,8 @@ describe('config', () => {
       ['a negative number of notes', 'review:\n  notes: -1\n', '`review.notes` must be a non-negative integer'],
       ['a fractional number of notes', 'review:\n  notes: 2.5\n', '`review.notes` must be a non-negative integer'],
       ['notes that are no number', 'review:\n  notes: "3"\n', '`review.notes` must be a non-negative integer'],
-      ['an unknown rules mode', 'review:\n  rules: error\n', '`review.rules` must be `warn` or `block`'],
-      ['a rules mode that is no string', 'review:\n  rules: true\n', '`review.rules` must be `warn` or `block`'],
+      ['an unknown rules mode', 'review:\n  rules: error\n', '`review.rules` must be `auto`, `warn` or `block`'],
+      ['a rules mode that is no string', 'review:\n  rules: true\n', '`review.rules` must be `auto`, `warn` or `block`'],
       ['examples as a plain list', 'review:\n  examples: [A panic.]\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['empty examples', 'review:\n  examples: {}\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['an unknown example side', 'review:\n  examples:\n    warning: [A slow call.]\n', '`review.examples.warning` is not a known side'],

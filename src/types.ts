@@ -433,8 +433,17 @@ export function breaksRule(finding: Pick<Finding, 'rule'>): boolean {
   return finding.rule?.verdict === 'confirmed';
 }
 
-/** How a broken required rule is graded, the `review.rules` setting: `warn` posts a warning, `block` a blocker. */
-export type RulesMode = 'warn' | 'block';
+/** How a broken required rule is graded, the `review.rules` setting: `auto` by its damage alone, `warn` at least a warning, `block` a blocker. */
+export const RULES_MODES = ['auto', 'warn', 'block'] as const;
+export type RulesMode = typeof RULES_MODES[number];
+
+/** Returns the grade a confirmed rule finding gets under `rules`: a warning with `warn`, a blocker with `block`, and none with `auto`, the default. */
+export const ruleGrade = (rules?: RulesMode): FindingSeverity | undefined => (rules === 'block' ? 'blocker' : rules === 'warn' ? 'warning' : undefined);
+
+/** Whether `finding` breaks a required rule that gives it a grade under `rules`, which `auto` never does. */
+export function gradedByRule(finding: Pick<Finding, 'rule'>, rules?: RulesMode): boolean {
+  return breaksRule(finding) && !!ruleGrade(rules);
+}
 
 /** The `review.sweep` setting. Each value past `off` names the lowest grade of a kept finding that starts a sweep. */
 export const SWEEP_MODES = ['off', 'blockers', 'warnings', 'notes'] as const;
@@ -872,12 +881,12 @@ export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>
 }
 
 /**
- * Returns the refutation that disproves a finding that `breaksRule` and is graded below blocker. Such a finding stays in
- * the review whatever the check disproved: the refuter checks whether a failure can happen, not whether a rule is
- * followed, and the same rule break with no damage to check is posted unchecked.
+ * Returns the refutation that disproves a finding graded below blocker that is `gradedByRule` under `rules`. Such a
+ * finding stays in the review whatever the check disproved: the refuter checks whether a failure can happen, not whether
+ * a rule is followed, and the same rule break with no damage to check is posted unchecked.
  */
-export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'refutation' | 'pairRefutation'>): Refutation | undefined {
-  return finding.severity === 'blocker' || finding.severity === 'ignore' || !breaksRule(finding) ? undefined : disproof(finding);
+export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'refutation' | 'pairRefutation'>, rules?: RulesMode): Refutation | undefined {
+  return finding.severity === 'blocker' || finding.severity === 'ignore' || !gradedByRule(finding, rules) ? undefined : disproof(finding);
 }
 
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
@@ -950,7 +959,7 @@ export function leadText(lead: OpenLead): OpenLead {
 /**
  * How an open lead ended in a round: `confirmed` and posted, `disproved` by the judge's tools, `dropped` by the judge,
  * `unsettled` by the tools, or `not_checked` because it went to no check and was only listed. A `disproved` lead is
- * still posted, with `RoundLead.posted` set, when a disproof cannot drop it: a blocker, or a finding that `breaksRule`.
+ * still posted, with `RoundLead.posted` set, when a disproof cannot drop it: a blocker, or a finding that `gradedByRule`.
  */
 export type LeadOutcome = 'confirmed' | 'disproved' | 'dropped' | 'unsettled' | 'not_checked';
 
@@ -1280,7 +1289,7 @@ export interface ReviewRoutingConfig {
   sweep?: SweepMode;
   /** How many notes a review lists at most. */
   notes?: number;
-  /** Whether a broken required rule of the instruction files is posted as a warning (`warn`) or blocks (`block`). */
+  /** Whether a broken required rule of the instruction files is graded by its damage alone (`auto`), at least a warning (`warn`) or blocks (`block`). */
   rules?: RulesMode;
 }
 

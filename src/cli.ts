@@ -93,8 +93,8 @@ export function formatReviewJson({ result, base, head, approvalHeld }: LocalRevi
  * Returns the review as Markdown: the outcome and summary, then each finding as the review body lists it. Control
  * characters are dropped, since model text the reviewed code can steer would otherwise reach the terminal as escapes.
  */
-export function formatReviewText({ result, base, head, approvalHeld }: LocalReview): string {
-  const links: CodeLinks = { linkTo: (file, line, end) => `${file}:${line}${end && end !== line ? `-${end}` : ''}`, files: new Map(), related: relatedCommits(result.relatedRepos) };
+export function formatReviewText({ result, base, head, approvalHeld, rules }: LocalReview): string {
+  const links: CodeLinks = { linkTo: (file, line, end) => `${file}:${line}${end && end !== line ? `-${end}` : ''}`, files: new Map(), related: relatedCommits(result.relatedRepos), rules };
   const title = outcomeReport(result.outcome, result.summary, approvalHeld).title;
   const blocks = result.findings.map(f => formatFindingBlock(f, links));
   const lead = [`## ${title}: ${base.slice(0, 7)}..${head.slice(0, 7)}`, roundSummary(result)].filter(Boolean).join('\n\n');

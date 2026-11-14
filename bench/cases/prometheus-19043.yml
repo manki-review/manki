@@ -22,6 +22,11 @@ body: |
   own `SDMock`/`httptest.Server` via `NewSDMock(t)` with `t.Cleanup`, so there is
   no shared mutable state and the tests are safe to run concurrently. Test-only,
   no production code or dependency changes. Part of the upstream issue 15185 effort.
+# The repository has no `.manki.yml` at the base, so this block keeps the defaults. It pins `review.rules` to `warn`,
+# the setting the key was written for, since the default `auto` grades a broken rule by its damage alone.
+config:
+  review:
+    rules: warn
 key_version: 1
 must_catch:
   - id: K1

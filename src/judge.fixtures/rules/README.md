@@ -1,6 +1,6 @@
 # Judge rule finding fixture corpus
 
-Each `*.json` file holds one round: the instruction files as the judge gets them (`repoContext`), the PR diff, and findings that each quote a rule of those files. `rules` is the `review.rules` setting of the round, `warn` when left out. `excludedPaths` names the changed files `exclude_paths` leaves out of the diff. `expected` names, per finding title, the rule verdicts and grades a correct judge may end with. The repositories and code are made up for the fixtures.
+Each `*.json` file holds one round: the instruction files as the judge gets them (`repoContext`), the PR diff, and findings that each quote a rule of those files. `rules` is the `review.rules` setting of the round, `auto` when left out. `excludedPaths` names the changed files `exclude_paths` leaves out of the diff. `expected` names, per finding title, the rule verdicts and grades a correct judge may end with. The repositories and code are made up for the fixtures.
 
 `judge.test.ts` checks that each finding points at a line of its diff, that its named instruction file holds its quote, and that every finding has an expectation. A live replay, gated on `RUN_JUDGE_LIVE_FIXTURES=1`, sends each fixture through `runJudgeAgent` against a real model and compares each finding's `rule.verdict` and grade with `expected`. A finding the judge drops counts as `ignore`. CI does not run it. Run it after changing the judge prompt or model.
 
