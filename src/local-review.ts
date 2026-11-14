@@ -8,7 +8,7 @@ import { extractCurrentCodeWindow } from './code-window';
 import { CONFIG_PATH, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
-import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, plainCitedFiles, RepoFiles, skippedFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, plainCitedFiles, RepoFiles, roundApproval, skippedFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
@@ -405,11 +405,14 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     });
     const unread = skippedFiles(excludedFiles, lockfiles, diff);
     // As in a pull request round, only a round that would approve has its approval held.
-    const approvalHeld = result.verdict !== 'APPROVE' ? false
+    const approves = result.verdict === 'APPROVE';
+    const warningsHeld = approves && (threadHolds || result.findings.some(holdsApproval));
+    const approvalHeld = !approves ? false
       : brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
       : unread.excluded.length + unread.binary.length > 0 ? 'unread'
-      : threadHolds || result.findings.some(holdsApproval) ? 'warnings' : false;
-    return { result, context, base, head, approvalHeld, rules: config.review?.rules };
+      : warningsHeld ? 'warnings' : false;
+    const record = approves ? { ...context, approval: roundApproval(approvalHeld, warningsHeld) } : context;
+    return { result, context: record, base, head, approvalHeld, rules: config.review?.rules };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   }

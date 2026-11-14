@@ -111,10 +111,17 @@ describe('reviewLocal', () => {
     expect(review.result.findings.map(f => f.title)).toEqual([finding.title, 'Note one', 'Note two', 'Note three']);
     expect(review.context.findings.unposted).toMatchObject([{ title: 'Note four', unpostedReason: 'note_cap', posted: 'record' }]);
     expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
+    // A round that does not approve records no approval, as a pull request round does.
+    expect(review.context).not.toHaveProperty('approval');
 
     // A round that would approve holds the approval for the excluded file no model read, as a pull request round does.
     jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
-    expect((await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', providerInputs: inputs })).approvalHeld).toBe('unread');
+    const unread = await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', providerInputs: inputs });
+    expect([unread.approvalHeld, unread.context.approval]).toEqual(['unread', { held: 'unread' }]);
+    // A warning holds it too, and the record says so behind the first reason, as a pull request round's does.
+    const warning = { ...finding, severity: 'warning' as const };
+    jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [warning], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    expect((await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', providerInputs: inputs })).context.approval).toEqual({ held: 'unread', warningsHeld: true });
     // So does a binary file, which no model reads either.
     git(repo, 'checkout', '-q', '-b', 'binary', later);
     commit(repo, 'Add a logo', { 'src/a.ts': 'const a = 1;\nconst b = 5;\n', 'logo.bin': 'logo\u0000' });
@@ -216,7 +223,10 @@ describe('reviewLocal', () => {
     const heldBy = async (findings: EarlierFinding[], threadEvaluations?: ThreadEvaluation[]) => {
       jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'], ...(threadEvaluations && { threadEvaluations }) });
       // From `later`, so the excluded `docs/x.md` does not hold the approval as unread.
-      return (await reviewLocal({ repoRoot: repo, base: later, head: fixed, earlier: { head: reviewed, findings }, providerInputs: inputs })).approvalHeld;
+      const review = await reviewLocal({ repoRoot: repo, base: later, head: fixed, earlier: { head: reviewed, findings }, providerInputs: inputs });
+      // The `--record` file keeps the same approval a pull request round's record does.
+      expect(review.context.approval).toEqual({ held: review.approvalHeld, ...(review.approvalHeld === 'warnings' && { warningsHeld: true }) });
+      return review.approvalHeld;
     };
     expect(await heldBy([thread({})])).toBe('warnings');
     expect(await heldBy([thread({})], [{ threadId: 'W1', status: 'addressed', reason: 'Bounded now.' }])).toBe(false);
