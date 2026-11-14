@@ -995,6 +995,7 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('"howToFix": "The change that fixes it, in one or two sentences"');
     expect(prompt).toContain('List any known caveats of the fix in `howToFix`');
     expect(prompt).toContain('Check that the fix removes every failure the description names. When it removes only part, say in `howToFix` which failure it leaves.');
+    expect(prompt).toContain('When the finding lists several cases or places, `howToFix` covers every one of them.');
     expect(prompt).toContain(WRITING_RULES);
     expect(prompt).not.toMatch(/[\u2014\u2013]| -- /);
   });
@@ -1500,6 +1501,8 @@ describe('selectTeam', () => {
       'For a library, outside input is anything a caller of its public API can pass, readers and byte streams included.',
       'Dropped cases: for each pattern match, `switch`, error handler, ignored result or fallback the change adds',
       'Rust `let _ =`, `.ok()` or `unwrap_or_default()`, TypeScript `catch {}`, `?.` with a default or an unawaited promise, Python `except: pass` or a `dict.get` default, Go `_ =` on an error or an ignored `ok`.',
+      'Same defect, other cases: once you find a defect, name the other kinds of input that reach the same lines and the other places in the change that make the same mistake.',
+      'List every case that fails the same way in that one finding, each place as `file:line`.',
       'Tests: for each test the change adds or edits, name the changed line whose revert makes it fail.',
       'one that sets private fields or internal state instead of calling the public API',
       'Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.',
@@ -1524,8 +1527,8 @@ describe('selectTeam', () => {
       'Report a rule that asks for focused changes only as the split rule under "Rules" allows.',
       'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
     ]) expect(focus).toContain(check);
-    // Reuse, repository rules and change rules come right after tests.
-    expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Change rules: [^\n]*\n11\. Contract breaks: [^\n]*\n12\. Narrowed input: /);
+    // Other cases of a defect come right after dropped cases, and reuse, repository rules and change rules right after tests.
+    expect(focus).toMatch(/\n6\. Dropped cases: [^\n]*\n7\. Same defect, other cases: [^\n]*\n8\. Tests: [^\n]*\n9\. Reuse: [^\n]*\n10\. Repository rules: [^\n]*\n11\. Change rules: [^\n]*\n12\. Contract breaks: [^\n]*\n13\. Narrowed input: /);
     expect({ focus }).toMatchSnapshot();
 
     // A related repo adds the check for its kind at its place in the order, for a finder that can read it: one with
@@ -1550,9 +1553,9 @@ describe('selectTeam', () => {
     expect(withReference).toMatch(/\n4\. Reference behaviour: [^\n]*\n5\. Specifications: when the change touches a wire format, a protocol message or a rule a specification defines, such as a validation or consensus rule, and a \*\*reference\*\* related repo holds that specification, search it for the name of the message, field or rule and compare the change with what it says\. [^\n]*\n6\. Error paths: /);
     expect(withReference).not.toContain('Consumers:');
     const withConsumer = focusWith('consumer');
-    expect(withConsumer).toMatch(/\n13\. Readers: [^\n]*\n14\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n15\. Sibling state: /);
+    expect(withConsumer).toMatch(/\n14\. Readers: [^\n]*\n15\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n16\. Sibling state: /);
     expect(withConsumer).not.toContain('Specifications:');
-    expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n14\. Readers: [^\n]*\n15\. Consumers: [^\n]*\n16\. Sibling state: /);
+    expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n15\. Readers: [^\n]*\n16\. Consumers: [^\n]*\n17\. Sibling state: /);
     expect({ focus: focusWith('reference', 'consumer') }).toMatchSnapshot();
     // A dependency adds its check after the reference checks and changes no other line, so a config without one keeps its checklist.
     const withDependency = focusWith('reference', 'consumer', 'dependency');
