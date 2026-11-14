@@ -16,7 +16,6 @@ import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoO
 import { classifyRelatedWork } from './related-work';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
-import { extractCurrentCodeWindow } from './code-window';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
@@ -642,10 +641,6 @@ export interface ReviewOptions {
   instructionFiles?: readonly InstructionFile[];
   memory?: RepoMemory | null;
   fileContents?: Map<string, string>;
-  /** The files of carried warnings that only the judge reads, kept out of the finders' files and their budget. */
-  carriedFileContents?: Map<string, string>;
-  /** The files at the head that the review tried to read and could not. Without it, no file counts as unread. */
-  unreadFiles?: ReadonlySet<string>;
   prContext?: PrContext;
   linkedIssues?: LinkedIssue[];
   onProgress?: (progress: ReviewProgress) => void;
@@ -1380,12 +1375,7 @@ export async function runReview(
     ...(refutation && { refutation }),
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
-    carriedWarnings: carriedWarnings.map(e => ({
-      ...e,
-      // The line of the round that listed the warning may hold other code by now, so only a located line gives a window.
-      ...(e.currentLine !== undefined && { currentCode: extractCurrentCodeWindow(fileContents?.has(e.fingerprint.file) ? fileContents : options.carriedFileContents, e.fingerprint.file, e.currentLine) }),
-      ...(options.unreadFiles?.has(e.fingerprint.file) && { codeUnread: true }),
-    })),
+    carriedWarnings,
   };
   if (judgeSkipped) {
     core.info('No finding, open thread or carried warning to judge, so the judge is skipped');

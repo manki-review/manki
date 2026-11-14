@@ -22,7 +22,7 @@ import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
-import { bodyWarnings, carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
@@ -1114,7 +1114,7 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
 /** Collects the open review threads with the code now at each, and the contents of the files the review reads. */
 async function collectOpenThreads(
   target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[], prAuthorLogin: string | undefined,
-): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string>; carriedFileContents?: Map<string, string>; unreadFiles: Set<string> }> {
+): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string> }> {
   const { octokit, owner, repo, commitSha } = target;
   const baseOpenThreads = recap.previousFindings
     .filter((f): f is PreviousFinding & { threadId: string } =>
@@ -1155,23 +1155,17 @@ async function collectOpenThreads(
   // The prompts read a parsed lockfile's package list, never the file, so it stays out of the shared budget.
   // Only a thread on it reads the file, for its window.
   const parsed = new Set(lockfiles.map(l => l.path));
-  // The judge reads the code around each warning an earlier review body listed when the push may have fixed it.
-  const carriedFiles = [...new Set(bodyWarnings(recap.priorRounds).map(e => e.fingerprint.file))];
   const filePaths = [...changedFilePaths, ...threadFilePaths].filter(p => !parsed.has(p));
-  // Only the judge reads a carried warning's file that the review does not read anyway, so it gets a budget of its own.
-  const carriedOnly = carriedFiles.filter(p => !filePaths.includes(p));
   const lockfileThreadPaths = [...new Set(threadFiles.filter(p => parsed.has(p)))];
   let fileContents: Map<string, string> | undefined;
   let lockfileContents: Map<string, string> | undefined;
-  let carriedFileContents: Map<string, string> | undefined;
   // A file that is not at the head, as one the PR deleted or renamed away, has no code to read, which is no failure to read it.
   const notFound = new Set<string>();
   try {
-    [fileContents, lockfileContents, carriedFileContents] = await Promise.all([
-      // The files of blocker and warning threads, then of earlier warnings, are read first, so the judge sees a fix however large the rest of the change is.
-      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads), ...carriedFiles], notFound),
+    [fileContents, lockfileContents] = await Promise.all([
+      // The files of blocker and warning threads are read first, so the judge sees a fix however large the rest of the change is.
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads)], notFound),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity, [], notFound) : new Map<string, string>(),
-      carriedOnly.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, carriedOnly, undefined, undefined, [], notFound) : new Map<string, string>(),
     ]);
   } catch (error) {
     core.warning(`Failed to fetch file contents: ${error}`);
@@ -1224,10 +1218,10 @@ async function collectOpenThreads(
       currentCode: elsewhere ? extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line) : extractCurrentCodeWindow(contents, t.file, near),
     };
   });
-  const read = (path: string): boolean => [fileContents, lockfileContents, carriedFileContents].some(contents => contents?.has(path));
-  const unreadFiles = new Set([...filePaths, ...lockfileThreadPaths, ...carriedOnly].filter(p => !notFound.has(p) && !read(p)));
-  const openThreads = placed.map(t => (unreadFiles.has(t.file) ? { ...t, codeUnread: true } : t));
-  return { openThreads, fileContents, carriedFileContents, unreadFiles };
+  const read = (path: string): boolean => [fileContents, lockfileContents].some(contents => contents?.has(path));
+  const unread = new Set([...filePaths, ...lockfileThreadPaths].filter(p => !notFound.has(p) && !read(p)));
+  const openThreads = placed.map(t => (unread.has(t.file) ? { ...t, codeUnread: true } : t));
+  return { openThreads, fileContents };
 }
 
 /**
@@ -1975,7 +1969,7 @@ async function runFullReview(
     const digest = changeDigest(fullDiff);
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
-    const { openThreads, fileContents, carriedFileContents, unreadFiles } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin);
+    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
@@ -2001,8 +1995,6 @@ async function runFullReview(
       instructionFiles: repoContext.files,
       memory,
       fileContents,
-      carriedFileContents,
-      unreadFiles,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,
       linkedIssues,
       relatedWork,

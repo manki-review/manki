@@ -200,7 +200,6 @@ jest.mock('./review', () => ({
   stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
   carryBodyWarnings: jest.requireActual('./review').carryBodyWarnings,
-  bodyWarnings: jest.requireActual('./review').bodyWarnings,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
@@ -5485,33 +5484,24 @@ describe('runFullReview orchestration', () => {
       { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
       { title: 'Outdated design issue', file: '', line: 0, originalLine: 1, originalCommit: 'c0ffee', severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile_old' },
     ];
-    // A warning the last review body listed has its file read too, ahead of the rest.
-    const listed = { ...makeFindingFingerprintEntry({ title: 'Retry never ends', file: 'src/carried.ts', lineStart: 4 }), posted: 'body' as const, citedLine: { hash: 'abcdefabcdef', count: 1 } };
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
-      priorRounds: [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [listed] } })],
+      priorRounds: [],
     });
 
-    const carriedText = 'one\ntwo\nthree\nretry();';
-    jest.mocked(ghUtils.fetchFileContents).mockImplementation(async (_o, _ow, _r, _ref, paths) => new Map(paths.filter(p => p === 'src/carried.ts').map(p => [p, carriedText])));
     await callRunFullReview();
 
-    // The file of a warning the last review body listed is read in a call of its own, which only the judge reads.
-    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledTimes(2);
+    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledTimes(1);
     const fetchCall = jest.mocked(ghUtils.fetchFileContents).mock.calls[0];
     const requestedPaths = fetchCall[4];
-    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls[1].slice(4)).toEqual([['src/carried.ts'], undefined, undefined, [], new Set()]);
-    const options = jest.mocked(reviewModule.runReview).mock.calls[0][1];
-    expect([options.fileContents?.has('src/carried.ts'), options.carriedFileContents]).toEqual([false, new Map([['src/carried.ts', carriedText]])]);
     expect(requestedPaths).not.toContain('');
     expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads?.filter(t => !t.file).map(t => [t.threadId, t.line, t.currentCode])).toEqual([['PRRT_nofile', 1, ''], ['PRRT_nofile_old', 0, '']]);
     // Both files present, no duplicate of `src/app.ts`
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');
     expect(requestedPaths.filter(p => p === 'src/app.ts')).toHaveLength(1);
-    expect(requestedPaths).not.toContain('src/carried.ts');
-    // Only the file of a blocker or warning thread, then the file of an earlier warning, are read ahead of the rest.
-    expect(fetchCall[7]).toEqual(['src/other.ts', 'src/carried.ts']);
+    // Only the file of a blocker or warning thread is read ahead of the rest.
+    expect(fetchCall[7]).toEqual(['src/other.ts']);
   });
 
   it('skips deleted changed files but still fetches open-thread files', async () => {
@@ -5561,7 +5551,6 @@ describe('runFullReview orchestration', () => {
       ['PRRT_live', true], ['PRRT_gone', undefined], ['PRRT_excluded', undefined], ['PRRT_renamed', undefined], ['PRRT_moved', undefined],
       ['PRRT_earlier', undefined], ['PRRT_earlier_renamed', undefined],
     ]);
-    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].unreadFiles).toEqual(new Set(['src/new.ts', 'src/live.ts']));
   });
 
   it('includes planner info in dashboard when planner result is available', async () => {
