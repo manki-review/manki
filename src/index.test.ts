@@ -182,6 +182,7 @@ jest.mock('./recap', () => ({
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
   FOUND_AGAIN_MARKER: jest.requireActual('./recap').FOUND_AGAIN_MARKER,
   replyClassOf: jest.requireActual('./recap').replyClassOf,
+  pushTouchesThread: jest.requireActual('./recap').pushTouchesThread,
   titleOverlapType: jest.requireActual('./recap').titleOverlapType,
 }));
 
@@ -5274,7 +5275,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads).toBeNull();
   });
 
-  it('forwards `description` and `suggestedFix` from `previousFindings` into `baseOpenThreads`', async () => {
+  it('forwards `description`, `suggestedFix` and `evidenceFiles` from `previousFindings` into `baseOpenThreads`', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5294,6 +5295,7 @@ describe('runFullReview orchestration', () => {
         threadId: 'PRRT_meta',
         description: 'Error enum lacks the rotation chainlock variant.',
         suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)` to the enum.',
+        evidenceFiles: ['src/errors.ts'],
       }],
       priorRounds: [],
     });
@@ -5301,11 +5303,12 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
-    const openThreads = runReviewCall.openThreads as Array<{ threadId: string; description?: string; suggestedFix?: string }>;
+    const openThreads = runReviewCall.openThreads as Array<{ threadId: string; description?: string; suggestedFix?: string; evidenceFiles?: string[] }>;
     expect(openThreads).toHaveLength(1);
     expect(openThreads[0].threadId).toBe('PRRT_meta');
     expect(openThreads[0].description).toBe('Error enum lacks the rotation chainlock variant.');
     expect(openThreads[0].suggestedFix).toBe('Add `MissingRotationChainLockSigs(QuorumHash)` to the enum.');
+    expect(openThreads[0].evidenceFiles).toEqual(['src/errors.ts']);
 
     // The judge reads the latest reply only on a guarded thread, and only when the PR author or someone with write
     // access wrote it. Anyone can comment on a PR, so no other reply reaches the judge, whatever it says.

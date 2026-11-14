@@ -3100,9 +3100,24 @@ function rulePart(finding: Finding): FoldPart | undefined {
  * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome. A finding that cites nothing
  * says so, unless a tool reported it or it is an earlier round's finding.
  */
+/** Returns the repository paths a finding's cited file names resolve against: the changed files, the files read and its own. */
+function knownFiles(finding: Finding, { files, changed = [] }: CodeLinks): string[] {
+  return [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
+}
+
+/**
+ * Returns the files other than its own that `finding` cites in its "Checked in the code" links, each a changed file or
+ * one read at the head. A later round counts a push to one of them as a push to the thread.
+ */
+function evidenceFiles(finding: Finding, links: CodeLinks): string[] {
+  const known = knownFiles(finding, links);
+  const cited = findingChecks(finding, known).flatMap(c => c.at?.file ?? []);
+  return [...new Set(cited)].filter(file => file !== finding.file && known.includes(file));
+}
+
 function checksSection(finding: Finding, links: CodeLinks, ownLine: string): FindingChecks {
-  const { linkTo, files, changed = [], related } = links;
-  const known = [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
+  const { linkTo, files, related } = links;
+  const known = knownFiles(finding, links);
   const checks = findingChecks(finding, known);
   const refutations = refutationParts(finding, links, known);
   // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too. The
@@ -3237,6 +3252,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   if (fold) comment += `\n\n${fold}`;
   comment += `\n\n${issueBoxFor(finding)}`;
 
+  const cited = evidenceFiles(finding, links);
   const data: Record<string, unknown> = {
     file: finding.file,
     line: finding.line,
@@ -3248,6 +3264,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
     ...(detached && { detached: true }),
+    ...(cited.length > 0 && { evidenceFiles: cited }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
   comment += `\n<!-- manki-finding: ${sanitizeHtmlCommentJson(JSON.stringify(data))} -->`;

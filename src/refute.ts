@@ -79,7 +79,7 @@ function codeDigest(workspace: string, files: readonly string[]): string | undef
   return hash.digest('hex');
 }
 
-function locationFile(location: string): string {
+export function locationFile(location: string): string {
   return location.replace(/:\d+(?:-\d+)?$/, '');
 }
 

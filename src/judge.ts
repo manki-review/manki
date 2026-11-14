@@ -835,11 +835,12 @@ export function buildJudgeUserMessage(
     parts.push('These are unresolved review threads from the previous review. Decide for each whether it has been addressed using the inter-round diff and current code regions below, then return one entry per thread in `threadEvaluations`.\n');
     const pushChangedFiles = filesChangedByPush(interRoundDiff);
     const earlierBlockers = earlierBlockerThreadIds(openThreads, priorRounds);
-    const staysOpenReason = interRoundDiff === undefined ? 'the fix cannot be confirmed without the inter-round diff' : 'the push did not change this file';
+    const staysOpenReason = (t: OpenThread): string => interRoundDiff === undefined ? 'the fix cannot be confirmed without the inter-round diff'
+      : t.evidenceFiles?.length ? 'the push changed neither this file nor a file its finding cited' : 'the push did not change this file';
     const heldOpen = openThreads.filter(t => guardedThreadStaysOpen(t, pushChangedFiles));
     for (const t of openThreads) {
       const linkSuffix = t.threadUrl ? ` ([view](${t.threadUrl}))` : '';
-      const stays = `stays open: ${t.file ? staysOpenReason : 'only a person can clear a thread that is not tied to a file'}`;
+      const stays = `stays open: ${t.file ? staysOpenReason(t) : 'only a person can clear a thread that is not tied to a file'}`;
       const marks = [...(earlierBlockers.has(t.threadId) ? ['earlier blocker'] : []), ...(heldOpen.includes(t) ? [stays] : [])];
       parts.push(`- **${t.threadId}**${linkSuffix}: [${t.severity}] "${sanitize(t.title)}" ${t.file ? 'at ' : ''}${threadPlace(t)}${marks.length > 0 ? ` (${marks.join(', ')})` : ''}`);
     }

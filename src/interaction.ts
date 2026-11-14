@@ -9,9 +9,10 @@ import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isB
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, pushTouchesThread, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ParsedDiff, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { locationFile } from './refute';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { CheckedReply, MAX_REPLY_STATEMENTS, checkReply, statementList, statementRecords, statementSummary } from './reply-check';
 import { formatReplyRecord } from './review-record';
@@ -115,6 +116,8 @@ function replyOutcome(reply: string): ReplyOutcome | undefined {
 }
 
 const KEPT_REPLY_RE = /^(\**)Kept\.(\**)/;
+
+const FIXED_REPLY_RE = /^(\**)Fixed\.(\**)/;
 
 const WITHDRAWN_REPLY_RE = /^\**Withdrawn\b/;
 
@@ -324,6 +327,24 @@ function requireNewProof(reply: string, finding: string, file: string | undefine
 }
 
 /**
+ * Returns the files of `proof`, the lines a "Fixed." answer cites, when none of them is the thread's `file` or a file in
+ * `evidenceFiles`, and none otherwise. A review confirms a fix on a guarded thread only after a push to one of those.
+ */
+function uncitedFixFiles(proof: readonly string[], file: string, evidenceFiles: string[] | undefined): string[] {
+  const files = new Set(proof.map(locationFile));
+  return file && files.size > 0 && !pushTouchesThread({ file, evidenceFiles }, files) ? [...files] : [];
+}
+
+/**
+ * Turns a "Fixed." answer whose fix lies only in `files` into "Unverified.", since no review can confirm a fix in a
+ * file the finding did not cite.
+ */
+function uncitedFix(reply: string, files: string[]): string {
+  const where = files.length === 1 ? `${inline(files[0])}, a file` : `${files.map(inline).join(', ')}, files`;
+  return `${reply.replace(FIXED_REPLY_RE, '$1Unverified.$2')} The fix is in ${where} this finding did not cite, so a review cannot confirm it.`;
+}
+
+/**
  * Saves the learning a withdrawn finding leaves: on `path`, findings like `title` do not apply, for the reason the
  * developer gave. Returns the sentence that tells the developer what was saved and how to remove it.
  */
@@ -508,6 +529,10 @@ export async function handleReviewCommentReply(
     // Every other answer reopens it with the note. The note's marker stops every later reopen, so the thread opens before the answer is posted.
     const noted = !!reopenNote && !!live && posts && !clears && await reopenThread(octokit, live.id);
     const staysOpen = !!thread && !mayClear && !noted && (thread.isResolved ? held : isGuarded(thread));
+    // A guarded thread left open clears on review only after a push to its file or a file its finding cited.
+    const uncited = outcome === 'Fixed' && (staysOpen || noted) ? uncitedFixFiles(checked.proof, filePath, parseFindingData(findingBody)?.evidenceFiles) : [];
+    const answer = uncited.length > 0 ? uncitedFix(reply, uncited) : reply;
+    const settled = uncited.length > 0 ? undefined : outcome;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
@@ -526,11 +551,11 @@ export async function handleReviewCommentReply(
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
       // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
-      const reopened = noted && reopenNote ? [outcome === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(saved ? [saved] : [])];
-      const decision = replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
+      const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(saved ? [saved] : [])];
+      const decision = replyDecision(settled, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
-      const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(outcome && mayClear)));
+      const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       const list = statementList(checked);
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays open.
       const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(isSecurity, true, config?.author_clear_role, live.isResolved)] : [])] : [];
@@ -539,14 +564,14 @@ export async function handleReviewCommentReply(
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers([reply, ...checks, ...notes].join('\n\n'), BOT_MARKER, response.record(decision, statementChecks(checked)), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : []), ...(noted ? [REOPENED_MARKER] : [])),
+        body: withMarkers([answer, ...checks, ...notes].join('\n\n'), BOT_MARKER, response.record(decision, statementChecks(checked)), ...(settled === 'Fixed' && head ? [fixedMarker(head)] : []), ...(noted ? [REOPENED_MARKER] : [])),
       });
       core.info('Posted reply to review comment');
     }
 
-    if (outcome && thread && mayResolve && !noted) {
+    if (settled && thread && mayResolve && !noted) {
       try {
-        await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[outcome], mayClear, undefined, clears);
+        await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[settled], mayClear, undefined, clears);
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }

@@ -27,14 +27,18 @@ function severityMarker(body: string): RegExpMatchArray | null {
   return ownMarker(body, '<!-- manki:')?.match(SEVERITY_MARKER_RE) ?? null;
 }
 
-/** `detached` marks a thread posted on another file than its finding's, where `file` and `line` name the finding's own place. */
-export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean } | undefined {
+/**
+ * `detached` marks a thread posted on another file than its finding's, where `file` and `line` name the finding's own
+ * place. `evidenceFiles` are the other files the finding cited, without `file`.
+ */
+export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean; evidenceFiles?: string[] } | undefined {
   const json = ownMarker(body, FINDING_DATA_OPENER);
   if (json === undefined) return undefined;
   try {
     const parsed: unknown = JSON.parse(json);
     if (!parsed || typeof parsed !== 'object') return undefined;
-    const { title, fix, howToFix, tags, flaggedBy, file, line, detached } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown };
+    const { title, fix, howToFix, tags, flaggedBy, file, line, detached, evidenceFiles } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown; evidenceFiles?: unknown };
+    const cited = isStringArray(evidenceFiles) ? [...new Set(evidenceFiles.filter(f => f && f !== file))] : [];
     return {
       ...(typeof title === 'string' && { title }),
       ...(typeof file === 'string' && file && { file }),
@@ -44,6 +48,7 @@ export function parseFindingData(body: string): { title?: string; fix?: string; 
       ...(isStringArray(tags) && { tags }),
       ...(isStringArray(flaggedBy) && { flaggedBy }),
       ...(detached === true && { detached }),
+      ...(cited.length > 0 && { evidenceFiles: cited }),
     };
   } catch {
     return undefined;
@@ -191,6 +196,14 @@ function recordedSecurityOverride(
  */
 function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
   return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
+}
+
+/**
+ * Whether the push changed the thread's file or a file its finding cited as evidence, from `changed`, the files the push
+ * changed. A thread tied to no file has none.
+ */
+function pushTouchesThread(t: { file: string; evidenceFiles?: string[] }, changed: ReadonlySet<string>): boolean {
+  return !!t.file && [t.file, ...(t.evidenceFiles ?? [])].some(file => changed.has(file));
 }
 
 /**
@@ -392,6 +405,8 @@ interface PreviousFinding extends FindingMetadata {
   originalCommit?: string;
   /** The thread sits on another file than its finding's, so GitHub moves no line of it: `line` stays the one the finding named when posted, or 0. */
   detached?: boolean;
+  /** The other files the finding cited as evidence, from the thread's hidden finding data. A push to one counts as a push to the thread. */
+  evidenceFiles?: string[];
   /**
    * Line the finding named when it was posted, from the thread's hidden finding data. A finding on a line outside the
    * diff is posted on a fallback line, so only this line matches it to its round record. `currentFindingLine` gives
@@ -659,6 +674,7 @@ async function fetchRecapState(
       ...(t.originalCommit && { originalCommit: t.originalCommit }),
       ...(t.findingLine && { findingLine: t.findingLine }),
       ...(t.detached && { detached: true }),
+      ...(t.evidenceFiles && { evidenceFiles: t.evidenceFiles }),
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
@@ -915,6 +931,7 @@ interface ReviewThread extends FindingMetadata {
   originalCommit?: string;
   findingLine?: number;
   detached?: boolean;
+  evidenceFiles?: string[];
   isBotThread: boolean;
   isResolved: boolean;
   resolvedByHuman: boolean;
@@ -1143,6 +1160,7 @@ async function fetchReviewThreads(
         ...(firstComment?.originalCommit?.oid && { originalCommit: firstComment.originalCommit.oid }),
         ...(findingLine && { findingLine }),
         ...(data?.detached && { detached: true }),
+        ...(data?.evidenceFiles && { evidenceFiles: data.evidenceFiles }),
         ...(markerSlug && { markerSlug }),
         severity,
         authorReplyText,
@@ -1207,12 +1225,13 @@ function deduplicateFindings(
 }
 
 /**
- * Returns the earlier blockers a judge confirmed fixed, and the open ones on a file in `changedSinceLastRound`, which the
- * author may have just fixed. Each sits on the line its finding names now.
+ * Returns the earlier blockers a judge confirmed fixed, and the open ones whose file or cited file is in
+ * `changedSinceLastRound`, which the author may have just fixed. Each sits on the line its finding names now.
  */
 function blockersToRecheck(previousFindings: PreviousFinding[], changedSinceLastRound: string[] | undefined): Array<{ title: string; file: string; line: number }> {
+  const changed = new Set(changedSinceLastRound);
   return withPostedLine(previousFindings)
-    .filter(f => (f.severity === 'blocker' || f.recordedGrade === 'blocker') && f.title && (f.fixed || ((f.status === 'open' || f.status === 'replied') && changedSinceLastRound?.includes(f.file))))
+    .filter(f => (f.severity === 'blocker' || f.recordedGrade === 'blocker') && f.title && (f.fixed || ((f.status === 'open' || f.status === 'replied') && pushTouchesThread(f, changed))))
     .map(f => ({ title: f.title, file: f.file, line: currentFindingLine(f) }));
 }
 
@@ -1411,4 +1430,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { answersWarning, BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { answersWarning, BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

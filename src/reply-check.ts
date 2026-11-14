@@ -59,6 +59,8 @@ export interface CheckedStatement {
 export interface CheckedReply {
   /** The answer as "Outcome. text", which is what the reply handler goes on with. */
   text: string;
+  /** The lines of the PR's repository that the answer cites as its proof, each one checked to exist. */
+  proof: string[];
   statements: CheckedStatement[];
   /** Statements of the reply past `MAX_REPLY_STATEMENTS`, which were not checked. */
   unchecked: number;
@@ -155,11 +157,11 @@ export function checkReply(content: string, developerReply: string, sources: Rep
   try {
     parsed = JSON.parse(extractJSON(content, 'object')) as Record<string, unknown>;
   } catch {
-    return { text: UNREADABLE_ANSWER, statements: [], unchecked: 0, dropped: 0 };
+    return { text: UNREADABLE_ANSWER, proof: [], statements: [], unchecked: 0, dropped: 0 };
   }
   const outcome = REPLY_OUTCOMES.find(o => o === parsed.outcome);
   const answer = typeof parsed.answer === 'string' ? parsed.answer.trim().replace(/^\**(?:Fixed|Withdrawn|Agreed|Kept|Unverified)\.\**\s*/, '') : '';
-  if (!outcome || !answer) return { text: UNREADABLE_ANSWER, statements: [], unchecked: 0, dropped: 0 };
+  if (!outcome || !answer) return { text: UNREADABLE_ANSWER, proof: [], statements: [], unchecked: 0, dropped: 0 };
 
   const said = collapse(developerReply);
   const entries = (Array.isArray(parsed.statements) ? parsed.statements : []).filter((e): e is Record<string, unknown> => !!e && typeof e === 'object');
@@ -175,6 +177,7 @@ export function checkReply(content: string, developerReply: string, sources: Rep
   const settled: AnswerOutcome = unproven ? 'Unverified' : outcome;
   return {
     text: `${settled}. ${answer}${unproven ? ` ${UNPROVEN_OUTCOME}` : ''}`,
+    proof: own,
     statements,
     unchecked: Math.max(0, quoted.size - MAX_REPLY_STATEMENTS),
     dropped: entries.length - quoted.size,

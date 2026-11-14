@@ -1568,6 +1568,8 @@ export interface OpenThread extends FindingMetadata, ThreadGrade {
   title: string;
   file: string;
   line: number;
+  /** The other files the finding cited as evidence. A push to one counts as a push to the thread, as one to `file` does. */
+  evidenceFiles?: string[];
   isSecurity?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets

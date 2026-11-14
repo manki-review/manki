@@ -4072,6 +4072,19 @@ describe('runReview', () => {
     expect((await runWith(touching, securityWarning)).threadEvaluations).toEqual([addressed]);
     expect((await runWith(elsewhere, { ...openThread, severity: 'warning' })).threadEvaluations).toEqual([addressed]);
 
+    // A push to a file the finding cited as evidence counts as a push to the thread, for a blocker and a security thread
+    // alike. A push to any other file does not, and its reason names every file a push could have changed.
+    const cited = { ...openThread, evidenceFiles: ['src/y.ts'] };
+    const unrelated = touching.replace(/src\/x\.ts/g, 'src/z.ts');
+    expect((await runWith(elsewhere, cited)).threadEvaluations).toEqual([addressed]);
+    expect((await runWith(elsewhere, { ...cited, severity: 'warning', isSecurity: true })).threadEvaluations).toEqual([addressed]);
+    expect((await runWith(unrelated, cited)).threadEvaluations)
+      .toEqual([{ ...addressed, status: 'uncertain', reason: 'The push did not change `src/x.ts` or `src/y.ts`, so the fix is not confirmed.' }]);
+    // A thread whose evidence could not be read names no cited file and falls back to its own.
+    expect((await runWith(elsewhere, { ...openThread, evidenceFiles: undefined })).threadEvaluations?.[0].status).toBe('uncertain');
+    // A thread tied to no file stays a person's to clear, whatever its finding cited.
+    expect((await runWith(elsewhere, { ...cited, file: '', line: 0 })).threadEvaluations?.[0].status).toBe('uncertain');
+
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });
     const namedAgain = await runWith(touching);
@@ -4088,6 +4101,10 @@ describe('runReview', () => {
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
     expect(await gradeAfter(partly(), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    // A push to a file its finding cited counts as a push to its file.
+    openThread.evidenceFiles = ['src/y.ts'];
+    expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['warning', 'READY']);
+    delete openThread.evidenceFiles;
     // An earlier push that rewrote an outdated thread's code is no push to its file, so the grade it carries holds.
     const rewritten = { postedCode: '>>> 10: old', postedCommit: 'sha0', currentCode: '>>> 10: rewritten', postedCodeGone: true };
     Object.assign(openThread, rewritten);
@@ -4132,6 +4149,9 @@ describe('runReview', () => {
     const open: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'The timeout is gone again.' };
     expect(await gradeAfter(open, touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(open, elsewhere)).toEqual([undefined, 'READY']);
+    openThread.evidenceFiles = ['src/y.ts'];
+    expect(await gradeAfter(open, elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    delete openThread.evidenceFiles;
     expect(await gradeAfter(addressed, elsewhere, [repeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
     // A blocker that repeats the thread's answered problem, or that this round folds into the thread, raises it again the same way.
     const answeredRepeat: Finding = { ...repeat, sameAs: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.', grade: { severity: 'blocker' } } };
@@ -6262,7 +6282,7 @@ describe('runReview', () => {
     const [[, readerMessage]] = (round2Clients.judge.sendMessage as jest.Mock).mock.calls as [string, string][];
     expect(readerMessage).toMatch(/^## Changed Since the Last Review\n[\s\S]*```\nsrc\/x\.ts\n```[\s\S]*## Pull Request Diff/);
 
-    // Each finder gets the blockers a judge confirmed fixed, and the open ones on a file the push changed.
+    // Each finder gets the blockers a judge confirmed fixed, and the open ones on or citing a file the push changed.
     const blocker = { severity: 'blocker' as const, threadId: 'T2' };
     const blockerClients = makeClients();
     await runReview(blockerClients, {
@@ -6271,6 +6291,7 @@ describe('runReview', () => {
       previousFindings: [
         { ...blocker, title: 'Open blocker on the changed file', file: 'src/x.ts', line: 3, status: 'replied' },
         { ...blocker, title: 'Open blocker on an unchanged file', file: 'src/y.ts', line: 4, status: 'open' },
+        { ...blocker, title: 'Open blocker citing the changed file', file: 'src/z.ts', line: 5, status: 'open', evidenceFiles: ['src/x.ts'] },
         { ...blocker, title: 'Fixed blocker whose code moved', file: 'src/y.ts', line: 0, originalLine: 7, status: 'resolved', fixed: true },
         { ...blocker, title: 'Blocker the author resolved', file: 'src/x.ts', line: 9, status: 'resolved' },
         { title: priorTitle, file: 'src/x.ts', line: 10, severity: 'warning', status: 'open', threadId: 'T1' },
@@ -6278,7 +6299,7 @@ describe('runReview', () => {
     });
     for (const [, userMessage] of (blockerClients.reviewer.sendMessage as jest.Mock).mock.calls as [string, string][]) {
       expect(userMessage).toContain('## Fixed Blockers');
-      expect(userMessage).toContain('```\nsrc/x.ts:3: Open blocker on the changed file\nsrc/y.ts:7: Fixed blocker whose code moved\n```');
+      expect(userMessage).toContain('```\nsrc/x.ts:3: Open blocker on the changed file\nsrc/z.ts:5: Open blocker citing the changed file\nsrc/y.ts:7: Fixed blocker whose code moved\n```');
       expect(userMessage).not.toContain('unchanged file');
       expect(userMessage).not.toContain('the author resolved');
     }
