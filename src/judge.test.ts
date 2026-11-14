@@ -2856,16 +2856,69 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('>>> 5: flagged()');
     expect(userMessage).not.toContain('The diff is cut at');
 
-    // A diff past the cap says where it was cut, so the judge does not read a missing file as unchanged.
+    // A diff past the cap is cut from the start after the thread's file moves first, and the judge is told what the cut reached.
     mockSendMessage.mockClear();
-    const long = `diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+${'x'.repeat(MAX_INTER_ROUND_DIFF_CHARS)}\n`;
+    const large = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,${MAX_INTER_ROUND_DIFF_CHARS / 10} @@\n${'+abcdefghi\n'.repeat(MAX_INTER_ROUND_DIFF_CHARS / 10)}`;
+    const fix = 'diff --git a/src/z.ts b/src/z.ts\n--- a/src/z.ts\n+++ b/src/z.ts\n@@ -1,1 +1,1 @@\n-old\n+fixed';
+    const long = `${large('src/a.ts')}${large('src/b.ts')}${fix}\n`;
     await runJudgeAgent(mockClient, makeConfig(), {
       findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
-      openThreads: [{ threadId: 'PRRT_x', title: 'Null check', file: 'src/a.ts', line: 5, severity: 'warning' }],
+      openThreads: [{ threadId: 'PRRT_x', title: 'Null check', file: 'src/z.ts', line: 5, severity: 'warning' }],
       priorRounds: priorRounds.map(roundContextFromLegacy),
       interRoundDiff: long,
     });
-    expect(mockSendMessage.mock.calls[0][1]).toContain(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${long.length} characters, so changes after the cut are missing.`);
+    const cutMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(cutMessage).toContain(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${long.length} characters, so changes after the cut are missing. The files of open blocker and warning threads, the files their findings cited and the files of earlier warnings come first.`);
+    expect(cutMessage).toContain('Cut short: `src/a.ts`.');
+    expect(cutMessage).toContain('Left out: `src/b.ts`.');
+    expect(cutMessage).toContain(`diff\n${fix}\ndiff --git a/src/a.ts`);
+    expect(cutMessage).not.toContain('The fix may not be shown');
+
+    // A file a thread's finding cited goes first too, and a thread whose fix may not be shown is told so in its own region.
+    mockSendMessage.mockClear();
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
+      openThreads: [
+        { threadId: 'PRRT_x', title: 'Null check', file: 'src/z.ts', evidenceFiles: ['src/b.ts'], line: 5, severity: 'warning' },
+        { threadId: 'PRRT_y', title: 'Naming', file: 'src/a.ts', line: 5, severity: 'note', currentCode: '(file content unavailable)', codeUnread: true },
+        // A file the fix deleted has no code, which says nothing about reading it.
+        { threadId: 'PRRT_d', title: 'Dead code', file: 'src/dead.ts', line: 5, severity: 'note', currentCode: '(file content unavailable)' },
+      ],
+      priorRounds: priorRounds.map(roundContextFromLegacy),
+      interRoundDiff: long,
+    });
+    const notedMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(notedMessage).toContain('Cut short: `src/b.ts`.');
+    expect(notedMessage).toContain('Left out: `src/a.ts`.');
+    expect(notedMessage).toContain(`diff\n${fix}\ndiff --git a/src/b.ts`);
+    expect(notedMessage).toContain('- **The fix may not be shown**: The inter-round diff leaves out `src/a.ts`. The current code of `src/a.ts` is not shown, as the file could not be read in full this round. Do not call this thread addressed from code you cannot see.');
+    expect(notedMessage).toContain('### PRRT_d — src/dead.ts:5\n```\n(file content unavailable)');
+    expect(notedMessage).toContain('### PRRT_x — src/z.ts:5\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this thread addressed from code you cannot see.');
+
+    // The file of an earlier warning goes first too.
+    mockSendMessage.mockClear();
+    const warning: FindingFingerprintEntry = { ...makeFindingFingerprintEntry({ title: 'Retry has no cap', file: 'src/b.ts', lineStart: 3 }), posted: 'body', raisedIn: 1, citedLine: { hash: 'abcdefabcdef', count: 1 } };
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, carriedWarnings: [warning],
+      priorRounds: priorRounds.map(roundContextFromLegacy),
+      interRoundDiff: long,
+    });
+    const carriedMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(carriedMessage).toContain('Cut short: `src/b.ts`.');
+    expect(carriedMessage).toContain('Left out: `src/a.ts`, `src/z.ts`.');
+
+    // A list names at most 200 files and counts the rest.
+    mockSendMessage.mockClear();
+    const many = Array.from({ length: 205 }, (_, i) => `diff --git a/gen/${i}.ts b/gen/${i}.ts\n--- a/gen/${i}.ts\n+++ b/gen/${i}.ts\n@@ -1,1 +1,1 @@\n-a\n+b`).join('\n');
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, carriedWarnings: [warning],
+      priorRounds: priorRounds.map(roundContextFromLegacy),
+      interRoundDiff: `${large('src/b.ts')}${many}\n`,
+    });
+    const manyMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(manyMessage).toContain('`gen/199.ts`, and 5 more files.\n');
+    expect(manyMessage).not.toContain('`gen/200.ts`');
+    expect(carriedMessage).toContain('- **C1**: "Retry has no cap" at src/b.ts:3.\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this warning addressed from code you cannot see.\n');
   });
 
   it('renders OpenThread `description` and `suggestedFix` in the open-thread block', async () => {

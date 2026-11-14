@@ -116,6 +116,25 @@ export function rebuildRawDiff(diff: ParsedDiff): string {
   }).join('\n');
 }
 
+/** One file's part of a raw diff, from its `diff --git` line up to the next file's. */
+export interface DiffSection {
+  path: string;
+  text: string;
+}
+
+/**
+ * Returns the file sections of `rawDiff` with the files in `first` at the front, in its order. The other files keep
+ * their order. Each text ends with a line break, so joining them gives a valid diff.
+ */
+export function orderDiffSections(rawDiff: string, first: readonly string[] = []): DiffSection[] {
+  const sections = rawDiff.split(/(?=^diff --git )/m).filter(text => text.length > 0).map(text => {
+    const parsed = parsePRDiff(text);
+    return { path: parsed.files[0]?.path ?? parsed.binarySkipped?.[0]?.path ?? '', text: text.endsWith('\n') ? text : `${text}\n` };
+  });
+  const front = [...new Set(first)].flatMap(path => sections.filter(s => s.path === path));
+  return [...front, ...sections.filter(s => !front.includes(s))];
+}
+
 /** A changed file as GitHub lists it for a pull request. */
 export interface ListedFile {
   filename: string;

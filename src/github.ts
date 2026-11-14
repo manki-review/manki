@@ -3365,7 +3365,8 @@ const DEFAULT_MAX_TOTAL_SIZE = 400 * 1024;
 /**
  * Fetch file contents for changed files via the GitHub API.
  * Skips binary files and files exceeding the size limit.
- * If total content exceeds the budget, includes only the largest files that fit.
+ * If total content exceeds the budget, includes the files in `first` in their order, then the largest of the rest, as many as fit.
+ * Adds each file that is not at `ref` to `notFound`, so a caller can tell a file that is gone from one it failed to read.
  */
 export async function fetchFileContents(
   octokit: Octokit,
@@ -3375,6 +3376,8 @@ export async function fetchFileContents(
   files: string[],
   maxFileSize: number = DEFAULT_MAX_FILE_SIZE,
   maxTotalSize: number = DEFAULT_MAX_TOTAL_SIZE,
+  first: readonly string[] = [],
+  notFound?: Set<string>,
 ): Promise<Map<string, string>> {
   const results: Array<{ path: string; content: string }> = [];
 
@@ -3400,7 +3403,8 @@ export async function fetchFileContents(
       }
 
       return { path, content };
-    } catch {
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) notFound?.add(path);
       core.debug(`Could not fetch ${path}`);
       return null;
     }
@@ -3416,17 +3420,21 @@ export async function fetchFileContents(
   // Sort by content size descending so we include the largest files first
   results.sort((a, b) => b.content.length - a.content.length);
 
-  const fileContents = new Map<string, string>();
+  const kept = new Set<string>();
   let totalSize = 0;
 
-  for (const { path, content } of results) {
+  const byPath = new Map(results.map(r => [r.path, r]));
+  const leading = [...new Set(first)].flatMap(p => byPath.get(p) ?? []);
+  for (const { path, content } of [...leading, ...results.filter(r => !leading.includes(r))]) {
     if (totalSize + content.length > maxTotalSize) {
       core.debug(`Skipping ${path}: would exceed total size budget (${totalSize}/${maxTotalSize})`);
       continue;
     }
-    fileContents.set(path, content);
+    kept.add(path);
     totalSize += content.length;
   }
+  // The map keeps the largest-first order, so a round where every file fits reads them as before.
+  const fileContents = new Map(results.filter(r => kept.has(r.path)).map(r => [r.path, r.content]));
 
   core.info(`Fetched ${fileContents.size}/${files.length} file contents (${totalSize} bytes)`);
   return fileContents;

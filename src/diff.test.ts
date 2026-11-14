@@ -9,6 +9,7 @@ import {
   isLineInDiff,
   sliceDiff,
   compareChanges,
+  orderDiffSections,
   ownChangeSince,
   overlongChangedLines,
   MAX_LINE_CHARS,
@@ -578,6 +579,22 @@ describe('rebuildRawDiff', () => {
     expect(raw).toContain('diff --git a/src/new-file.ts b/src/new-file.ts\n--- /dev/null\n+++ b/src/new-file.ts\n');
     expect(raw).toContain('diff --git a/src/old-file.ts b/src/old-file.ts\n--- a/src/old-file.ts\n+++ /dev/null\n');
     expect(raw).toContain('diff --git a/src/old-name.ts b/src/new-name.ts\n--- a/src/old-name.ts\n+++ b/src/new-name.ts\n');
+  });
+});
+
+describe('orderDiffSections', () => {
+  const fileDiff = (path: string): string => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new\n`;
+  const binary = 'diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\n';
+  const raw = [fileDiff('src/a.ts'), binary, fileDiff('src/b.ts'), fileDiff('Cargo.lock'), fileDiff('src/z.ts').trimEnd()].join('');
+
+  it('moves the files in `first` to the front in its order and keeps the rest in order', () => {
+    const paths = (first: string[]) => orderDiffSections(raw, first).map(s => s.path);
+    expect(paths([])).toEqual(['src/a.ts', 'img.png', 'src/b.ts', 'Cargo.lock', 'src/z.ts']);
+    expect(paths(['src/z.ts', 'gone.ts', 'src/b.ts', 'src/z.ts'])).toEqual(['src/z.ts', 'src/b.ts', 'src/a.ts', 'img.png', 'Cargo.lock']);
+    // Each section keeps its text, and a last section without a line break gets one so a reordered diff stays valid.
+    const ordered = orderDiffSections(raw, ['src/z.ts']);
+    expect(ordered.map(s => s.text)).toEqual([fileDiff('src/z.ts'), fileDiff('src/a.ts'), binary, fileDiff('src/b.ts'), fileDiff('Cargo.lock')]);
+    expect(orderDiffSections('')).toEqual([]);
   });
 });
 

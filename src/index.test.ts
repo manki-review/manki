@@ -2790,7 +2790,7 @@ describe('runFullReview orchestration', () => {
     const { openThreads, fileContents } = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect([openThreads?.[0].currentCode, fileContents?.has('Cargo.lock')]).toEqual([expect.stringContaining('>>> 5: version = "0.4.3"'), false]);
     // The lockfile is read outside the size budget the prompts' files share, so it can't push a code file out.
-    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[]], [['Cargo.lock'], 1024 * 1024, Infinity]]);
+    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => c.slice(4))).toEqual([[[], undefined, undefined, [], new Set()], [['Cargo.lock'], 1024 * 1024, Infinity, [], new Set()]]);
     const lockfiles = [{ path: 'Cargo.lock', file, changes: [expect.objectContaining({ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', line: 5 })] }];
     expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
     expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
@@ -5217,6 +5217,8 @@ describe('runFullReview orchestration', () => {
         line: 2,
         severity: 'note',
         currentCode: '(file content unavailable)',
+        // The mocked read returns no file, so the window says it could not be read.
+        codeUnread: true,
       },
     ]);
   });
@@ -5468,16 +5470,18 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
+    const fixedFile = { ...changedFile, path: 'src/fix.ts' };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [changedFile], totalAdditions: 10, totalDeletions: 5,
+      files: [changedFile, fixedFile], totalAdditions: 20, totalDeletions: 10,
     });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile], excluded: [] });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile, fixedFile], excluded: [] });
 
     // Two open threads: one in a changed file (must not duplicate) and one in
     // an unchanged file (must be added to the fetch list).
     const previousFindings = [
       { title: 'Issue in changed', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_dup' },
-      { title: 'Issue in unchanged', file: 'src/other.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
+      { title: 'Issue in fixed', file: 'src/fix.ts', line: 3, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_fix' },
+      { title: 'Issue in unchanged', file: 'src/other.ts', evidenceFiles: ['src/caller.ts'], line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
       // A thread tied to no file has no code to fetch, at the head or on the commit it was posted on.
       { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
       { title: 'Outdated design issue', file: '', line: 0, originalLine: 1, originalCommit: 'c0ffee', severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile_old' },
@@ -5498,6 +5502,8 @@ describe('runFullReview orchestration', () => {
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');
     expect(requestedPaths.filter(p => p === 'src/app.ts')).toHaveLength(1);
+    // Only the changed file of a blocker or warning thread is read ahead of the rest, never a file outside the diff.
+    expect(fetchCall[7]).toEqual(['src/fix.ts']);
   });
 
   it('skips deleted changed files but still fetches open-thread files', async () => {
@@ -5505,14 +5511,31 @@ describe('runFullReview orchestration', () => {
       path: 'src/gone.ts', changeType: 'deleted' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 0, newLines: 0, content: 'code' }],
     };
+    // A deleted file that `exclude_paths` leaves out, and a renamed file, are not at the head under their old paths either.
+    const excludedDeleted = { ...deletedFile, path: 'dist/old.js' };
+    const renamed = { path: 'src/new.ts', oldPath: 'src/old.ts', changeType: 'renamed' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '-a\n+b' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [deletedFile], totalAdditions: 0, totalDeletions: 5,
+      files: [deletedFile, excludedDeleted, renamed], totalAdditions: 1, totalDeletions: 6,
+      binarySkipped: [{ path: 'img/new.png', header: JSON.stringify(['img/old.png', 'img/new.png', null, null, null]) }],
     });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [deletedFile], excluded: [] });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [deletedFile, renamed], excluded: [{ path: 'dist/old.js', matchedPattern: 'dist/**' }] });
 
     const previousFindings = [
       { title: 'Live thread', file: 'src/live.ts', line: 1, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_live' },
+      { title: 'Gone thread', file: 'src/gone.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_gone' },
+      { title: 'Excluded thread', file: 'dist/old.js', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_excluded' },
+      { title: 'Renamed thread', file: 'src/old.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_renamed' },
+      { title: 'Moved image thread', file: 'img/old.png', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_moved' },
+      // Files the PR added in an earlier round and deleted or renamed since are in no diff against the base branch.
+      { title: 'Earlier file thread', file: 'src/earlier.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_earlier' },
+      { title: 'Earlier renamed thread', file: 'src/earlier-old.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_earlier_renamed' },
     ];
+    // Every file that is not at the head answers 404, and the rest fail to read.
+    const atHead = new Set(['src/live.ts', 'src/new.ts']);
+    jest.mocked(ghUtils.fetchFileContents).mockImplementation(async (_o, _ow, _r, _ref, paths, _size, _total, _first, notFound) => {
+      for (const path of paths) if (!atHead.has(path)) notFound?.add(path);
+      return new Map();
+    });
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
       priorRounds: [],
@@ -5522,8 +5545,14 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledTimes(1);
     const requestedPaths = jest.mocked(ghUtils.fetchFileContents).mock.calls[0][4];
-    expect(requestedPaths).not.toContain('src/gone.ts');
+    // The deleted file is read only once, for its thread, and never as a changed file.
+    expect(requestedPaths.filter(p => p === 'src/gone.ts')).toHaveLength(1);
     expect(requestedPaths).toContain('src/live.ts');
+    // A file that could not be read is marked unread, and a file the PR deleted or renamed away is not.
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads?.map(t => [t.threadId, t.codeUnread])).toEqual([
+      ['PRRT_live', true], ['PRRT_gone', undefined], ['PRRT_excluded', undefined], ['PRRT_renamed', undefined], ['PRRT_moved', undefined],
+      ['PRRT_earlier', undefined], ['PRRT_earlier_renamed', undefined],
+    ]);
   });
 
   it('includes planner info in dashboard when planner result is available', async () => {

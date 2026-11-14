@@ -14,7 +14,7 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { addedLines, isLineInDiff, newLineNumbers, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { addedLines, isLineInDiff, newLineNumbers, orderDiffSections, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -221,6 +221,24 @@ const IN_PR_SUPPRESSION_LINE_TOLERANCE = 5;
 
 /** Cap on inter-round diff size embedded in the judge user message, to keep prompts bounded on large rebases. */
 export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
+
+/**
+ * Returns `diff` cut at `MAX_INTER_ROUND_DIFF_CHARS`, with the files in `first` moved ahead of the rest when it is longer.
+ * Also names the file the cut runs through and the files wholly past it.
+ */
+function cutInterRoundDiff(diff: string, first: readonly string[]): { text: string; cut?: string; omitted: string[] } {
+  if (diff.length <= MAX_INTER_ROUND_DIFF_CHARS) return { text: diff, omitted: [] };
+  const sections = orderDiffSections(diff, first);
+  let cut: string | undefined;
+  const omitted: string[] = [];
+  let start = 0;
+  for (const { path, text } of sections) {
+    if (start >= MAX_INTER_ROUND_DIFF_CHARS) omitted.push(path);
+    else if (start + text.length > MAX_INTER_ROUND_DIFF_CHARS) cut = path;
+    start += text.length;
+  }
+  return { text: safeTruncate(sections.map(s => s.text).join(''), MAX_INTER_ROUND_DIFF_CHARS), cut, omitted };
+}
 
 const JUDGE_TIMEOUT_MS = 300_000;
 
@@ -867,6 +885,23 @@ export function buildJudgeUserMessage(
     const staysOpenReason = (t: OpenThread): string => interRoundDiff === undefined ? 'the fix cannot be confirmed without the inter-round diff'
       : t.evidenceFiles?.length ? 'the push changed neither this file nor a file its finding cited' : 'the push did not change this file';
     const heldOpen = threads.filter(t => guardedThreadStaysOpen(t, pushChangedFiles));
+    const hasDiffSection = !!(priorRounds && priorRounds.length > 0);
+    // A thread's own file goes ahead of the files its finding cited, so a large cited file cannot push it past the cut.
+    const shownDiff = hasDiffSection && interRoundDiff?.trim()
+      ? cutInterRoundDiff(interRoundDiff, [...fixThreadFiles(threads), ...fixThreadFiles(threads, true), ...carriedWarnings.map(e => e.fingerprint.file)])
+      : undefined;
+    const named = (paths: string[]): string => paths.map(p => `\`${sanitize(p)}\``).join(', ');
+    // Says why the fix of a thread or warning on `files` may not be shown, so the judge does not call it addressed unseen.
+    const unseenNote = (files: string[], codeUnread: boolean, what: string): string[] => {
+      const leftOut = files.filter(p => shownDiff?.omitted.includes(p));
+      const cutShort = files.filter(p => p === shownDiff?.cut);
+      const reasons = [
+        ...(leftOut.length > 0 ? [`The inter-round diff leaves out ${named(leftOut)}.`] : []),
+        ...(cutShort.length > 0 ? [`The inter-round diff shows only the start of ${named(cutShort)}.`] : []),
+        ...(codeUnread && files.length > 0 ? [`The current code of ${named(files.slice(0, 1))} is not shown, as the file could not be read in full this round.`] : []),
+      ];
+      return reasons.length > 0 ? [`- **The fix may not be shown**: ${reasons.join(' ')} Do not call this ${what} addressed from code you cannot see.`] : [];
+    };
     for (const t of threads) {
       const linkSuffix = t.threadUrl ? ` ([view](${t.threadUrl}))` : '';
       const stays = `stays open: ${t.file ? staysOpenReason(t) : 'only a person can clear a thread that is not tied to a file'}`;
@@ -883,23 +918,27 @@ export function buildJudgeUserMessage(
       carriedWarnings.forEach((e, i) => {
         const description = e.description ? ` ${sanitizeForPromptEmbed(safeTruncate(e.description.replace(/[\r\n]+/g, ' '), MAX_CARRIED_DESCRIPTION_CHARS))}` : '';
         parts.push(`- **C${i + 1}**: "${sanitize(e.title ?? '')}" at ${sanitize(e.fingerprint.file)}:${e.currentLine ?? e.fingerprint.lineStart}.${description}`);
+        parts.push(...unseenNote([e.fingerprint.file], false, 'warning'));
       });
       parts.push('');
     }
 
-    if (priorRounds && priorRounds.length > 0) {
+    if (hasDiffSection) {
       parts.push(`## Inter-Round Diff\n`);
       if (interRoundDiff === undefined) {
         parts.push('_Inter-round diff unavailable (compare API error). Evaluate threads based on the open-thread code regions and prior-round context only._');
       } else if (interRoundDiff.trim().length === 0) {
         parts.push('_No code changes since prior review: the PR changes the same code as at the prior round (commit SHA unchanged, identical tree, or only a rebase onto the base branch)._');
-      } else {
+      } else if (shownDiff) {
         parts.push('Unified diff from the prior round\'s commit to the current head, for the files where the PR\'s own change differs from the prior round. Files only a rebase onto the base branch changed are left out, but a file listed here can still show base branch changes. Use this as the primary signal when judging whether each open thread is addressed.\n');
         parts.push(`${UNTRUSTED_DIFF_NOTE}\n`);
+        const { text: diffContent, cut, omitted } = shownDiff;
         if (interRoundDiff.length > MAX_INTER_ROUND_DIFF_CHARS) {
-          parts.push(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${interRoundDiff.length} characters, so changes after the cut are missing. A thread whose file is not shown may still be fixed: judge it from its code region below.\n`);
+          parts.push(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${interRoundDiff.length} characters, so changes after the cut are missing. The files of open blocker and warning threads, the files their findings cited and the files of earlier warnings come first. A fix this diff does not show may still exist: look for it in the current code shown with its thread, and never call a thread or warning addressed from code you cannot see.\n`);
+          if (cut) parts.push(`Cut short: ${named([cut])}.\n`);
+          // A push can change thousands of files, so the list names at most `MAX_UNSHOWN_FILES` of them.
+          if (omitted.length > 0) parts.push(`Left out: ${named(omitted.slice(0, MAX_UNSHOWN_FILES))}${omitted.length > MAX_UNSHOWN_FILES ? `, and ${omitted.length - MAX_UNSHOWN_FILES} more files` : ''}.\n`);
         }
-        const diffContent = safeTruncate(interRoundDiff, MAX_INTER_ROUND_DIFF_CHARS);
         const fence = dynamicFence(diffContent);
         parts.push(`${fence}diff`);
         parts.push(diffContent);
@@ -910,7 +949,6 @@ export function buildJudgeUserMessage(
 
     if (threads.length > 0) {
       parts.push(`## Open Thread Code Regions\n`);
-      const hasDiffSection = !!(priorRounds && priorRounds.length > 0);
       parts.push(
         hasDiffSection
           ? 'Current source around each open thread\'s flagged line. Use this together with the inter-round diff above to verify whether the concern still applies. The flagged line is GitHub-anchored from when the thread was created and may be stale relative to the current head — the actual fix can land anywhere within the surrounding window.\n'
@@ -952,6 +990,7 @@ export function buildJudgeUserMessage(
         fenced(t.postedCode);
         parts.push(t.postedCodeGone ? '- **Now**: that code is not found in the file any more. The head\'s code near the same line:' : t.movedTo ? `- **Now**: that code is not found in the file any more. The same code sits in \`${sanitize(t.movedTo)}\` at the head:` : '- **Now**: where that code sits at the head:');
       }
+      parts.push(...unseenNote([t.file, ...(t.evidenceFiles ?? [])].filter(Boolean), !!t.codeUnread, 'thread'));
       fenced(t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)');
       parts.push('');
     }

@@ -32,7 +32,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -1159,10 +1159,14 @@ async function collectOpenThreads(
   const lockfileThreadPaths = [...new Set(threadFiles.filter(p => parsed.has(p)))];
   let fileContents: Map<string, string> | undefined;
   let lockfileContents: Map<string, string> | undefined;
+  // A file that is not at the head, as one the PR deleted or renamed away, has no code to read, which is no failure to read it.
+  const notFound = new Set<string>();
   try {
     [fileContents, lockfileContents] = await Promise.all([
-      fetchFileContents(octokit, owner, repo, commitSha, filePaths),
-      lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
+      // The changed files of blocker and warning threads are read first, so the judge sees a fix however large the rest of the change is.
+      // A thread file outside the diff keeps its place, since the finders read the same files and need the changed ones.
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, [...fixThreadFiles(baseOpenThreads)].filter(p => changedFilePaths.includes(p)), notFound),
+      lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity, [], notFound) : new Map<string, string>(),
     ]);
   } catch (error) {
     core.warning(`Failed to fetch file contents: ${error}`);
@@ -1184,7 +1188,7 @@ async function collectOpenThreads(
       return [commit, new Map<string, string>()] as const;
     }
   })));
-  const openThreads = baseOpenThreads.map((t): OpenThread => {
+  const placed = baseOpenThreads.map((t): OpenThread => {
     const contents = parsed.has(t.file) ? lockfileContents : fileContents;
     const posted = postedAt.get(t.threadId);
     const commit = posted?.commit;
@@ -1215,6 +1219,9 @@ async function collectOpenThreads(
       currentCode: elsewhere ? extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line) : extractCurrentCodeWindow(contents, t.file, near),
     };
   });
+  const read = (path: string): boolean => [fileContents, lockfileContents].some(contents => contents?.has(path));
+  const unread = new Set([...filePaths, ...lockfileThreadPaths].filter(p => !notFound.has(p) && !read(p)));
+  const openThreads = placed.map(t => (unread.has(t.file) ? { ...t, codeUnread: true } : t));
   return { openThreads, fileContents };
 }
 
@@ -1268,7 +1275,7 @@ async function collectRoundSignals(
   if (shouldFetchDiff) {
     if (diffResult.status === 'fulfilled' && priorChange && diffResult.value !== undefined) {
       // The two heads also differ by what a rebase brought in, so only the files whose PR change moved are kept.
-      // The judge reads only the start of this diff, so the lockfile hunks go after the code.
+      // The lockfile hunks go after the code, so the judge reads the code first.
       interRoundDiff = lockfilesLast(ownChangeSince(diffResult.value, priorChange, reviewed), lockfiles);
     } else if (diffResult.status === 'fulfilled') {
       core.warning('Without the PR\'s change at the last reviewed commit, the inter-round diff cannot leave out a rebase, so it is not used');

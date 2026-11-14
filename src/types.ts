@@ -1574,6 +1574,8 @@ export interface OpenThread extends FindingMetadata, ThreadGrade {
    * exists at the head commit.
    */
   currentCode?: string;
+  /** Set when the thread's file is at the head but could not be read in full, as it is too large or the read failed. */
+  codeUnread?: boolean;
   /** Manki's latest answer to a developer in the thread, such as a "Fixed." reply with its evidence. */
   answer?: string;
   /**
@@ -1630,6 +1632,14 @@ export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; recorde
 export function threadWarns(t: Parameters<typeof threadBlocks>[0]): boolean {
   if (threadBlocks(t)) return false;
   return t.recordedGrade === 'warning' || (t.severity === 'warning' && (!t.recordedGrade || !!t.isSecurity));
+}
+
+/**
+ * Returns the files of the open threads that block or warn, which the code and diffs a review reads put first. With
+ * `cited`, also the files their findings cited, since a push to one of them can fix the thread too.
+ */
+export function fixThreadFiles(threads: ReadonlyArray<Parameters<typeof threadBlocks>[0] & { file: string; evidenceFiles?: string[] }>, cited = false): Set<string> {
+  return new Set(threads.filter(t => t.file && (threadBlocks(t) || threadWarns(t))).flatMap(t => [t.file, ...(cited ? t.evidenceFiles ?? [] : [])]));
 }
 
 

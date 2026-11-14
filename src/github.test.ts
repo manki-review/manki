@@ -2593,8 +2593,9 @@ describe('fetchFileContents', () => {
         repos: {
           getContent: jest.fn(async ({ path }: { path: string }) => {
             const entry = files[path];
-            if (!entry || entry === 'error') {
-              throw new Error(`Not found: ${path}`);
+            if (!entry) throw Object.assign(new Error(`Not found: ${path}`), { status: 404 });
+            if (entry === 'error') {
+              throw Object.assign(new Error(`Forbidden: ${path}`), { status: 403 });
             }
             return {
               data: {
@@ -2626,6 +2627,12 @@ describe('fetchFileContents', () => {
     expect([...(await fetchFileContents(large, 'owner', 'repo', 'abc123', ['checker.rs', 'collection.rs', 'huge.rs'])).keys()]).toEqual(['checker.rs', 'collection.rs']);
     const many = mockOctokit({ 'a.rs': sized(190), 'b.rs': sized(190), 'c.rs': sized(30) });
     expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'])).keys()]).toEqual(['a.rs', 'b.rs']);
+    // A small thread file is read before two large files fill the budget, and the map keeps the largest-first order.
+    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'], undefined, undefined, ['c.rs'])).keys()]).toEqual(['a.rs', 'c.rs']);
+    // The files in `first` are read in their order, so a later one is the one left out.
+    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'], undefined, undefined, ['c.rs', 'b.rs', 'a.rs'])).keys()]).toEqual(['b.rs', 'c.rs']);
+    // A thread file over the per-file cap is still skipped.
+    expect([...(await fetchFileContents(large, 'owner', 'repo', 'abc123', ['checker.rs', 'collection.rs', 'huge.rs'], undefined, undefined, ['huge.rs'])).keys()]).toEqual(['checker.rs', 'collection.rs']);
   });
 
   it('skips files exceeding maxFileSize', async () => {
@@ -2643,9 +2650,12 @@ describe('fetchFileContents', () => {
       'missing.ts': 'error',
     });
 
-    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['good.ts', 'missing.ts']);
+    const notFound = new Set<string>();
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['good.ts', 'missing.ts', 'gone.ts'], undefined, undefined, [], notFound);
     expect(result.size).toBe(1);
     expect(result.get('good.ts')).toBe('ok');
+    // Only a file that is not at the ref counts as not found, never one whose read failed.
+    expect(notFound).toEqual(new Set(['gone.ts']));
   });
 
   it('respects maxTotalSize budget', async () => {
