@@ -269,10 +269,10 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
  * A comment with finding data is matched from its top first, so text of the finding further down cannot pass as the title line.
  */
 function matchTitleLine(body: string): RegExpMatchArray | null {
-  // Threads posted with an earlier label wording still say "needs an answer" or "fix, explain or track".
+  // Threads posted with an earlier label wording still say "needs an answer".
   const atTop = ownMarker(body, FINDING_DATA_OPENER) !== undefined
-    ? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix|: fix, explain or track)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
-      ?? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix|: fix, explain or track)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
+    ? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
+      ?? body.match(/^\S+ \*\*\w+(?:, not blocking|, needs an answer|, needs a fix)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
     : null;
   return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }
