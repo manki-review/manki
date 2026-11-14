@@ -103,7 +103,9 @@ export function formatReviewText({ result, base, head, approvalHeld, rules }: Lo
 }
 
 async function defaultBase(root: string): Promise<string> {
-  return (await runGit(root, ['rev-parse', '--abbrev-ref', 'origin/HEAD']).catch(() => 'main')).trim();
+  const ref = (await runGit(root, ['rev-parse', '--abbrev-ref', 'origin/HEAD']).catch(() => '')).trim();
+  if (!ref) throw new Error('Could not tell the remote\'s default branch from origin/HEAD. Name the base, as in `manki review main`, or set it with `git remote set-head origin --auto`.');
+  return ref;
 }
 
 /**
