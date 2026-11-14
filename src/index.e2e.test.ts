@@ -604,9 +604,11 @@ describe('runFullReview end to end', () => {
       meta: { round: 1, outcome: 'READY' },
       verdict: 'APPROVE',
       routing: { class: 'internal', classSource: 'triage', group: 'solo', groupSource: 'routing', configSource: 'builtin', reviewers: [expect.objectContaining({ effort: 'high' })] },
+      judge: { skipped: 'nothing_to_judge', summary: 'No new problems found.' },
     });
-    // The claims of the PR text are listed while the planner runs, and this PR makes none.
-    expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'judge', 'verdict']);
+    // The claims of the PR text are listed while the planner runs, and this PR makes none. The finder found nothing, so no judge is called.
+    expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'verdict']);
+    expect(mockGitHub.comments.find(c => c.body.includes('**Judge'))?.body).toContain('**Judge:** skipped, nothing to judge');
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
     expect(core.setOutput).toHaveBeenCalledWith('approval_held', '');
     // No finder client has repository tools, so the PR head is not fetched.
@@ -1089,7 +1091,7 @@ describe('runFullReview end to end', () => {
 
   it.each([
     ['the finders run', 'reviewer', ['claims', 'planner', 'reviewer']],
-    ['the verdict reader runs', 'verdict', ['claims', 'planner', 'reviewer', 'judge', 'verdict']],
+    ['the verdict reader runs', 'verdict', ['claims', 'planner', 'reviewer', 'verdict']],
   ] as const)('posts no verdict and marks the progress comment superseded when a push lands while %s', async (_label, pushDuring, calls) => {
     mockLLM.onCall = stage => {
       if (stage === pushDuring) mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
@@ -1115,7 +1117,7 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     expect(mockLLM.aborted).toEqual(['verdict']);
-    expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'judge', 'verdict']);
+    expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'verdict']);
     expect(core.setFailed).not.toHaveBeenCalled();
     expect(mockGitHub.reviews).toEqual([]);
     expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`. No verdict was posted');
