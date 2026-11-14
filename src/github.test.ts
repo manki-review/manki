@@ -5459,6 +5459,24 @@ describe('postReview non-blocking findings', () => {
     expect(titles(all.findings)).toEqual([...others, 'Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
     expect(all.unposted).toBeUndefined();
 
+    // A style note comes after every improvement note, whatever the judge's order, so it takes only a free place.
+    const cell = (row: 'improvement' | 'style') => ({ cell: { row, column: 'normal' as const } });
+    const rows = [
+      nonBlocking('note', 'Rename the flag', 20, { ...cell('style'), noteRank: 0 }),
+      nonBlocking('note', 'Fix the comment wording', 21, { ...cell('style'), noteRank: 1 }),
+      nonBlocking('note', 'Test the empty list', 22, { ...cell('improvement'), noteRank: 2 }),
+      nonBlocking('note', 'Reuse the parser', 23, { ...cell('improvement'), noteRank: 4 }),
+      nonBlocking('note', 'Document the limit', 24, { ...cell('improvement'), noteRank: 3 }),
+    ];
+    const improvementsFirst = buildResult([...rows]);
+    capNotes(improvementsFirst, []);
+    expect(titles(improvementsFirst.findings)).toEqual(['Test the empty list', 'Document the limit', 'Reuse the parser']);
+    expect(titles(improvementsFirst.unposted)).toEqual(['Rename the flag', 'Fix the comment wording']);
+    // With fewer improvement notes than places, the style notes fill the rest in the judge's order.
+    const styleFills = buildResult([...rows]);
+    capNotes(styleFills, [], 4);
+    expect(titles(styleFills.findings)).toEqual(['Test the empty list', 'Document the limit', 'Reuse the parser', 'Rename the flag']);
+
     // A tool alert is listed in the judge's order with the notes, takes no place and is never left out.
     const alerts = [nonBlocking('note', 'Unused import', 12, { toolSource: 'eslint', noteRank: 2 }), nonBlocking('note', 'Shadowed name', 13, { toolSource: 'eslint' })];
     const withAlerts = buildResult([alerts[0], ...findings.map(f => (f.title in ranks ? { ...f, noteRank: ranks[f.title] } : f)), alerts[1]]);
