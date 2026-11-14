@@ -28,7 +28,7 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.memory).toBe('object');
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
-      expect(DEFAULT_CONFIG.planner).toEqual({ enabled: true, paired: 'auto' });
+      expect(DEFAULT_CONFIG.planner).toEqual({ enabled: true });
       expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
@@ -347,18 +347,25 @@ memory:
       expect(config.memory.repo).toBe('');
     });
 
-    it('warns on unknown keys but does not fail', () => {
+    it('warns on unknown keys, removed ones included, but does not fail', () => {
       const yaml = `
 auto_review: true
 unknown_key: some_value
 another_unknown: 123
 nit_handling: comments
+review_level: large
+planner:
+  paired: never
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.auto_review).toBe(true);
-      expect(core.warning).toHaveBeenCalledWith('Unknown config key: "unknown_key"');
-      expect(core.warning).toHaveBeenCalledWith('Unknown config key: "another_unknown"');
-      expect(core.warning).toHaveBeenCalledWith('Unknown config key: "nit_handling"');
+      expect(jest.mocked(core.warning).mock.calls.map(c => c[0])).toEqual([
+        'Unknown config key: "unknown_key"',
+        'Unknown config key: "another_unknown"',
+        'Unknown config key: "nit_handling"',
+        'Unknown config key: "review_level"',
+        'Unknown config key: "planner.paired"',
+      ]);
     });
 
     it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
@@ -472,18 +479,6 @@ memory:
     it('names the file in schema errors', () => {
       expect(() => loadConfigFromContent('auto_approve: "no"\n', 'cfg/manki.yml'))
         .toThrow(/^Invalid config in cfg\/manki\.yml: /);
-    });
-
-    it('accepts `review_level`, `review_thresholds` and `stats` with a deprecation warning and drops them', () => {
-      const config = loadConfigFromContent('review_level: large\nreview_thresholds:\n  small: 500\n  medium: 100\nstats:\n  hidden: false\n');
-      expect(config).toEqual(DEFAULT_CONFIG);
-      for (const key of ['review_level', 'review_thresholds', 'stats']) {
-        expect(core.warning).toHaveBeenCalledWith(expect.stringContaining(`\`${key}\` is deprecated and ignored`));
-      }
-      expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('Unknown config key'));
-      const thresholds = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).find(m => m.startsWith('`review_thresholds`'));
-      expect(thresholds).toContain('the planner triage sets how many finders read each PR');
-      expect(thresholds).not.toContain('planner.paired');
     });
 
     it('ignores unknown keys during merge', () => {
@@ -752,15 +747,6 @@ models:
     it('rejects invalid planner.enabled type', () => {
       expect(() => loadConfig('planner:\n  enabled: "yes"\n')).toThrow();
     });
-
-    it('accepts each `planner.paired` pin and rejects any other value', () => {
-      for (const pin of ['auto', 'always', 'never']) {
-        expect(loadConfig(`planner:\n  paired: ${pin}\n`).planner).toEqual({ enabled: true, paired: pin });
-      }
-      expect(() => loadConfig('planner:\n  paired: sometimes\n')).toThrow('Invalid config');
-      expect(core.error).toHaveBeenCalledWith('`planner.paired` must be one of: auto, always, never');
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`planner.paired` is deprecated. Route classes to review groups with `review.routing` instead'));
-    });
   });
 
   describe('judge config', () => {
@@ -798,7 +784,7 @@ models:
     it('names the keys whose values differ, whatever their order in the file', () => {
       const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  reviewer_pair: gpt-5.5\nreview_passes: 2\n');
       expect(changedKeys(loadConfigFromContent('models:\n  reviewer_pair: gpt-5.5\n  judge: claude-opus-5-5\nreview_passes: 2\n'), base)).toEqual([]);
-      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nreview_passes: 2\nplanner:\n  paired: never\nstats: {}\n');
+      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nreview_passes: 2\nplanner:\n  enabled: false\n');
       expect(changedKeys(head, base)).toEqual(['exclude_paths', 'models', 'planner']);
     });
   });

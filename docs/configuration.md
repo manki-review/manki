@@ -222,15 +222,4 @@ memory:
 | `memory.repo` | `owner/name` | none | Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning. For a private repo, it must be private and have the same owner. |
 | `metrics` | map | none | Metrics Manki records. |
 | `metrics.fix_rate` | boolean | the value of `memory.enabled` | On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the repo's memory when memory is on. |
-
-### Deprecated settings
-
-These still load, with a warning.
-
-| Setting | Type | Default | What it does |
-|---------|------|---------|--------------|
-| `planner.paired` | `auto`, `always` or `never` | `auto` | Pins the planner's `paired` answer. Route classes with `review.routing` instead. |
-| `review_level` | any | none | Ignored. The planner sets how many finders read each PR. |
-| `review_thresholds` | any | none | Ignored. Line counts no longer size the review. |
-| `stats` | any | none | Ignored. The round record is always a hidden comment in the review. |
 <!-- config-reference:end -->

@@ -1221,7 +1221,7 @@ export interface ReviewGroup {
 export interface ReviewClassMatch {
   /** Globs or `@` path aliases, one of which some changed file must match. */
   paths_any?: string[];
-  /** Answers the triage, after `planner.paired` and the floor and file rules, must give. */
+  /** Answers the triage, after the floor and file rules, must give. */
   triage?: Partial<Triage>;
 }
 
@@ -1265,9 +1265,6 @@ export interface PlannerResult extends Triage {
 }
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
-
-
-export type PairedPin = 'auto' | 'always' | 'never';
 
 /** The `review` block of `.manki.yml`. Unset keys keep the built-ins. */
 export interface ReviewRoutingConfig {
@@ -1323,7 +1320,7 @@ export interface TeamRouting {
 export interface TeamRoster {
   finders: Finder[];
   routing: TeamRouting;
-  /** Triage after `planner.paired` and the floor and file rules. */
+  /** Triage after the floor and file rules. */
   triage: Triage;
   sensitivePaths: boolean;
   /** Whether the diff touches CI, automation or a dependency or toolchain manifest. */
@@ -1380,11 +1377,6 @@ export interface ReviewConfig {
   };
   planner?: {
     enabled?: boolean;
-    /**
-     * @deprecated Use `review.routing`. Pins the planner's `paired` answer. A floor class path,
-     * such as a security-sensitive one, still gets a pair.
-     */
-    paired?: PairedPin;
   };
   judge?: {
     /** Read-only repository tool calls the judge may make while it grades. 0 gives it none. */
@@ -2131,7 +2123,7 @@ export interface RoundPlanner {
    * timeout, parse failure). Free-text, capped, sanitized for logs.
    */
   fallbackReason?: string;
-  /** Triage the team was built from, after `planner.paired` and the sensitive-path rule. */
+  /** Triage the team was built from, after the floor and file rules. */
   trivial?: boolean;
   subtle?: boolean;
   paired?: boolean;

@@ -215,18 +215,15 @@ const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
 
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
- * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
- * before the PR is classified, and every floor class the PR matches is checked after routing.
+ * and each reader in the group becomes one finder. Every floor class the PR matches is checked after routing.
  * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group, where a finder the
  * earlier group had runs at least at that group's effort.
  * With `clients`, each finder is named and recorded by the effort its client sends. With `workspace`, the PR head
  * checked out for the tools, a finder whose client has repository tools also gets the checks on the related repos.
  */
 export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients, workspace?: string): TeamRoster {
-  const pin = config.planner?.paired ?? 'auto';
-  const pinned: Triage = { ...triage, paired: pin === 'auto' ? triage.paired : pin === 'always' };
   const routing = resolveRouting(config.review);
-  const classification = classifyPr(diff, pinned, routing.classes);
+  const classification = classifyPr(diff, triage, routing.classes);
   let choice: GroupChoice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
   let escalatedFrom: ReviewGroup | undefined;
   if (deeper && choice.group.reviewers.filter(r => r.role !== 'verifier').length < 2) {

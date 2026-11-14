@@ -13,6 +13,6 @@
 | Only blockers request changes. A warning, a security warning included, gets a thread that holds the approval until it is fixed or answered | No setting |
 | Provider CLIs get only the environment variables they need | No setting. Pass a provider's settings through its documented variables |
 | Codex reviewers have no shell, image reader or web search | No setting |
-| `stats` is ignored, and the round record is always hidden | No setting |
+| `stats` is gone, and the round record is always hidden | No setting. Remove `stats` from `.manki.yml` |
 
 See [Configuration](configuration.md) for every setting, and the [CHANGELOG](../CHANGELOG.md) for everything else that changed.

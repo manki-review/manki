@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, AUTHOR_CLEAR_ROLES, PairedPin, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig, RULES_MODES, SWEEP_MODES } from './types';
+import { ANALYZERS, AUTHOR_CLEAR_ROLES, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig, RULES_MODES, SWEEP_MODES } from './types';
 
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
@@ -44,7 +44,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   },
   planner: {
     enabled: true,
-    paired: 'auto',
   },
   judge: {
     tool_steps: 0,
@@ -93,8 +92,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'reviewers',
   'instructions',
   'project',
-  'review_level',
-  'review_thresholds',
   'memory',
   'models',
   'planner',
@@ -105,14 +102,9 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'drafts',
   'review_passes',
   'convergence',
-  'stats',
   'metrics',
 ]);
 
-// Accepted so older configs keep loading, then dropped.
-const IGNORED_KEYS = new Set(['review_level', 'review_thresholds', 'stats']);
-
-const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 const MAX_JUDGE_TOOL_STEPS = 100;
 
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
@@ -124,7 +116,7 @@ export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effor
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
-const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled', 'paired']);
+const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'rounds_after_restart', 'test_path_patterns', 'suppress_resolved_threads']);
@@ -198,13 +190,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     }
   }
 
-  if ('review_level' in config) {
-    warnings.push('`review_level` is deprecated and ignored. The planner triage now sets how many finders read each PR, from the nature of the change. To pin whether a second finder runs, use `planner.paired`.');
-  }
-  if ('review_thresholds' in config) {
-    warnings.push('`review_thresholds` is deprecated and ignored. Line counts no longer size the review: the planner triage sets how many finders read each PR, from the nature of the change.');
-  }
-
   if ('reviewers' in config) {
     if (!Array.isArray(config.reviewers)) {
       errors.push('`reviewers` must be an array');
@@ -267,12 +252,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       warnUnknownKeys(planner, PLANNER_KEYS, 'planner', warnings);
       if ('enabled' in planner && typeof planner.enabled !== 'boolean') {
         errors.push('`planner.enabled` must be a boolean');
-      }
-      if ('paired' in planner) {
-        if (!PAIRED_PINS.includes(planner.paired as PairedPin)) {
-          errors.push('`planner.paired` must be one of: auto, always, never');
-        }
-        warnings.push('`planner.paired` is deprecated. Route classes to review groups with `review.routing` instead: `always` is `behavior` and `internal` on a two-finder group, `never` is `behavior` on a one-finder group.');
       }
     }
   }
@@ -379,10 +358,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
         errors.push('`convergence.suppress_resolved_threads` must be a boolean');
       }
     }
-  }
-
-  if ('stats' in config) {
-    warnings.push('`stats` is deprecated and ignored. The round record is always a hidden comment in the review.');
   }
 
   if ('metrics' in config) {
@@ -653,7 +628,7 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
   const result = { ...defaults };
 
   for (const key of Object.keys(overrides)) {
-    if (!KNOWN_KEYS.has(key) || IGNORED_KEYS.has(key)) continue;
+    if (!KNOWN_KEYS.has(key)) continue;
 
     const value = overrides[key];
 
@@ -762,7 +737,7 @@ export function loadStaticAnalysisConfig(content: string | null, source = '.mank
 /** Returns the top-level keys whose values differ between the PR's config and the base branch's. */
 export function changedKeys(head: ReviewConfig, base: ReviewConfig): string[] {
   const values = (config: ReviewConfig) => config as unknown as Record<string, unknown>;
-  return [...KNOWN_KEYS].filter(key => !IGNORED_KEYS.has(key) && canonicalJson(values(head)[key]) !== canonicalJson(values(base)[key]));
+  return [...KNOWN_KEYS].filter(key => canonicalJson(values(head)[key]) !== canonicalJson(values(base)[key]));
 }
 
 export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
