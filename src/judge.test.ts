@@ -2721,7 +2721,7 @@ describe('runJudgeAgent', () => {
     const carriedWarnings: CarriedWarning[] = [
       carried('Wait ignores the limit', 16, { description: 'The handler\nwaits forever.', currentLine: 20, currentCode: '>>> 20:   await waitFor(limit);' }),
       carried('Token kept after logout', 30, { codeUnread: true }),
-      carried('Retry has no cap', 40),
+      carried('Retry has no cap', 40, { currentCode: '>>> 40:   stale();' }),
       carried('Cache never cleared', 50),
     ];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [], carriedEvaluations: [
@@ -2744,10 +2744,12 @@ describe('runJudgeAgent', () => {
     expect(systemPrompt).toContain('"carriedEvaluations": [');
     expect(userMessage).toContain('## Earlier Warnings in the Review Body');
     expect(userMessage).toContain('- **C1**: "Wait ignores the limit" at src/auth.ts:20. The handler waits forever.');
-    expect(userMessage).toContain('- **C2**: "Token kept after logout" at src/auth.ts:30.\n');
     // A warning shows the code around its line when its file was read, and says so when it was not.
     expect(userMessage).toContain('The handler waits forever.\n```\n>>> 20:   await waitFor(limit);\n```\n- **C2**');
-    expect(userMessage).toContain('- **C2**: "Token kept after logout" at src/auth.ts:30.\n- **The fix may not be shown**: The current code of `src/auth.ts` is not shown, as the file could not be read in full this round. Do not call this warning addressed from code you cannot see.');
+    expect(userMessage).toContain('- **C2**: "Token kept after logout" in src/auth.ts, at line 30 in an earlier round.\n- **The fix may not be shown**: The current code of `src/auth.ts` is not shown, as the file could not be read in full this round. Do not call this warning addressed from code you cannot see.\n- **C3**');
+    // A warning whose line could not be found at the head shows no code, even code from the line it had earlier, and says why.
+    expect(userMessage).toContain('- **C3**: "Retry has no cap" in src/auth.ts, at line 40 in an earlier round.\n- **The fix may not be shown**: The line it pointed at could not be found at the head, so no code is shown. Do not call this warning addressed from code you cannot see.\n- **C4**');
+    expect(userMessage).not.toContain('stale();');
     // Without open threads the round still shows the diff since the last round, and no thread sections.
     expect(userMessage).toContain('## Inter-Round Diff');
     expect(userMessage).toContain('+new');
@@ -2901,7 +2903,7 @@ describe('runJudgeAgent', () => {
 
     // The file of an earlier warning goes first too.
     mockSendMessage.mockClear();
-    const warning: CarriedWarning = { ...makeFindingFingerprintEntry({ title: 'Retry has no cap', file: 'src/b.ts', lineStart: 3 }), posted: 'body', raisedIn: 1, citedLine: { hash: 'abcdefabcdef', count: 1 }, currentCode: '>>> 3: retry();' };
+    const warning: CarriedWarning = { ...makeFindingFingerprintEntry({ title: 'Retry has no cap', file: 'src/b.ts', lineStart: 3 }), posted: 'body', raisedIn: 1, citedLine: { hash: 'abcdefabcdef', count: 1 }, currentLine: 3, currentCode: '>>> 3: retry();' };
     await runJudgeAgent(mockClient, makeConfig(), {
       findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, carriedWarnings: [warning],
       priorRounds: priorRounds.map(roundContextFromLegacy),

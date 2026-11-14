@@ -1382,7 +1382,8 @@ export async function runReview(
     usesOutsideDiff,
     carriedWarnings: carriedWarnings.map(e => ({
       ...e,
-      currentCode: extractCurrentCodeWindow(fileContents?.has(e.fingerprint.file) ? fileContents : options.carriedFileContents, e.fingerprint.file, e.currentLine ?? e.fingerprint.lineStart),
+      // The line of the round that listed the warning may hold other code by now, so only a located line gives a window.
+      ...(e.currentLine !== undefined && { currentCode: extractCurrentCodeWindow(fileContents?.has(e.fingerprint.file) ? fileContents : options.carriedFileContents, e.fingerprint.file, e.currentLine) }),
       ...(options.unreadFiles?.has(e.fingerprint.file) && { codeUnread: true }),
     })),
   };

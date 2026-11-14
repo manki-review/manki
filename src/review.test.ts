@@ -5204,7 +5204,7 @@ describe('runReview', () => {
     ];
     // The judge is asked about the warning the last review body listed, and not about the one in a thread.
     const cited = { hash: 'abcdefabcdef', count: 1 };
-    const listed = { ...makeFindingFingerprintEntry({ title: 'Retry never ends', file: 'src/a.ts', lineStart: 4 }), posted: 'body' as const, citedLine: cited };
+    const listed = { ...makeFindingFingerprintEntry({ title: 'Retry never ends', file: 'src/a.ts', lineStart: 4 }), posted: 'body' as const, citedLine: cited, currentLine: 4 };
     const inThread = { ...makeFindingFingerprintEntry({ title: 'Cache never cleared', file: 'src/a.ts', lineStart: 8 }), threadId: 'T1', citedLine: cited };
     const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: {}, entries: [listed, inThread] } })];
 
@@ -5255,6 +5255,15 @@ describe('runReview', () => {
       });
       expect(mockedRunJudgeAgent.mock.calls[0][2].carriedWarnings).toEqual([{ ...listed, currentCode: expect.stringContaining('>>> 4: retry();'), ...(unreadFiles && { codeUnread: true }) }]);
     }
+    // A warning whose line no single place at the head reads like gets no window from the line it had earlier.
+    mockedRunJudgeAgent.mockClear();
+    const { currentLine: _located, ...unlocated } = listed;
+    await runReview(clients, {
+      config, diff, rawDiff: 'raw diff', repoContext: 'repo context', previousFindings,
+      priorRounds: [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [unlocated] } })],
+      fileContents: new Map([['src/a.ts', 'one\ntwo\nthree\nretry();\nfive']]),
+    });
+    expect(mockedRunJudgeAgent.mock.calls[0][2].carriedWarnings?.[0].currentCode).toBeUndefined();
   });
 
   it('propagates agree-reply inPrSuppression when prAuthorLogin matches reply author', async () => {
