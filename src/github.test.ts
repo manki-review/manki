@@ -2593,8 +2593,9 @@ describe('fetchFileContents', () => {
         repos: {
           getContent: jest.fn(async ({ path }: { path: string }) => {
             const entry = files[path];
-            if (!entry || entry === 'error') {
-              throw new Error(`Not found: ${path}`);
+            if (!entry) throw Object.assign(new Error(`Not found: ${path}`), { status: 404 });
+            if (entry === 'error') {
+              throw Object.assign(new Error(`Forbidden: ${path}`), { status: 403 });
             }
             return {
               data: {
@@ -2649,9 +2650,12 @@ describe('fetchFileContents', () => {
       'missing.ts': 'error',
     });
 
-    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['good.ts', 'missing.ts']);
+    const notFound = new Set<string>();
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['good.ts', 'missing.ts', 'gone.ts'], undefined, undefined, [], notFound);
     expect(result.size).toBe(1);
     expect(result.get('good.ts')).toBe('ok');
+    // Only a file that is not at the ref counts as not found, never one whose read failed.
+    expect(notFound).toEqual(new Set(['gone.ts']));
   });
 
   it('respects maxTotalSize budget', async () => {

@@ -3366,6 +3366,7 @@ const DEFAULT_MAX_TOTAL_SIZE = 400 * 1024;
  * Fetch file contents for changed files via the GitHub API.
  * Skips binary files and files exceeding the size limit.
  * If total content exceeds the budget, includes the files in `first` in their order, then the largest of the rest, as many as fit.
+ * Adds each file that is not at `ref` to `notFound`, so a caller can tell a file that is gone from one it failed to read.
  */
 export async function fetchFileContents(
   octokit: Octokit,
@@ -3376,6 +3377,7 @@ export async function fetchFileContents(
   maxFileSize: number = DEFAULT_MAX_FILE_SIZE,
   maxTotalSize: number = DEFAULT_MAX_TOTAL_SIZE,
   first: readonly string[] = [],
+  notFound?: Set<string>,
 ): Promise<Map<string, string>> {
   const results: Array<{ path: string; content: string }> = [];
 
@@ -3401,7 +3403,8 @@ export async function fetchFileContents(
       }
 
       return { path, content };
-    } catch {
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) notFound?.add(path);
       core.debug(`Could not fetch ${path}`);
       return null;
     }
