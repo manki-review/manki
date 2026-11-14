@@ -953,8 +953,8 @@ describe('runBench and buildReport', () => {
     }
   });
 
-  it('prints long runs of blank lines, spaces, tabs and carriage returns in outside text without slowing down', async () => {
-    for (const unit of ['\n', ' ', '\t', '\r', ' \t\r\n\n \r']) {
+  it('prints long runs of blank lines, spaces, tabs, carriage returns and Unicode line breaks in outside text without slowing down', async () => {
+    for (const unit of ['\n', ' ', '\t', '\r', ' \t\r\n\n \r', '\u2028', '\u2029', ' \u2028\u0085\u2029']) {
       const inputs = new Map<number, { long: string; report: BenchReport }>();
       const inputOf = async (size: number) => {
         if (!inputs.has(size)) {

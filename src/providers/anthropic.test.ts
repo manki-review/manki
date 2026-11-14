@@ -5,7 +5,7 @@ import { join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, readClaudeLimits, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, readClaudeLimits, STALE_TIMEOUT_MS } from './anthropic';
 import { runnerDiagnostics } from '../run-diagnostics';
 import { installPinned } from '../tool-install';
 import { RelatedRepoTools } from '../types';
@@ -1514,15 +1514,15 @@ describe('sendViaOAuth — stale process detection', () => {
 
       await jest.advanceTimersByTimeAsync(0);
 
-      stdoutCb!(Buffer.from('before ::set-output::val'));
-      stderrCb!(Buffer.from('err ::error::bad'));
+      stdoutCb!(Buffer.from('before\n::set-output::val'));
+      stderrCb!(Buffer.from('err\r::error::bad'));
 
       await jest.advanceTimersByTimeAsync(STALE_TIMEOUT_MS);
       closeCb!(null, 'SIGTERM');
 
       const err = await promise.catch((e: unknown) => e) as Error;
-      expect(err.message).toContain('before [redacted-workflow-cmd]');
-      expect(err.message).toContain('err [redacted-workflow-cmd]');
+      expect(err.message).toContain('before\n[redacted-workflow-cmd]');
+      expect(err.message).toContain('err\r[redacted-workflow-cmd]');
       expect(err.message).not.toContain('::set-output');
       expect(err.message).not.toContain('::error');
     } finally {
@@ -1568,7 +1568,7 @@ describe('sendViaOAuth — stale process detection', () => {
       // The last keepalive contains a workflow command to verify stdout sanitization.
       for (let i = 0; i < 14; i++) {
         await jest.advanceTimersByTimeAsync(80_000);
-        const payload = i === 13 ? 'stdout ::set-env name=X::val' : `keepalive-${i}`;
+        const payload = i === 13 ? 'stdout\n  ::set-env name=X::val' : `keepalive-${i}`;
         stdoutCb!(Buffer.from(payload));
       }
 
@@ -1625,58 +1625,6 @@ describe('sendViaOAuth — stale process detection', () => {
     } finally {
       jest.useRealTimers();
     }
-  });
-});
-
-describe('sanitizeLogOutput', () => {
-  it('strips ::set-output workflow commands', () => {
-    expect(sanitizeLogOutput('before ::set-output name=val::data'))
-      .toBe('before [redacted-workflow-cmd]');
-  });
-
-  it('strips ::error commands', () => {
-    expect(sanitizeLogOutput('::error::something bad')).toBe('[redacted-workflow-cmd]');
-  });
-
-  it('strips ::warning commands', () => {
-    expect(sanitizeLogOutput('::warning::msg')).toBe('[redacted-workflow-cmd]');
-  });
-
-  it('strips ::set-env commands', () => {
-    expect(sanitizeLogOutput('::set-env name=FOO::bar')).toBe('[redacted-workflow-cmd]');
-  });
-
-  it('consumes the entire line after :: message marker', () => {
-    expect(sanitizeLogOutput('prefix ::error::msg trailing'))
-      .toBe('prefix [redacted-workflow-cmd]');
-  });
-
-  it('handles multiple commands on separate lines', () => {
-    const input = 'line1\n::error::bad\nline2\n::warning::also bad';
-    const result = sanitizeLogOutput(input);
-    expect(result).toBe('line1\n[redacted-workflow-cmd]\nline2\n[redacted-workflow-cmd]');
-  });
-
-  it('leaves normal text unchanged', () => {
-    expect(sanitizeLogOutput('just normal output')).toBe('just normal output');
-  });
-
-  it('handles empty string', () => {
-    expect(sanitizeLogOutput('')).toBe('');
-  });
-
-  it('is case-insensitive', () => {
-    expect(sanitizeLogOutput('::SET-OUTPUT::val')).toBe('[redacted-workflow-cmd]');
-  });
-
-  it('handles colons in parameters', () => {
-    expect(sanitizeLogOutput('::error file=src/foo.ts,line=5,col=10::Something failed: timeout'))
-      .toBe('[redacted-workflow-cmd]');
-  });
-
-  it('strips command with complex parameter values containing colons', () => {
-    expect(sanitizeLogOutput('prefix ::warning file=a:b::msg:with:colons'))
-      .toBe('prefix [redacted-workflow-cmd]');
   });
 });
 

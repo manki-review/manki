@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -131,11 +131,6 @@ export function buildOpenAIAuth(oauthToken: string, apiKey: string): OpenAIAuth 
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
   throw new Error('Either openai_oauth_token or openai_api_key must be provided');
-}
-
-/** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
-export function sanitizeLogOutput(text: string): string {
-  return text.replace(/^::[a-z].*$/gim, '[redacted-workflow-cmd]');
 }
 
 type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';

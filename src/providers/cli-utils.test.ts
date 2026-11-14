@@ -43,6 +43,31 @@ describe('sanitizeLogOutput', () => {
   it('redacts workflow commands case-insensitively on the command letter', () => {
     // The regex uses /i so ::Error:: and ::ERROR:: are both matched
     expect(sanitizeLogOutput('::Error::msg')).toBe('[redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('::SET-ENV name=X::val')).toBe('[redacted-workflow-cmd]');
+  });
+
+  it('redacts a command whose parameters hold colons', () => {
+    expect(sanitizeLogOutput('::error file=src/foo.ts,line=5,col=10::Something failed: timeout')).toBe('[redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('line1\n::warning file=a:b::msg:with:colons\nline2')).toBe('line1\n[redacted-workflow-cmd]\nline2');
+  });
+
+  it('keeps `::` in the middle of a line, where a runner reads no command', () => {
+    expect(sanitizeLogOutput('use std::fmt::Display here')).toBe('use std::fmt::Display here');
+    expect(sanitizeLogOutput('caller foo::bar::baz failed\nA line :: with colons')).toBe('caller foo::bar::baz failed\nA line :: with colons');
+    expect(sanitizeLogOutput('prefix ::error::msg trailing')).toBe('prefix ::error::msg trailing');
+  });
+
+  it('redacts a command after whitespace or control characters at the start of a line', () => {
+    expect(sanitizeLogOutput('  ::warning::msg')).toBe('  [redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('ok\n\t ::add-mask::secret')).toBe('ok\n\t [redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('\u00a0\u0085\u0000\u2003::set-output name=a::b')).toBe('\u00a0\u0085\u0000\u2003[redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('a\n\n  ::error::x')).toBe('a\n\n  [redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('a\n \u2028 ::error::x')).toBe('a\n \u2028 [redacted-workflow-cmd]');
+  });
+
+  it('counts a bare `\\r` as a line break, as a runner does', () => {
+    expect(sanitizeLogOutput('ok\r::error::x')).toBe('ok\r[redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('ok\r\n  ::error::x\rnext')).toBe('ok\r\n  [redacted-workflow-cmd]\rnext');
   });
 
   it('redacts the older ##[command] form, which a runner reads anywhere in a line', () => {
@@ -515,11 +540,9 @@ describe('extractCliErrorSnippet', () => {
     expect(extractCliErrorSnippet(stderr, 100)).toBe('a'.repeat(100));
   });
 
-  it('sanitizes workflow commands inside an ERROR line', () => {
-    const stderr = 'ERROR: ::warning::leaked secret here';
-    const snippet = extractCliErrorSnippet(stderr);
-    expect(snippet).not.toContain('::warning');
-    expect(snippet).toContain('[redacted-workflow-cmd]');
+  it('sanitizes workflow commands that start a line of stderr', () => {
+    expect(extractCliErrorSnippet('boom\r  ::warning::leaked secret here')).toBe('boom\r  [redacted-workflow-cmd]');
+    expect(extractCliErrorSnippet('ERROR: std::io::Error in ::warning::text')).toBe('ERROR: std::io::Error in ::warning::text');
   });
 
   it('handles ERROR lines with surrounding whitespace', () => {

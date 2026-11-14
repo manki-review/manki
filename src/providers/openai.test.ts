@@ -12,7 +12,6 @@ import {
   resetCLIInstallPromise,
   resolveCodexHome,
   resolveReasoningEffort,
-  sanitizeLogOutput,
   STALE_TIMEOUT_MS,
 } from './openai';
 import { QuotaError, RefusalError } from './types';
@@ -857,39 +856,6 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
     await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Codex CLI spawn failed: ENOENT');
-  });
-});
-
-describe('sanitizeLogOutput', () => {
-  it('redacts workflow commands', () => {
-    expect(sanitizeLogOutput('::set-env name=X::val')).toBe('[redacted-workflow-cmd]');
-    expect(sanitizeLogOutput('::add-mask::secret')).toBe('[redacted-workflow-cmd]');
-    expect(sanitizeLogOutput('::error file=foo.ts,line=5::message')).toBe('[redacted-workflow-cmd]');
-  });
-
-  it('does not touch regular text', () => {
-    expect(sanitizeLogOutput('hello world')).toBe('hello world');
-    expect(sanitizeLogOutput('A line :: with double colons mid-text')).toBe('A line :: with double colons mid-text');
-  });
-
-  it('does not redact `::identifier` patterns mid-line', () => {
-    // `^` anchor (with multiline flag) ensures `std::io::Error` and similar
-    // namespace syntax in code output is preserved.
-    expect(sanitizeLogOutput('error: std::io::Error at module::path')).toBe('error: std::io::Error at module::path');
-    expect(sanitizeLogOutput('caller foo::bar::baz failed')).toBe('caller foo::bar::baz failed');
-  });
-
-  it('redacts per line in multiline input', () => {
-    const input = 'safe line\n::set-env name=X::val\nother safe';
-    expect(sanitizeLogOutput(input)).toBe('safe line\n[redacted-workflow-cmd]\nother safe');
-  });
-
-  it('redacts case-insensitively', () => {
-    expect(sanitizeLogOutput('::SET-ENV name=X::val')).toBe('[redacted-workflow-cmd]');
-  });
-
-  it('returns empty string unchanged', () => {
-    expect(sanitizeLogOutput('')).toBe('');
   });
 });
 
