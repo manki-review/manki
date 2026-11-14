@@ -1279,47 +1279,44 @@ describe('selectTeam', () => {
     const docs = [file('README.md')];
     const tests = [file('src/format.test.ts'), file('src/__tests__/util.ts')];
     const t = (trivial: boolean, subtle: boolean, paired: boolean) => ({ trivial, subtle, paired });
-    type Row = [string, DiffFile[], ReturnType<typeof t> | undefined, 'auto' | 'always' | 'never', string, string[]];
-    const run = ([, files, triage, paired]: Row) => selectTeam(makeDiff({ files }), makeConfig({ planner: { enabled: true, paired } }), triage);
+    type Row = [string, DiffFile[], ReturnType<typeof t> | undefined, string, string[]];
+    const run = ([, files, triage]: Row) => selectTeam(makeDiff({ files }), makeConfig(), triage);
     const readers = names;
 
     // Each row gives the same finders as the selection before review classes existed.
     it.each<Row>([
-      ['code, nothing set', code, t(false, false, false), 'auto', 'internal', [`${S} · medium`]],
-      ['code, subtle', code, t(false, true, false), 'auto', 'internal', [`${S} · high`]],
-      ['code, paired', code, t(false, false, true), 'auto', 'behavior', [`${S} · medium`, `${O} · medium`]],
-      ['code, subtle and paired', code, t(false, true, true), 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
-      ['code the planner called trivial', code, t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
-      ['code the planner called trivial and paired', code, t(true, true, true), 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
-      ['no triage', code, undefined, 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
-      ['docs called trivial and paired', docs, t(true, true, true), 'auto', 'docs', [verifier]],
-      ['docs not called trivial', docs, t(false, false, false), 'auto', 'internal', [`${S} · medium`]],
-      ['docs and a deletion', [file('docs/a.md'), file('src/old.ts', 'deleted', '-code')], t(true, false, false), 'auto', 'docs', [verifier]],
-      ['an unchanged rename', [{ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] }], t(true, false, false), 'auto', 'docs', [verifier]],
-      ['a rename with edits', [file('src/b.ts', 'renamed')], t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
-      ['code pinned never', code, t(false, true, true), 'never', 'internal', [`${S} · high`]],
-      ['code pinned always', code, t(false, false, false), 'always', 'behavior', [`${S} · medium`, `${O} · medium`]],
-      ['docs pinned always', docs, t(true, false, false), 'always', 'docs', [verifier]],
-      ['a security path called trivial, pinned never', [file('src/auth/session.ts')], t(true, false, false), 'never', 'security', [`${S} · medium`, `${O} · medium`]],
-      ['docs and a security path', [...docs, file('src/token.ts')], t(true, false, false), 'auto', 'security', [`${S} · medium`, `${O} · medium`]],
-      ['a workflow called trivial, pinned never', [file('.github/workflows/ci.yml')], t(true, false, false), 'never', 'supply_chain', [`${S} · medium`, `${O} · medium`]],
+      ['code, nothing set', code, t(false, false, false), 'internal', [`${S} · medium`]],
+      ['code, subtle', code, t(false, true, false), 'internal', [`${S} · high`]],
+      ['code, paired', code, t(false, false, true), 'behavior', [`${S} · medium`, `${O} · medium`]],
+      ['code, subtle and paired', code, t(false, true, true), 'behavior', [`${S} · high`, `${O} · high`]],
+      ['code the planner called trivial', code, t(true, false, false), 'internal', [`${S} · medium`]],
+      ['code the planner called trivial and paired', code, t(true, true, true), 'behavior', [`${S} · high`, `${O} · high`]],
+      ['no triage', code, undefined, 'behavior', [`${S} · high`, `${O} · high`]],
+      ['docs called trivial and paired', docs, t(true, true, true), 'docs', [verifier]],
+      ['docs not called trivial', docs, t(false, false, false), 'internal', [`${S} · medium`]],
+      ['docs and a deletion', [file('docs/a.md'), file('src/old.ts', 'deleted', '-code')], t(true, false, false), 'docs', [verifier]],
+      ['an unchanged rename', [{ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] }], t(true, false, false), 'docs', [verifier]],
+      ['a rename with edits', [file('src/b.ts', 'renamed')], t(true, false, false), 'internal', [`${S} · medium`]],
+      ['a security path called trivial', [file('src/auth/session.ts')], t(true, false, false), 'security', [`${S} · medium`, `${O} · medium`]],
+      ['docs and a security path', [...docs, file('src/token.ts')], t(true, false, false), 'security', [`${S} · medium`, `${O} · medium`]],
+      ['a workflow called trivial', [file('.github/workflows/ci.yml')], t(true, false, false), 'supply_chain', [`${S} · medium`, `${O} · medium`]],
     ])('routes %s as before', (...row) => {
       const team = run(row);
-      expect([team.routing.class, readers(team)]).toEqual([row[4], row[5]]);
+      expect([team.routing.class, readers(team)]).toEqual([row[3], row[4]]);
       // Tool steps by risk: 8 for the quick check, 40 for two finders, 30 for one.
-      const steps = row[5][0] === verifier ? 8 : row[5].length === 2 ? 40 : 30;
-      expect(team.finders.map(f => f.steps)).toEqual(row[5].map(() => steps));
+      const steps = row[4][0] === verifier ? 8 : row[4].length === 2 ? 40 : 30;
+      expect(team.finders.map(f => f.steps)).toEqual(row[4].map(() => steps));
     });
 
     it('routes what fetches or builds code and the review config to two finders, and never calls build or agent files trivial', () => {
       for (const path of ['.gitmodules', 'lib/.gitattributes', '.npmrc', '.yarnrc.yml', 'build.rs', 'setup.py', 'tools/Makefile', '.husky/pre-commit', '.manki.yml', '.github/manki.yml', 'config/.manki.yaml']) {
-        const team = run([path, [file(path)], t(true, false, false), 'never', '', []]);
+        const team = run([path, [file(path)], t(true, false, false), '', []]);
         expect([path, team.routing.class, readers(team)]).toEqual([path, 'supply_chain', [`${S} · medium`, `${O} · medium`]]);
       }
       for (const path of ['docs/conf.py', 'CMakeLists.txt', 'AGENTS.md', 'pkg/claude.md', '.github/copilot-instructions.md', '.github/instructions/ts.instructions.md', '.claude/agents/review.md', '.cursor/rules/style.md']) {
-        expect([path, run([path, [file(path)], t(true, false, false), 'auto', '', []]).routing.class]).toEqual([path, 'internal']);
+        expect([path, run([path, [file(path)], t(true, false, false), '', []]).routing.class]).toEqual([path, 'internal']);
       }
-      expect(run(['', [file('docs/guide.md'), file('README.md')], t(true, false, false), 'auto', '', []]).routing.class).toBe('docs');
+      expect(run(['', [file('docs/guide.md'), file('README.md')], t(true, false, false), '', []]).routing.class).toBe('docs');
     });
 
     it('runs two finders on every group at xhigh, or one level above a set effort, on a deeper review', () => {
@@ -1342,7 +1339,7 @@ describe('selectTeam', () => {
       expect(readers(selectTeam(makeDiff({ files: code }), xhigh, t(false, true, true), true))).toEqual([`${S} · max`, `${O} · max`]);
       expect(pair.routing.deeperSameEffort).toBeUndefined();
 
-      expect(run(['', code, t(false, false, false), 'auto', '', []]).routing.deeper).toBeUndefined();
+      expect(run(['', code, t(false, false, false), '', []]).routing.deeper).toBeUndefined();
     });
 
     it('names and records a finder by the effort its client sends, and lists the finders a deeper review gives no more effort', () => {
@@ -1416,7 +1413,7 @@ describe('selectTeam', () => {
     it('gives a tests-only change one full finder, where the trivial verifier read it before', () => {
       for (const files of [tests, [...tests, ...docs], [file('src/__snapshots__/a.snap'), file('tests/fixture.json')]]) {
         for (const triage of [t(true, false, false), t(false, false, false)]) {
-          const team = run(['', files, triage, 'auto', '', []]);
+          const team = run(['', files, triage, '', []]);
           expect([team.routing.class, team.routing.group, readers(team)]).toEqual(['internal', 'solo', [`${S} · medium`]]);
         }
       }
@@ -1424,17 +1421,17 @@ describe('selectTeam', () => {
 
     it('gives a data contract change two finders as a floor class, where the triage decided before', () => {
       for (const path of ['db/migrations/0001_init.ts', 'schema/users.sql', 'proto/api.proto', 'src/schema.graphql', 'openapi.yaml']) {
-        const team = run(['', [file(path)], t(true, false, false), 'never', '', []]);
+        const team = run(['', [file(path)], t(true, false, false), '', []]);
         expect([path, team.routing.class, team.routing.group, readers(team)]).toEqual([path, 'data_contract', 'pair', [`${S} · medium`, `${O} · medium`]]);
         expect(team.trivialOverridden).toBe(true);
       }
     });
   });
 
-  it('gives a CI, automation or dependency change two finders, even when the planner calls it trivial and the pin says never', () => {
+  it('gives a CI, automation or dependency change two finders, even when the planner calls it trivial', () => {
     const hunk = [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+change' }];
     for (const path of ['.github/workflows/ci.yml', 'package.json', 'action.yml', 'Cargo.lock', 'requirements-dev.txt', 'tools/Dockerfile.ci', '.nvmrc', 'config.json']) {
-      const team = selectTeam(makeDiff({ files: [{ path, changeType: 'modified', hunks: hunk }] }), makeConfig({ planner: { enabled: true, paired: 'never' } }), { trivial: true, subtle: false, paired: false });
+      const team = selectTeam(makeDiff({ files: [{ path, changeType: 'modified', hunks: hunk }] }), makeConfig(), { trivial: true, subtle: false, paired: false });
       const forced = path !== 'config.json';
       expect([path, team.ciOrDependencyPaths]).toEqual([path, forced]);
       expect(team.trivialOverridden).toBe(true);
@@ -1480,21 +1477,11 @@ describe('selectTeam', () => {
     expect(team.finders.map(f => f.effort)).toEqual(['high', 'high']);
   });
 
-  it('forces `trivial: false` and `paired: true` on a security-sensitive path, over the planner and the pin', () => {
-    for (const paired of ['auto', 'never'] as const) {
-      const team = selectTeam(authDiff, makeConfig({ planner: { enabled: true, paired } }), { trivial: true, subtle: false, paired: false });
-      expect(team.sensitivePaths).toBe(true);
-      expect(team.triage).toEqual({ trivial: false, subtle: false, paired: true });
-      expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
-    }
-  });
-
-  it('pins `paired` with `planner.paired` on other paths', () => {
-    const never = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(never)).toEqual(['Claude Sonnet 5.5 · high']);
-    const always = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'always' } }), { trivial: false, subtle: true, paired: false });
-    expect(names(always)).toHaveLength(2);
-    expect(always.sensitivePaths).toBe(false);
+  it('forces `trivial: false` and `paired: true` on a security-sensitive path, over the planner', () => {
+    const team = selectTeam(authDiff, makeConfig(), { trivial: true, subtle: false, paired: false });
+    expect(team.sensitivePaths).toBe(true);
+    expect(team.triage).toEqual({ trivial: false, subtle: false, paired: true });
+    expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
   });
 
   it('folds custom reviewers into the one checklist every finder runs', () => {
@@ -1505,7 +1492,7 @@ describe('selectTeam', () => {
     const [focus, second] = team.finders.map(f => f.prompt.focus);
     expect(second).toBe(focus);
     expect(focus).toMatch(/^defects in the change\. Check, in this order:\n1\. Correctness/);
-    const solo = selectTeam(plainDiff, makeConfig({ reviewers, planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
+    const solo = selectTeam(plainDiff, makeConfig({ reviewers }), { trivial: false, subtle: true, paired: false });
     expect(solo.finders.map(f => f.prompt.focus)).toEqual([focus]);
     expect(focus).toContain('This repository also asks you to check:\n- API Compatibility: public API changes keep old clients working');
     for (const check of [
