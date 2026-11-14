@@ -5,14 +5,13 @@ import { assertWritesAllowed } from './abort';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, plainRepoPath, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, pushTouchesThread, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ParsedDiff, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
-import { locationFile } from './refute';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { CheckedReply, MAX_REPLY_STATEMENTS, checkReply, statementList, statementRecords, statementSummary } from './reply-check';
 import { formatReplyRecord } from './review-record';
@@ -327,19 +326,14 @@ function requireNewProof(reply: string, finding: string, file: string | undefine
 }
 
 /**
- * Returns why no review can confirm the fix that a "Fixed." answer's `proof` cites, or nothing when one can. A review
- * confirms a fix on a guarded thread only after a push to its `file` or a file in `evidenceFiles`. So it never confirms
- * one on a thread tied to no file, or one whose cited lines all lie in other files. A cited path that is no plain
- * repository path cannot be compared, so it says nothing.
+ * Returns the sentence a "Fixed." answer on a guarded thread gets, which says when a review can confirm the fix. A
+ * review confirms one only after a push changes the thread's `file` or a file in `evidenceFiles`, so on a thread tied
+ * to no file it never does, and the answer turns into "Unverified.".
  */
-function unconfirmableFix(proof: readonly string[], file: string, evidenceFiles: string[] | undefined): string | undefined {
-  if (!file) return 'This finding is not tied to a file, so a review cannot confirm the fix.';
-  const paths = proof.map(location => plainRepoPath(locationFile(location)));
-  if (paths.length === 0 || paths.some(path => path === undefined)) return undefined;
-  const files = [...new Set(paths as string[])];
-  if (pushTouchesThread({ file, evidenceFiles }, new Set(files))) return undefined;
-  const where = files.length === 1 ? `${inline(files[0])}, a file` : `${files.map(inline).join(', ')}, files`;
-  return `The fix is in ${where} this finding did not cite, so a review cannot confirm it.`;
+function fixReviewNote(reply: string, file: string, evidenceFiles: string[] = []): string {
+  if (!file) return `${reply.replace(FIXED_REPLY_RE, '$1Unverified.$2')} This finding is not tied to a file, so a review cannot confirm the fix.`;
+  const cited = evidenceFiles.length > 0 ? ` or a file its finding cited (${evidenceFiles.map(inline).join(', ')})` : '';
+  return `${reply} A review confirms the fix only after a push changes the thread's file ${inline(file)}${cited}.`;
 }
 
 /**
@@ -527,10 +521,11 @@ export async function handleReviewCommentReply(
     // Every other answer reopens it with the note. The note's marker stops every later reopen, so the thread opens before the answer is posted.
     const noted = !!reopenNote && !!live && posts && !clears && await reopenThread(octokit, live.id);
     const staysOpen = !!thread && !mayClear && !noted && (thread.isResolved ? held : isGuarded(thread));
-    // A "Fixed." that no review can confirm turns into "Unverified.", so the guarded thread it leaves open hears who clears it.
-    const unconfirmable = outcome === 'Fixed' && (staysOpen || noted) ? unconfirmableFix(checked.proof, filePath, parseFindingData(findingBody)?.evidenceFiles) : undefined;
-    const answer = unconfirmable ? `${reply.replace(FIXED_REPLY_RE, '$1Unverified.$2')} ${unconfirmable}` : reply;
-    const settled = unconfirmable ? undefined : outcome;
+    // A "Fixed." that leaves a guarded thread open says when a review can confirm the fix. No review ever confirms one on
+    // a thread tied to no file, so that answer is "Unverified." and the thread hears who clears it.
+    const leftOpen = outcome === 'Fixed' && (staysOpen || noted);
+    const answer = leftOpen ? fixReviewNote(reply, filePath, parseFindingData(findingBody)?.evidenceFiles) : reply;
+    const settled = leftOpen && !filePath ? undefined : outcome;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;

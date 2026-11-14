@@ -176,11 +176,7 @@ describe('checkReply', () => {
   ])('lets the proof only ever turn an outcome into Unverified: %s %s', (outcome, _name, proof, text) => {
     // Every statement is confirmed, which changes nothing.
     const statements = [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }];
-    const checked = checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources);
-    expect(checked.text).toBe(text);
-    // Only a line of the PR that exists is kept as the answer's proof, never a related line.
-    const existing = Array.isArray(proof) && proof.includes('src/ledger.rs:3') && outcome !== 'Resolved' ? ['src/ledger.rs:3'] : [];
-    expect(checked.proof).toEqual(existing);
+    expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text).toBe(text);
   });
 
   it.each([
@@ -189,7 +185,7 @@ describe('checkReply', () => {
     ['no answer', '{"outcome": "Withdrawn", "proof": ["src/ledger.rs:3"]}'],
   ])('answers Unverified when the model returns %s', (_name, content) => {
     expect(checkReply(content, REPLY, sources)).toEqual({
-      text: 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.', proof: [], statements: [], unchecked: 0, dropped: 0,
+      text: 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.', statements: [], unchecked: 0, dropped: 0,
     });
   });
 
