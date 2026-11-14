@@ -18,7 +18,7 @@ import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
 import { SECURITY_TAG, threadWarns } from './types';
-import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome } from './types';
+import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
 import { fetchWorkspace, gitEnv, runGit } from './workspace';
 
 const DEFAULT_CONFIG_PATH = '.manki.yml';
@@ -133,6 +133,8 @@ export interface LocalReview {
   head: string;
   /** Set to `config` when the base config, or a head copy that differs from the base's, did not load, which holds a pull request round's approval. */
   approvalHeld: ApprovalHeld;
+  /** The `review.rules` setting the round graded with. */
+  rules?: RulesMode;
 }
 
 const MAX_SYMLINK_HOPS = 5;
@@ -398,7 +400,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       : brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config'
       : unread.excluded.length + unread.binary.length > 0 ? 'unread'
       : threadHolds || result.findings.some(holdsApproval) ? 'warnings' : false;
-    return { result, context, base, head, approvalHeld };
+    return { result, context, base, head, approvalHeld, rules: config.review?.rules };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   }

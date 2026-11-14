@@ -542,24 +542,28 @@ describe('formatFindingComment', () => {
       expect(render(noDefect)).toContain(`so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
       expect(render(noDefect)).toContain('**Doubt found:** Manki found a reason this may not happen');
     }
-    // A warning that breaks a confirmed rule outlives a disproof, and says why it stays.
-    expect(render({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } }))
-      .toContain('**Doubt found**\nThe finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself. A comment says it is intended.');
+    // With `review.rules: warn` or `block`, a warning that breaks a confirmed rule outlives a disproof, and says why it stays.
+    const ruled = (finding: Finding, rules: 'warn' | 'block' = 'warn'): string => formatFindingComment(finding, { ...links, rules });
+    const keptByRule = '**Doubt found**\nThe finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself. A comment says it is intended.';
+    for (const rules of ['warn', 'block'] as const) {
+      expect(ruled({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } }, rules)).toContain(keptByRule);
+    }
+    // With `auto`, the default, the rule keeps nothing, so a security finding the disproof leaves says why it stays like any other.
+    expect(render({ ...disprovedFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } })).toContain('**Doubt found**\nManki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding');
     // It also outlives a check's answer that the defect does not exist, with the same sentence, which holds whatever the check's reason says.
     const ruleWarning: Finding = { ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } };
-    expect(render({ ...ruleWarning, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
-      .toContain('**Doubt found**\nThe finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself. A comment says it is intended.');
+    expect(ruled({ ...ruleWarning, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } })).toContain(keptByRule);
     // A rule the judge did not confirm keeps no finding, so its check reads like any other disproof.
-    expect(render({ ...ruleWarning, rule: { ...ruleWarning.rule!, verdict: 'unproven' } })).toContain('Manki found a reason this may not happen, but a disproof alone');
+    expect(ruled({ ...ruleWarning, rule: { ...ruleWarning.rule!, verdict: 'unproven' } })).toContain('Manki found a reason this may not happen, but a disproof alone');
     // The check that disproved it says why the finding stays, also when it is the second one.
     const unsettled = { outcome: 'unsettled' as const, reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' };
-    const keptBySecond = render({ ...ruleWarning, refutation: unsettled, pairRefutation: disprovedFinding.refutation });
+    const keptBySecond = ruled({ ...ruleWarning, refutation: unsettled, pairRefutation: disprovedFinding.refutation });
     expect(keptBySecond).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. The caller is generated.');
     expect(keptBySecond).toContain('**Second check, on another model**\nThe finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself. A comment says it is intended.');
     // A check that confirmed a premise settles the disproof of the other, so nothing was dropped and no check says the rule kept it.
     const backed = { outcome: 'unsettled' as const, reason: 'One premise holds.', premises: [{ premise: 'A caller passes it', outcome: 'confirmed' as const, reason: 'r' }], files: ['src/main.ts'], codeDigest: 'abc' };
-    expect(render({ ...ruleWarning, pairRefutation: backed })).not.toContain('The finding stays');
-    expect(render({ ...ruleWarning, pairRefutation: backed })).toContain('**Doubt found**\nManki found a reason this may not happen, but a disproof alone');
+    expect(ruled({ ...ruleWarning, pairRefutation: backed })).not.toContain('The finding stays');
+    expect(ruled({ ...ruleWarning, pairRefutation: backed })).toContain('**Doubt found**\nManki found a reason this may not happen, but a disproof alone');
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 

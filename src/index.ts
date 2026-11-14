@@ -1405,7 +1405,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildCo
   cancelDashboardFlush(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
-  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true });
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true, rules: run.config.review?.rules });
   await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: Date.now() - run.startTime }, undefined, progressSettings(run, run.progress, 'review incomplete'));
@@ -1677,6 +1677,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     disproved,
     draft: run.options.draft,
     autoApprove: run.config.auto_approve,
+    rules: run.config.review?.rules,
     configHold: run.configHold,
     memorySkip: run.memorySkip?.message,
     restart,

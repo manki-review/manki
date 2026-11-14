@@ -6,7 +6,6 @@ import * as core from '@actions/core';
 import { holdsLines } from './code-window';
 import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
-import { ruleGrade } from './judge';
 import { extractJSON } from './json';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
@@ -15,7 +14,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -347,10 +346,11 @@ function withProof(evidence: FindingEvidence | undefined, answers: readonly Pick
  */
 function confirmRuleFact(finding: Finding, checks: readonly Refutation[], rules?: RulesMode): Finding {
   const { rule } = finding;
-  if (rule?.verdict !== 'unproven' || !rule.unseen || checks.some(r => r.defect === 'disproved')) return finding;
+  const ruled = ruleGrade(rules);
+  if (!ruled || rule?.verdict !== 'unproven' || !rule.unseen || checks.some(r => r.defect === 'disproved')) return finding;
   const answers = checks.flatMap(r => r.premises?.filter(p => p.premise === rule.unseen) ?? []);
   if (!answers.some(p => p.outcome === 'confirmed') || answers.some(p => p.outcome === 'disproved')) return finding;
-  const grade = raisedTo(finding, ruleGrade(rules));
+  const grade = raisedTo(finding, ruled);
   return {
     ...finding, rule: { ...rule, verdict: 'confirmed' },
     // Lines that confirm the fact show no damage, so they are added only where they raise the grade.
@@ -392,7 +392,8 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
   if (!refutation.model || !pairRefutation.model || refutation.model === pairRefutation.model) return undefined;
   const filed = finderGrade(finding);
   // The rule alone gives a finding that `breaksRule` its grade, whatever the refuters say about the damage.
-  const lowest = breaksRule(finding) && rank(ruleGrade(rules)) < rank(filed) ? ruleGrade(rules) : filed;
+  const ruled = breaksRule(finding) ? ruleGrade(rules) : undefined;
+  const lowest = ruled && rank(ruled) < rank(filed) ? ruled : filed;
   return lowest === 'blocker' ? undefined : lowest;
 }
 
@@ -418,7 +419,7 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${notes}` : notes,
   };
   if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
-  if (overruledDisproof(graded)) {
+  if (overruledDisproof(graded, rules)) {
     // The cell and the grade it promised state the damage the check disproved, so they go. The cell is no `judgeCell`,
     // since the finding is no blocker the check lowered. The check finished a lead, which is posted for its rule.
     const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, lead: _lead, notChecked: _notChecked, ...kept } = graded;
@@ -469,10 +470,10 @@ const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.len
 
 /**
  * Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted
- * either way. So is a finding that `breaksRule`: the judge confirmed the quoted rule and the cited line that breaks it.
+ * either way. So is a finding `gradedByRule` under `rules`: the judge confirmed the quoted rule and the cited line that breaks it.
  */
-export function needsProof(finding: Finding): boolean {
-  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !breaksRule(finding);
+export function needsProof(finding: Finding, rules?: RulesMode): boolean {
+  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !gradedByRule(finding, rules);
 }
 
 /**
@@ -482,7 +483,7 @@ export function needsProof(finding: Finding): boolean {
  * whether the defect exists, and one no cited line proves. Then come the warnings `preExisting` accepts, which are
  * posted only when a check confirms them, those with a doubt first. Then come the warnings of both kinds that
  * `restatesEarlier` accepts, which an earlier finding keeps posted. Last come the findings the judge doubts that are posted without
- * proof: a security finding and one that `breaksRule`. A round can judge findings in several calls, so only the first group is returned for a judge
+ * proof: a security finding and one `gradedByRule` under `rules`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding with a
  * `gradeIfConfirmed` above its grade is always checked: that check is how a warning with a blocker cell becomes a
@@ -492,12 +493,12 @@ export function needsProof(finding: Finding): boolean {
  */
 function doubtsToCheck(
   findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
-  preExisting?: (finding: Finding) => boolean, roundEnd = false,
+  preExisting?: (finding: Finding) => boolean, roundEnd = false, rules?: RulesMode,
 ): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
   const warnings = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation);
-  const unchanged = warnings.filter(f => needsProof(f) && preExisting?.(f));
-  const unproven = warnings.filter(f => needsProof(f) && !unchanged.includes(f) && (doubtsDefect(f) || citesNoProof(f)));
-  const statusOnly = warnings.filter(f => !needsProof(f) && doubtsDefect(f));
+  const unchanged = warnings.filter(f => needsProof(f, rules) && preExisting?.(f));
+  const unproven = warnings.filter(f => needsProof(f, rules) && !unchanged.includes(f) && (doubtsDefect(f) || citesNoProof(f)));
+  const statusOnly = warnings.filter(f => !needsProof(f, rules) && doubtsDefect(f));
   const old = [...unchanged.filter(f => f.doubts?.length), ...unchanged.filter(f => !f.doubts?.length)];
   const groups = roundEnd ? [...old.filter(f => !restatesEarlier(f)), ...[...unproven, ...old].filter(restatesEarlier), ...statusOnly] : unproven.filter(f => !restatesEarlier(f));
   const open = groups.filter(f => !noCheck(f));
@@ -612,7 +613,7 @@ export interface RefuteOptions {
   roundEnd?: boolean;
   /** Whether `finding` sits on code the PR did not change. A warning there is posted only when a check confirms it. */
   preExisting?: (finding: Finding) => boolean;
-  /** The repository's `review.rules`, the grade of a finding whose `unproven` rule a check confirms. */
+  /** The repository's `review.rules`, which decides whether a confirmed rule grades a finding and how. */
   rules?: RulesMode;
 }
 
@@ -664,7 +665,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
   const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
-  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, preExisting, roundEnd);
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, preExisting, roundEnd, rules);
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);
   const overLimit = new Set(picked.over);

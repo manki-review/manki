@@ -2283,7 +2283,7 @@ describe('runJudgeAgent', () => {
     ]);
   });
 
-  it('grades a finding that quotes a rule by the judge\'s two answers: a warning by default, a blocker with `review.rules: block`, and by its cell alone when not confirmed', async () => {
+  it('grades a finding that quotes a rule by the judge\'s two answers: by its cell alone with `review.rules: auto`, the default, a warning with `warn`, a blocker with `block`, and by its cell alone when not confirmed', async () => {
     const rule = { file: 'CONTRIBUTING.md', quote: 'Every model change\nneeds a `migration`.' };
     const titles = [
       'Field without migration', 'Advice quoted', 'Rule kept', 'Doubted', 'No line cited', 'Dropped', 'Real defect too',
@@ -2328,39 +2328,45 @@ describe('runJudgeAgent', () => {
     // `exclude_paths` left out two changed files, one of them a lockfile Manki read and lists anyway, and one changed file is a binary.
     const diff: ParsedDiff = { ...makeDiff(), binarySkipped: [{ path: 'docs/schema.png', header: '' }] };
     const input: JudgeInput = { findings, diff, rawDiff: '', repoContext: '', agentCount: 2, excludedPaths: ['migrations/generated/0007.sql', diff.files[0].path], provenanceMap: applied };
-    const graded = async (rules?: 'warn' | 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), input)).findings
+    const graded = async (rules?: RulesMode) => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), input)).findings
       .map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', '), ...(f.rule?.unseen || f.doubts ? [f.gradeIfConfirmed, f.rule?.unseen, f.doubts?.map(d => d.premise)] : [])]);
 
-    const expected = (grade: 'warning' | 'blocker') => [
-      ['Field without migration', grade, 'confirmed', `rule: ${grade}`],
-      ['Advice quoted', 'note', 'no_requirement', undefined],
-      ['Rule kept', 'note', 'not_broken', undefined],
-      // A doubt of the judge is about the damage, so the rule is confirmed with it.
-      ['Doubted', grade, 'confirmed', `rule: ${grade}`, 'note', undefined, ['The deploy script fails on a model without a migration']],
-      ['No line cited', 'note', 'unproven', undefined],
-      ['Dropped', 'ignore', 'unproven', 'judge: ignore'],
-      // The cell already gives a blocker, so the rule changes nothing.
-      ['Real defect too', 'blocker', 'confirmed', 'judge: blocker'],
-      // A rule blocker passes the caps of any blocker, so one that says something is missing without a search is a warning.
-      ['Missing without a search', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
-      ['No rule quoted', 'note', undefined, undefined],
-      // A folded copy's confirmed rule goes to the finding that stays.
-      ['Schema drift', grade, 'confirmed', `rule: ${grade}`],
-      // A fact the judge could not see leaves the rule unproven whatever it says about the break. Only the refuter reads it as a doubt, so with no check the note has neither that doubt nor the rule's grade.
-      ['Unseen file', 'note', 'unproven', undefined, undefined, 'No migration under `migrations/` adds the field', undefined],
-      // A finding graded by its own damage is not put at risk by a doubt about the rule.
-      ['Unseen on a real defect', 'warning', 'unproven', 'judge: warning', undefined, 'No migration adds the field', undefined],
-      ['Unseen in advice', 'note', 'no_requirement', undefined],
-      // On code that applies an earlier Manki fix a note is dropped. The rule grades first, so a confirmed rule keeps
-      // its finding there, also a rule that came from a duplicate the judge folded or from a copy with the same title.
-      ['On an applied fix', grade, 'confirmed', `rule: ${grade}`],
-      ['Fix drift', grade, 'confirmed', `rule: ${grade}`],
-      ['Twice on an applied fix', grade, 'confirmed', `rule: ${grade}`],
-      ['Advice on an applied fix', 'ignore', 'no_requirement', 'own_proposal: ignore'],
-    ];
-    expect(await graded()).toEqual(expected('warning'));
+    // Without a `grade`, as with `auto`, a confirmed rule adds no floor, so the note its `improvement` cell gives stays a note.
+    const expected = (grade?: 'warning' | 'blocker') => {
+      const ruled = [grade ?? 'note', 'confirmed', grade && `rule: ${grade}`];
+      return [
+        ['Field without migration', ...ruled],
+        ['Advice quoted', 'note', 'no_requirement', undefined],
+        ['Rule kept', 'note', 'not_broken', undefined],
+        // A doubt of the judge is about the damage, so the rule is confirmed with it.
+        ['Doubted', ...ruled, 'note', undefined, ['The deploy script fails on a model without a migration']],
+        ['No line cited', 'note', 'unproven', undefined],
+        ['Dropped', 'ignore', 'unproven', 'judge: ignore'],
+        // The cell already gives a blocker, so the rule changes nothing.
+        ['Real defect too', 'blocker', 'confirmed', 'judge: blocker'],
+        // A rule blocker passes the caps of any blocker, so one that says something is missing without a search is a warning.
+        ['Missing without a search', grade ? 'warning' : 'note', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : grade && 'rule: warning'],
+        ['No rule quoted', 'note', undefined, undefined],
+        // A folded copy's confirmed rule goes to the finding that stays.
+        ['Schema drift', ...ruled],
+        // A fact the judge could not see leaves the rule unproven whatever it says about the break. Only the refuter reads it as a doubt, so with no check the note has neither that doubt nor the rule's grade.
+        ['Unseen file', 'note', 'unproven', undefined, undefined, 'No migration under `migrations/` adds the field', undefined],
+        // A finding graded by its own damage is not put at risk by a doubt about the rule.
+        ['Unseen on a real defect', 'warning', 'unproven', 'judge: warning', undefined, 'No migration adds the field', undefined],
+        ['Unseen in advice', 'note', 'no_requirement', undefined],
+        // On code that applies an earlier Manki fix a note is dropped. The rule grades first, so a confirmed rule keeps
+        // its finding there, also a rule that came from a duplicate the judge folded or from a copy with the same title.
+        // With no floor the finding is a note there like any other, and is dropped.
+        ...['On an applied fix', 'Fix drift', 'Twice on an applied fix'].map(title => [title, ...(grade ? ruled : ['ignore', 'confirmed', 'own_proposal: ignore'])]),
+        ['Advice on an applied fix', 'ignore', 'no_requirement', 'own_proposal: ignore'],
+      ];
+    };
+    expect(await graded()).toEqual(expected());
+    expect(await graded('auto')).toEqual(expected());
     expect(await graded('warn')).toEqual(expected('warning'));
     expect(await graded('block')).toEqual(expected('blocker'));
+    // The judge gets the same prompts under every setting, so it is never told that a broken rule is at least a warning.
+    expect(new Set(mockSendMessage.mock.calls.map(call => JSON.stringify(call.slice(0, 2)))).size).toBe(1);
 
     const [system, user] = mockSendMessage.mock.calls[0];
     expect(user.split("- **Quoted rule**, from `CONTRIBUTING.md`: Every model change needs a 'migration'.")).toHaveLength(17);
@@ -2383,7 +2389,7 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage.mock.calls.at(-1)!.slice(0, 2)).toEqual(sent);
   });
 
-  it('settles an unproven rule from the fact the judge could not see alone, whatever the refuter says about the damage, and keeps a confirmed rule finding whose damage it disproves', async () => {
+  it('settles an unproven rule from the fact the judge could not see alone, whatever the refuter says about the damage, and with `warn` or `block` keeps a confirmed rule finding whose damage it disproves', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -2461,10 +2467,10 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', ...answers[title] })),
     }) });
-    const run = async (rules?: 'block', pair?: LLMClient) => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
+    const run = async (rules?: RulesMode, pair?: LLMClient) => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
       findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace, ...(pair && { pair }) },
     })).findings;
-    const graded = async (rules?: 'block', pair?: LLMClient) => (await run(rules, pair)).map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
+    const graded = async (rules?: RulesMode, pair?: LLMClient) => (await run(rules, pair)).map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
 
     try {
       const expected = (grade: 'warning' | 'blocker', disputed: Array<string | undefined> = [grade, 'confirmed', `rule: ${grade}`]) => [
@@ -2505,17 +2511,17 @@ describe('runJudgeAgent', () => {
         }),
         ['No search, no rule, check disproves', 'ignore', undefined, 'judge: blocker, unproven: warning, refutation: ignore'],
       ];
-      expect(await graded()).toEqual(expected('warning'));
+      expect(await graded('warn')).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
       expect(refuterMessages).toHaveLength(50);
       // Only the run with `block` checked the finding no finder filed as a blocker.
       expect(refuterMessages.filter(m => m.includes(': Damage doubted and no finder blocker\n'))).toHaveLength(1);
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
-      expect(await graded(undefined, second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
+      expect(await graded('warn', second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
       expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
 
       // The damage the check disproved goes from the warning the fact raised, as from 'Damage disproved' below. An unsettled damage keeps its doubts.
-      const byTitle = Object.fromEntries((await run()).map(f => [f.title, f]));
+      const byTitle = Object.fromEntries((await run('warn')).map(f => [f.title, f]));
       const raised = byTitle['Fact confirmed, damage disproved'];
       expect([raised.cell, raised.doubts, raised.gradeIfConfirmed, raised.refutation?.outcome]).toEqual([undefined, undefined, undefined, 'disproved']);
       expect(byTitle['Fact confirmed, damage unsettled'].doubts?.map(d => d.premise)).toEqual(['The service fails to start without the variable', '`.env.example` has no entry for the variable']);
@@ -2538,7 +2544,7 @@ describe('runJudgeAgent', () => {
       expect([byTitle['Defect disproved'].refutation?.defect, byTitle['Defect disproved'].cell, byTitle['Defect disproved'].gradeIfConfirmed]).toEqual(['disproved', undefined, undefined]);
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.
-      const kept = (await run()).find(f => f.title === 'Damage disproved')!;
+      const kept = (await run('warn')).find(f => f.title === 'Damage disproved')!;
       expect([kept.cell, kept.judgeCell, kept.doubts, kept.gradeIfConfirmed, kept.refutation?.outcome]).toEqual([undefined, undefined, undefined, undefined, 'disproved']);
       const { cell, judgeCell, doubts, gradeIfConfirmed, refutation, rule: keptRule } = kept;
       const entry = { ...makeFindingFingerprintEntry({ title: kept.title, severity: kept.severity }), cell, judgeCell, doubts, gradeIfConfirmed, refutation, rule: keptRule };
@@ -2550,6 +2556,28 @@ describe('runJudgeAgent', () => {
       expect(refuterMessages[0]).toMatch(/^## Finding the judge could not settle without tools: Fact confirmed\n/);
       expect(refuterMessages[0]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. '.env.example' has no entry for the variable");
       expect(refuterMessages.find(m => m.includes(': Another premise confirmed\n'))).not.toContain('.env.example');
+
+      // With `auto`, the default, a rule gives no grade: the fact the judge could not see becomes no doubt, a confirmed
+      // rule keeps no finding a check disproved, and each finding ends at the grade its damage earns.
+      const autoChecked = refuterMessages.length;
+      const note = (title: string, verdict: string) => [title, 'note', verdict, undefined];
+      const autoExpected = titles.map(title => {
+        if (/^Fact|^Another premise/.test(title)) return title === 'Another premise confirmed' ? [title, 'warning', 'unproven', 'judge: warning'] : note(title, 'unproven');
+        if (['Damage disproved', 'Defect disproved'].includes(title)) return [title, 'ignore', 'confirmed', 'judge: warning, refutation: ignore'];
+        if (title === 'Damage doubted and no finder blocker') return [title, 'warning', 'confirmed', 'judge: warning'];
+        if (title.startsWith('No search, check')) return note(title, 'confirmed');
+        if (title === 'No search, no rule, check disproves') return [title, 'ignore', undefined, 'judge: blocker, unproven: warning, refutation: ignore'];
+        const cap = title.startsWith('Build claim') ? 'build_claim' : 'unproven';
+        const path = `judge: blocker, ${cap}: warning`;
+        if (title.endsWith('disproves')) return [title, 'ignore', 'confirmed', `${path}, refutation: ignore`];
+        return title.endsWith('confirms') && cap === 'unproven' ? [title, 'blocker', 'confirmed', `${path}, refutation: blocker`] : [title, 'warning', 'confirmed', path];
+      });
+      expect(await graded()).toEqual(autoExpected);
+      expect(await graded('auto')).toEqual(autoExpected);
+      // No note is checked for its rule's fact, and the warning no finder filed as a blocker is checked in the judge call like any other warning nothing proves.
+      const autoMessages = refuterMessages.slice(autoChecked);
+      expect(autoMessages.some(m => m.includes('.env.example'))).toBe(false);
+      expect(autoMessages.filter(m => m.includes(': Damage doubted and no finder blocker\n'))).toHaveLength(2);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -6446,7 +6474,7 @@ describe('judge rule finding fixture corpus', () => {
   });
 
   it('covers a confirmed rule finding under both settings, and each way a quote fails', () => {
-    const expected = fixtures.flatMap(f => Object.values(f.expected).map(e => ({ rules: f.rules ?? 'warn', ...e })));
+    const expected = fixtures.flatMap(f => Object.values(f.expected).map(e => ({ rules: f.rules ?? 'auto', ...e })));
     expect(expected).toContainEqual({ rules: 'warn', verdicts: ['confirmed'], grades: ['warning'] });
     expect(expected).toContainEqual({ rules: 'block', verdicts: ['confirmed'], grades: ['blocker'] });
     expect(expected.map(e => e.verdicts[0])).toEqual(expect.arrayContaining(['no_requirement', 'not_broken']));

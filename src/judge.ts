@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1643,7 +1643,7 @@ export async function runJudgeAgent(
     restatesEarlier: finding => restatesEarlier(earlier, finding),
     preExisting: staysPreExisting, rules: config.review?.rules,
   }) : mapped;
-  const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(withoutRuleDoubt));
+  const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(f => withoutRuleDoubt(f, config.review?.rules)));
 
   return {
     findings: suppressed,
@@ -1802,16 +1802,15 @@ function ruleVerdict(finding: Finding, { row, ruleIsRequirement, ruleBroken, rul
   return row !== 'none' && !!finding.evidence?.proof.length ? 'confirmed' : 'unproven';
 }
 
-export const ruleGrade = (rules: RulesMode = 'warn'): FindingSeverity => (rules === 'block' ? 'blocker' : 'warning');
-
 /**
- * Raises a finding whose rule the judge confirmed to the grade `rules` gives: a warning, or a blocker with `block`.
- * A finding graded higher keeps its grade, and a dropped one stays dropped. A blocker made here passes the caps of any
- * blocker, so in doubt it is a warning. The refuter's confirmation gives the blocker back, and no disproof drops the warning.
+ * Raises a finding whose rule the judge confirmed to the grade `rules` gives: a warning with `warn`, or a blocker with
+ * `block`. With `auto` its damage alone grades it. A finding graded higher keeps its grade, and a dropped one stays
+ * dropped. A blocker made here passes the caps of any blocker, so in doubt it is a warning. The refuter's confirmation
+ * gives the blocker back, and no disproof drops the warning.
  */
 function gradeConfirmedRule(finding: Finding, rules?: RulesMode): Finding {
   const grade = ruleGrade(rules);
-  if (!breaksRule(finding) || finding.severity === 'ignore' || SEVERITY_ORDER.indexOf(finding.severity) <= SEVERITY_ORDER.indexOf(grade)) return finding;
+  if (!grade || !breaksRule(finding) || finding.severity === 'ignore' || SEVERITY_ORDER.indexOf(finding.severity) <= SEVERITY_ORDER.indexOf(grade)) return finding;
   const raised = { ...finding, ...gradeStep(finding, grade, 'rule', 'the judge confirmed it breaks a required rule of the instruction files') };
   return capUnprovenBlocker(capUnconfirmedBuildClaim(raised));
 }
@@ -1821,12 +1820,13 @@ function gradeConfirmedRule(finding: Finding, rules?: RulesMode): Finding {
  * `gradeIfConfirmed`. The refuter then checks the finding, and `applyRefutation` raises it and confirms the rule when
  * a check confirms that fact. A note's cell promises no grade above a note, so the rule's grade replaces no promise
  * of the damage. A finding graded above a note gets no such doubt, since a disproved doubt drops the finding
- * and one graded by its own damage must not go with it.
+ * and one graded by its own damage must not go with it. With `auto` no finding gets it, since the rule gives no grade.
  */
 function doubtUnprovenRule(finding: Finding, rules?: RulesMode): Finding {
   const fact = unseenRuleFact(finding);
-  if (!fact || !isNote(finding.severity)) return finding;
-  return { ...finding, gradeIfConfirmed: ruleGrade(rules), doubts: [...(finding.doubts ?? []), { premise: fact, decides: 'defect' }] };
+  const grade = ruleGrade(rules);
+  if (!fact || !grade || !isNote(finding.severity)) return finding;
+  return { ...finding, gradeIfConfirmed: grade, doubts: [...(finding.doubts ?? []), { premise: fact, decides: 'defect' }] };
 }
 
 /**
@@ -1844,9 +1844,9 @@ function unseenRuleFact(finding: Finding): string | undefined {
  * call reads the two. Any later step, and the round record, would read the rule's grade as one the damage earned, also
  * on a note the refuter dropped. `rule.unseen` keeps the fact.
  */
-function withoutRuleDoubt(finding: Finding): Finding {
+function withoutRuleDoubt(finding: Finding, rules?: RulesMode): Finding {
   const fact = unseenRuleFact(finding);
-  if (!fact) return finding;
+  if (!fact || !ruleGrade(rules)) return finding;
   const { gradeIfConfirmed: _gradeIfConfirmed, doubts, ...kept } = finding;
   const others = doubts?.filter(d => d.premise !== fact) ?? [];
   return { ...kept, ...(others.length > 0 && { doubts: others }) };

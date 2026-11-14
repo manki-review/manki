@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, AUTHOR_CLEAR_ROLES, PairedPin, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig, SWEEP_MODES } from './types';
+import { ANALYZERS, AUTHOR_CLEAR_ROLES, PairedPin, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig, RULES_MODES, SWEEP_MODES } from './types';
 
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
@@ -591,7 +591,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   }
   if ('sweep' in review && !SWEEP_MODES.some(mode => mode === review.sweep)) errors.push('`review.sweep` must be `off`, `blockers`, `warnings` or `notes`');
   if ('notes' in review && !(Number.isInteger(review.notes) && (review.notes as number) >= 0)) errors.push('`review.notes` must be a non-negative integer');
-  if ('rules' in review && review.rules !== 'warn' && review.rules !== 'block') errors.push('`review.rules` must be `warn` or `block`');
+  if ('rules' in review && !RULES_MODES.some(mode => mode === review.rules)) errors.push('`review.rules` must be `auto`, `warn` or `block`');
   if ('examples' in review) {
     const examples = review.examples;
     if (!isObject(examples) || Object.keys(examples).length === 0) {

@@ -3202,7 +3202,7 @@ describe('runReview', () => {
     };
 
     it('settles warning leads with the judge\'s tools, lists the unsettled ones, and records each outcome', async () => {
-      const clients = leadClients([
+      const leads = [
         leadOf('warning', 'The token may not read the other repository', 'src/a.ts', 1),
         leadOf('warning', 'The retry may loop forever on a 404', 'src/b.ts', 2),
         leadOf('warning', 'The cache may go stale after a deploy', 'src/c.ts', 3),
@@ -3211,23 +3211,25 @@ describe('runReview', () => {
         leadOf('blocker', 'The sum may overflow on large input', 'src/b.ts', 8),
         leadOf('warning', 'The new route may be missing from the API docs', 'src/d.ts', 6),
         leadOf('warning', 'The new flag may be missing from the reference', 'src/d.ts', 7),
-      ], true);
+      ];
+      const clients = leadClients(leads, true);
       const rule = { file: 'AGENTS.md', quote: 'Every route must be listed in the API docs.', verdict: 'confirmed' as const };
-      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
+      const judged: Parameters<typeof mockedRunJudgeAgent.mockImplementation>[0] = async (_client, _config, input) => ({
         summary: 'ok',
         findings: input.findings.map(f => {
           if (f.file === 'src/a.ts') { const { lead: _lead, ...confirmed } = f; return { ...confirmed, refutation: refuted('confirmed') }; }
           if (f.line === 8) return { ...f, refutation: refuted('disproved') };
-          // A disproved lead that breaks a confirmed rule comes back as a finding: a warning without its `lead`, or the blocker `review.rules: block` makes it.
+          // With `review.rules: warn` a disproved lead that breaks a confirmed rule comes back as a finding: a warning without its `lead`, or the blocker `review.rules: block` makes it.
           if (f.line === 6) { const { lead: _lead, ...kept } = f; return { ...kept, rule, refutation: refuted('disproved') }; }
           if (f.line === 7) return { ...f, severity: 'blocker' as const, rule, refutation: refuted('disproved') };
           if (f.file === 'src/b.ts') return { ...f, severity: 'ignore' as const, refutation: refuted('disproved') };
           if (f.line === 9) return { ...f, tags: [SECURITY_TAG], refutation: refuted('unsettled') };
           return { ...f, refutation: { ...refuted('unsettled'), stepsUsedUp: 'yes' as const } };
         }),
-      }));
+      });
+      mockedRunJudgeAgent.mockImplementationOnce(judged);
 
-      const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+      const result = await runReview(clients, { config: makeConfig({ review: { rules: 'warn' } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
 
       expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.line)).toEqual([1, 2, 3, 9, 8, 6, 7]);
       // A disproof never lowers a blocker, and a security lead the tools do not confirm stays posted. So does a disproved lead its rule keeps.
@@ -3249,6 +3251,12 @@ describe('runReview', () => {
       expect(result.leads?.map(l => l.refutation?.outcome)).toEqual(['confirmed', 'disproved', 'unsettled', undefined, 'unsettled', 'disproved', 'disproved', 'disproved']);
       // A lead that is only listed keeps whether its unsettled check used up its tool steps.
       expect(result.leads?.[2].refutation?.stepsUsedUp).toBe('yes');
+
+      // With `auto`, the default, the rule gives no grade, so the disproved rule warning needs proof like any other and is left out.
+      mockedRunJudgeAgent.mockImplementationOnce(judged);
+      const auto = await runReview(leadClients(leads, true), { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+      expect(auto.findings.map(f => [f.line, f.severity])).toEqual([[1, 'warning'], [9, 'warning'], [8, 'blocker'], [7, 'blocker']]);
+      expect(auto.unposted?.map(f => [f.line, f.unpostedReason])).toEqual([[6, 'unsettled_check']]);
     });
 
     it('lists a warning lead without sending it to a judge that has no tools to settle it', async () => {
