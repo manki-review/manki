@@ -5078,6 +5078,22 @@ describe('runFullReview orchestration', () => {
     expect(lastDashboard.agentProgress).toBeDefined();
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4])
       .toMatchObject({ phase: 'complete', suppressionCount: 1, staticDedupCount: 1, llmDedupCount: 0 });
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4].judgeDurationMs).toEqual(expect.any(Number));
+
+    // A round with nothing to judge shows the judge as skipped, and neither the dashboard nor the record gives it a duration.
+    jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, { onProgress }) => {
+      onProgress?.({ phase: 'judging', rawFindingCount: 0, judgeInputCount: 0, judgeSkipped: true });
+      return { verdict: 'APPROVE', outcome: 'READY', summary: 'No new problems found.', findings: [], highlights: [], reviewComplete: true, agentNames: [], judgeSkipped: true };
+    });
+    jest.mocked(ghUtils.postReview).mockClear();
+    await callRunFullReview();
+    expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls.at(-1)![4]).toMatchObject({ phase: 'reviewed', judgeSkipped: true });
+    const completed = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4];
+    expect(completed).toMatchObject({ phase: 'complete', judgeSkipped: true });
+    expect(completed).not.toHaveProperty('judgeDurationMs');
+    const judge = jest.mocked(ghUtils.postReview).mock.calls[0][7]!.judge;
+    expect(judge).toMatchObject({ skipped: 'nothing_to_judge', summary: 'No new problems found.' });
+    expect(judge).not.toHaveProperty('durationMs');
   });
 
   it('flushes dashboard immediately on reviewed progress', async () => {
@@ -6210,6 +6226,9 @@ describe('runFullReview orchestration', () => {
     mockChecksUpdate.mockClear();
     await run('abc123', true);
     expect(holdOf()).toEqual(['https://github.com/o/r/pull/1#pullrequestreview-7']);
+    // The review is told, so it never skips the judge for want of something to judge.
+    expect(jest.mocked(reviewModule.runReview).mock.calls.at(-1)![1].priorRoundsIncomplete).toBe(true);
+    expect(jest.mocked(reviewModule.runReview).mock.calls.at(-2)![1]).not.toHaveProperty('priorRoundsIncomplete');
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5]).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
     expect(mockChecksUpdate.mock.calls.at(-1)?.[0].output.summary).toMatch(/^\*\*Approval withheld:\*\* an earlier review record could not be read \(\[review 1\]\(https:\/\/github\.com\/o\/r\/pull\/1#pullrequestreview-7\)\)/);
     expect(mockChecksUpdate.mock.calls.at(-1)?.[0].output.summary).toMatch(/\n\n\*\*Summary:\*\* ok\.$/);

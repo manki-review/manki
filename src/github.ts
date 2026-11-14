@@ -889,6 +889,10 @@ export function buildDashboard(data: DashboardData): string {
   if (data.phase === 'planning' || data.phase === 'started') {
     judgeLines.push(`**Judge**`);
     judgeLines.push(`${INDENT}pending`);
+  } else if (data.judgeSkipped) {
+    judgeLines.push(`**Judge:** skipped, nothing to judge`);
+    const drops = preJudgeDrops(data);
+    if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
   } else if (data.phase === 'reviewed') {
     judgeLines.push(`**Judge**`);
     const drops = preJudgeDrops(data);

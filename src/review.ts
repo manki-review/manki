@@ -5,7 +5,7 @@ import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { mapWithConcurrency, parseRetryNote } from './utils';
-import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
+import { capUnconfirmedBuildClaim, carriedToJudge, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
@@ -131,6 +131,9 @@ const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
 };
 
 export const RETRY_HINT = 'Retry with @manki review.';
+
+/** The round's summary when it had nothing to judge, in place of the one the judge writes. */
+const SKIPPED_JUDGE_SUMMARY = 'No new problems found.';
 
 const MAX_LISTED_LINES = 10;
 
@@ -429,6 +432,8 @@ export interface ReviewProgress {
   routing?: TeamRouting;
   /** True when the planner failed or timed out, so the fail-safe triage was used. */
   heuristicFallback?: boolean;
+  /** True on the `judging` event of a round with nothing to judge, which calls no judge. */
+  judgeSkipped?: boolean;
 }
 
 /** Lists the changed files for the planner, fenced as untrusted data. The PR title and description are left out. */
@@ -650,6 +655,8 @@ export interface ReviewOptions {
   openThreads?: OpenThread[] | null;
   previousFindings?: PreviousFinding[];
   priorRounds?: RoundContext[];
+  /** Set when some earlier round records could not be read, so `priorRounds` misses them. */
+  priorRoundsIncomplete?: boolean;
   prAuthorLogin?: string;
   interRoundDiff?: string;
   /** Commit under review. A prior blocker raised on another commit was followed by a push. */
@@ -1284,6 +1291,10 @@ export async function runReview(
     staticDedupCount, llmDedupCount, ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(dedupDurationMs != null && { dedupDurationMs }),
   });
 
+  const carriedWarnings = bodyWarnings(priorRounds ?? []);
+  // Unknown threads or unread round records may hide something to judge, so only a round known to have nothing skips the judge.
+  const judgeSkipped = findingsForJudge.length === 0 && openThreads?.length === 0 && !options.priorRoundsIncomplete
+    && carriedToJudge({ interRoundDiff, carriedWarnings }).length === 0;
   if (onProgress) {
     onProgress({
       phase: 'judging',
@@ -1293,6 +1304,7 @@ export async function runReview(
       llmDedupCount,
       totalAgents: team.finders.length,
       completedAgents: team.finders.length,
+      ...(judgeSkipped && { judgeSkipped }),
     });
   }
 
@@ -1359,42 +1371,49 @@ export async function runReview(
     ...(refutation && { refutation }),
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
-    carriedWarnings: bodyWarnings(priorRounds ?? []),
+    carriedWarnings,
   };
-  try {
-    core.info(`Running judge on ${findingsForJudge.length} findings...`);
-    const judgeStart = Date.now();
-    const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
-    judgeDurationMs = Date.now() - judgeStart;
-    const judgeTotals = judgeWrap.getTotals();
-    judgeUsage = judgeTotals.usage;
-    logOutputTokens('Judge', judgeUsage);
-    judgeRetryCount = Math.max(0, judgeTotals.calls - 1);
-    judgeSummary = judgeResult.summary;
-    allJudgedFindings = judgeResult.findings;
-    judgeThreadEvaluations = judgeResult.threadEvaluations;
-    carriedFixed = judgeResult.carriedFixed;
-    judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
-    judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
-    judgeInterRoundDiffEmptyOverride = judgeResult.interRoundDiffEmptyOverride;
-    inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
-    finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
-    // A lead the judge's tools left unsettled is no finding, so below blocker it is listed as not finished, never posted.
-    // A security lead stays posted, since only a confirmation may change a security finding.
-    const unsettled = refutation ? finalFindings.filter(f => f.lead && f.severity !== 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) : [];
-    finalFindings = finalFindings.filter(f => !unsettled.includes(f));
-    openLeads.push(...unsettled);
-    core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored or left unsettled)`);
-  } catch (error) {
-    core.warning(`Judge failed: ${error}`);
-    logOutputTokens('Judge', judgeWrap.getTotals().usage);
-    return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The judge failed. ${RETRY_HINT}`, {
-      // The failed attempts count too, since the judge ended on one.
-      judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
-    });
+  if (judgeSkipped) {
+    core.info('No finding, open thread or carried warning to judge, so the judge is skipped');
+    judgeSummary = SKIPPED_JUDGE_SUMMARY;
+    allJudgedFindings = [];
+    finalFindings = [];
+  } else {
+    try {
+      core.info(`Running judge on ${findingsForJudge.length} findings...`);
+      const judgeStart = Date.now();
+      const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
+      judgeDurationMs = Date.now() - judgeStart;
+      const judgeTotals = judgeWrap.getTotals();
+      judgeUsage = judgeTotals.usage;
+      logOutputTokens('Judge', judgeUsage);
+      judgeRetryCount = Math.max(0, judgeTotals.calls - 1);
+      judgeSummary = judgeResult.summary;
+      allJudgedFindings = judgeResult.findings;
+      judgeThreadEvaluations = judgeResult.threadEvaluations;
+      carriedFixed = judgeResult.carriedFixed;
+      judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
+      judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
+      judgeInterRoundDiffEmptyOverride = judgeResult.interRoundDiffEmptyOverride;
+      inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
+      finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
+      // A lead the judge's tools left unsettled is no finding, so below blocker it is listed as not finished, never posted.
+      // A security lead stays posted, since only a confirmation may change a security finding.
+      const unsettled = refutation ? finalFindings.filter(f => f.lead && f.severity !== 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) : [];
+      finalFindings = finalFindings.filter(f => !unsettled.includes(f));
+      openLeads.push(...unsettled);
+      core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored or left unsettled)`);
+    } catch (error) {
+      core.warning(`Judge failed: ${error}`);
+      logOutputTokens('Judge', judgeWrap.getTotals().usage);
+      return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The judge failed. ${RETRY_HINT}`, {
+        // The failed attempts count too, since the judge ended on one.
+        judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
+      });
+    }
   }
   Object.assign(recorded, {
-    allJudgedFindings, ...(judgeDurationMs != null && { judgeDurationMs }), judgeRetryCount,
+    allJudgedFindings, ...(judgeSkipped && { judgeSkipped }), ...(judgeDurationMs != null && { judgeDurationMs }), judgeRetryCount,
     crossRoundSuppressed: judgeCrossRoundSuppressed, crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }), ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
   });
@@ -1693,6 +1712,7 @@ export async function runReview(
     agentWarnings,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
     ...(plannerDurationMs != null && { plannerDurationMs }),
+    ...(judgeSkipped && { judgeSkipped }),
     ...(judgeDurationMs != null && { judgeDurationMs }),
     judgeRetryCount,
     ...(dedupDurationMs != null && { dedupDurationMs }),

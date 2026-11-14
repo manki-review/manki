@@ -3222,6 +3222,13 @@ describe('buildDashboard', () => {
       .toContain(`${INDENT}evaluating 0 findings (1 dropped as a repeat of an earlier resolved finding)...`);
     expect(buildDashboard({ ...data, staticDedupCount: 1, llmDedupCount: 1 }))
       .toContain(`${INDENT}evaluating 10 findings (2 dropped as repeats of earlier resolved findings)...`);
+    // A round with nothing to judge shows the judge as skipped while it runs and once it is done, never as pending.
+    for (const phase of ['reviewed', 'complete'] as const) {
+      const skipped = buildDashboard({ ...data, phase, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0, keptCount: 0, droppedCount: 0, judgeSkipped: true });
+      expect(skipped).toContain(`**Judge:** skipped, nothing to judge\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
+      expect(skipped).not.toContain('evaluating');
+      expect(skipped).not.toContain('kept');
+    }
   });
 
   it('renders per-agent detail in the reviewed phase when agentProgress is provided', () => {

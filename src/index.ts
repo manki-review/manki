@@ -1392,6 +1392,7 @@ async function reviewRound(
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
         dashboard.judgeInputCount = event.judgeInputCount;
+        if (event.judgeSkipped) dashboard.judgeSkipped = true;
         dashboard.staticDedupCount = event.staticDedupCount;
         dashboard.llmDedupCount = event.llmDedupCount;
         updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(run, progress))
@@ -1781,7 +1782,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     droppedSeverities,
     ...(result.suppressionCount && { suppressionCount: result.suppressionCount }),
     ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
-    judgeDurationMs: judgeEndTime - reviewEndTime,
+    ...(!dashboard.judgeSkipped && { judgeDurationMs: judgeEndTime - reviewEndTime }),
   };
 
   const timing = {
@@ -2011,6 +2012,7 @@ async function runFullReview(
       openThreads: recap.openThreadsState === 'fetch_failed' ? null : openThreads,
       previousFindings: recap.previousFindings,
       priorRounds: recap.priorRounds,
+      ...(recap.priorRoundsIncomplete && { priorRoundsIncomplete: true }),
       prAuthorLogin,
       interRoundDiff,
       headSha: commitSha,
