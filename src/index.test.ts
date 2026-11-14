@@ -292,6 +292,7 @@ jest.mock('./fix-rate', () => ({
 
 jest.mock('./static-signals', () => ({
   collectStaticSignals: jest.fn().mockResolvedValue({ signals: [] }),
+  ciFoundNothing: jest.fn().mockResolvedValue(true),
   fetchLockfiles: jest.fn().mockResolvedValue(new Map()),
 }));
 
@@ -2741,8 +2742,6 @@ describe('runFullReview orchestration', () => {
     ['a binary', undefined, undefined, [{ path: 'gradle/wrapper/gradle-wrapper.jar', header: '' }], undefined],
     ['a deleted binary next to an added one', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }, { path: 'new.png', header: '' }], undefined],
     ['deleted binaries whose code scanning could not be read', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { record: { sources: [{ source: 'code_scanning' as const, status: 'skipped' as const, reason: 'the token cannot read it (HTTP 403)' }] } }],
-    ['deleted binaries while a check still runs', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { record: { checksStillPending: ['build'] } }],
-    ['deleted binaries while a check reports a result on another file', undefined, undefined, [{ path: 'old.png', header: '', deleted: true as const }], { offDiffResults: 1 }],
   ])('never approves a PR that changes only %s, and runs the analyzers on it first', async (_label, file, matchedPattern, binarySkipped, analysis: Omit<StaticAnalysisResult, 'signals'> | undefined) => {
     const signal = { tool: 'osv-scanner', ruleId: 'GHSA-1234', severity: 'error' as const, file: 'yarn.lock', line: 12, message: 'left-pad 1.0.0 is vulnerable', source: 'dependencies' as const };
     jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce({ signals: file?.path === 'yarn.lock' ? [signal] : [], ...analysis });
@@ -2798,6 +2797,7 @@ describe('runFullReview orchestration', () => {
     expect(call[7]).toMatchObject({ verdict: 'APPROVE', staticAnalysis: { sources: [{ source: 'checks', status: 'ran' }] } });
     expect(call[9]).toMatchObject({ skipped: { excluded: [], binary: [] } });
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ ...check, output: expect.objectContaining({ summary: expect.stringContaining('without a model read') }) }));
+    expect(staticSignalsModule.ciFoundNothing).toHaveBeenCalledWith(expect.anything(), { owner: 'test-owner', repo: 'test-repo', prNumber: 42, headSha: 'abc123' }, undefined);
     expect(reviewModule.runReview).not.toHaveBeenCalled();
   });
 
@@ -2820,13 +2820,16 @@ describe('runFullReview orchestration', () => {
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'cancelled', output: expect.objectContaining({ title: 'Superseded' }) }));
   });
 
-  it('keeps a PR that only deletes binaries unreviewed when an earlier round left a finding', async () => {
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [{ path: 'old.png', header: '', deleted: true }] });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
-    jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({
+  it.each([
+    ['an earlier round left a finding', () => jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({
       previousFindings: [{ title: 'Broken image link', file: 'README.md', line: 3, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_img' }],
       priorRounds: [],
-    });
+    })],
+    ['CI reported something or could not be read', () => jest.mocked(staticSignalsModule.ciFoundNothing).mockResolvedValueOnce(false)],
+  ])('keeps a PR that only deletes binaries unreviewed when %s', async (_label, arrange) => {
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [{ path: 'old.png', header: '', deleted: true }] });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
+    arrange();
 
     await callRunFullReview();
 

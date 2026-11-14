@@ -26,7 +26,7 @@ import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, Revie
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
-import { collectStaticSignals, fetchLockfiles } from './static-signals';
+import { ciFoundNothing, collectStaticSignals, fetchLockfiles } from './static-signals';
 import type { StaticAnalysisResult } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
@@ -991,18 +991,17 @@ async function postUnreviewedRound(
 }
 
 /**
- * Whether a diff no model reads can be approved without one. Every changed file must be a deleted binary, LFS file or
- * submodule, and every static source must have run and found nothing anywhere on the head. No earlier round may have
+ * Whether a diff no model reads can be approved without one, before CI is read. Every changed file must be a deleted
+ * binary, LFS file or submodule, and every static source must have run and found nothing. No earlier round may have
  * recorded a finding, since no model reads whether the change settled it.
  */
 function approvesUnread(
-  fullDiff: ParsedDiff, excludedFiles: RoundDiffExcludedFile[], lockfiles: LockfileDiff[], { signals, record, offDiffResults }: StaticAnalysisResult, recap: RecapState,
+  fullDiff: ParsedDiff, excludedFiles: RoundDiffExcludedFile[], lockfiles: LockfileDiff[], { signals, record }: StaticAnalysisResult, recap: RecapState,
 ): boolean {
   const skipped = skippedFiles(excludedFiles, lockfiles, fullDiff);
   const runs = [...record?.analyzers ?? [], ...record?.sources ?? []];
   return (fullDiff.binarySkipped?.length ?? 0) > 0 && skipped.excluded.length === 0 && skipped.binary.length === 0
-    // Such a diff has no line a result can sit on, so a result anywhere on the head counts.
-    && signals.length === 0 && !offDiffResults && runs.every(r => r.status === 'ran') && !record?.checksStillPending
+    && signals.length === 0 && runs.every(r => r.status === 'ran')
     && !recap.priorRoundsIncomplete && recap.openThreadsState !== 'fetch_failed'
     && recap.previousFindings.length === 0 && recap.priorRounds.every(r => r.findings.count === 0);
 }
@@ -1984,9 +1983,12 @@ async function runFullReview(
     if (diff.files.length === 0 && lockfiles.length === 0) {
       core.info('No reviewable files in diff');
       // Every source reads the skipped files as the diff, so CI, dependency review and the analyzers still check them.
-      const analysis = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, diff: fullDiff, fullDiff });
+      const signalsOctokit = await workflowOctokit();
+      const analysis = await collectStaticSignals(signalsOctokit, { owner, repo, prNumber, headSha: commitSha, baseRef, diff: fullDiff, fullDiff });
       const { signals } = analysis;
-      if (approvesUnread(fullDiff, excludedFiles, lockfiles, analysis, recap) && (!pause.paused || skipCap || forceReview)) {
+      // Such a diff has no line a static result can sit on, so CI is read as a whole.
+      if (approvesUnread(fullDiff, excludedFiles, lockfiles, analysis, recap) && (!pause.paused || skipCap || forceReview)
+        && await ciFoundNothing(signalsOctokit, { owner, repo, prNumber, headSha: commitSha }, config.static_analysis)) {
         core.info('Every changed file is a deleted binary, LFS file or submodule, and no static check found anything');
         const run: ReviewRun = {
           ...target, options, trigger, config, reviewSource, configHold, models, plannerEnabled: !!clients.planner,
@@ -1995,7 +1997,7 @@ async function runFullReview(
           memoryLoadStatus: config.memory?.enabled ? 'skipped' : 'disabled', staticAnalysis: analysis.record,
           commentId, dashboard, progress, startTime, parseEndTime,
         };
-        checkReport = await postUnreadApproval(run, 'This PR only deletes files with nothing to read, such as binaries, LFS files or submodules, so Manki approves it without a model read. No static check found anything.', unreviewedMetadata());
+        checkReport = await postUnreadApproval(run, 'This PR only deletes files with nothing to read, such as binaries, LFS files or submodules, so Manki approves it without a model read. CI and the static checks found nothing.', unreviewedMetadata());
         return;
       }
       const notice = formatUnreviewedNotice(shortSha, { excluded: excludedFiles, binary: fullDiff.binarySkipped ?? [] }, signals);

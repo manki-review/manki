@@ -31,7 +31,7 @@ export interface QueuedCheck {
   headSha: string;
 }
 
-const CHECK_NAME = 'Manki';
+export const CHECK_NAME = 'Manki';
 const CHECK_STATE_KEY = 'manki_check_run';
 /** How long a failed completion waits before its one retry. */
 const COMPLETE_RETRY_MS = 3_000;

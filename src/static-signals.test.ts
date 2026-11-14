@@ -14,7 +14,7 @@ import type { PackageChange } from './lockfile';
 import { createOctokit, withDeadline } from './auth';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
-import { checkFindingClaims, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
+import { checkFindingClaims, ciFoundNothing, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
 import { Finding, StaticSignal } from './types';
 import { paginateSinglePage } from './test-utils';
 
@@ -137,10 +137,8 @@ describe('collectStaticSignals', () => {
   it('keeps results on lines in the diff and fences them in the reviewer prompt', async () => {
     const octokit = makeOctokit();
 
-    const { signals, record, offDiffResults } = await collectStaticSignals(octokit, request());
+    const { signals, record } = await collectStaticSignals(octokit, request());
 
-    // The two annotations on no line of the diff are counted, but left out of the signals.
-    expect(offDiffResults).toBe(2);
     // Each source is recorded with its results on lines in the diff.
     expect(record).toEqual({ sources: [
       { source: 'checks', status: 'ran', results: 1 },
@@ -773,6 +771,44 @@ describe('collectStaticSignals with analyzers and waits', () => {
 function signal(overrides: Partial<StaticSignal>): StaticSignal {
   return { tool: 'lint', ruleId: 'no-undef', severity: 'error', file: 'src/app.ts', line: 2, message: 'b is not defined', source: 'checks', ...overrides };
 }
+
+describe('ciFoundNothing', () => {
+  const clean = { id: 1, name: 'test', status: 'completed', conclusion: 'success', output: { annotations_count: 0 } };
+  const head = { owner: 'o', repo: 'r', prNumber: 7, headSha: 'head-sha' };
+  const settings = { wait_for_checks: ['test', 'review'], code_scanning: true };
+  const found = async (runs: object[], status = { state: 'success', total_count: 1 }, alerts: object[] = [], waitFor = settings) => {
+    const octokit = makeOctokit();
+    octokit.rest.checks.listForRef.mockResolvedValue({ data: runs });
+    octokit.rest.codeScanning.listAlertsForRepo.mockResolvedValue({ data: alerts });
+    (octokit.rest.repos as Record<string, unknown>).getCombinedStatusForRef = jest.fn().mockResolvedValue({ data: status });
+    return ciFoundNothing(octokit, head, waitFor);
+  };
+
+  it('finds nothing only when every other check run finished clean, every awaited one ran, statuses passed and no alert is open', async () => {
+    // This job and the `Manki` check run beside the review, so neither counts. A head without statuses reads as `pending`.
+    const ours = [{ ...clean, name: 'review', status: 'in_progress', conclusion: null }, { ...clean, name: 'Manki', conclusion: 'action_required' }];
+    expect(await found([clean, { ...clean, name: 'docs', conclusion: 'skipped' }, ...ours], { state: 'pending', total_count: 0 })).toBe(true);
+    expect(await found([{ ...clean, status: 'in_progress', conclusion: null }])).toBe(false);
+    expect(await found([{ ...clean, conclusion: 'failure' }])).toBe(false);
+    expect(await found([{ ...clean, output: { annotations_count: 1 } }])).toBe(false);
+    // A check `wait_for_checks` names that has not started yet has no run.
+    expect(await found([{ ...clean, name: 'lint' }])).toBe(false);
+    expect(await found([clean], { state: 'failure', total_count: 1 })).toBe(false);
+    expect(await found([clean], { state: 'pending', total_count: 1 })).toBe(false);
+    expect(await found([clean], undefined, [{ number: 1 }])).toBe(false);
+    expect(await found([clean], undefined, [{ number: 1 }], { ...settings, code_scanning: false })).toBe(true);
+  });
+
+  it('counts a CI result it cannot read as a report', async () => {
+    const octokit = makeOctokit();
+    octokit.rest.checks.listForRef.mockResolvedValue({ data: [clean] });
+    octokit.rest.codeScanning.listAlertsForRepo.mockRejectedValue(Object.assign(new Error('no analysis found'), { status: 404 }));
+    (octokit.rest.repos as Record<string, unknown>).getCombinedStatusForRef = jest.fn().mockResolvedValue({ data: { state: 'success', total_count: 1 } });
+
+    expect(await ciFoundNothing(octokit, head, settings)).toBe(false);
+    expect(core.warning).toHaveBeenCalledWith('Could not read the CI results of the head, so they count as a report: no analysis found');
+  });
+});
 
 describe('toolAlertFindings', () => {
   it('turns security, code-scanning, analyzer and error-level results into labelled candidates, and never style results', () => {
