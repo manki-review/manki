@@ -2553,7 +2553,7 @@ describe('parseFindingFromComment', () => {
     }
     // The issue box, and the link that replaces it once ticked, are not part of the description.
     expect(body).toContain('Create an issue for this');
-    const filed = body.replace(/- \[ \] Create an issue for this[^\n]*/, 'Issue #12 created by @bob');
+    const filed = body.replace(/- \[ \] Create an issue for this[^\n]*/, 'Issue #12 created by `@bob`');
     expect(parseFindingFromComment(filed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
     // The plain label with a tool name is read as a header above the title, never as a one-line title.

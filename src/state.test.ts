@@ -1096,12 +1096,12 @@ describe('checkAndAutoApprove', () => {
 
     const byAuthor = approves && resolver === 'author';
     const replies = jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply'));
-    const reply = (threadId: string) => ({ threadId, body: `Finding dismissed by @author, the PR author, who has the \`${role}\` role on this repository.\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->` });
+    const reply = (threadId: string) => ({ threadId, body: `Finding dismissed by \`@author\`, the PR author, who has the \`${role}\` role on this repository.\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->` });
     expect(replies.map(([, vars]) => vars)).toEqual(byAuthor ? [...(recorded ? [] : [reply('t1')]), reply('t2')] : []);
     // The resolver's write access is asked once for both threads, and the role lookup of an author who resolved reuses that answer.
     expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(1);
     if (approves) {
-      const line = `**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author (\`${role}\` role), [Off by one](https://github.com/o/r/pull/1#r2) by @author (\`${role}\` role).`;
+      const line = `**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by \`@author\` (\`${role}\` role), [Off by one](https://github.com/o/r/pull/1#r2) by \`@author\` (\`${role}\` role).`;
       expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(byAuthor);
     }
   });

@@ -339,7 +339,7 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Requ
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
-      await replyToReviewThread(octokit, o.thread, `Finding dismissed by @${o.login}, the PR author, who has ${rolePhrase(o.role)} on this repository.`, securityOverrideMarker(o.via, o.login));
+      await replyToReviewThread(octokit, o.thread, `Finding dismissed by \`@${o.login}\`, the PR author, who has ${rolePhrase(o.role)} on this repository.`, securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {
