@@ -18,6 +18,7 @@ import {
   deduplicateFindings,
   runJudgeAgent,
   synthesizeMissingThreadEvaluations,
+  CarriedWarning,
   JudgeInput,
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
@@ -2714,11 +2715,11 @@ describe('runJudgeAgent', () => {
 
   it('asks the judge whether each carried warning is fixed, and reports only the ones every answer finds addressed', async () => {
     const priorRounds = ([{ round: 1, commitSha: 'abc', timestamp: 't', findings: [] }] as LegacyHandoverRoundFixture[]).map(roundContextFromLegacy);
-    const carried = (title: string, lineStart: number, more: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry => ({
+    const carried = (title: string, lineStart: number, more: Partial<CarriedWarning> = {}): CarriedWarning => ({
       ...makeFindingFingerprintEntry({ title, file: 'src/auth.ts', lineStart }), posted: 'body', raisedIn: 1, citedLine: { hash: 'abcdefabcdef', count: 1 }, ...more,
     });
-    const carriedWarnings = [
-      carried('Wait ignores the limit', 16, { description: 'The handler\nwaits forever.', currentLine: 20 }),
+    const carriedWarnings: CarriedWarning[] = [
+      carried('Wait ignores the limit', 16, { description: 'The handler\nwaits forever.', currentLine: 20, currentCode: '>>> 20:   await waitFor(limit);' }),
       carried('Token kept after logout', 30),
       carried('Retry has no cap', 40),
       carried('Cache never cleared', 50),
@@ -2744,6 +2745,9 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('## Earlier Warnings in the Review Body');
     expect(userMessage).toContain('- **C1**: "Wait ignores the limit" at src/auth.ts:20. The handler waits forever.');
     expect(userMessage).toContain('- **C2**: "Token kept after logout" at src/auth.ts:30.\n');
+    // A warning shows the code around its line when its file was read, and says so when it was not.
+    expect(userMessage).toContain('The handler waits forever.\n```\n>>> 20:   await waitFor(limit);\n```\n- **C2**');
+    expect(userMessage).toContain('- **C2**: "Token kept after logout" at src/auth.ts:30.\n- **The fix may not be shown**: The current code of `src/auth.ts` is not shown, as the file could not be read in full this round. Do not call this warning addressed from code you cannot see.');
     // Without open threads the round still shows the diff since the last round, and no thread sections.
     expect(userMessage).toContain('## Inter-Round Diff');
     expect(userMessage).toContain('+new');
@@ -2868,7 +2872,7 @@ describe('runJudgeAgent', () => {
       interRoundDiff: long,
     });
     const cutMessage: string = mockSendMessage.mock.calls[0][1];
-    expect(cutMessage).toContain(`The diff has ${long.length} characters, more than the ${MAX_INTER_ROUND_DIFF_CHARS} shown, so each file gets a share, and the files of open blocker and warning threads come first.`);
+    expect(cutMessage).toContain(`The diff has ${long.length} characters, more than the ${MAX_INTER_ROUND_DIFF_CHARS} shown, so each file gets a share, and the files of open blocker and warning threads and of earlier warnings come first.`);
     expect(cutMessage).toContain('Cut, each ending with a line that says so: `src/a.ts`, `src/b.ts`.');
     expect(cutMessage).not.toContain('Left out:');
     expect(cutMessage).toContain(`diff\n${fix}\ndiff --git a/src/a.ts`);
@@ -2889,8 +2893,21 @@ describe('runJudgeAgent', () => {
     expect(notedMessage).toContain('Cut, each ending with a line that says so: `src/b.ts`.');
     expect(notedMessage).toContain('Left out: `src/a.ts`.');
     expect(notedMessage).toContain(`${fix}\n${'`'.repeat(3)}`);
-    expect(notedMessage).toContain('- **The fix may not be shown**: The inter-round diff above leaves out `src/a.ts`. The file could not be read in full this round, as it is too large or could not be fetched. Do not call this thread addressed from code you cannot see.');
-    expect(notedMessage).toContain('### PRRT_x — src/z.ts:5\n- **The fix may not be shown**: The inter-round diff above shows only the start of `src/b.ts`. Do not call this thread addressed from code you cannot see.');
+    expect(notedMessage).toContain('- **The fix may not be shown**: The inter-round diff leaves out `src/a.ts`. The current code of `src/a.ts` is not shown, as the file could not be read in full this round. Do not call this thread addressed from code you cannot see.');
+    expect(notedMessage).toContain('### PRRT_x — src/z.ts:5\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this thread addressed from code you cannot see.');
+
+    // The file of an earlier warning goes first too.
+    mockSendMessage.mockClear();
+    const warning: CarriedWarning = { ...makeFindingFingerprintEntry({ title: 'Retry has no cap', file: 'src/b.ts', lineStart: 3 }), posted: 'body', raisedIn: 1, citedLine: { hash: 'abcdefabcdef', count: 1 }, currentCode: '>>> 3: retry();' };
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, carriedWarnings: [warning],
+      priorRounds: priorRounds.map(roundContextFromLegacy),
+      interRoundDiff: long,
+    });
+    const carriedMessage: string = mockSendMessage.mock.calls[0][1];
+    expect(carriedMessage).toContain('Cut, each ending with a line that says so: `src/b.ts`.');
+    expect(carriedMessage).toContain('Left out: `src/a.ts`, `src/z.ts`.');
+    expect(carriedMessage).toContain('\n- **The fix may not be shown**: The inter-round diff shows only the start of `src/b.ts`. Do not call this warning addressed from code you cannot see.\n```\n>>> 3: retry();');
   });
 
   it('renders OpenThread `description` and `suggestedFix` in the open-thread block', async () => {

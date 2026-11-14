@@ -5218,12 +5218,14 @@ describe('runReview', () => {
         repoContext: 'repo context',
         previousFindings,
         priorRounds,
+        fileContents: new Map([['src/a.ts', 'one\ntwo\nthree\nretry();\nfive']]),
       },
     );
 
     expect(result.inPrSuppressedCount).toBe(1);
     expect(result.carriedFixed).toEqual(['key']);
-    expect(mockedRunJudgeAgent.mock.calls[0][2].carriedWarnings).toEqual([listed]);
+    // The judge also sees the code around the warning's line.
+    expect(mockedRunJudgeAgent.mock.calls[0][2].carriedWarnings).toEqual([{ ...listed, currentCode: expect.stringContaining('>>> 4: retry();') }]);
     expect(mockedRunJudgeAgent).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),

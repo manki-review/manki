@@ -16,6 +16,7 @@ import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoO
 import { classifyRelatedWork } from './related-work';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
+import { extractCurrentCodeWindow } from './code-window';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
@@ -1375,7 +1376,7 @@ export async function runReview(
     ...(refutation && { refutation }),
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
-    carriedWarnings,
+    carriedWarnings: carriedWarnings.map(e => ({ ...e, currentCode: extractCurrentCodeWindow(fileContents, e.fingerprint.file, e.currentLine ?? e.fingerprint.lineStart) })),
   };
   if (judgeSkipped) {
     core.info('No finding, open thread or carried warning to judge, so the judge is skipped');

@@ -200,6 +200,7 @@ jest.mock('./review', () => ({
   stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
   carryBodyWarnings: jest.requireActual('./review').carryBodyWarnings,
+  bodyWarnings: jest.requireActual('./review').bodyWarnings,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
@@ -5482,9 +5483,11 @@ describe('runFullReview orchestration', () => {
       { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
       { title: 'Outdated design issue', file: '', line: 0, originalLine: 1, originalCommit: 'c0ffee', severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile_old' },
     ];
+    // A warning the last review body listed has its file read too, ahead of the rest.
+    const listed = { ...makeFindingFingerprintEntry({ title: 'Retry never ends', file: 'src/carried.ts', lineStart: 4 }), posted: 'body' as const, citedLine: { hash: 'abcdefabcdef', count: 1 } };
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
-      priorRounds: [],
+      priorRounds: [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [listed] } })],
     });
 
     await callRunFullReview();
@@ -5499,7 +5502,8 @@ describe('runFullReview orchestration', () => {
     expect(requestedPaths).toContain('src/other.ts');
     expect(requestedPaths.filter(p => p === 'src/app.ts')).toHaveLength(1);
     // Only the files of a blocker or warning thread, with those its finding cited, are read ahead of the rest.
-    expect(fetchCall[7]).toEqual(new Set(['src/other.ts', 'src/caller.ts']));
+    expect(requestedPaths.filter(p => p === 'src/carried.ts')).toHaveLength(1);
+    expect(fetchCall[7]).toEqual(new Set(['src/other.ts', 'src/caller.ts', 'src/carried.ts']));
   });
 
   it('skips deleted changed files but still fetches open-thread files', async () => {

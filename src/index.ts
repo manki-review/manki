@@ -22,7 +22,7 @@ import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
-import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { bodyWarnings, carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
@@ -1155,14 +1155,16 @@ async function collectOpenThreads(
   // The prompts read a parsed lockfile's package list, never the file, so it stays out of the shared budget.
   // Only a thread on it reads the file, for its window.
   const parsed = new Set(lockfiles.map(l => l.path));
-  const filePaths = [...changedFilePaths, ...threadFilePaths].filter(p => !parsed.has(p));
+  // The judge reads the code around each warning an earlier review body listed when the push may have fixed it.
+  const carriedFiles = [...new Set(bodyWarnings(recap.priorRounds).map(e => e.fingerprint.file))];
+  const filePaths = [...changedFilePaths, ...threadFilePaths, ...carriedFiles.filter(p => !changedFilePaths.includes(p) && !threadFiles.includes(p))].filter(p => !parsed.has(p));
   const lockfileThreadPaths = [...new Set(threadFiles.filter(p => parsed.has(p)))];
   let fileContents: Map<string, string> | undefined;
   let lockfileContents: Map<string, string> | undefined;
   try {
     [fileContents, lockfileContents] = await Promise.all([
-      // The files of blocker and warning threads are read first, so the judge sees a fix however large the rest of the change is.
-      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, fixThreadFiles(baseOpenThreads)),
+      // The files of blocker and warning threads and of earlier warnings are read first, so the judge sees a fix however large the rest of the change is.
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths, undefined, undefined, new Set([...fixThreadFiles(baseOpenThreads), ...carriedFiles])),
       lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
     ]);
   } catch (error) {
