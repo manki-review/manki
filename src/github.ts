@@ -1945,7 +1945,9 @@ export async function postReview(
   const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' }
     : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }) } : undefined;
   // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
-  const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) ?? warningHold : undefined;
+  // It is read beside a config or unread hold too, which comes first but gets a line of its own.
+  const prHold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
+  const hold = event === 'APPROVE' ? standingHold ?? prHold ?? warningHold : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   const warningsHeld = event === 'APPROVE' && !!warningHold;
   // A review that warnings hold reads like a change request, so what the change does waits for the approval check's
@@ -1958,7 +1960,10 @@ export async function postReview(
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
-  const heldLine = lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && approvalHoldLine(lineHold, autoApprove);
+  const heldLines = [
+    lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && approvalHoldLine(lineHold, autoApprove),
+    standingHold && prHold && approvalHoldLine(prHold, autoApprove),
+  ].filter(Boolean).join('\n\n');
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
   const unthreadedWarnings = unthreaded.filter(f => !isBlockingFinding(f));
@@ -1974,7 +1979,7 @@ export async function postReview(
     // Without their threads, the body lists them, so the verdict line still counts them.
     const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
     const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
-    const line = approvalRefusal ? APPROVAL_REFUSED_LINES[approvalRefusal] : heldLine;
+    const line = approvalRefusal ? APPROVAL_REFUSED_LINES[approvalRefusal] : heldLines;
     let head = line ? `${line}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
