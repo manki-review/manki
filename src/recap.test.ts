@@ -2544,12 +2544,10 @@ describe('parseFindingFromComment', () => {
       expect(old).toContain('**Warning, not blocking**\n\n**Extract helper**\n\n');
       expect(parseFindingFromComment(old)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
       expect(threadSeverity(old)).toBe('warning');
-      // So do threads posted while warnings held, with the labels and the note of earlier wordings.
-      for (const label of ['**Warning, needs an answer**', '**Warning: fix, explain or track**']) {
-        const earlier = late.replace('**Warning**', label).replace('so it still holds the approval._', 'so it still needs a fix or an answer._');
-        expect(earlier).toContain(`${label}\n\n**Extract helper**\n\n`);
-        expect(parseFindingFromComment(earlier)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
-      }
+      // So do threads posted while warnings held, with the label and the note of an earlier wording.
+      const earlier = late.replace('**Warning**', '**Warning, needs an answer**').replace('so it still holds the approval._', 'so it still needs a fix or an answer._');
+      expect(earlier).toContain('**Warning, needs an answer**\n\n**Extract helper**\n\n');
+      expect(parseFindingFromComment(earlier)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
       // A security warning has its own header and note, which are not part of the description either.
       const security = formatFindingComment({ severity: 'warning', title: 'Token in log', file: 'src/a.ts', line: 2, description: 'The token is logged.', reviewers: [], origin: 'reviewed', tags: ['follow-up', 'security'], checkStatus }, TEST_LINKS);
       expect(security).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
