@@ -72,7 +72,11 @@ Respond with ONLY a JSON object. Leave out \`premises\` when the message lists n
 function codeDigest(workspace: string, files: readonly string[]): string | undefined {
   const hash = createHash('sha256');
   try {
-    for (const file of files) hash.update(file).update('\0').update(readFileSync(resolveInRoot(workspace, file).absolute)).update('\0');
+    for (const file of files) {
+      const content = readFileSync(resolveInRoot(workspace, file).absolute);
+      // A file can hold a NUL byte, so only the length keeps text that moves between two files from leaving the digest unchanged.
+      hash.update(file).update('\0').update(`${content.length}\0`).update(content);
+    }
   } catch {
     return undefined;
   }

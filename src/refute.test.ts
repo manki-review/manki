@@ -1365,6 +1365,18 @@ describe('refuteBlockers', () => {
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
     expect(await calls()).toBe(2);
+
+    // Text that moves from one cited file to the next forces a new check too, even when the files hold NUL bytes.
+    const write = (api: string, math: string) => {
+      writeFileSync(join(workspace, 'src', 'api.ts'), api);
+      writeFileSync(join(workspace, 'src', 'math.ts'), math);
+    };
+    write('if (a > 1000) throw new Error();\n', 'x\0src/math.ts\0y');
+    const [beforeMove] = await refuteBlockers(client, [finding('Sum overflows')], { workspace, diff });
+    const movedRounds = [{ findings: { entries: [] }, judge: { dropped: [{ title: 'Sum overflows', file: 'src/math.ts', line: 2, reviewers: ['R'], refutation: beforeMove.refutation }] } }] as unknown as RoundContext[];
+    write('if (a > 1000) throw new Error();\n\0src/math.ts\0x', 'y');
+    await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds: movedRounds, diff });
+    expect([beforeMove.refutation?.files, client.calls.length]).toEqual([['src/api.ts', 'src/math.ts'], 4]);
   });
 
   it('checks again a grade an earlier round kept below its conditional grade while no check settled the doubt', async () => {
