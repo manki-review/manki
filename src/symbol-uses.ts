@@ -1973,9 +1973,10 @@ function findSymbolUses(symbols: ChangedSymbol[], hits: Hit[], redefined: Set<st
  * for its type first. A namesake of another type ranks after every other use of the symbol.
  *
  * With `rankedLast` the blocks are the finders'. A symbol then shows the best use of each file before a second use of
- * any file, and the uses in the files `rankedLast` names after those of every other file. A line that likely is no use of
- * the symbol still comes after every line that is: a mention in a comment or a document, a namesake, and for a field a
- * line that only calls `.name()` or a file that never names its type.
+ * any file, and the uses in the files `rankedLast` names after those of every other file, whatever those lines are.
+ * Within each of the two groups of files, a line that likely is no use of the symbol still comes after every line that
+ * is: a mention in a comment or a document, a line in a package that cannot reach the symbol, and for a field a line
+ * that only calls `.name()` or a file that never names its type.
  */
 function formatSymbolUses({ entries, namesakes }: FoundUses, packages: Packages, redefined: Set<string>, typeFiles: Map<string, Set<string>>, rankedLast?: (file: string) => boolean): SymbolUses {
   const capOf = (symbol: ChangedSymbol) => redefined.has(symbol.name) ? MAX_REDEFINED_USES : MAX_USES_PER_SYMBOL;
