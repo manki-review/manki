@@ -400,6 +400,8 @@ interface FinderSteps {
   toolSteps: number;
   /** Distinct files the finder's tool calls read, over all its calls. */
   filesRead: number;
+  /** Set when the finder was asked once more, since its first answer opened none of the listed files outside the diff. */
+  askedAgain?: true;
 }
 
 /** How a finding got its grade, in grades, kinds and counts only, so a summary can count it for a hold-out case. */
@@ -489,7 +491,8 @@ function finderSteps(review: LocalReview): FinderSteps[] {
     for (const file of call.filesRead ?? []) entry.files.add(file);
     byName.set(call.agent, entry);
   }
-  return [...byName].map(([name, { model, toolSteps, files }]) => ({ name, ...(model && { model }), toolSteps, filesRead: files.size }));
+  const askedAgain = new Set(review.context.reviewers?.agentMetrics?.filter(a => a.askedAgain).map(a => a.name));
+  return [...byName].map(([name, { model, toolSteps, files }]) => ({ name, ...(model && { model }), toolSteps, filesRead: files.size, ...(askedAgain.has(name) && { askedAgain: true as const }) }));
 }
 
 /** The key items a restatement of an earlier finding is matched against: what is left of each kept-open thread, and each earlier finding still present. */
@@ -1304,7 +1307,7 @@ export function formatBenchSummary(report: BenchReport): string {
         lines.push(`  ${item.id} ${TIER_LABELS[item.tier]} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
       }
       for (const [i, run] of c.runs.entries()) {
-        const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
+        const reads = run.finders.map(f => `${f.name} ${f.filesRead}${f.askedAgain ? ' (asked again)' : ''}`).join(', ') || 'none';
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}`
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);

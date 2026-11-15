@@ -142,6 +142,7 @@ function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true)
           { stage: 'judge', model: 'claude-opus-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }] },
         ],
       },
+      reviewers: { agentMetrics: [{ name: 'finder-a', askedAgain: true }, { name: 'finder-b' }] },
     } as unknown as RoundContext,
     base: SHA_A,
     head: SHA_B,
@@ -389,7 +390,7 @@ describe('scoreRun', () => {
     ]);
     expect(score).toMatchObject({
       outcome: 'ADDRESS_FIRST', complete: true, mustCatchRecall: 0.5, weightedRecall: 3 / 5, verdictCorrect: true, falseBlockers: 1, unexpectedWarnings: 0, extraFindings: 1, duplicates: 1,
-      finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, filesRead: 3 }],
+      finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, filesRead: 3, askedAgain: true }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings.slice(1, 3)).toEqual([
@@ -723,7 +724,7 @@ describe('runBench and buildReport', () => {
     expect(summary).toContain('  K1 must blocker: 2/3, 1 partial\n');
     expect(summary).toContain('  run 2: FAILED: provider down\n');
     expect(summary).toContain('  run 4: INCOMPLETE: The review did not complete.\n');
-    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 unexpected warnings, 0 extra, 0 duplicates, files read finder-a 3, $1.25\n');
+    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 unexpected warnings, 0 extra, 0 duplicates, files read finder-a 3 (asked again), $1.25\n');
     expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, at grade 33%, verdicts 67%.');
     expect(summary).not.toContain('Follow-up rounds');
     expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, unexpected warnings 0, extra findings 0, duplicates 0, cost $5.00.');

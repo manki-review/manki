@@ -3176,6 +3176,7 @@ describe('runFullReview orchestration', () => {
       agentRetryCount: new Map([['security', 0], ['general', 1]]),
       agentFailureReasons: { general: 'CLI timed out' },
       agentWarnings: new Map([['general', ['malformed response', 'CLI timed out']]]),
+      agentsAskedAgain: ['general'],
       plannerDurationMs: 500,
       judgeDurationMs: 800,
       judgeRetryCount: 2,
@@ -3230,9 +3231,11 @@ describe('runFullReview orchestration', () => {
         status: 'failed',
         failureReason: 'CLI timed out',
         warnings: ['malformed response', 'CLI timed out'],
+        askedAgain: true,
       }),
     ]);
     expect(ctx!.reviewers.agentMetrics![0]).not.toHaveProperty('warnings');
+    expect(ctx!.reviewers.agentMetrics![0]).not.toHaveProperty('askedAgain');
   });
 
   it('emits `usage` with zero rollups and no `perStage` when no stage reports tokens', async () => {
