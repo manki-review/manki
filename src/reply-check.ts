@@ -14,8 +14,9 @@ type AnswerOutcome = typeof REPLY_OUTCOMES[number];
 export const MAX_REPLY_STATEMENTS = 5;
 const MAX_PLACES = 3;
 const MAX_QUOTE_CHARS = 160;
-const MIN_TERM_CHARS = 3;
-const MAX_TERM_CHARS = 200;
+/** The shortest and longest text Manki searches for, or looks up in the PR description. */
+export const MIN_TERM_CHARS = 3;
+export const MAX_TERM_CHARS = 200;
 
 const UNREADABLE_ANSWER = 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.';
 const UNPROVEN_OUTCOME = 'I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.';
@@ -30,7 +31,12 @@ export interface ReplySources {
   relatedNames: readonly string[];
   /** The PR's diff. Without a checkout, only a line inside it counts as a line of the PR. */
   diff?: ParsedDiff;
+  /** The PR's description as fetched for this reply. Unset when it could not be read. */
+  description?: string;
 }
+
+/** What Manki's own look at the PR description showed: the text it holds, or the text it does not hold in any letter case. */
+type DescriptionCheck = { holds: string } | { lacks: string };
 
 /** A search Manki ran itself and that found no line. */
 interface EmptySearch {
@@ -51,8 +57,10 @@ export interface CheckedStatement {
   /** The lines the status rests on, each one checked to exist. */
   places: string[];
   search?: EmptySearch;
+  /** Set when the status rests on the PR description instead of a line or a search of the code. */
+  description?: DescriptionCheck;
   why?: UncheckedReason;
-  /** The term of a search that found a line, or the repo a search could not read, for the reason shown. */
+  /** The term of a search that found a line or text of the PR description, or the repo a search could not read, for the reason shown. */
   detail?: string;
 }
 
@@ -126,8 +134,34 @@ function emptySearch(term: string, repo: unknown, sources: ReplySources): EmptyS
   return { term: text, ...(configured && { repo: configured.repo }), ...(configured?.paths && { paths: configured.paths }), skipped: found.skipped };
 }
 
+/**
+ * Checks a statement about the PR description against `description`, the text as fetched. `absent` is text the
+ * statement says is gone, and counts when the description does not hold it, ignoring case. `cited` is text the
+ * statement rests on, and counts when the description holds it. Both compare with whitespace collapsed.
+ */
+function checkDescription(cited: string, absent: string, description: string | undefined): DescriptionCheck | { why: UncheckedReason; detail?: string } {
+  if (description === undefined) return { why: 'description_unread' };
+  const body = collapse(description);
+  const inLimits = (text: string) => text.length >= MIN_TERM_CHARS && text.length <= MAX_TERM_CHARS;
+  if (absent) {
+    if (!inLimits(absent)) return { why: 'search_term' };
+    return body.toLowerCase().includes(absent.toLowerCase()) ? { why: 'description_found', detail: absent } : { lacks: absent };
+  }
+  return inLimits(cited) && body.includes(cited) ? { holds: cited } : { why: 'description_text' };
+}
+
 function checkStatement(entry: Record<string, unknown>, quote: string, sources: ReplySources): CheckedStatement {
   const status = entry.status;
+  if (status === 'confirmed' || status === 'contradicted') {
+    const text = (value: unknown) => (typeof value === 'string' ? collapse(value) : '');
+    const absent = status === 'confirmed' ? text(entry.description_search) : '';
+    const cited = text(entry.description);
+    // The PR author wrote the description, so only Manki's own look at the fetched text decides a statement about it.
+    if (absent || cited) {
+      const shown = checkDescription(cited, absent, sources.description);
+      return 'why' in shown ? { quote, status: 'not_checkable', places: [], ...shown } : { quote, status, places: [], description: shown };
+    }
+  }
   // A statement that something exists nowhere has no line to cite, so the search alone decides it, and Manki runs it.
   if (status === 'confirmed' && typeof entry.search === 'string' && entry.search.trim()) {
     const search = emptySearch(entry.search, entry.repo, sources);
@@ -138,7 +172,9 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
     const places = [...own, ...related].slice(0, MAX_PLACES);
     return places.length > 0 ? { quote, status, places } : { quote, status: 'not_checkable', places: [], ...unshownReason(entry.places, sources) };
   }
-  const why = entry.why === 'outside_code' || entry.why === 'not_reachable' ? entry.why : 'no_line';
+  // The model may say that the description was not shown, which counts only when Manki could not read it.
+  const why = entry.why === 'outside_code' || entry.why === 'not_reachable' ? entry.why
+    : entry.why === 'description_unread' && sources.description === undefined ? entry.why : 'no_line';
   return { quote, status: 'not_checkable', places: [], why };
 }
 
@@ -192,6 +228,9 @@ const UNCHECKED_REASONS: Record<UncheckedReason, (detail: string) => string> = {
   search_failed: () => 'the search failed',
   search_found: term => `a search for ${inline(term)} found a line`,
   search_cut: () => 'the search did not reach every file',
+  description_unread: () => 'the PR description could not be read',
+  description_text: () => `the PR description does not hold a cited text of ${MIN_TERM_CHARS} to ${MAX_TERM_CHARS} characters`,
+  description_found: term => `the PR description holds ${inline(term)}, ignoring case`,
 };
 
 /** Returns the developer's words for display: cut after the check that they are in the reply, with the cut marked. */
@@ -209,11 +248,19 @@ function searchLine({ term, repo, paths, skipped }: EmptySearch): string {
   return `No line of ${repo ? inline(repo) : 'this repository'} holds ${inline(term)}, ignoring case${scope.length > 0 ? ` (${scope.join(', ')})` : ''}`;
 }
 
+/** Says what Manki's look at the PR description showed. It reads as what the description holds, never as whether the developer is right. */
+function descriptionLine(shown: DescriptionCheck, status: CheckedStatement['status']): string {
+  return 'lacks' in shown
+    ? `The PR description does not hold ${inline(shown.lacks)}, ignoring case`
+    : `The PR description holds ${inline(shown.holds)}, cited ${status === 'confirmed' ? 'for' : 'against'} it`;
+}
+
 /** Returns the list of checked statements as Manki posts it below the answer, or `undefined` when the reply listed none. */
 export function statementList({ statements, unchecked }: CheckedReply): string | undefined {
   if (statements.length === 0) return undefined;
   const lines = statements.map(s => {
-    const what = s.search ? searchLine(s.search)
+    const what = s.description ? descriptionLine(s.description, s.status)
+      : s.search ? searchLine(s.search)
       : s.status === 'not_checkable' ? `Not checked, ${UNCHECKED_REASONS[s.why ?? 'outside_code'](s.detail ?? '')}`
         : `${s.places.length === 1 ? 'Line' : 'Lines'} cited ${s.status === 'confirmed' ? 'for' : 'against'} it ${s.places.length === 1 ? 'exists' : 'exist'} at ${s.places.map(inline).join(', ')}`;
     return `- ${what}: ${shownQuote(s.quote)}`;
@@ -228,21 +275,22 @@ export function statementList({ statements, unchecked }: CheckedReply): string |
  * finding is cleared, settled or wrong.
  */
 export function statementSummary({ statements, unchecked }: CheckedReply, blocks: boolean): string {
-  const contradicted = statements.some(s => s.status === 'contradicted');
+  const contradicted = statements.find(s => s.status === 'contradicted');
   const open = unchecked > 0 || statements.some(s => s.status === 'not_checkable');
-  const checks = contradicted ? 'I cited a line against at least one of these statements.'
+  const checks = contradicted ? `I cited ${contradicted.description ? 'text of the PR description' : 'a line'} against at least one of these statements.`
     : open ? 'I could not check every one of these statements.'
       : 'Each line says what I checked, not that the statement is right.';
   if (!blocks) return checks;
   return `${checks} ${open ? 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.' : 'What they mean for this finding is for a maintainer to decide.'}`;
 }
 
-/** Returns what the reply record keeps of the checked statements: no words of the developer and no search term. */
+/** Returns what the reply record keeps of the checked statements: no words of the developer, no search term and no text of the PR description. */
 export function statementRecords({ statements }: CheckedReply): ReplyStatementRecord[] {
   return statements.map(s => ({
     status: s.status,
     ...(s.places.length > 0 && { places: s.places }),
     ...(s.search && { searched: s.search.repo ?? 'pr' }),
+    ...(s.description && { description: 'lacks' in s.description ? 'absent' as const : 'held' as const }),
     ...(s.why && { why: s.why }),
   }));
 }

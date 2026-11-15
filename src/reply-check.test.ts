@@ -7,7 +7,10 @@ import * as mcpServer from './mcp-server';
 import { checkReply, ReplySources, statementList, statementRecords, statementSummary } from './reply-check';
 import { RelatedRepoTools } from './types';
 
-const REPLY = 'The exporter writes rows as CSV columns.\nNothing   calls `Ledger::snapshot`. The mobile app never stores them, see @alice and [the docs](https://example.com).';
+const REPLY = 'The exporter writes rows as CSV columns.\nNothing   calls `Ledger::snapshot`. The mobile app never stores them, see @alice and [the docs](https://example.com). The description no longer names `MAX_ROWS`.';
+// What the PR description says at the time of the reply. Its last paragraph is longer than a text Manki looks up.
+const DESCRIPTION = `Rewrites the exporter.\n\nIt writes one   row\nper ledger entry, with **no** cap.\n\n${'Every row keeps its order. '.repeat(9)}`;
+const HELD = 'writes one row per ledger entry';
 const UNPROVEN = 'I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.';
 const DIFF = parsePRDiff('diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -2,2 +2,3 @@\n context\n+    rows.write_csv();\n context');
 
@@ -31,7 +34,7 @@ describe('checkReply', () => {
       cacheDir: join(root, 'cache'),
       stateDir,
     };
-    sources = { workspace, related, relatedNames: ['acme/reports', 'acme/billing'], diff: DIFF };
+    sources = { workspace, related, relatedNames: ['acme/reports', 'acme/billing'], diff: DIFF, description: DESCRIPTION };
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -39,6 +42,7 @@ describe('checkReply', () => {
   const answer = (fields: Record<string, unknown>) => JSON.stringify({ outcome: 'Unverified', answer: 'A maintainer should confirm it.', ...fields });
   const csv = 'The exporter writes rows as CSV columns.';
   const snapshot = 'Nothing calls `Ledger::snapshot`.';
+  const rewrote = 'The description no longer names `MAX_ROWS`.';
 
   it.each<[string, Record<string, unknown>, string]>([
     ['a line of the PR that exists confirms', { quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, `- Line cited for it exists at \`src/ledger.rs:3\`: "${csv}"`],
@@ -52,6 +56,16 @@ describe('checkReply', () => {
     ['a search in a related repo names the paths it is limited to', { quote: snapshot, status: 'confirmed', search: 'snapshot', repo: 'acme/reports' },
       `- No line of \`acme/reports\` holds \`snapshot\`, ignoring case (only \`lib/\`, \`docs/*.md\` of that repository is fetched): "${snapshot}"`],
     ['a blank search falls back to the cited line', { quote: snapshot, status: 'confirmed', search: ' ', places: ['src/ledger.rs:4'] }, `- Line cited for it exists at \`src/ledger.rs:4\`: "${snapshot}"`],
+    // The description is the PR author's text. Whether it holds a text is what Manki reads in it, never the model's word.
+    ['text the PR description holds confirms, whitespace aside', { quote: rewrote, status: 'confirmed', description: ' writes one row\n per ledger   entry' },
+      `- The PR description holds \`${HELD}\`, cited for it: "${rewrote}"`],
+    ['text the PR description holds contradicts', { quote: rewrote, status: 'contradicted', description: 'with **no** cap' }, `- The PR description holds \`with **no** cap\`, cited against it: "${rewrote}"`],
+    ['a search of the PR description that finds nothing says what was searched', { quote: rewrote, status: 'confirmed', description_search: ' MAX_ROWS ' },
+      `- The PR description does not hold \`MAX_ROWS\`, ignoring case: "${rewrote}"`],
+    ['the PR description decides alone, whatever line or search is given', { quote: rewrote, status: 'confirmed', description_search: 'MAX_ROWS', description: 'no such text', search: 'fn snapshot', places: ['src/ledger.rs:99'] },
+      `- The PR description does not hold \`MAX_ROWS\`, ignoring case: "${rewrote}"`],
+    ['a blank description text falls back to the cited line', { quote: rewrote, status: 'confirmed', description: ' ', description_search: '', places: ['src/ledger.rs:4'] },
+      `- Line cited for it exists at \`src/ledger.rs:4\`: "${rewrote}"`],
   ])('checks a statement itself: %s', (_name, statement, line) => {
     const checked = checkReply(answer({ statements: [statement] }), REPLY, sources);
 
@@ -60,12 +74,14 @@ describe('checkReply', () => {
     expect(checked.text).toBe('Unverified. A maintainer should confirm it.');
   });
 
-  type Run = 'checkout' | 'no checkout' | 'no related repo';
+  type Run = 'checkout' | 'no checkout' | 'no related repo' | 'no description';
   const runs = (): Record<Run, ReplySources> => ({
     'checkout': sources,
     // As the reply handler passes it: without a checkout no related repo can be fetched.
     'no checkout': { relatedNames: sources.relatedNames, diff: DIFF },
     'no related repo': { workspace: sources.workspace, relatedNames: [], diff: DIFF },
+    // As the reply handler passes it when GitHub did not return the PR.
+    'no description': { ...sources, description: undefined },
   });
   const cutSearch = () => ({ matches: [], stopped: false, cut: true, skipped: 0 });
 
@@ -104,6 +120,22 @@ describe('checkReply', () => {
     ['the model saying that no code can show it', 'checkout', { status: 'not_checkable', why: 'outside_code', places: ['src/ledger.rs:3'] }, 'the review model says code cannot show it'],
     ['the model not reaching the code', 'checkout', { status: 'not_checkable', why: 'not_reachable' }, 'the review model could not read the code that would show it'],
     ['an unknown status and reason', 'checkout', { status: 'true', why: 'because I say so' }, 'no cited line was found in the code that was read'],
+    ['a text the PR description does not hold', 'checkout', { status: 'confirmed', description: 'caps the export at 500 rows' }, 'the PR description does not hold a cited text of 3 to 200 characters'],
+    ['a text the PR description holds in other letter case', 'checkout', { status: 'contradicted', description: HELD.toUpperCase() }, 'the PR description does not hold a cited text of 3 to 200 characters'],
+    ['a text of the PR description under 3 characters', 'checkout', { status: 'confirmed', description: 'It' }, 'the PR description does not hold a cited text of 3 to 200 characters'],
+    ['a text of the PR description over 200 characters', 'checkout', { status: 'confirmed', description: 'Every row keeps its order. '.repeat(8) }, 'the PR description does not hold a cited text of 3 to 200 characters'],
+    ['a text the PR description does not hold, whatever line is cited', 'checkout', { status: 'confirmed', description: 'no such text', places: ['src/ledger.rs:3'] },
+      'the PR description does not hold a cited text of 3 to 200 characters'],
+    ['a search of the PR description that finds the term', 'checkout', { status: 'confirmed', description_search: 'ledger entry' }, 'the PR description holds `ledger entry`, ignoring case'],
+    ['a search of the PR description that finds the term in other letter case, across a line break', 'checkout', { status: 'confirmed', description_search: 'ONE ROW  PER' },
+      'the PR description holds `ONE ROW PER`, ignoring case'],
+    ['a search of the PR description for a term under 3 characters', 'checkout', { status: 'confirmed', description_search: 'zz' }, 'a search needs one line of 3 to 200 characters'],
+    ['a search of the PR description for a term over 200 characters', 'checkout', { status: 'confirmed', description_search: 'z'.repeat(201) }, 'a search needs one line of 3 to 200 characters'],
+    ['a search of the PR description, which cannot contradict', 'checkout', { status: 'contradicted', description_search: 'MAX_ROWS' }, 'no cited line was found in the code that was read'],
+    ['a search of a PR description that could not be read', 'no description', { status: 'confirmed', description_search: 'MAX_ROWS' }, 'the PR description could not be read'],
+    ['a text of a PR description that could not be read', 'no description', { status: 'contradicted', description: HELD }, 'the PR description could not be read'],
+    ['the model saying that the description is not shown, when it could not be read', 'no description', { status: 'not_checkable', why: 'description_unread' }, 'the PR description could not be read'],
+    ['the model saying that the description is not shown, when it was read', 'checkout', { status: 'not_checkable', why: 'description_unread' }, 'no cited line was found in the code that was read'],
   ])('gives the true reason a statement was not checked: %s (%s)', (_name, run, statement, reason, ...[search]) => {
     const from = runs()[run];
     const spy = search && jest.spyOn(mcpServer, 'findLines').mockImplementation(search as typeof mcpServer.findLines);
@@ -156,6 +188,16 @@ describe('checkReply', () => {
       { status: 'confirmed', searched: 'acme/reports' },
       { status: 'not_checkable', why: 'search_found' },
     ]);
+    // Nor any text of the PR description: only that the description was the source.
+    expect(statementRecords(checkReply(answer({ statements: [
+      { quote: rewrote, status: 'confirmed', description_search: 'MAX_ROWS' },
+      { quote: csv, status: 'contradicted', description: HELD },
+      { quote: snapshot, status: 'confirmed', description_search: 'ledger entry' },
+    ] }), REPLY, sources))).toEqual([
+      { status: 'confirmed', description: 'absent' },
+      { status: 'contradicted', description: 'held' },
+      { status: 'not_checkable', why: 'description_found' },
+    ]);
     expect(statementList(checkReply(answer({}), REPLY, sources))).toBeUndefined();
   });
 
@@ -165,6 +207,7 @@ describe('checkReply', () => {
     ['Withdrawn', 'becomes Unverified on related lines alone', ['acme/reports:lib/rows.py:2'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Withdrawn', 'becomes Unverified on a line that does not exist', ['src/ledger.rs:99'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Withdrawn', 'becomes Unverified without proof', undefined, `Unverified. The exporter writes CSV. ${UNPROVEN}`],
+    ['Withdrawn', 'becomes Unverified on text of the PR description', [HELD], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Fixed', 'holds without proof', undefined, 'Fixed. The exporter writes CSV.'],
     ['Fixed', 'holds on a line of the PR next to a related line', ['src/ledger.rs:3', 'acme/reports:lib/rows.py:2'], 'Fixed. The exporter writes CSV.'],
     ['Fixed', 'becomes Unverified on related lines alone', ['acme/reports:lib/rows.py:2'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
@@ -174,8 +217,12 @@ describe('checkReply', () => {
     ['Unverified', 'stays', ['src/ledger.rs:3'], 'Unverified. The exporter writes CSV.'],
     ['Resolved', 'is no outcome', ['src/ledger.rs:3'], 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.'],
   ])('lets the proof only ever turn an outcome into Unverified: %s %s', (outcome, _name, proof, text) => {
-    // Every statement is confirmed, which changes nothing.
-    const statements = [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }];
+    // Every statement is confirmed, by a line and by the PR description, which changes nothing.
+    const statements = [
+      { quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] },
+      { quote: rewrote, status: 'confirmed', description_search: 'MAX_ROWS' },
+      { quote: snapshot, status: 'confirmed', description: HELD },
+    ];
     expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text).toBe(text);
   });
 
@@ -212,6 +259,8 @@ describe('checkReply', () => {
       'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
     ['one contradicted', [{ quote: csv, status: 'contradicted', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' }], 0,
       'I cited a line against at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.'],
+    ['one contradicted by the PR description', [{ quote: csv, status: 'contradicted', description: HELD }, { quote: rewrote, status: 'confirmed', description_search: 'MAX_ROWS' }], 0,
+      'I cited text of the PR description against at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.'],
     ['one contradicted and one not checked', [{ quote: csv, status: 'contradicted', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'not_checkable' }], 0,
       'I cited a line against at least one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
   ])('sums the checks up without a word on the finding, and leaves a blocking one to a maintainer: %s', (_name, statements, unchecked, checks, decision) => {

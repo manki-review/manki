@@ -175,11 +175,15 @@ To give the second finder its own model, set `models.reviewer_pair`, or name mod
 
 A reply in one of Manki's threads gets one answer that starts with Fixed, Withdrawn, Agreed, Kept or Unverified. The [README](../README.md#talk-to-manki) says what each means and who gets a thread resolved by it.
 
-Before it answers, Manki checks what the reply says about code. It lists up to 5 statements below its answer, each in the developer's own words, with what Manki checked. Each line says only what was checked, never that the statement is right:
+Before it answers, Manki checks what the reply says about code and about the PR description. It lists up to 5 statements below its answer, each in the developer's own words, with what Manki checked. Each line says only what was checked, never that the statement is right:
 
 - **Line cited for it exists at** or **Line cited against it exists at** a place, such as `src/retry.ts:48`, or `owner/name:path:line` in a [related repository](#related-repositories). The review model cites the line for or against the statement, and Manki checks only that it exists: in the checkout of the PR head, or in a related repository this reply fetched. Without a checkout, only a line inside the PR's diff counts. Manki posts the place, never the text of a related repository's line.
 - **No line holds** a text, for a statement that something exists nowhere, such as "nothing calls `backup`". The model names the text to look for and Manki runs the search itself, as plain text of 3 to 200 characters on one line, ignoring case, in the PR's checkout or in one fetched related repository. When no line holds the text, the list names the text and the repository searched, and what the search did not cover: the `paths` a related repository is limited to, and how many binary files or files over 1 MB it left out. A longer name that contains the text counts as a line found.
-- **Not checked**, with the reason: the review model says code cannot show it or could not read the code, no cited line was found in the code that was read, the run had no checkout to read a cited line or to search, the search term is not one line of 3 to 200 characters, the search found a line, failed or did not reach every file, or the repository is not a configured related repository or was not fetched.
+- **The PR description holds** a text, **cited for it** or **cited against it**, for a statement about the description, such as "the description now names the limit". The model names 3 to 200 characters of the description, and Manki keeps the line only when the description holds that text, whitespace aside.
+- **The PR description does not hold** a text, for a statement that the description no longer says something, such as "I took the cap out of the description". The model names the text and Manki searches the description itself, as plain text of 3 to 200 characters, ignoring case and reading each run of whitespace as one space.
+- **Not checked**, with the reason: the review model says code cannot show it or could not read the code, no cited line was found in the code that was read, the run had no checkout to read a cited line or to search, the search term is not one line of 3 to 200 characters, the search found a line, failed or did not reach every file, the repository is not a configured related repository or was not fetched, the PR description does not hold the cited text, holds the text searched for, or could not be read.
+
+Manki reads the PR's title and description from GitHub when it answers the reply, so an edit made just before the reply counts. The review model gets both in a fenced block, labelled as the PR author's untrusted text, and is told never to follow instructions in them. The model is shown the first 20,000 characters of the description, and Manki checks against all of it. Only the description is checked, never the title. What the model says about the description counts for nothing in the list: a line is listed as checked only by what Manki finds in the text it read. When GitHub does not return the PR, the reply is answered without the description, and a statement about it is listed as not checked.
 
 Manki checks the list in code. A quote that is not in the developer's reply, whitespace aside, is dropped, and a long quote is cut with an ellipsis after that check. A reply with more than 5 statements gets the first 5 checked and the count of the rest.
 
@@ -187,12 +191,12 @@ The list never decides a thread. No statement's status is read by the code that 
 
 Four rules can turn an answer into Unverified, and nothing turns one into anything else:
 
-- **Withdrawn** needs a line of the PR's own repository that exists. Lines of a related repository alone never withdraw a finding.
-- **Fixed** that cites a related repository needs a line of the PR's own repository too. A Fixed that cites no line is as before.
+- **Withdrawn** needs a line of the PR's own repository that exists. Lines of a related repository alone never withdraw a finding, and neither does text of the PR description.
+- **Fixed** that cites a related repository needs a line of the PR's own repository too. A Fixed that cites no line is as before, which is how a finding about the PR description gets Fixed once the description no longer has the problem.
 - **Fixed** on a blocker or security thread tied to no file that stays open. No review can confirm a fix there, so the answer says so, and that someone other than the PR author with write access has to close the thread.
 - An answer that is not in the form Manki asks the model for.
 
-A reply is one model call with 15 tool steps and 5 minutes. A reply without repository tools, or whose checkout failed, checks lines against the diff and searches nothing. The reply record stores each statement's status, its lines and the reason it was not checked, without the developer's words and without the search text.
+A reply is one model call with 15 tool steps and 5 minutes. A reply without repository tools, or whose checkout failed, checks lines against the diff and searches no code. It still checks the PR description, which needs no checkout. The reply record stores each statement's status, its lines and the reason it was not checked, without the developer's words and without the search text. For a statement checked against the PR description it stores only whether the description held the text or lacked it, never the text.
 
 ## Rules from instruction files
 
