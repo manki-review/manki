@@ -1,14 +1,14 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { makeFindingFingerprintEntry, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
 import { parsePRDiff } from './diff';
-import { extractReviewRecords, hasOwnMarker } from './review-record';
+import { extractReviewRecords, formatApprovalRecord, hasOwnMarker } from './review-record';
 import { withoutFences } from './issue-box';
 import { isSecurityThread, parseFindingData, parseFindingFromComment, threadMarkerSlug, threadSeverity, type PreviousFinding } from './recap';
 
@@ -44,6 +44,14 @@ function fenceOpeners(markdown: string): string[] {
 /** The "About this review" fold that closes a review body, for a commit with no round context. */
 function aboutFold(commitLink: string): string {
   return `<details>\n<summary>About this review</summary>\n\n- Reviewed ${commitLink}\n- [How Manki reviews](https://github.com/manki-review/manki/blob/main/docs/how-reviews-work.md)\n\n</details>`;
+}
+
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+
+/** The body of a round review of `sha`: `text`, the footer that names the commit, and the markers. */
+function roundReviewOf(sha: string, text = 'Review'): string {
+  return withMarkers(`${text}\n\n${aboutFold(`[\`${sha.slice(0, 7)}\`](https://github.com/owner/repo/commit/${sha})`)}`, BOT_MARKER);
 }
 
 function suggestionBlocks(comment: string): string[] {
@@ -1491,6 +1499,11 @@ describe('postReview with context', () => {
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, routing: { ...ctx.routing!, reviewers: [{ name: 'deep', model: 'gemini-3-pro', provider: 'gemini' }] } }, 60000);
     expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('- Found by `gemini-3-pro`, judged by ');
     expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\n<details>\n<summary>About this review<\/summary>\n\n- Reviewed \[`abc`\]\([^)]+\), round \d+\n- 200 changed lines read in 1m 0s\n- Found by `claude-sonnet-4-20250514`, judged by `[^`]+`\n- \[How Manki reviews\]\([^)]+\)\n\n<\/details>$/);
+    // Code reads the reviewed commit from that footer, whatever commit GitHub reports the review on later.
+    await postReview(mockOctokit, 'owner', 'repo', 99, SHA_A, result, undefined, ctx, 60000);
+    expect(reviewedCommit({ body: mockCreateReview.mock.calls.at(-1)![0].body as string, commit_id: SHA_B })).toBe(SHA_A);
+    await postReview(mockOctokit, 'owner', 'repo', 99, SHA_A, result);
+    expect(reviewedCommit({ body: mockCreateReview.mock.calls.at(-1)![0].body as string, commit_id: SHA_B })).toBe(SHA_A);
     // A round that recorded its runner shows it as the footer's last line of figures.
     const runner = { environment: 'self-hosted', os: 'linux', arch: 'x64', cpus: 4, memoryBytes: 64 * 1024 ** 3, memoryLimitBytes: 2 * 1024 ** 3, queuedMs: 663_000, peakMemoryBytes: 1.5 * 1024 ** 3, peakCliProcesses: 6 };
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, runner }, 60000);
@@ -4350,6 +4363,8 @@ describe('dismissPreviousReviews', () => {
       { id: 1, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'old', user: MANKI },
       { id: 2, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'head', user: MANKI },
       { id: 3, body: `${BOT_MARKER}\nIncomplete`, state: 'COMMENTED', commit_id: 'head', user: MANKI },
+      // GitHub reports an approval of an older commit on the head after a rebase. Its body still names the older commit.
+      { id: 4, body: roundReviewOf(SHA_A, 'Approved'), state: 'APPROVED', commit_id: 'head', user: MANKI },
     ];
     const mockOctokit = {
       paginate: jest.fn().mockResolvedValue(reviews),
@@ -4357,7 +4372,7 @@ describe('dismissPreviousReviews', () => {
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
     await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 3, 'APPROVED', 'head');
-    expect(dismissMock.mock.calls).toEqual([[expect.objectContaining({ review_id: 1 })]]);
+    expect(dismissMock.mock.calls).toEqual([[expect.objectContaining({ review_id: 1 })], [expect.objectContaining({ review_id: 4 })]]);
   });
 
   it('dismisses reviews past the first page', async () => {
@@ -5870,6 +5885,33 @@ describe('markOwnProgressCommentCancelled', () => {
   });
 });
 
+describe('reviewedCommit', () => {
+  const approvalRecord = (head: string) => formatApprovalRecord({ decision: 'approved', reason: 'all blocking threads are resolved', head, threads: { total: 1, resolved: 1 }, timestamp: '2026-11-16T00:00:00Z', mankiVersion: '7.5.1' });
+  const autoApproval = (head: string, text = 'Approved.') => withMarkers(text, '<!-- manki -->', '<!-- manki-auto-approve -->', approvalRecord(head));
+  const footerLine = (sha: string) => `- Reviewed [\`${sha.slice(0, 7)}\`](https://github.com/owner/repo/commit/${sha})`;
+
+  it.each<[string, string | null | undefined, string]>([
+    ['the footer of a round review', roundReviewOf(SHA_A), SHA_A],
+    ['the footer below a footer line that the review text quotes', roundReviewOf(SHA_A, `Quoted:\n${footerLine(SHA_B)}\n${autoApproveHeadMarker(SHA_B)}\n${approvalRecord(SHA_B)}`), SHA_A],
+    ['the approval record of an auto-approval', autoApproval(SHA_A), SHA_A],
+    ['the approval record below a footer line that the approval text quotes', autoApproval(SHA_A, `Approved.\n\n${footerLine(SHA_B)}`), SHA_A],
+    ['the head marker of an approval posted again', withMarkers('Approved. The previous verdict stands.', BOT_MARKER, autoApproveHeadMarker(SHA_A)), SHA_A],
+    ['`commit_id` for a body that names no commit', `${BOT_MARKER}\nReview`, SHA_B],
+    ['`commit_id` for a review without a body', null, SHA_B],
+    ['`commit_id` for a footer without a full commit hash', roundReviewOf('abc1234'), SHA_B],
+    ['`commit_id` for a head marker without a full commit hash', withMarkers('Approved.', BOT_MARKER, autoApproveHeadMarker('sha-x')), SHA_B],
+    ['`commit_id` for an approval record that does not parse', withMarkers('Approved.', '<!-- manki -->', '<!-- manki-approval-record: {"head": -->'), SHA_B],
+    ['the footer above an approval record that does not parse', `${roundReviewOf(SHA_A)}\n<!-- manki-approval-record: {"head": -->`, SHA_A],
+  ])('reads %s', (_label, body, expected) => {
+    expect(reviewedCommit({ body, commit_id: SHA_B })).toBe(expected);
+  });
+
+  it('returns no commit for a review that names none and has no `commit_id`', () => {
+    expect(reviewedCommit({ body: 'Review' })).toBeUndefined();
+    expect(reviewedCommit({ body: 'Review', commit_id: null })).toBeNull();
+  });
+});
+
 describe('isApprovedOnCommit', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
@@ -5898,6 +5940,13 @@ describe('isApprovedOnCommit', () => {
     ]);
 
     expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-new')).toBe(false);
+
+    // After a rebase GitHub reports the approval of A on the new head B. The body decides, so B is not approved.
+    const moved = makeMockOctokit([{ body: roundReviewOf(SHA_A), state: 'APPROVED', commit_id: SHA_B, user: { login: BOT_LOGIN, type: 'Bot' } }]);
+    expect(await isApprovedOnCommit(moved, TEST_BOT, 'owner', 'repo', 1, SHA_B)).toBe(false);
+    expect(await isApprovedOnCommit(moved, TEST_BOT, 'owner', 'repo', 1, SHA_A)).toBe(true);
+    expect(await hasBotReviewOnCommit(moved, TEST_BOT, 'owner', 'repo', 1, SHA_B)).toBe(false);
+    expect(await hasBotReviewOnCommit(moved, TEST_BOT, 'owner', 'repo', 1, SHA_A)).toBe(true);
   });
 
   it('returns false when the latest bot review is DISMISSED', async () => {
@@ -6106,12 +6155,12 @@ describe('fetchStandingVerdict', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
   const bot = { login: BOT_LOGIN, type: 'Bot' };
 
-  function makeMockOctokit(reviews: Array<{ id: number; state: string; commit_id: string }>, timeline: unknown[] | Error = []) {
+  function makeMockOctokit(reviews: Array<{ id: number; state: string; commit_id: string; body?: string }>, timeline: unknown[] | Error = []) {
     const listReviews = {};
     const listEventsForTimeline = {};
     return {
       paginate: jest.fn().mockImplementation((endpoint: unknown) => {
-        if (endpoint === listReviews) return Promise.resolve(reviews.map(r => ({ ...r, body: `${BOT_MARKER}\nreview`, user: bot })));
+        if (endpoint === listReviews) return Promise.resolve(reviews.map(r => ({ body: `${BOT_MARKER}\nreview`, ...r, user: bot })));
         return timeline instanceof Error ? Promise.reject(timeline) : Promise.resolve(timeline);
       }),
       rest: { pulls: { listReviews }, issues: { listEventsForTimeline } },
@@ -6146,6 +6195,20 @@ describe('fetchStandingVerdict', () => {
       [dismissal(6, 'changes_requested'), dismissal(7, 'approved', 'sha-pushed')],
     );
     expect(await fetchStandingVerdict(octokit, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: 'sha-a' });
+  });
+
+  it('names the commit the review body names when GitHub reports the review on a newer commit', async () => {
+    for (const state of ['APPROVED', 'CHANGES_REQUESTED'] as const) {
+      const moved = makeMockOctokit([{ id: 1, state, commit_id: SHA_B, body: roundReviewOf(SHA_A) }]);
+      expect(await fetchStandingVerdict(moved, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: state === 'APPROVED' ? 'APPROVE' : 'REQUEST_CHANGES', commitSha: SHA_A });
+    }
+    // The approval posted again on B names B, so a second rebase compares the new head with B.
+    const again = makeMockOctokit([
+      { id: 1, state: 'APPROVED', commit_id: 'sha-c', body: roundReviewOf(SHA_A) },
+      { id: 2, state: 'APPROVED', commit_id: 'sha-c', body: withMarkers('Approved. The previous verdict stands.', BOT_MARKER, autoApproveHeadMarker(SHA_B)) },
+    ]);
+    expect(await fetchStandingVerdict(again, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: SHA_B });
+    expect(await isApprovedOnCommit(again, TEST_BOT, 'owner', 'repo', 1, 'sha-c')).toBe(false);
   });
 
   it('returns undefined for a review dismissed by hand or when the timeline cannot be read', async () => {

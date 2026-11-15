@@ -249,6 +249,12 @@ describe('handleReviewBoxTick', () => {
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/net.ts:7:Retry-has-no-limit -->', 'Issue #23 created by `@bob`')
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/log.ts:9:Token-in-the-log -->', 'Issue #24 created by `@bob`'));
     expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls[0][0]).toMatchObject({ owner: 'o', repo: 'r', pull_number: 5, review_id: 900 });
+
+    // After a rebase GitHub can report the review on the new head. The issue links the code at the commit the review's footer names.
+    const [reviewed, moved] = ['a'.repeat(40), makeOctokit()];
+    moved.rest.issues.create.mockResolvedValue({ data: { number: 30 } });
+    await tickReview(moved, { ...review, body: `${body}\n\n- Reviewed [\`aaaaaaa\`](https://github.com/o/r/commit/${reviewed})`, commit_id: 'b'.repeat(40) });
+    expect(jest.mocked(moved.rest.issues.create).mock.calls[0][0].body).toContain(`Found by Manki in #5 at [\`src/pool.ts:12\`](https://github.com/o/r/blob/${reviewed}/src/pool.ts#L12)`);
   });
 
   it('files one issue per tick for two findings on one line whose titles differ only in punctuation', async () => {

@@ -256,6 +256,7 @@ jest.mock('./github', () => ({
   titleToSlug: jest.requireActual('./github').titleToSlug,
   truncateBody: jest.requireActual('./github').truncateBody,
   APPROVED_LINE: jest.requireActual('./github').APPROVED_LINE,
+  autoApproveHeadMarker: jest.requireActual('./github').autoApproveHeadMarker,
   MAX_CONTENT_API_BYTES: jest.requireActual('./github').MAX_CONTENT_API_BYTES,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
@@ -7000,6 +7001,9 @@ describe('runFullReview orchestration', () => {
       jest.mocked(ghUtils.fetchStandingVerdict).mockResolvedValue(undefined);
       jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('');
       jest.mocked(ghUtils.readConfigFile).mockResolvedValue(null);
+      jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValue(false);
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(false);
+      delete (mockOctokitInstance as { paginate?: unknown }).paginate;
     });
 
     function expectNoRound(): void {
@@ -7099,6 +7103,52 @@ describe('runFullReview orchestration', () => {
       })]]);
       expect(mockChecksUpdate).not.toHaveBeenCalled();
       expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual(verdict === 'APPROVE' ? [['test-owner', 'test-repo', 42, { approval: { commit: 'abc123', held } }]] : []);
+    });
+
+    it.each([
+      ['posts the approval again on the head when the PR change is the same', true, REBASED_DIFF, 'stands'],
+      ['reviews the head in full when the PR change differs', true, REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'), 'reviews'],
+      ['counts the head as approved when the approval body names no commit', false, REBASED_DIFF, 'skips'],
+    ] as const)('reads the approved commit from the approval body when GitHub reports the approval on a rebased head: %s', async (_label, named, currentDiff, outcome) => {
+      const [reviewed, head] = ['a'.repeat(40), 'b'.repeat(40)];
+      const actual = jest.requireActual<typeof ghUtils>('./github');
+      const footer = `- Reviewed [\`${reviewed.slice(0, 7)}\`](https://github.com/test-owner/test-repo/commit/${reviewed})`;
+      // Manki approved `reviewed`. After the rebase GitHub lists that approval with `commit_id` set to the new head.
+      const approval = {
+        id: 5, state: 'APPROVED', commit_id: head, user: { login: 'manki-review[bot]', type: 'Bot' },
+        body: withMarkers(named ? `${actual.APPROVED_LINE}\n\n${footer}` : actual.APPROVED_LINE, '<!-- manki-bot -->'),
+      };
+      Object.assign(mockOctokitInstance, { paginate: jest.fn(async (endpoint: unknown) => (endpoint === mockListReviews ? [approval] : [])) });
+      jest.mocked(ghUtils.isApprovedOnCommit).mockImplementation(actual.isApprovedOnCommit);
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockImplementation(actual.hasBotReviewOnCommit);
+      jest.mocked(ghUtils.fetchStandingVerdict).mockImplementation(actual.fetchStandingVerdict);
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockImplementation(
+        async (_octokit, _owner, _repo, _base, commit) => (commit === reviewed ? REVIEWED_DIFF : currentDiff),
+      );
+      mockPullsGet.mockResolvedValue({ data: { title: 'Test PR', body: 'body', head: { sha: head }, base: { ref: 'main' } } });
+      setContext({
+        eventName: 'pull_request',
+        payload: { action: 'synchronize', sender: { login: 'alice' }, pull_request: { number: 42, head: { sha: head }, base: { ref: 'main' }, title: 'Test PR', body: '', draft: false } },
+      });
+
+      await handlePullRequest();
+
+      const alreadyApproved = jest.mocked(core.info).mock.calls.some(([line]) => line === 'Already approved on this commit — skipping review');
+      expect(alreadyApproved).toBe(outcome === 'skips');
+      expect(jest.mocked(reviewModule.runReview).mock.calls.length > 0).toBe(outcome === 'reviews');
+      if (outcome !== 'stands') {
+        expect(mockCreateReview).not.toHaveBeenCalled();
+        if (outcome === 'skips') expect(mockChecksCreate).not.toHaveBeenCalled();
+        return;
+      }
+      const summary = 'No change to this PR since the reviewed commit `aaaaaaa`. The previous verdict stands.';
+      const body = withMarkers(`${actual.APPROVED_LINE} ${summary}`, '<!-- manki-bot -->', actual.autoApproveHeadMarker(head));
+      expect(mockCreateReview.mock.calls).toEqual([[{ owner: 'test-owner', repo: 'test-repo', pull_number: 42, commit_id: head, event: 'APPROVE', body }]]);
+      expect(mockChecksCreate.mock.calls).toEqual([[expect.objectContaining({
+        name: 'Manki', head_sha: head, status: 'completed', conclusion: 'success', output: { title: 'Approved', summary },
+      })]]);
+      // The approval posted again names the head it approves, so the next rebase is compared with that head.
+      expect(actual.reviewedCommit({ body, commit_id: 'c'.repeat(40) })).toBe(head);
     });
 
     it.each([

@@ -69,6 +69,7 @@ import {
   reactToIssueComment,
   fetchLinkedIssues,
   APPROVED_LINE,
+  autoApproveHeadMarker,
   BOT_MARKER as PROGRESS_MARKER,
   isBotLogin,
   sanitizeMarkdown,
@@ -880,7 +881,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
         if (approved && !held) {
           await octokit.rest.pulls.createReview({
             owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
-            body: withMarkers(`${APPROVED_LINE} ${summary}`, PROGRESS_MARKER),
+            body: withMarkers(`${APPROVED_LINE} ${summary}`, PROGRESS_MARKER, autoApproveHeadMarker(commitSha)),
           });
           await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }

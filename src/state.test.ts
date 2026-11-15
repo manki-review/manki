@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
-import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
+import { APPROVED_LINE, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG, fallbackConfig } from './config';
 import { determineOutcome } from './review';
@@ -1850,28 +1850,37 @@ describe('checkAndAutoApprove', () => {
     });
 
     const rebaseDiff = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    const REVIEWED = 'b'.repeat(40);
+    const REBASED = 'a'.repeat(40);
+    // The review of `REVIEWED` names its commit in its footer. After a rebase GitHub can report it on the new head.
+    const reviewOn = (commit_id: string) => ({
+      body: `<!-- manki-bot -->\n${formatReviewRecord(blockingRound(REVIEWED))}\n\n- Reviewed [\`${REVIEWED.slice(0, 7)}\`](https://github.com/owner/repo/commit/${REVIEWED})`,
+      state: 'CHANGES_REQUESTED', commit_id, user: { login: 'manki-review[bot]', type: 'Bot' },
+    });
     it.each([
-      ['approves the head when its PR diff equals the reviewed commit\'s, as after a rebase', rebaseDiff, true],
-      ['withholds approval when the head changes the PR diff', rebaseDiff.replace('+new', '+newer'), false],
-    ])('%s', async (_label, headDiff, approves) => {
+      ['approves the head when its PR diff equals the reviewed commit\'s, as after a rebase', rebaseDiff, REVIEWED, true],
+      ['withholds approval when the head changes the PR diff', rebaseDiff.replace('+new', '+newer'), REVIEWED, false],
+      ['approves the head on the review of the commit its body names, when GitHub reports the review on the head', rebaseDiff, REBASED, true],
+      ['withholds approval when GitHub reports the review on a head that changes the PR diff', rebaseDiff.replace('+new', '+newer'), REBASED, false],
+    ])('%s', async (_label, headDiff, reportedOn, approves) => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const octokit = makeMockOctokit({
-        threads: [makeGraphqlFetchThreadNode({ id: 't1', isResolved: true, commit: 'old-sha-bbbb' })],
-        prHeadSha: 'head-sha-aaaa',
+        threads: [makeGraphqlFetchThreadNode({ id: 't1', isResolved: true, commit: REVIEWED })],
+        prHeadSha: REBASED,
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
-        existingReviews: [
-          { body: `<!-- manki-bot -->\n${formatReviewRecord(blockingRound('old-sha-bbbb'))}`, state: 'CHANGES_REQUESTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
-        ],
-        diffs: { 'old-sha-bbbb': rebaseDiff, 'head-sha-aaaa': headDiff },
+        existingReviews: [reviewOn(reportedOn)],
+        diffs: { [REVIEWED]: rebaseDiff, [REBASED]: headDiff },
       });
 
       const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
       expect(result.approved).toBe(approves);
-      expect(createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])).toEqual(approves ? [['APPROVE', 'head-sha-aaaa']] : []);
+      expect(createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])).toEqual(approves ? [['APPROVE', REBASED]] : []);
       expect(createCommentMock).not.toHaveBeenCalled();
-      if (!result.approved) expect(await result.why()).toBe(NOT_REVIEWED_YET);
+      if (!result.approved) expect(await result.why()).toBe(NOT_REVIEWED_YET.replace('head-sh', REBASED.slice(0, 7)));
+      // The auto-approval names the head it approves, whatever commit GitHub reports it on later.
+      else expect(reviewedCommit({ body: createReviewMock.mock.calls[0][0].body as string, commit_id: REVIEWED })).toBe(REBASED);
     });
 
     it('explains an unreviewed head by the pause, the Pause box, or by the review still to come', async () => {

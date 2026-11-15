@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, buildLineLink, findingLocation, linked, sanitizeMarkdown } from './github';
+import { BotIdentity, buildLineLink, findingLocation, linked, reviewedCommit, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutDetachedNote } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
@@ -207,7 +207,7 @@ export async function handleReviewBoxTick(
     } else {
       try {
         filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, {
-          title: finding.title, text: finding.text, file, line: Number(line), commit: review.commit_id, postedAt: review.html_url, postedIn: 'review',
+          title: finding.title, text: finding.text, file, line: Number(line), commit: reviewedCommit(review), postedAt: review.html_url, postedIn: 'review',
         });
         core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
       } catch (error) {

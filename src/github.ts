@@ -7,7 +7,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
@@ -15,8 +15,8 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
-import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
-import { formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
+import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
+import { extractApprovalRecords, formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
 import { RELATED_REPO_HOST } from './related-repos';
 import { latestLimits } from './providers/instrumentation';
@@ -1000,9 +1000,14 @@ export async function postAutoApproveProgressComment(
   return placeProgressComment(octokit, owner, repo, prNumber, body, reuseId);
 }
 
-/** The hidden marker naming the head an auto-approve comment is for. Pass it to `markProgressCommentFailed` so a failure keeps it. */
+const HEAD_MARKER_OPENER = '<!-- manki-auto-approve-head: ';
+
+/**
+ * The hidden marker naming the head an auto-approve comment is for, or the head an approval posted again without a
+ * round approves. Pass it to `markProgressCommentFailed` so a failure keeps it.
+ */
 export function autoApproveHeadMarker(headSha: string): string {
-  return `<!-- manki-auto-approve-head: ${headSha} -->`;
+  return `${HEAD_MARKER_OPENER}${headSha} -->`;
 }
 
 /** Returns the ID of Manki's comment that says an auto-approve of `headSha` failed, or `undefined` when there is none. */
@@ -1240,7 +1245,7 @@ export async function dismissPreviousReviews(
   }
 
   for (const review of reviews) {
-    const onKeptCommit = keepCommit !== undefined && review.commit_id === keepCommit;
+    const onKeptCommit = keepCommit !== undefined && reviewedCommit(review) === keepCommit;
     if (review.id !== keepReviewId && !onKeptCommit && isBotUser(bot, review.user) && review.body?.includes(BOT_MARKER) && review.state === state) {
       assertWritesAllowed();
       try {
@@ -2283,6 +2288,35 @@ function buildReviewedCommitFooter(owner: string, repo: string, commitSha: strin
     `- [How Manki reviews](${HOW_REVIEWS_WORK_URL})`,
   ];
   return `<details>\n<summary>About this review</summary>\n\n${lines.join('\n')}\n\n</details>`;
+}
+
+/** The footer line of `buildReviewedCommitFooter` that links the reviewed commit. */
+const REVIEWED_COMMIT_LINE = /^- Reviewed \[`[0-9a-f]{7}`\]\(\S+\/commit\/([0-9a-f]{40})\)/;
+
+/** Returns the commit that `line` of a Manki review body names: in the footer, the head marker or the approval record. */
+function commitNamedBy(line: string): string | undefined {
+  const [record] = extractApprovalRecords(line);
+  let named: unknown = line.match(REVIEWED_COMMIT_LINE)?.[1] ?? ownMarker(line, HEAD_MARKER_OPENER);
+  try {
+    if (record) named = (JSON.parse(record) as Partial<ApprovalRecord>).head;
+  } catch {
+    // A record that does not parse names no commit.
+  }
+  return typeof named === 'string' && /^[0-9a-f]{40}$/.test(named) ? named : undefined;
+}
+
+/**
+ * Returns the commit a Manki review gave its verdict on. The review's own body decides: its last line that names a
+ * commit, which Manki writes below all text it quotes. GitHub moves `commit_id` to the new head when a push leaves the
+ * PR's change as it was, so `commit_id` counts only for a body that names no commit.
+ */
+export function reviewedCommit<R extends { body?: string | null; commit_id?: string | null }>(review: R): string | R['commit_id'] {
+  const lines = (review.body ?? '').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const named = commitNamedBy(lines[i]);
+    if (named) return named;
+  }
+  return review.commit_id;
 }
 
 function appendReviewFooter(body: string, footer: string): string {
@@ -3681,6 +3715,7 @@ async function markOwnProgressCommentCancelled(octokit: Octokit, owner: string, 
 type BotReviewSummary = {
   id: number;
   state: string;
+  /** The commit `reviewedCommit` returns for the review. */
   commitId: string;
   htmlUrl: string;
   body: string;
@@ -3716,7 +3751,7 @@ async function fetchBotReviews(
         return {
           id: raw.id,
           state: raw.state,
-          commitId: raw.commit_id,
+          commitId: reviewedCommit(raw),
           htmlUrl: raw.html_url ?? '',
           body: raw.body ?? '',
         };
@@ -3737,7 +3772,7 @@ function givesVerdict(review: { state?: string; body?: string | null }): boolean
 
 /**
  * State-based head-SHA dedupe gate. Returns the most-recent non-DISMISSED
- * review by `bot` whose `commit_id` matches `commitSha` when it gave a verdict, otherwise
+ * review by `bot` that `reviewedCommit` places on `commitSha` when it gave a verdict, otherwise
  * `undefined`. A newest review without one does not count, so a later run reviews the commit
  * again, also when an earlier review of the commit is complete.
  * Run entry points consult this before any LLM call so serialized
