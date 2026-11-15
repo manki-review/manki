@@ -887,10 +887,12 @@ export async function runReview(
   const relatedTools = related && { ...related, ...(guides && { guides }) };
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;
+  // The quick check has too few tool steps to open the listed files, so it gets the copy that asks for none.
+  const usesFor = (finder: Finder) => (finder.prompt === TRIVIAL_VERIFIER_AGENT ? { usesOutsideDiff } : { usesOutsideDiff: finderUses, openListed: !!finderUses });
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;
   // Only a retry or a second ask passes `retryNote`, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
-    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, usesOutsideDiff: finderUses,
+    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, ...usesFor(finder),
     lockfileChanges, instructionFiles: options.instructionFiles,
     ...(retryNote && { retryNote }),
   });
@@ -1837,6 +1839,8 @@ interface RunReviewerAgentOptions {
   interRoundDiff?: InterRoundDiffInput;
   earlierBlockers?: BuildReviewerUserMessageOptions['earlierBlockers'];
   usesOutsideDiff?: string;
+  /** Whether `usesOutsideDiff` tells the finder to open files, which the prompt of its tools then says too. */
+  openListed?: boolean;
   lockfileChanges?: string;
   instructionFiles?: readonly InstructionFile[];
   /** Added after the user message: the `parseRetryNote` of the reply a retry corrects, or the `unreadFilesNote` of a second ask. */
@@ -1947,7 +1951,7 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, workspace, related, changedSinceLastRound, interRoundDiff, earlierBlockers, usesOutsideDiff, lockfileChanges, instructionFiles, retryNote } = options;
+  const { effort, language, workspace, related, changedSinceLastRound, interRoundDiff, earlierBlockers, usesOutsideDiff, openListed, lockfileChanges, instructionFiles, retryNote } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, tools);
   const message = buildReviewerUserMessage(rawDiff, repoContext, {
@@ -1957,7 +1961,7 @@ async function runReviewerOnSlice(
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
-    ...(tools && { repoTools: repoTools(workspace!, finder.steps, related, usesOutsideDiff ? 'read' : 'find'), timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
+    ...(tools && { repoTools: repoTools(workspace!, finder.steps, related, openListed ? 'read' : 'find'), timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
   };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {

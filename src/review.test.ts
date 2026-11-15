@@ -2328,6 +2328,24 @@ describe('runReview', () => {
     const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
     expect(finderGuides).toEqual(finderCalls.map(() => ({ 'o/ref': 'AGENTS.md' })));
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
+
+    // The quick check of a trivial PR has too few tool steps to open the listed files, so it gets the copy that asks for none.
+    const limit = (value: number) => `export function bodyLimit(): number {\n  return ${value};\n}\n`;
+    const generated = gitWorkspace({ 'src/limits.generated.ts': limit(1), 'src/server.ts': 'const cap = bodyLimit();\n' }, { 'src/limits.generated.ts': limit(2) });
+    const trivial = JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' });
+    const quickClients = { ...makeClients(), planner: { sendMessage: jest.fn().mockResolvedValue({ content: trivial }) } as unknown as import('./providers').LLMClient };
+    Object.assign(quickClients.reviewer, { repoTools: true });
+    try {
+      const quick = await runReview(quickClients, { config: makeConfig(), diff: generated.diff, rawDiff: 'raw diff', repoContext: '', workspace: generated.root });
+      expect(quick.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
+      const [[, message, sent]] = jest.mocked(quickClients.reviewer.sendMessage).mock.calls;
+      expect(message).toContain('src/server.ts:1: const cap = bodyLimit();');
+      expect(message).toContain('Check that every use still holds after the change.');
+      expect(message).not.toContain('Before you answer');
+      expect(sent?.repoTools).toEqual({ root: generated.root, steps: 8, related: undefined });
+    } finally {
+      rmSync(generated.root, { recursive: true, force: true });
+    }
   }, GIT_TEST_TIMEOUT_MS);
 
   it('asks a finder that opened none of the listed files once more, and keeps its first answer when the second ask fails', async () => {
