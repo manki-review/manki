@@ -2620,15 +2620,18 @@ export interface ReplyRecord {
 /** Why a thread reply could not check a statement. The first two are the model's answer, the rest come from Manki's own checks. */
 export type UncheckedReason =
   | 'outside_code' | 'not_reachable'
-  | 'no_line' | 'search_term' | 'not_related' | 'not_fetched' | 'no_checkout' | 'search_failed' | 'search_found' | 'search_cut';
+  | 'no_line' | 'search_term' | 'not_related' | 'not_fetched' | 'no_checkout' | 'search_failed' | 'search_found' | 'search_cut'
+  | 'description_unread' | 'description_text' | 'description_found';
 
-/** How one statement of a developer's reply fared. It holds no words of the developer and no search term. */
+/** How one statement of a developer's reply fared. It holds no words of the developer, no search term and no text of the PR description. */
 export interface ReplyStatementRecord {
   status: 'confirmed' | 'contradicted' | 'not_checkable';
   /** The lines the status rests on, each checked to exist: `path:line` of the PR, or `owner/name:path:line`. */
   places?: string[];
   /** Where Manki's own search found no line: `owner/name`, or `pr` for the PR's repository. */
   searched?: string;
+  /** Set when the status rests on the PR description: `held` when it holds the cited text, `absent` when Manki's search of it found nothing. */
+  description?: 'held' | 'absent';
   why?: UncheckedReason;
 }
 
