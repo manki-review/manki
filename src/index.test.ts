@@ -7108,7 +7108,7 @@ describe('runFullReview orchestration', () => {
     it.each([
       ['posts the approval again on the head when the PR change is the same', true, REBASED_DIFF, 'stands'],
       ['reviews the head in full when the PR change differs', true, REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'), 'reviews'],
-      ['counts the head as approved when the approval body names no commit', false, REBASED_DIFF, 'skips'],
+      ['reviews the head in full when the approval body names no commit, also with the same PR change', false, REBASED_DIFF, 'reviews'],
     ] as const)('reads the approved commit from the approval body when GitHub reports the approval on a rebased head: %s', async (_label, named, currentDiff, outcome) => {
       const [reviewed, head] = ['a'.repeat(40), 'b'.repeat(40)];
       const actual = jest.requireActual<typeof ghUtils>('./github');
@@ -7133,12 +7133,13 @@ describe('runFullReview orchestration', () => {
 
       await handlePullRequest();
 
-      const alreadyApproved = jest.mocked(core.info).mock.calls.some(([line]) => line === 'Already approved on this commit — skipping review');
-      expect(alreadyApproved).toBe(outcome === 'skips');
+      // The commit GitHub reports never makes the head count as approved or reviewed.
+      const exits = jest.mocked(core.info).mock.calls.map(([line]) => line).filter(line => /^(Already approved on this commit|Bot already reviewed commit)/.test(line));
+      expect(exits).toEqual([]);
+      expect(jest.mocked(ghUtils.showSettings)).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, expect.anything(), 'This commit already has a review.');
       expect(jest.mocked(reviewModule.runReview).mock.calls.length > 0).toBe(outcome === 'reviews');
-      if (outcome !== 'stands') {
+      if (outcome === 'reviews') {
         expect(mockCreateReview).not.toHaveBeenCalled();
-        if (outcome === 'skips') expect(mockChecksCreate).not.toHaveBeenCalled();
         return;
       }
       const summary = 'No change to this PR since the reviewed commit `aaaaaaa`. The previous verdict stands.';
@@ -7148,7 +7149,7 @@ describe('runFullReview orchestration', () => {
         name: 'Manki', head_sha: head, status: 'completed', conclusion: 'success', output: { title: 'Approved', summary },
       })]]);
       // The approval posted again names the head it approves, so the next rebase is compared with that head.
-      expect(actual.reviewedCommit({ body, commit_id: 'c'.repeat(40) })).toBe(head);
+      expect(actual.reviewedCommit({ body })).toBe(head);
     });
 
     it.each([

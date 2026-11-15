@@ -24,7 +24,6 @@ interface TickedComment {
 interface TickedReview {
   id: number;
   body: string;
-  commit_id: string;
   html_url: string;
 }
 
@@ -34,7 +33,8 @@ interface IssueSource {
   text: string;
   file: string;
   line: number;
-  commit: string;
+  /** The commit the finding was posted on. Without one, the issue names the place without a link. */
+  commit?: string;
   /** The thread or review the finding was posted in, and which of the two it is. */
   postedAt: string;
   postedIn: 'review thread' | 'review';
@@ -67,7 +67,7 @@ async function fileOrLink(
 ): Promise<{ number: number; existing: boolean }> {
   const existing = await findFiledIssue(octokit, bot, owner, repo, id);
   if (existing !== undefined) return { number: existing, existing: true };
-  const permalink = buildLineLink(owner, repo, source.commit, github.context.serverUrl)(source.file, source.line);
+  const permalink = source.commit ? buildLineLink(owner, repo, source.commit, github.context.serverUrl)(source.file, source.line) : undefined;
   const where = source.file ? ` at ${linked(`\`${findingLocation(source)}\``, permalink)}` : '';
   const body = [
     postedText(source.text, id),

@@ -16,7 +16,7 @@ import { COMMENT_MARKER as BOT_MARKER, ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 type PullHead = { head: { sha: string }; base: { ref: string } };
-type ReviewEntry = { id: number; body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
+type ReviewEntry = { id: number; body?: string | null; state?: string; user?: { login?: string; type?: string } | null };
 
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
 const APPROVAL_HELD_MARKER_PREFIX = '<!-- manki-approval-held:';
@@ -903,12 +903,12 @@ async function approveOrSayWhy(
   const latestBotReview = botReviews[botReviews.length - 1];
 
   // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
-  // every variant: stale prior review, absent commit_id, all reviews DISMISSED, or
+  // every variant: stale prior review, a review that names no commit, all reviews DISMISSED, or
   // no bot review at all.
   const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
   if (!covered) {
     const staleSha =
-      reviews.filter((r: ReviewEntry) => isBotReview(bot, r)).map(reviewedCommit).filter(sha => sha !== pr.head.sha).at(-1) ?? 'unknown';
+      reviews.filter((r: ReviewEntry) => isBotReview(bot, r)).map(reviewedCommit).filter(sha => sha && sha !== pr.head.sha).at(-1) ?? 'unknown';
     core.warning(
       `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`,
     );

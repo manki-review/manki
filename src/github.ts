@@ -2306,17 +2306,17 @@ function commitNamedBy(line: string): string | undefined {
 }
 
 /**
- * Returns the commit a Manki review gave its verdict on. The review's own body decides: its last line that names a
- * commit, which Manki writes below all text it quotes. GitHub moves `commit_id` to the new head when a push leaves the
- * PR's change as it was, so `commit_id` counts only for a body that names no commit.
+ * Returns the commit a Manki review gave its verdict on, or `undefined` when its body names no full commit hash. Only
+ * the review's own body decides: its last line that names a commit, which Manki writes below all text it quotes.
+ * GitHub moves `commit_id` to the new head when a push leaves the PR's change as it was, so `commit_id` never counts.
  */
-export function reviewedCommit<R extends { body?: string | null; commit_id?: string | null }>(review: R): string | R['commit_id'] {
+export function reviewedCommit(review: { body?: string | null }): string | undefined {
   const lines = (review.body ?? '').split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const named = commitNamedBy(lines[i]);
     if (named) return named;
   }
-  return review.commit_id;
+  return undefined;
 }
 
 function appendReviewFooter(body: string, footer: string): string {
@@ -3716,7 +3716,7 @@ type BotReviewSummary = {
   id: number;
   state: string;
   /** The commit `reviewedCommit` returns for the review. */
-  commitId: string;
+  commitId?: string;
   htmlUrl: string;
   body: string;
 };
@@ -3747,7 +3747,7 @@ async function fetchBotReviews(
         !!r.body && r.body.includes(BOT_MARKER),
       )
       .map((r: unknown) => {
-        const raw = r as { id: number; state: string; commit_id: string; html_url?: string; body?: string | null };
+        const raw = r as { id: number; state: string; html_url?: string; body?: string | null };
         return {
           id: raw.id,
           state: raw.state,
@@ -3815,15 +3815,16 @@ type StandingVerdict = {
 /**
  * Returns the verdict of the latest bot review and the commit it reviewed. An
  * approval that a push dismissed still counts as APPROVE. Returns `undefined`
- * for a comment, a dismissal by hand, or when the reviews cannot be read.
+ * for a comment, a dismissal by hand, a review that names no commit, or when the reviews cannot be read.
  */
 async function fetchStandingVerdict(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
 ): Promise<StandingVerdict | undefined> {
   const latest = (await fetchBotReviews(octokit, bot, owner, repo, prNumber, true)).at(-1);
-  if (!latest) return undefined;
-  if (latest.state === 'APPROVED') return { verdict: 'APPROVE', commitSha: latest.commitId };
-  if (latest.state === 'CHANGES_REQUESTED') return { verdict: 'REQUEST_CHANGES', commitSha: latest.commitId };
+  const commitSha = latest?.commitId;
+  if (!latest || !commitSha) return undefined;
+  if (latest.state === 'APPROVED') return { verdict: 'APPROVE', commitSha };
+  if (latest.state === 'CHANGES_REQUESTED') return { verdict: 'REQUEST_CHANGES', commitSha };
   if (latest.state !== 'DISMISSED') return undefined;
   // The reviews API reports only `DISMISSED`. The timeline keeps the state
   // before the dismissal and, for a push, the commit that caused it.
@@ -3835,7 +3836,7 @@ async function fetchStandingVerdict(
       .map(e => ('dismissed_review' in e ? e.dismissed_review : undefined))
       .find(d => d?.review_id === latest.id);
     if (dismissed?.state === 'approved' && dismissed.dismissal_commit_id) {
-      return { verdict: 'APPROVE', commitSha: latest.commitId };
+      return { verdict: 'APPROVE', commitSha };
     }
   } catch (error) {
     core.warning(`Failed to read review dismissals: ${error instanceof Error ? error.message : error}`);

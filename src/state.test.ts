@@ -1,8 +1,8 @@
 import * as core from '@actions/core';
 import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
-import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
-import { APPROVED_LINE, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
+import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
+import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG, fallbackConfig } from './config';
 import { determineOutcome } from './review';
@@ -27,7 +27,7 @@ jest.mock('./github', () => ({
 }));
 
 const AUTO_REVIEW_OFF = { ...DEFAULT_CONFIG, auto_review: false };
-const NOT_REVIEWED_YET = 'Manki has not reviewed `head-sh` yet, and approval follows from the verdict of that review. If no review of it starts, as for a PR from a fork or one that matches a skip rule, comment `@manki review`.';
+const NOT_REVIEWED_YET = 'Manki has not reviewed `bead000` yet, and approval follows from the verdict of that review. If no review of it starts, as for a PR from a fork or one that matches a skip rule, comment `@manki review`.';
 
 const SETTING_REFUSAL = 'GitHub Actions is not permitted to approve pull requests.';
 
@@ -186,7 +186,7 @@ describe('fetchBotReviewThreads', () => {
   it('returns bot threads with parsed severity and title', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
-        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check', databaseId: 501, commit: 'sha-1' }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check', databaseId: 501, commit: testSha('1') }),
         // A file-level thread keeps the line its finding names.
         makeGraphqlFetchThreadNode({
           id: 't3', line: null, path: 'src/parse.ts',
@@ -209,7 +209,7 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(3);
-    expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: 'sha-1' } });
+    expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, mayCarryBlocker: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: testSha('1') } });
     expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, isWarning: true, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
     expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', writerResolverLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)] });
   });
@@ -569,7 +569,7 @@ describe('checkAndAutoApprove', () => {
     mergeable?: boolean | null;
     draft?: boolean;
   } = {}) {
-    const prHeadSha = overrides.prHeadSha ?? 'abc123';
+    const prHeadSha = overrides.prHeadSha ?? testSha('abc123');
     // A thread was posted on the head unless it names another commit, and the round on the head posted the threads unless `existingReviews` says otherwise.
     const threads = (overrides.threads ?? []).map(t => ({ ...t, comments: { nodes: t.comments.nodes.map((c, i) => (i === 0 ? { originalCommit: { oid: prHeadSha }, ...c } : c)) } }));
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
@@ -586,7 +586,7 @@ describe('checkAndAutoApprove', () => {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' }, mergeable: overrides.mergeable, draft: overrides.draft } }),
           createReview: createReviewFn,
-          listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
+          listReviews: jest.fn().mockResolvedValue({ data: namingCommit(existingReviews) }),
         },
         issues: {
           listComments: jest.fn().mockResolvedValue({ data: existingComments }),
@@ -656,25 +656,25 @@ describe('checkAndAutoApprove', () => {
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true }),
         makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:note:style --> style', isResolved: true }),
       ],
-      prHeadSha: 'sha-456',
+      prHeadSha: testSha('456'),
       createReviewFn: createReviewMock,
     });
 
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }));
+    expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: testSha('456') }));
     const { body } = createReviewMock.mock.calls[0][0] as { body: string };
     expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.\n\n<!-- manki -->\n<!-- manki-auto-approve -->\n<!-- manki-approval-record: /u);
     // The approval review keeps the decision, its reason and the threads it counted.
     expect(extractApprovalRecords(body).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([{
-      decision: 'approved', reason: 'all blocking threads are resolved', head: 'sha-456', threads: { total: 2, resolved: 2 },
+      decision: 'approved', reason: 'all blocking threads are resolved', head: testSha('456'), threads: { total: 2, resolved: 2 },
       timestamp: expect.any(String), mankiVersion: expect.any(String),
     }]);
   });
 
   describe('the round that covers the head', () => {
-    const HEAD = 'head-sha';
+    const HEAD = testSha('bead000');
     const user = { login: 'manki-review[bot]', type: 'Bot' };
     const blocker = (overrides: Parameters<typeof makeFindingFingerprintEntry>[0] = {}): FindingFingerprintEntry =>
       makeFindingFingerprintEntry({ severity: 'blocker', title: 'Lock is never released', file: 'src/lock.ts', ...overrides });
@@ -697,16 +697,16 @@ describe('checkAndAutoApprove', () => {
     const GONE = 'names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const NEXT_ROUND = 'The next review round decides. To start one, tick **Review again** in the settings block, or push a commit. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
     const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread without the `maintain` role or a higher one.';
-    const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
-    const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
+    const UNREAD = 'Manki cannot read the record of its review of `bead000`, so it cannot tell what that review blocked on.';
+    const UNNAMED = 'The record of Manki\'s review of `bead000` does not say what it blocked on.';
     const warning = (posted: FindingFingerprintEntry['posted'], tags = ['follow-up'], holds = posted !== 'earlier_thread'): FindingFingerprintEntry =>
       ({ ...makeFindingFingerprintEntry({ title: 'Retry never stops', file: 'src/lock.ts', posted }), tags, ...(holds && { holds: true as const }) });
     const held = (entries: FindingFingerprintEntry[]) => roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: entries.length, severityCounts: {}, entries } }));
-    const NO_WARNING_THREAD = 'Manki\'s review of `head-sh` lists 1 warning with no thread, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
+    const NO_WARNING_THREAD = 'Manki\'s review of `bead000` lists 1 warning with no thread, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
     const WARNING_THREAD = '1 warning thread holds the approval:\n- Lock is never released\n\nApproval follows once each one is fixed, resolved, or answered in its thread by the PR author or someone with the `maintain` role or a higher one with a reason to keep it.';
     const HELD_FOR_PERSON = 'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.';
     const DRAFT = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
-    const GONE_WARNING = 'The record of Manki\'s review of `head-sh` names a thread that does not exist for 1 warning, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
+    const GONE_WARNING = 'The record of Manki\'s review of `bead000` names a thread that does not exist for 1 warning, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
 
     it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
       ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
@@ -714,7 +714,7 @@ describe('checkAndAutoApprove', () => {
       ['a new blocker on a changed line, its thread resolved beside an open suggestion thread on that line', blocked([blocker({ posted: 'thread' })]), [thread('t0', 'note'), fixed()], true],
       ['a new blocker in a changed file outside the hunks, its file-level thread resolved', blocked([blocker({ posted: 'thread', lineStart: 40 })]), [fixed('t1', 'blocker', { line: null })], true],
       ['a new blocker whose thread is not there yet, was refused or was deleted by hand', blocked([blocker({ posted: 'thread' })]), [], GONE],
-      ['a new blocker without its thread, beside a resolved thread an earlier round posted at its place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { commit: 'older-sha' })], GONE],
+      ['a new blocker without its thread, beside a resolved thread an earlier round posted at its place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { commit: testSha('01de') })], GONE],
       ['a new blocker without its thread, beside the resolved thread of another finding at its place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { title: 'Other' })], GONE],
       ['a new blocker without its thread, beside the resolved thread of the same finding in another place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { line: 30 })], GONE],
       ['two new blockers with one title at one place and a single thread, resolved', blocked([blocker({ posted: 'thread' }), blocker({ posted: 'thread', lineStart: 12 })]), [fixed()], GONE],
@@ -738,7 +738,7 @@ describe('checkAndAutoApprove', () => {
       ['a round that blocked without naming a blocker', blocked([]), [fixed()], UNNAMED],
       ['a record that cannot be read', '<!-- manki -->\n<!-- manki-context: {"meta": -->', [fixed()], UNREAD],
       ['a review without a record', '<!-- manki -->', [fixed()], UNREAD],
-      ['a record of another commit', roundBody(blockingRound('other-sha')), [fixed()], UNREAD],
+      ['a record of another commit', roundBody(blockingRound(testSha('07e'))), [fixed()], UNREAD],
       ['the record of an incomplete round', roundBody({ ...blockingRound(HEAD), meta: { ...blockingRound(HEAD).meta, incomplete: true } }), [fixed()], UNREAD],
       ['a round that approved, its thread reopened and resolved again', roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } })), [fixed()], true],
       ['a round held for a warning with no thread, listed in its body', held([warning('body')]), [fixed()], NO_WARNING_THREAD],
@@ -771,7 +771,7 @@ describe('checkAndAutoApprove', () => {
       // The `check` command gets the threads that block, or why resolving threads cannot lift the block.
       const reply = await result.why();
       if (outcome.includes('resolved')) expect(reply).toMatch(/^1 thread blocks the approval:\n- Lock is never released.*\n\nApproval follows once it is resolved by someone allowed to\./);
-      else expect(reply).toBe(`${outcome.startsWith('names') ? 'The record of Manki\'s review of `head-sh` ' : ''}${outcome}\n\n${NEXT_ROUND}`);
+      else expect(reply).toBe(`${outcome.startsWith('names') ? 'The record of Manki\'s review of `bead000` ' : ''}${outcome}\n\n${NEXT_ROUND}`);
     });
 
     it('approves a blocker left to an open thread at its place once that thread is resolved', async () => {
@@ -821,7 +821,7 @@ describe('checkAndAutoApprove', () => {
         return { body: createReview.mock.calls[0][0].body as string, failure, updateReview };
       };
       const refuse = () => Promise.reject(Object.assign(new Error('refused'), { status: 422 }));
-      const held = () => expect(infoSpy).toHaveBeenLastCalledWith(`The record of Manki's review of \`head-sh\` ${GONE}\nSkipping auto-approve, the next review round decides`);
+      const held = () => expect(infoSpy).toHaveBeenLastCalledWith(`The record of Manki's review of \`bead000\` ${GONE}\nSkipping auto-approve, the next review round decides`);
 
       // GitHub refuses the thread, and the review has no room for the blocker, so its record still says `thread`.
       const full = await post(refuse, jest.fn(), 'word '.repeat(13000));
@@ -859,22 +859,22 @@ describe('checkAndAutoApprove', () => {
     it('reads a standing approval posted again on a new head as blocking on nothing, and no other review without a record', async () => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       const change = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n';
-      const approving = roundBody(blockingRound('sha-1', { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } }));
-      const restated = `${APPROVED_LINE} No change to this PR since the reviewed commit \`sha-1\`. The previous verdict stands.\n\n<!-- manki-bot -->`;
-      // Round 1 approved `sha-1`, a push without a change got the approval again on `sha-2`, and another one made `sha-3` the head.
+      const approving = roundBody(blockingRound(testSha('1'), { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } }));
+      const restated = `${APPROVED_LINE} No change to this PR since the reviewed commit \`1000000\`. The previous verdict stands.\n\n<!-- manki-bot -->\n${autoApproveHeadMarker(testSha('2'))}`;
+      // Round 1 approved `1000000`, a push without a change got the approval again on `2000000`, and another one made `3000000` the head.
       const check = async (second: { body: string; state: string }, threads = [fixed()]) => {
         const createReviewMock = jest.fn().mockResolvedValue({});
         const octokit = makeMockOctokit({
-          threads, prHeadSha: 'sha-3', mergeable: true, createReviewFn: createReviewMock, diffs: { 'sha-2': change, 'sha-3': change },
-          existingReviews: [{ id: 1, body: approving, state: 'DISMISSED', commit_id: 'sha-1', user }, { id: 2, ...second, commit_id: 'sha-2', user }],
+          threads, prHeadSha: testSha('3'), mergeable: true, createReviewFn: createReviewMock, diffs: { [testSha('2')]: change, [testSha('3')]: change },
+          existingReviews: [{ id: 1, body: approving, state: 'DISMISSED', commit_id: testSha('1'), user }, { id: 2, ...second, commit_id: testSha('2'), user }],
         });
-        Object.assign(octokit.rest.issues, { listEventsForTimeline: jest.fn().mockResolvedValue({ data: [{ dismissed_review: { review_id: 2, state: 'approved', dismissal_commit_id: 'sha-3' } }] }) });
+        Object.assign(octokit.rest.issues, { listEventsForTimeline: jest.fn().mockResolvedValue({ data: [{ dismissed_review: { review_id: 2, state: 'approved', dismissal_commit_id: testSha('3') } }] }) });
         return [await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG), createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])];
       };
-      const unread = 'Manki cannot read the record of its review of `sha-2`, so it cannot tell what that review blocked on.';
+      const unread = 'Manki cannot read the record of its review of `2000000`, so it cannot tell what that review blocked on.';
 
       // The second push dismissed the approval, so the check approves the head again.
-      expect(await check({ body: restated, state: 'DISMISSED' })).toEqual([true, [['APPROVE', 'sha-3']]]);
+      expect(await check({ body: restated, state: 'DISMISSED' })).toEqual([true, [['APPROVE', testSha('3')]]]);
       // The approval was held at the second push and still stands, so nothing more is posted.
       expect(await check({ body: restated, state: 'APPROVED' })).toEqual([true, []]);
       // A thread that blocks still does.
@@ -890,60 +890,60 @@ describe('checkAndAutoApprove', () => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       const createReviewMock = jest.fn().mockResolvedValue({});
       const outside = blocker({ posted: 'body', file: 'src/store.ts', title: 'Persisters miss the lock' });
-      const first = blockingRound('sha-1', { findings: { count: 1, severityCounts: {}, entries: [outside] } });
-      const firstReview = { id: 1, body: roundBody(first), state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user };
+      const first = blockingRound(testSha('1'), { findings: { count: 1, severityCounts: {}, entries: [outside] } });
+      const firstReview = { id: 1, body: roundBody(first), state: 'CHANGES_REQUESTED', commit_id: testSha('1'), user };
       const check = (head: string, existingReviews: typeof firstReview[], threads: ReturnType<typeof thread>[]) => checkAndAutoApprove(
         makeMockOctokit({ threads, prHeadSha: head, mergeable: true, createReviewFn: createReviewMock, existingReviews }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
 
       // Round 1 lists the blocker in its body, and its own review starts the check.
-      expect(await check('sha-1', [firstReview], [thread('t2', 'note')])).toBe(false);
+      expect(await check(testSha('1'), [firstReview], [thread('t2', 'note')])).toBe(false);
 
       // Round 2 cannot read the threads, so it carries the blocker without a finding that restates it.
       const decided = determineOutcome([], first.findings.entries, null);
       expect(decided).toMatchObject({ outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed' });
       expect(decided.verdictTrace.unresolvedPriors).toEqual([expect.not.objectContaining({ threadId: expect.anything() })]);
-      const second = blockingRound('sha-2', { findings: { count: 0, severityCounts: {}, entries: [] }, judge: { summary: '', ...decided } }, 2);
-      const reviews = [{ ...firstReview, state: 'DISMISSED' }, { id: 2, body: roundBody(second), state: 'CHANGES_REQUESTED', commit_id: 'sha-2', user }];
+      const second = blockingRound(testSha('2'), { findings: { count: 0, severityCounts: {}, entries: [] }, judge: { summary: '', ...decided } }, 2);
+      const reviews = [{ ...firstReview, state: 'DISMISSED' }, { id: 2, body: roundBody(second), state: 'CHANGES_REQUESTED', commit_id: testSha('2'), user }];
       const threads = [fixed('t1'), thread('t2', 'note'), thread('t3', 'note')];
-      expect(await check('sha-2', reviews, threads)).toBe(false);
+      expect(await check(testSha('2'), reviews, threads)).toBe(false);
 
       expect(createReviewMock).not.toHaveBeenCalled();
-      const told = 'The record of Manki\'s review of `sha-2` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Persisters miss the lock (`src/store.ts`)';
+      const told = 'The record of Manki\'s review of `2000000` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Persisters miss the lock (`src/store.ts`)';
       expect(infoSpy).toHaveBeenLastCalledWith(`${told}\nSkipping auto-approve, the next review round decides`);
       // The `check` command gets the same reason, and an approval once a thread of that round carries the blocker.
       const asked = async (existingReviews: typeof reviews, live = threads) => {
-        const result = await approveOrSayWhy(makeMockOctokit({ threads: live, prHeadSha: 'sha-2', mergeable: true, createReviewFn: createReviewMock, existingReviews }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+        const result = await approveOrSayWhy(makeMockOctokit({ threads: live, prHeadSha: testSha('2'), mergeable: true, createReviewFn: createReviewMock, existingReviews }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
         return result.approved || result.why();
       };
       expect(await asked(reviews)).toBe(`${told}\n\n${NEXT_ROUND}`);
-      const withThread = [{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }];
+      const withThread = [{ ...reviews[1], body: roundBody(blockingRound(testSha('2'))) }];
       const own = (commit: string) => [makeGraphqlFetchThreadNode({ isResolved: true, commit })];
       // The same thread on an earlier commit is not that round's.
-      expect(await asked(withThread, own('sha-1'))).toBe(`The record of Manki's review of \`sha-2\` names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (\`src/a.ts\`)\n\n${NEXT_ROUND}`);
+      expect(await asked(withThread, own(testSha('1')))).toBe(`The record of Manki's review of \`2000000\` names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (\`src/a.ts\`)\n\n${NEXT_ROUND}`);
       expect(createReviewMock).not.toHaveBeenCalled();
-      expect(await asked(withThread, own('sha-2'))).toBe(true);
+      expect(await asked(withThread, own(testSha('2')))).toBe(true);
 
       // Round 3 lists the blocker again, and the review posts it as a thread on the first changed file.
       createReviewMock.mockClear();
       const relisted: Finding = { severity: 'blocker', title: 'Persisters miss the lock', file: 'src/store.ts', line: 10, description: 'Two writers interleave.', reviewers: [], sameAs: 'src/store.ts:10:10:Persisters-miss-the-lock', raisedIn: 1, relisted: true };
-      const third = blockingRound('sha-3', { findings: { count: 1, severityCounts: {}, entries: [blocker({ file: 'src/store.ts', title: relisted.title })] } }, 3);
+      const third = blockingRound(testSha('3'), { findings: { count: 1, severityCounts: {}, entries: [blocker({ file: 'src/store.ts', title: relisted.title })] } }, 3);
       const postedReview = jest.fn().mockResolvedValue({ data: { id: 3 } });
       const postedComment = jest.fn().mockResolvedValue({ data: { id: 30 } });
-      await postReview({ rest: { pulls: { createReview: postedReview, createReviewComment: postedComment } } } as unknown as Octokit, 'owner', 'repo', 1, 'sha-3',
+      await postReview({ rest: { pulls: { createReview: postedReview, createReviewComment: postedComment } } } as unknown as Octokit, 'owner', 'repo', 1, testSha('3'),
         { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: '', findings: [relisted], highlights: [], reviewComplete: true, agentNames: [] },
         { files: [{ path: 'src/api.ts', changeType: 'modified', hunks: [] }], totalAdditions: 1, totalDeletions: 0 }, third);
       expect(postedComment.mock.calls.map(([c]) => c.path)).toEqual(['src/api.ts']);
       expect(postedReview.mock.calls[0][0].body).toMatch(/\*\*Changes requested:\*\* 1 blocker still open from an earlier review\./);
-      const withThird = [...reviews.map(r => ({ ...r, state: 'DISMISSED' })), { id: 3, body: postedReview.mock.calls[0][0].body as string, state: 'CHANGES_REQUESTED', commit_id: 'sha-3', user }];
+      const withThird = [...reviews.map(r => ({ ...r, state: 'DISMISSED' })), { id: 3, body: postedReview.mock.calls[0][0].body as string, state: 'CHANGES_REQUESTED', commit_id: testSha('3'), user }];
       const carrying = (resolvedBy?: string) => makeGraphqlFetchThreadNode({ id: 't4', path: 'src/api.ts', line: null, body: postedComment.mock.calls[0][0].body as string, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }) });
 
-      expect(await check('sha-3', withThird, [...threads, carrying()])).toBe(false);
+      expect(await check(testSha('3'), withThird, [...threads, carrying()])).toBe(false);
       expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
       expect(createReviewMock).not.toHaveBeenCalled();
       // Manki's own resolve lifts nothing without a record that confirms the fix. A person who resolves the thread does.
-      expect(await check('sha-3', withThird, [...threads, carrying('manki-review[bot]')])).toBe(false);
+      expect(await check(testSha('3'), withThird, [...threads, carrying('manki-review[bot]')])).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
-      expect(await check('sha-3', withThird, [...threads, carrying('maintainer')])).toBe(true);
+      expect(await check(testSha('3'), withThird, [...threads, carrying('maintainer')])).toBe(true);
       expect(createReviewMock).toHaveBeenCalledTimes(1);
     });
 
@@ -965,11 +965,11 @@ describe('checkAndAutoApprove', () => {
       ['open blocking threads beside a blocker no thread carries', {
         threads: [thread('t1', 'blocker'), thread('t2', 'blocker', 'author', { title: 'Second' })],
         existingReviews: [{ id: 7, body: blocked([blocker({ posted: 'thread' }), blocker({ posted: 'thread', title: 'Second' }), blocker({ posted: 'body', title: 'Other', file: 'src/b.ts' })]), state: 'CHANGES_REQUESTED', commit_id: HEAD, user }],
-      }, `2 threads block the approval:\n- Lock is never released\n- Second (resolved by \`author\`, who may not clear it)\n\nThe record of Manki's review of \`head-sh\` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Other (\`src/b.ts\`)\n\n${NEXT_ROUND}`],
+      }, `2 threads block the approval:\n- Lock is never released\n- Second (resolved by \`author\`, who may not clear it)\n\nThe record of Manki's review of \`bead000\` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Other (\`src/b.ts\`)\n\n${NEXT_ROUND}`],
       ['an open blocking thread on a head no review covers',
-        { threads: [thread('t1', 'blocker', undefined, { commit: 'old-sha' })], existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
+        { threads: [thread('t1', 'blocker', undefined, { commit: testSha('01d') })], existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
         `1 thread blocks the approval:\n- Lock is never released\n\n${NOT_REVIEWED_YET}`],
-      ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
+      ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
         NOT_REVIEWED_YET],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
       // An open blocking or warning thread declines beside an approval that stands, and neither dismisses that approval.
@@ -987,7 +987,7 @@ describe('checkAndAutoApprove', () => {
       ['an open warning thread beside a warning the review lists with no thread', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: held([warning('body')]), state: 'COMMENTED', commit_id: HEAD, user }] },
         `${NO_WARNING_THREAD}\n\n${NEXT_ROUND}\n\n${WARNING_THREAD}`],
       ['an open warning thread on a head no review covers',
-        { threads: [thread('t1', 'warning', undefined, { commit: 'old-sha' })], existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
+        { threads: [thread('t1', 'warning', undefined, { commit: testSha('01d') })], existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
         `${NOT_REVIEWED_YET}\n\n${WARNING_THREAD}`],
       ['an open blocking thread and an open warning thread on a draft that conflicts', { threads: [thread('t1', 'blocker'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })], draft: true, mergeable: false },
         `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}`],
@@ -1008,21 +1008,21 @@ describe('checkAndAutoApprove', () => {
     const createCommentMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({ draft: true, mergeable: true, createCommentFn: createCommentMock });
 
-    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toMatchObject({ reason: 'draft', posted: true });
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('9'))).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
-      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.\n\n<!-- manki-approval-held:sha-9 -->',
+      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.\n\n<!-- manki-approval-held:9000000000000000000000000000000000000000 -->',
     ]);
     // With `auto_approve` off the notice promises no approval for marking the PR ready.
     createCommentMock.mockClear();
-    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-8', false, false)).toMatchObject({ reason: 'draft', posted: true });
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('8'), false, false)).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
-      '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n<!-- manki-approval-held:sha-8 -->',
+      '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n<!-- manki-approval-held:8000000000000000000000000000000000000000 -->',
     ]);
-    expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
+    expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, testSha('9'))).toBe(false);
     const unreadable = makeMockOctokit({ mergeable: true });
     jest.mocked(unreadable.rest.pulls.get).mockRejectedValue(new Error('API down'));
-    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9', true)).toMatchObject({ reason: 'draft' });
-    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, testSha('9'), true)).toMatchObject({ reason: 'draft' });
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, testSha('9'))).toBe(false);
   });
 
   it('never approves a draft, however its threads stand', async () => {
@@ -1044,16 +1044,16 @@ describe('checkAndAutoApprove', () => {
     const line = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
 
     await expectHeldOncePerHead(
-      { threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks },
-      'conflict', 'Approval held: the PR conflicts with its base', line, '<!-- manki-approval-held:sha-456 -->',
+      { threads: resolved, prHeadSha: testSha('456'), mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks },
+      'conflict', 'Approval held: the PR conflicts with its base', line, '<!-- manki-approval-held:4560000000000000000000000000000000000000 -->',
     );
     expect(createReviewMock).not.toHaveBeenCalled();
 
     jest.mocked(authModule.reportPrState).mockClear();
-    const clean = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
+    const clean = makeMockOctokit({ threads: resolved, prHeadSha: testSha('456'), mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
     expect(await checkAndAutoApprove(clean, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }));
-    expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: { commit: 'sha-456', held: false }, pause: null }]]);
+    expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: testSha('456') }));
+    expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([['owner', 'repo', 1, { approval: { commit: testSha('456'), held: false }, pause: null }]]);
   });
 
   it.each<[string, string, string, AuthorClearRole | 'unreadable' | undefined, boolean, boolean]>([
@@ -1194,7 +1194,7 @@ describe('checkAndAutoApprove', () => {
   });
 
   describe('a warning thread', () => {
-    const HEAD = 'head-sha';
+    const HEAD = testSha('bead000');
     const user = { login: 'manki-review[bot]', type: 'Bot' };
     const reply = (login: string, body = 'It is bounded by the caller.', __typename?: string, createdAt?: string) => ({ body, author: { login, ...(__typename && { __typename }) }, ...(createdAt && { createdAt }) });
     const warning = (id: string, overrides: Parameters<typeof makeGraphqlFetchThreadNode>[0] = {}, tags?: string[]) => makeGraphqlFetchThreadNode({
@@ -1351,10 +1351,10 @@ describe('checkAndAutoApprove', () => {
 
   it.each([
     ['in a check it creates completed', undefined, 0],
-    ['in the queued check on the head, completed in one update', 'abc123', 0],
+    ['in the queued check on the head, completed in one update', testSha('abc123'), 0],
     ['in a check it creates when the queued check sits on another head', 'def456', 0],
-    ['in a check it creates, then completes the queued check, when its first update fails', 'abc123', 1],
-    ['in a check it creates when the queued check cannot be updated at all', 'abc123', 2],
+    ['in a check it creates, then completes the queued check, when its first update fails', testSha('abc123'), 1],
+    ['in a check it creates when the queued check cannot be updated at all', testSha('abc123'), 2],
   ])('reports the approval as a passing `Manki` check on the head %s', async (_name, queuedHead, updateFailures) => {
     const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}) };
@@ -1365,10 +1365,10 @@ describe('checkAndAutoApprove', () => {
 
     // Each call writes a completed check, so a failed takeover still leaves a passing check newest on the head.
     const completed = { status: 'completed', conclusion: 'success', details_url: expect.any(String), output: { title: 'Approved', summary: 'All blocking threads are resolved.' } };
-    const takesOver = queuedHead === 'abc123';
+    const takesOver = queuedHead === testSha('abc123');
     const updateQueued = [{ owner: 'owner', repo: 'repo', check_run_id: 77, ...completed }];
     expect(checks.update.mock.calls).toEqual(takesOver ? (updateFailures ? [updateQueued, updateQueued] : [updateQueued]) : []);
-    expect(checks.create.mock.calls).toEqual(takesOver && !updateFailures ? [] : [[{ owner: 'owner', repo: 'repo', name: 'Manki', head_sha: 'abc123', ...completed }]]);
+    expect(checks.create.mock.calls).toEqual(takesOver && !updateFailures ? [] : [[{ owner: 'owner', repo: 'repo', name: 'Manki', head_sha: testSha('abc123'), ...completed }]]);
     expect(warning.mock.calls.filter(([message]) => String(message).includes('queued Manki check')).length).toBe(updateFailures);
   });
 
@@ -1380,7 +1380,7 @@ describe('checkAndAutoApprove', () => {
     const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}), listForRef };
     const user = { login: `${botSlug}[bot]`, type: 'Bot' };
     const createReviewMock = jest.fn().mockResolvedValue({});
-    const octokit = makeMockOctokit({ checks, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body: roundBody(roundThatPosted('abc123', [])), state: 'APPROVED', commit_id: 'abc123', user }] });
+    const octokit = makeMockOctokit({ checks, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body: roundBody(roundThatPosted(testSha('abc123'), [])), state: 'APPROVED', commit_id: testSha('abc123'), user }] });
     return { octokit, checks, createReviewMock, bot: { logins: [user.login] } };
   };
 
@@ -1398,9 +1398,9 @@ describe('checkAndAutoApprove', () => {
 
     expect(await approveOrSayWhy(octokit, bot, 'owner', 'repo', 1)).toEqual({ approved: true, standing: true });
 
-    expect(checks.listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'abc123', check_name: 'Manki', filter: 'all' }));
+    expect(checks.listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: testSha('abc123'), check_name: 'Manki', filter: 'all' }));
     expect(checks.create.mock.calls).toEqual(reports ? [[expect.objectContaining({
-      head_sha: 'abc123', status: 'completed', conclusion: 'success', output: { title: 'Approved', summary: 'Manki\'s approval of this commit stands.' },
+      head_sha: testSha('abc123'), status: 'completed', conclusion: 'success', output: { title: 'Approved', summary: 'Manki\'s approval of this commit stands.' },
     })]] : []);
     expect(createReviewMock).not.toHaveBeenCalled();
   });
@@ -1427,7 +1427,7 @@ describe('checkAndAutoApprove', () => {
       threads: [
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
       ],
-      prHeadSha: 'sha-789',
+      prHeadSha: testSha('789'),
       createReviewFn: createReviewMock,
       createCommentFn: createCommentMock,
     });
@@ -1436,7 +1436,7 @@ describe('checkAndAutoApprove', () => {
 
     // A refused approval is held, as in a review round.
     expect(result).toBe(false);
-    expect(jest.mocked(authModule.reportPrState)).toHaveBeenCalledWith('owner', 'repo', 1, { approval: { commit: 'sha-789', held: true } });
+    expect(jest.mocked(authModule.reportPrState)).toHaveBeenCalledWith('owner', 'repo', 1, { approval: { commit: testSha('789'), held: true } });
     expect(createReviewMock).toHaveBeenCalledTimes(1);
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE' }),
@@ -1449,7 +1449,7 @@ describe('checkAndAutoApprove', () => {
     }));
     // The notice records the hold, as the notice of a draft or a conflict does.
     const notice = createCommentMock.mock.calls[0][0].body as string;
-    expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused', head: 'sha-789' })]);
+    expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused', head: testSha('789') })]);
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
@@ -1463,8 +1463,8 @@ describe('checkAndAutoApprove', () => {
       name: 'Manki', head_sha: head, status: 'completed', conclusion: 'neutral', output: { title: 'Approval held: GitHub refused the approval', summary: refusal },
     });
     const posted = await expectHeldOncePerHead(
-      { threads: resolved, prHeadSha: 'sha-789', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks },
-      'refused', 'Approval held: GitHub refused the approval', refusal, '<!-- manki-approval-held:sha-789:refused -->',
+      { threads: resolved, prHeadSha: testSha('789'), mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks },
+      'refused', 'Approval held: GitHub refused the approval', refusal, '<!-- manki-approval-held:7890000000000000000000000000000000000000:refused -->',
     );
     // A failed notice still deletes the progress comment, so nothing marks the check failed.
     expect(deleteAutoApproveProgressComment).toHaveBeenCalledTimes(3);
@@ -1472,29 +1472,29 @@ describe('checkAndAutoApprove', () => {
 
     // A new head gets its own notice, and the draft or conflict notice of that head does not stand in for it.
     await approveOrSayWhy(makeMockOctokit({
-      threads: resolved, prHeadSha: 'sha-790', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks,
-      existingComments: [posted, '**Approval held:** this PR is a draft.\n\n<!-- manki-approval-held:sha-790 -->'].map(body => ({ body, user: { login: 'manki-review[bot]' } })),
+      threads: resolved, prHeadSha: testSha('790'), mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks,
+      existingComments: [posted, '**Approval held:** this PR is a draft.\n\n<!-- manki-approval-held:7900000000000000000000000000000000000000 -->'].map(body => ({ body, user: { login: 'manki-review[bot]' } })),
     }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
     expect(createCommentMock).toHaveBeenCalledTimes(2);
-    expect(createCommentMock.mock.calls[1][0].body).toContain('<!-- manki-approval-held:sha-790:refused -->');
-    expect(checks.create.mock.calls).toEqual([[heldCheck('sha-789')], [heldCheck('sha-790')]]);
+    expect(createCommentMock.mock.calls[1][0].body).toContain('<!-- manki-approval-held:7900000000000000000000000000000000000000:refused -->');
+    expect(checks.create.mock.calls).toEqual([[heldCheck(testSha('789'))], [heldCheck(testSha('790'))]]);
 
     const deleteComment = jest.fn().mockResolvedValue({});
     const listed = { paginate: jest.fn(paginateSinglePage), rest: { issues: {
       listComments: jest.fn().mockResolvedValue({ data: [{ id: 11, body: posted, user: { login: 'manki-review[bot]' }, updated_at: '2025-01-01T00:00:00Z' }] }),
       deleteComment,
     } } } as unknown as Octokit;
-    await retireStaleNotices(listed, TEST_BOT, 'owner', 'repo', 1, 'sha-791');
+    await retireStaleNotices(listed, TEST_BOT, 'owner', 'repo', 1, testSha('791'));
     expect(deleteComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 11 });
 
     // Once the setting allows it, the approval of the head retires the notice too. It changes no other comment: not a
     // failed review that holds the PR's settings block, nor the token service's conflict note.
     const deleteOnApproval = jest.fn().mockResolvedValue({});
     const updateOnApproval = jest.fn().mockResolvedValue({});
-    const failedReview = '🔴 **Review failed** boom\n\n<!-- manki-bot -->\n\n---\nNot reviewed yet · head `sha-789` · failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->';
+    const failedReview = '🔴 **Review failed** boom\n\n<!-- manki-bot -->\n\n---\nNot reviewed yet · head `7890000` · failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->';
     const conflictNote = 'This PR conflicts with `main`. Rebase it, and Manki reviews it then.\n\n<!-- manki-conflict-note -->';
     const approved = await approveOrSayWhy(makeMockOctokit({
-      threads: resolved, prHeadSha: 'sha-789', mergeable: true, deleteCommentFn: deleteOnApproval, updateCommentFn: updateOnApproval,
+      threads: resolved, prHeadSha: testSha('789'), mergeable: true, deleteCommentFn: deleteOnApproval, updateCommentFn: updateOnApproval,
       existingComments: [
         { id: 12, body: posted, user: { login: 'manki-review[bot]' } },
         { id: 13, body: failedReview, user: { login: 'manki-review[bot]' } },
@@ -1515,7 +1515,7 @@ describe('checkAndAutoApprove', () => {
       threads: [
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
       ],
-      prHeadSha: 'sha-vis',
+      prHeadSha: testSha('5a15'),
       createReviewFn: createReviewMock,
     });
 
@@ -1545,10 +1545,10 @@ describe('checkAndAutoApprove', () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [],
-      prHeadSha: 'abc123',
+      prHeadSha: testSha('abc123'),
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: testSha('abc123'), user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -1563,11 +1563,11 @@ describe('checkAndAutoApprove', () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const bot = { login: 'manki-review[bot]', type: 'Bot' };
     const older = Array.from({ length: 30 }, (_, i) => ({ body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: `old-${i}`, user: bot }));
-    const octokit = makeMockOctokit({ threads: [], prHeadSha: 'abc123', createReviewFn: createReviewMock, existingReviews: older });
-    (octokit.paginate as unknown as jest.Mock).mockResolvedValueOnce([
+    const octokit = makeMockOctokit({ threads: [], prHeadSha: testSha('abc123'), createReviewFn: createReviewMock, existingReviews: older });
+    (octokit.paginate as unknown as jest.Mock).mockResolvedValueOnce(namingCommit([
       ...older,
-      { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: bot },
-    ]);
+      { body: '<!-- manki -->', state: 'APPROVED', commit_id: testSha('abc123'), user: bot },
+    ]));
 
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
@@ -1580,11 +1580,11 @@ describe('checkAndAutoApprove', () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [makeGraphqlFetchThreadNode({ isResolved: true })],
-      prHeadSha: 'sha-new',
+      prHeadSha: testSha('5ae'),
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
-        { body: roundBody(blockingRound('sha-new')), state: 'CHANGES_REQUESTED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: testSha('5ae'), user: { login: 'manki-review[bot]', type: 'Bot' } },
+        { body: roundBody(blockingRound(testSha('5ae'))), state: 'CHANGES_REQUESTED', commit_id: testSha('5ae'), user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -1602,11 +1602,11 @@ describe('checkAndAutoApprove', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const octokit = makeMockOctokit({
       threads: [],
-      prHeadSha: 'sha-new',
+      prHeadSha: testSha('5ae'),
       createReviewFn: createReviewMock,
       createCommentFn: createCommentMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'DISMISSED', commit_id: testSha('5ae'), user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -1638,10 +1638,10 @@ describe('checkAndAutoApprove', () => {
       threads: [
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
       ],
-      prHeadSha: 'head-sha-aaaa',
+      prHeadSha: testSha('bead000a'),
       createCommentFn,
       existingReviews: (roundBodies.length > 0 ? roundBodies : ['']).map(extra => (
-        { body: `<!-- manki -->\n${extra}`, state: 'COMMENTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } }
+        { body: `<!-- manki -->\n${extra}`, state: 'COMMENTED', commit_id: testSha('01db'), user: { login: 'manki-review[bot]', type: 'Bot' } }
       )),
     });
 
@@ -1656,7 +1656,7 @@ describe('checkAndAutoApprove', () => {
 
       expect(result).toBe(false);
       expect(octokit.rest.pulls.createReview).not.toHaveBeenCalled();
-      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('head=head-sha-aaaa'));
+      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('head=bead000a00000000000000000000000000000000'));
       expect(createCommentMock).not.toHaveBeenCalled();
     });
 
@@ -1677,12 +1677,12 @@ describe('checkAndAutoApprove', () => {
       expect(createCommentMock).toHaveBeenCalledTimes(1);
       const { body, issue_number } = createCommentMock.mock.calls[0][0] as { body: string; issue_number: number };
       expect(issue_number).toBe(1);
-      expect(body).toContain('**Auto-approve withheld** for `head-sh`');
-      expect(body).toContain('Its latest review was on `old-sha`.');
+      expect(body).toContain('**Auto-approve withheld** for `bead000`');
+      expect(body).toContain('Its latest review was on `01db000`.');
       expect(body).toContain(reason);
-      expect(body).toContain('<!-- manki-stale-approve:head-sha-aaaa -->');
+      expect(body).toContain('<!-- manki-stale-approve:bead000a00000000000000000000000000000000 -->');
       // The record names the cause in a fixed word, so the stats count one cause on one row.
-      expect(extractApprovalRecords(body).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'withheld', reason: cause, head: 'head-sha-aaaa' })]);
+      expect(extractApprovalRecords(body).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'withheld', reason: cause, head: testSha('bead000a') })]);
     });
 
     it('still approves when the latest manki review is on the current HEAD, even with automatic review paused by the round cap', async () => {
@@ -1692,12 +1692,12 @@ describe('checkAndAutoApprove', () => {
         threads: [
           makeGraphqlFetchThreadNode({ id: 't1', isResolved: true }),
         ],
-        prHeadSha: 'head-sha-aaaa',
+        prHeadSha: testSha('bead000a'),
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [1, 2, 3, 4, 5].map(n => ({
-          body: roundBody(n === 5 ? blockingRound('head-sha-aaaa', {}, 5) : makeRoundContext(n)), state: n === 5 ? 'CHANGES_REQUESTED' : 'COMMENTED',
-          commit_id: n === 5 ? 'head-sha-aaaa' : `old-sha-${n}`, user: { login: 'manki-review[bot]', type: 'Bot' },
+          body: roundBody(n === 5 ? blockingRound(testSha('bead000a'), {}, 5) : makeRoundContext(n)), state: n === 5 ? 'CHANGES_REQUESTED' : 'COMMENTED',
+          commit_id: n === 5 ? testSha('bead000a') : `old-sha-${n}`, user: { login: 'manki-review[bot]', type: 'Bot' },
         })),
       });
 
@@ -1705,7 +1705,7 @@ describe('checkAndAutoApprove', () => {
 
       expect(result).toBe(true);
       expect(createReviewMock).toHaveBeenCalledWith(
-        expect.objectContaining({ event: 'APPROVE', commit_id: 'head-sha-aaaa' }),
+        expect.objectContaining({ event: 'APPROVE', commit_id: testSha('bead000a') }),
       );
       expect(createCommentMock).not.toHaveBeenCalled();
       expect(warningSpy).not.toHaveBeenCalled();
@@ -1718,14 +1718,14 @@ describe('checkAndAutoApprove', () => {
         threads: [
           makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
         ],
-        prHeadSha: 'head-sha-aaaa',
+        prHeadSha: testSha('bead000a'),
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [
-          { body: '<!-- manki -->', state: 'COMMENTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '<!-- manki -->', state: 'COMMENTED', commit_id: testSha('01db'), user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
         existingComments: [
-          { body: '<!-- manki-stale-approve:head-sha-aaaa -->\nAuto-approve withheld...', user: { login: 'manki-review[bot]' } },
+          { body: '<!-- manki-stale-approve:bead000a00000000000000000000000000000000 -->\nAuto-approve withheld...', user: { login: 'manki-review[bot]' } },
         ],
       });
 
@@ -1741,14 +1741,14 @@ describe('checkAndAutoApprove', () => {
 
     const heldReview = (commit: string) => ({ body: '**Changes requested**\n\n<!-- manki-held-for-person -->\n\n<!-- manki -->\n<!-- manki-bot -->', state: 'CHANGES_REQUESTED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } });
     it.each([
-      ['on the head', [heldReview('head-sha')]],
-      ['on an earlier commit with the same change, such as before an empty commit', [heldReview('old-sha')]],
-      ['on the head under a later round that gave no verdict', [heldReview('head-sha'), { body: 'Incomplete\n\n<!-- manki-no-verdict -->\n\n<!-- manki -->\n<!-- manki-bot -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } }]],
+      ['on the head', [heldReview(testSha('bead000'))]],
+      ['on an earlier commit with the same change, such as before an empty commit', [heldReview(testSha('01d'))]],
+      ['on the head under a later round that gave no verdict', [heldReview(testSha('bead000')), { body: 'Incomplete\n\n<!-- manki-no-verdict -->\n\n<!-- manki -->\n<!-- manki-bot -->', state: 'COMMENTED', commit_id: testSha('bead000'), user: { login: 'manki-review[bot]', type: 'Bot' } }]],
     ])('skips approval when the review that covers the head holds its approval for a person, %s', async (_label, existingReviews) => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({
         threads: [],
-        prHeadSha: 'head-sha',
+        prHeadSha: testSha('bead000'),
         createReviewFn: createReviewMock,
         existingReviews,
       });
@@ -1765,14 +1765,14 @@ describe('checkAndAutoApprove', () => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({
         threads: [],
-        prHeadSha: 'head-sha',
+        prHeadSha: testSha('bead000'),
         createReviewFn: createReviewMock,
         existingReviews: [
-          { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '<!-- manki -->', state: 'APPROVED', commit_id: testSha('01d'), user: { login: 'manki-review[bot]', type: 'Bot' } },
           // An incomplete round carries its record, which makes it no more of a verdict.
-          { body: '**Review incomplete**\n\n<!-- manki-context: {"meta":{"round":1,"mankiVersion":"7","incomplete":true}} -->\n\n<!-- manki-no-verdict -->\n\n<!-- manki -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '**Review incomplete**\n\n<!-- manki-context: {"meta":{"round":1,"mankiVersion":"7","incomplete":true}} -->\n\n<!-- manki-no-verdict -->\n\n<!-- manki -->', state: 'COMMENTED', commit_id: testSha('bead000'), user: { login: 'manki-review[bot]', type: 'Bot' } },
           // The review command reads an incomplete round by its first line, so that alone makes it no verdict here too.
-          { body: '⏸️ **Review incomplete:** The judge failed.\n\n<!-- manki -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '⏸️ **Review incomplete:** The judge failed.\n\n<!-- manki -->', state: 'COMMENTED', commit_id: testSha('bead000'), user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
       });
 
@@ -1787,10 +1787,10 @@ describe('checkAndAutoApprove', () => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({
         threads: [],
-        prHeadSha: 'new-sha',
+        prHeadSha: testSha('e3'),
         createReviewFn: createReviewMock,
         existingReviews: [
-          { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '<!-- manki -->', state: 'APPROVED', commit_id: testSha('01d'), user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
       });
 
@@ -1808,11 +1808,11 @@ describe('checkAndAutoApprove', () => {
         threads: [
           makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
         ],
-        prHeadSha: 'head-sha-new',
+        prHeadSha: testSha('bead000e'),
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [
-          { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'old-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '<!-- manki -->', state: 'DISMISSED', commit_id: testSha('01d'), user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
       });
 
@@ -1825,7 +1825,7 @@ describe('checkAndAutoApprove', () => {
       );
       expect(createCommentMock).toHaveBeenCalledTimes(1);
       expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
-        body: expect.stringContaining('<!-- manki-stale-approve:head-sha-new -->'),
+        body: expect.stringContaining('<!-- manki-stale-approve:bead000e00000000000000000000000000000000 -->'),
       }));
     });
 
@@ -1834,7 +1834,7 @@ describe('checkAndAutoApprove', () => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const octokit = makeMockOctokit({
         threads: [],
-        prHeadSha: 'sha-fresh',
+        prHeadSha: testSha('5af'),
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [],
@@ -1850,19 +1850,21 @@ describe('checkAndAutoApprove', () => {
     });
 
     const rebaseDiff = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
-    const REVIEWED = 'b'.repeat(40);
-    const REBASED = 'a'.repeat(40);
+    const REVIEWED = testSha('01db');
+    const REBASED = testSha('bead000a');
     // The review of `REVIEWED` names its commit in its footer. After a rebase GitHub can report it on the new head.
-    const reviewOn = (commit_id: string) => ({
-      body: `<!-- manki-bot -->\n${formatReviewRecord(blockingRound(REVIEWED))}\n\n- Reviewed [\`${REVIEWED.slice(0, 7)}\`](https://github.com/owner/repo/commit/${REVIEWED})`,
+    const reviewOn = (commit_id: string, named = true) => ({
+      body: `<!-- manki-bot -->\n${formatReviewRecord(blockingRound(REVIEWED))}${named ? `\n\n${reviewedLine(REVIEWED)}` : ''}`,
       state: 'CHANGES_REQUESTED', commit_id, user: { login: 'manki-review[bot]', type: 'Bot' },
     });
     it.each([
-      ['approves the head when its PR diff equals the reviewed commit\'s, as after a rebase', rebaseDiff, REVIEWED, true],
-      ['withholds approval when the head changes the PR diff', rebaseDiff.replace('+new', '+newer'), REVIEWED, false],
-      ['approves the head on the review of the commit its body names, when GitHub reports the review on the head', rebaseDiff, REBASED, true],
-      ['withholds approval when GitHub reports the review on a head that changes the PR diff', rebaseDiff.replace('+new', '+newer'), REBASED, false],
-    ])('%s', async (_label, headDiff, reportedOn, approves) => {
+      ['approves the head when its PR diff equals the reviewed commit\'s, as after a rebase', rebaseDiff, reviewOn(REVIEWED), true],
+      ['withholds approval when the head changes the PR diff', rebaseDiff.replace('+new', '+newer'), reviewOn(REVIEWED), false],
+      ['approves the head on the review of the commit its body names, when GitHub reports the review on the head', rebaseDiff, reviewOn(REBASED), true],
+      ['withholds approval when GitHub reports the review on a head that changes the PR diff', rebaseDiff.replace('+new', '+newer'), reviewOn(REBASED), false],
+      ['withholds approval on a review whose body names no commit, whatever commit GitHub reports it on', rebaseDiff, reviewOn(REBASED, false), false],
+      ['withholds approval on a review whose body names no commit, also with an unchanged PR diff since the commit GitHub reports', rebaseDiff, reviewOn(REVIEWED, false), false],
+    ])('%s', async (_label, headDiff, review, approves) => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const octokit = makeMockOctokit({
@@ -1870,17 +1872,18 @@ describe('checkAndAutoApprove', () => {
         prHeadSha: REBASED,
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
-        existingReviews: [reviewOn(reportedOn)],
         diffs: { [REVIEWED]: rebaseDiff, [REBASED]: headDiff },
       });
+      // The review is listed as built, so one that names no commit stays that way.
+      jest.mocked(octokit.rest.pulls.listReviews).mockResolvedValue({ data: [review] } as never);
 
       const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
       expect(result.approved).toBe(approves);
       expect(createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])).toEqual(approves ? [['APPROVE', REBASED]] : []);
       expect(createCommentMock).not.toHaveBeenCalled();
-      if (!result.approved) expect(await result.why()).toBe(NOT_REVIEWED_YET.replace('head-sh', REBASED.slice(0, 7)));
-      // The auto-approval names the head it approves, whatever commit GitHub reports it on later.
-      else expect(reviewedCommit({ body: createReviewMock.mock.calls[0][0].body as string, commit_id: REVIEWED })).toBe(REBASED);
+      if (!result.approved) expect(await result.why()).toBe(NOT_REVIEWED_YET);
+      // The auto-approval names the head it approves.
+      else expect(reviewedCommit({ body: createReviewMock.mock.calls[0][0].body as string })).toBe(REBASED);
     });
 
     it('explains an unreviewed head by the pause, the Pause box, or by the review still to come', async () => {
@@ -1890,10 +1893,10 @@ describe('checkAndAutoApprove', () => {
       };
       const notice = () => jest.fn().mockResolvedValue({ data: { id: 1 } });
       expect(await asked(staleHeadOctokit(notice(), [formatReviewRecord(notConverging)])))
-        .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
+        .toMatch(/^Manki has not reviewed `bead000`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
       jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
       expect(await asked(staleHeadOctokit(notice(), [])))
-        .toBe('Manki has not reviewed `head-sh`. Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.');
+        .toBe('Manki has not reviewed `bead000`. Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.');
       expect(await asked(staleHeadOctokit(notice(), [])))
         .toBe(NOT_REVIEWED_YET);
 
@@ -1901,14 +1904,14 @@ describe('checkAndAutoApprove', () => {
       const unknown = notice();
       jest.mocked(authModule.fetchPrState).mockRejectedValueOnce(new Error('HTTP 503'));
       expect(await asked(staleHeadOctokit(unknown, [])))
-        .toBe('Manki has not reviewed `head-sh`. Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `@manki review`.');
-      expect(unknown.mock.calls[0][0].body).toContain('**Auto-approve withheld** for `head-sh`');
+        .toBe('Manki has not reviewed `bead000`. Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `@manki review`.');
+      expect(unknown.mock.calls[0][0].body).toContain('**Auto-approve withheld** for `bead000`');
       expect(unknown.mock.calls[0][0].body).toContain('"reason":"pause_unknown"');
 
       // A pause the rounds show is certain, so it wins over the unknown Pause box.
       jest.mocked(authModule.fetchPrState).mockRejectedValueOnce(new Error('HTTP 503'));
       expect(await asked(staleHeadOctokit(notice(), [formatReviewRecord(notConverging)])))
-        .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
+        .toMatch(/^Manki has not reviewed `bead000`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
     });
   });
 });
@@ -1937,7 +1940,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
   } = {}) {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
-    const prHeadSha = overrides.prHeadSha ?? 'sha-x';
+    const prHeadSha = overrides.prHeadSha ?? testSha('aaa1');
     const existingReviews = overrides.existingReviews ?? [
       { body: roundBody(blockingRound(prHeadSha)), state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
     ];
@@ -1948,7 +1951,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
           createReview: createReviewFn,
-          listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
+          listReviews: jest.fn().mockResolvedValue({ data: namingCommit(existingReviews) }),
         },
         issues: {
           createComment: createCommentFn,
@@ -1987,12 +1990,12 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       id, body: `🔴 **Auto-approve failed:** boom\n\n<!-- manki -->\n${ghActualMarker(head)}`, updated_at: `2026-11-13T10:00:0${id % 10}Z`, user: { login: 'manki-review[bot]', type: 'Bot' },
     });
 
-    await checkAndAutoApprove(makeMockOctokit({ comments: [failedOn(55, 'sha-x'), failedOn(56, 'sha-old')] }), TEST_BOT, 'owner', 'repo', 1);
-    expect(ghMock.postAutoApproveProgressComment).toHaveBeenLastCalledWith(expect.anything(), 'owner', 'repo', 1, 'sha-x', 55);
+    await checkAndAutoApprove(makeMockOctokit({ comments: [failedOn(55, testSha('aaa1')), failedOn(56, testSha('501d'))] }), TEST_BOT, 'owner', 'repo', 1);
+    expect(ghMock.postAutoApproveProgressComment).toHaveBeenLastCalledWith(expect.anything(), 'owner', 'repo', 1, testSha('aaa1'), 55);
 
     // A failure on an earlier head stays, and the new head gets its own comment.
-    await checkAndAutoApprove(makeMockOctokit({ comments: [failedOn(56, 'sha-old')] }), TEST_BOT, 'owner', 'repo', 1);
-    expect(ghMock.postAutoApproveProgressComment).toHaveBeenLastCalledWith(expect.anything(), 'owner', 'repo', 1, 'sha-x', undefined);
+    await checkAndAutoApprove(makeMockOctokit({ comments: [failedOn(56, testSha('501d'))] }), TEST_BOT, 'owner', 'repo', 1);
+    expect(ghMock.postAutoApproveProgressComment).toHaveBeenLastCalledWith(expect.anything(), 'owner', 'repo', 1, testSha('aaa1'), undefined);
   });
 
   it('does not post a marker when unresolved findings remain', async () => {
@@ -2003,7 +2006,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-x' } } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: testSha('aaa1') } } }),
           createReview: jest.fn().mockResolvedValue({}),
           listReviews: jest.fn().mockResolvedValue({ data: [] }),
         },
@@ -2020,9 +2023,9 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
   it('does not post a marker when a prior bot approval already exists for the same SHA', async () => {
     const octokit = makeMockOctokit({
-      prHeadSha: 'sha-x',
+      prHeadSha: testSha('aaa1'),
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-x', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: testSha('aaa1'), user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -2041,7 +2044,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
     await expect(checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).rejects.toThrow(reason);
     expect(ghMock.markProgressCommentFailed).toHaveBeenCalledWith(
-      octokit, 'owner', 'repo', 7777, 'Auto-approve', reason, undefined, [ghActualMarker('sha-x')],
+      octokit, 'owner', 'repo', 7777, 'Auto-approve', reason, undefined, [ghActualMarker(testSha('aaa1'))],
     );
     expect(createCommentMock).not.toHaveBeenCalled();
     expect(ghMock.deleteAutoApproveProgressComment).not.toHaveBeenCalled();
@@ -2085,11 +2088,11 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     });
     const octokit = { rest: { issues: { createComment } } } as unknown as Octokit;
 
-    await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1, 'sha-x');
+    await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1, testSha('aaa1'));
 
     expect(saveState).toHaveBeenCalledWith('manki_progress_comment', '1');
     expect(postedBody).toContain('Auto-approving');
-    expect(postedBody).toContain(ghActual.autoApproveHeadMarker('sha-x'));
+    expect(postedBody).toContain(ghActual.autoApproveHeadMarker(testSha('aaa1')));
     saveState.mockRestore();
   });
 
@@ -2102,12 +2105,12 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     const createComment = jest.fn();
     const octokit = { rest: { issues: { updateComment, createComment } } } as unknown as Octokit;
 
-    expect(await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1, 'sha-x', 55)).toBe(55);
+    expect(await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1, testSha('aaa1'), 55)).toBe(55);
     expect([body.startsWith('**Auto-approving:**'), createComment.mock.calls.length]).toEqual([true, 0]);
 
-    await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 55, 'Auto-approve', 'boom', undefined, [ghActual.autoApproveHeadMarker('sha-x')]);
+    await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 55, 'Auto-approve', 'boom', undefined, [ghActual.autoApproveHeadMarker(testSha('aaa1'))]);
     const comment = { id: 55, body, user: { login: 'manki-review[bot]', type: 'Bot' } } as Parameters<typeof ghActual.failedAutoApproveId>[0][number];
-    expect([ghActual.failedAutoApproveId([comment], TEST_BOT, 'sha-x'), ghActual.failedAutoApproveId([comment], TEST_BOT, 'sha-y')]).toEqual([55, undefined]);
+    expect([ghActual.failedAutoApproveId([comment], TEST_BOT, testSha('aaa1')), ghActual.failedAutoApproveId([comment], TEST_BOT, testSha('aaa2'))]).toEqual([55, undefined]);
   });
 
   it('deletes the comment, and only warns when the deletion fails', async () => {
