@@ -995,7 +995,7 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('"howToFix": "The change that fixes it, in one or two sentences"');
     expect(prompt).toContain('List any known caveats of the fix in `howToFix`');
     expect(prompt).toContain('Check that the fix removes every failure the description names. When it removes only part, say in `howToFix` which failure it leaves.');
-    expect(prompt).toContain('When the finding lists several cases or places, `howToFix` covers every one of them.');
+    expect(prompt).toContain("When the finding lists several cases or places, `howToFix` covers every one of them. When your evidence shows where the wrong state arises, propose the change there. Never advise repeating the PR's own handling on another path when one change at the source covers every path.");
     expect(prompt).toContain(WRITING_RULES);
     expect(prompt).not.toMatch(/[\u2014\u2013]| -- /);
   });
