@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
 
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RoundContext } from './types';
-import { BotIdentity, CodeLinks, titleToSlug } from './github';
+import { BotIdentity, CodeLinks, reviewedCommit, titleToSlug } from './github';
 import { parsePRDiff } from './diff';
 import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 
@@ -277,6 +277,24 @@ function legacyFindingToFingerprintEntry(f: LegacyHandoverFindingFixture): Findi
 
 /** The identity a run without custom App credentials resolves to. */
 export const TEST_BOT: BotIdentity = { logins: ['manki-review[bot]'] };
+
+/** A full commit hash that starts with the hex digits `start`. Manki reads a commit only from a full hash. */
+export function testSha(start: string): string {
+  return start.padEnd(40, '0');
+}
+
+/** The footer line in which a Manki round review names `sha` as the commit it reviewed. */
+export function reviewedLine(sha: string): string {
+  return `- Reviewed [\`${sha.slice(0, 7)}\`](https://github.com/owner/repo/commit/${sha})`;
+}
+
+/**
+ * Returns `reviews` as GitHub lists real Manki reviews: each one that has a `commit_id` names that commit in its body,
+ * unless its body already names a commit.
+ */
+export function namingCommit<R extends { body?: string | null; commit_id?: string | null }>(reviews: R[]): R[] {
+  return reviews.map(r => (r.commit_id && !reviewedCommit(r) ? { ...r, body: `${r.body ?? ''}\n\n${reviewedLine(r.commit_id)}` } : r));
+}
 
 const numberedLines = (count: number): string[] => Array.from({ length: count }, (_, i) => `line ${i + 1}`);
 

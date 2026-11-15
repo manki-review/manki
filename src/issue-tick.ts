@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, buildLineLink, findingLocation, linked, sanitizeMarkdown } from './github';
+import { BotIdentity, buildLineLink, findingLocation, linked, reviewedCommit, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutDetachedNote } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
@@ -24,7 +24,6 @@ interface TickedComment {
 interface TickedReview {
   id: number;
   body: string;
-  commit_id: string;
   html_url: string;
 }
 
@@ -34,7 +33,8 @@ interface IssueSource {
   text: string;
   file: string;
   line: number;
-  commit: string;
+  /** The commit the finding was posted on. Without one, the issue names the place without a link. */
+  commit?: string;
   /** The thread or review the finding was posted in, and which of the two it is. */
   postedAt: string;
   postedIn: 'review thread' | 'review';
@@ -67,7 +67,7 @@ async function fileOrLink(
 ): Promise<{ number: number; existing: boolean }> {
   const existing = await findFiledIssue(octokit, bot, owner, repo, id);
   if (existing !== undefined) return { number: existing, existing: true };
-  const permalink = buildLineLink(owner, repo, source.commit, github.context.serverUrl)(source.file, source.line);
+  const permalink = source.commit ? buildLineLink(owner, repo, source.commit, github.context.serverUrl)(source.file, source.line) : undefined;
   const where = source.file ? ` at ${linked(`\`${findingLocation(source)}\``, permalink)}` : '';
   const body = [
     postedText(source.text, id),
@@ -207,7 +207,7 @@ export async function handleReviewBoxTick(
     } else {
       try {
         filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, {
-          title: finding.title, text: finding.text, file, line: Number(line), commit: review.commit_id, postedAt: review.html_url, postedIn: 'review',
+          title: finding.title, text: finding.text, file, line: Number(line), commit: reviewedCommit(review), postedAt: review.html_url, postedIn: 'review',
         });
         core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
       } catch (error) {

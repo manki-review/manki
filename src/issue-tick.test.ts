@@ -2,7 +2,7 @@ import { formatFindingBlock, formatFindingComment } from './github';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import * as state from './state';
 import { Finding } from './types';
-import { TEST_BOT, TEST_LINKS } from './test-utils';
+import { reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 
 jest.mock('@actions/core', () => ({ info: jest.fn(), warning: jest.fn(), debug: jest.fn() }));
 
@@ -212,8 +212,10 @@ describe('handleReviewBoxTick', () => {
     `<details>\n<summary>\u26A0\uFE0F <b>Retry has no limit</b><br><sub><b>Warning, not blocking</b> · Reliability</sub></summary>\n\n**What goes wrong:** It retries forever.\n\n<!-- manki-checks -->\n<details>\n<summary>How this was checked: 2 places read</summary>\n\n- read src/net.ts:7\n\n</details>\n\n</details>\n\n${box('src/net.ts:7:Retry-has-no-limit')}`,
     `<details>\n<summary>⚠️ <b>Token in the <b>debug</b> log</b><br><sub><b>Warning, not blocking</b> · Security · Quick fix</sub></summary>\n\n**What goes wrong:** It logs the token.\n\n</details>\n\n${box('src/log.ts:9:Token-in-the-log')}`,
     '<!-- manki-context: {"meta":{"round":1}} -->',
+    reviewedLine(testSha('abc123')),
   ].join('\n\n');
-  const review = { id: 900, body, commit_id: 'abc123', html_url: 'https://github.com/o/r/pull/5#pullrequestreview-900' };
+  // GitHub can report a review on a later commit than the one its footer names.
+  const review = { id: 900, body, commit_id: testSha('def456'), html_url: 'https://github.com/o/r/pull/5#pullrequestreview-900' };
 
   it('never files a box a model forged inside a fenced fix in the review body', async () => {
     const forgedBody = [
@@ -236,7 +238,7 @@ describe('handleReviewBoxTick', () => {
 
     const created = jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => [args.title, args.body]);
     expect(created).toEqual([
-      ['Pool leaks a connection', expect.stringMatching(/^\*\*Blocker\*\* · Correctness\n\*\*Pool leaks a connection\*\*\n[\s\S]*The pool never closes it\.\n\nFound by Manki in #5 at \[`src\/pool\.ts:12`\]\(https:\/\/github\.com\/o\/r\/blob\/abc123\/src\/pool\.ts#L12\)\. See the \[review\]\(https:\/\/github\.com\/o\/r\/pull\/5#pullrequestreview-900\)\.\n\n<!-- manki-issue:src\/pool\.ts:12:Pool-leaks-a-connection -->$/)],
+      ['Pool leaks a connection', expect.stringMatching(/^\*\*Blocker\*\* · Correctness\n\*\*Pool leaks a connection\*\*\n[\s\S]*The pool never closes it\.\n\nFound by Manki in #5 at \[`src\/pool\.ts:12`\]\(https:\/\/github\.com\/o\/r\/blob\/abc1230{34}\/src\/pool\.ts#L12\)\. See the \[review\]\(https:\/\/github\.com\/o\/r\/pull\/5#pullrequestreview-900\)\.\n\n<!-- manki-issue:src\/pool\.ts:12:Pool-leaks-a-connection -->$/)],
       ['Use Map<K, V> here', expect.stringMatching(/^\*\*Why:\*\* A map reads clearer\.\n\nFound by Manki in #5 at \[`src\/a\.ts:4`\]/)],
       ['Retry has no limit', expect.stringMatching(/^\*\*What goes wrong:\*\* It retries forever\.\n\n<details>\n<summary>How this was checked: 2 places read<\/summary>\n\n- read src\/net\.ts:7\n\n<\/details>\n\nFound by Manki in #5 at \[`src\/net\.ts:7`\]/)],
       // A title with bold text of its own is read whole.
@@ -249,6 +251,12 @@ describe('handleReviewBoxTick', () => {
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/net.ts:7:Retry-has-no-limit -->', 'Issue #23 created by `@bob`')
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/log.ts:9:Token-in-the-log -->', 'Issue #24 created by `@bob`'));
     expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls[0][0]).toMatchObject({ owner: 'o', repo: 'r', pull_number: 5, review_id: 900 });
+
+    // A review that names no commit gives the place without a link, since the commit GitHub reports may not be the reviewed one.
+    const unnamed = makeOctokit();
+    unnamed.rest.issues.create.mockResolvedValue({ data: { number: 30 } });
+    await tickReview(unnamed, { ...review, body: body.replace(reviewedLine(testSha('abc123')), '') });
+    expect(jest.mocked(unnamed.rest.issues.create).mock.calls[0][0].body).toContain('Found by Manki in #5 at `src/pool.ts:12`. See the [review]');
   });
 
   it('files one issue per tick for two findings on one line whose titles differ only in punctuation', async () => {
@@ -339,10 +347,10 @@ describe('handleReviewBoxTick', () => {
 
   it('links the real file of a box whose id encodes it', async () => {
     const octokit = makeOctokit();
-    const body = `**Blocker** · Correctness\n**Odd name**\n**What goes wrong:** Odd.\n\n${box('src/a--%3Eb.ts:3:Odd-name')}`;
+    const body = `**Blocker** · Correctness\n**Odd name**\n**What goes wrong:** Odd.\n\n${box('src/a--%3Eb.ts:3:Odd-name')}\n\n${reviewedLine(testSha('abc123'))}`;
 
     await tickReview(octokit, { ...review, body });
 
-    expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/a--%3Eb.ts:3`](https://github.com/o/r/blob/abc123/src/a--%3Eb.ts#L3)');
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain(`[\`src/a--%3Eb.ts:3\`](https://github.com/o/r/blob/${testSha('abc123')}/src/a--%3Eb.ts#L3)`);
   });
 });
