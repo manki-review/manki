@@ -170,7 +170,7 @@ export interface RepoTools {
   related: RelatedRepoTools | undefined;
   /** Set on a call that checks one finding or statement. Its prompt then names a related repo only for the code that check rests on, with no rules for grading. */
   checking?: true;
-  /** Set on a finder's call whose message lists uses outside the diff or lines of the related repos. Its prompt then tells it to open their files. */
+  /** Set on a finder's call whose message lists uses outside the diff or lines of the related repos and tells it to open files. Its prompt then says so too. */
   listed?: true;
 }
 

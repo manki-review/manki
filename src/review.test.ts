@@ -2296,9 +2296,11 @@ describe('runReview', () => {
     const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls;
     expect(finderCalls.length).toBeGreaterThan(0);
     for (const [, message, sent] of finderCalls) {
-      expect(message).toContain('Before you answer, open the file of each use that is not in the file of its declaration, up to 5 files, and check that every use still holds after the change.');
+      expect(message).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files, and check that every use still holds after the change.');
       expect(message).toContain("Each line is quoted from the reference's fetched commit. Before you answer, open the file of each line, up to 5 files. Cite one as");
       expect(message).toContain(uses!.slice(uses!.indexOf('### `ComputeFee` (function)'), uses!.indexOf('## In the Reference Repos')));
+      // The consumer section asks for no reading, so the finders get it as the judge does.
+      expect(message).toContain(uses!.slice(uses!.indexOf('## In the Consumer Repos')));
       expect(sent?.repoTools?.listed).toBe(true);
     }
     expect(result.usesOutsideDiff).toEqual({
@@ -2329,7 +2331,8 @@ describe('runReview', () => {
     expect(finderGuides).toEqual(finderCalls.map(() => ({ 'o/ref': 'AGENTS.md' })));
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
 
-    // The quick check of a trivial PR has too few tool steps to open the listed files, so it gets the copy that asks for none.
+    // The quick check of a trivial PR has too few tool steps to open the listed files, and a finder without repository
+    // tools can open none, so both get the copy that asks for none.
     const limit = (value: number) => `export function bodyLimit(): number {\n  return ${value};\n}\n`;
     const generated = gitWorkspace({ 'src/limits.generated.ts': limit(1), 'src/server.ts': 'const cap = bodyLimit();\n' }, { 'src/limits.generated.ts': limit(2) });
     const trivial = JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' });
@@ -2343,6 +2346,20 @@ describe('runReview', () => {
       expect(message).toContain('Check that every use still holds after the change.');
       expect(message).not.toContain('Before you answer');
       expect(sent?.repoTools).toEqual({ root: generated.root, steps: 8, related: undefined });
+
+      const mixed = makeClients();
+      Object.assign(mixed.reviewer, { repoTools: true });
+      const withoutTools = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
+      mixed.reviewerByModel = new Map([['claude-opus-5-5', withoutTools]]);
+      await runReview(mixed, { config: makeConfig(), diff: generated.diff, rawDiff: 'raw diff', repoContext: '', workspace: generated.root });
+      const [[, withTools, toolsSent]] = jest.mocked(mixed.reviewer.sendMessage).mock.calls;
+      expect(withTools).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files');
+      expect(toolsSent?.repoTools?.listed).toBe(true);
+      const [[, plain, plainSent]] = jest.mocked(withoutTools.sendMessage).mock.calls;
+      expect(plain).toContain('src/server.ts:1: const cap = bodyLimit();');
+      expect(plain).toContain('Check that every use still holds after the change.');
+      expect(plain).not.toContain('Before you answer');
+      expect(plainSent?.repoTools).toBeUndefined();
     } finally {
       rmSync(generated.root, { recursive: true, force: true });
     }

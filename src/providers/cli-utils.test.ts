@@ -285,7 +285,7 @@ describe('repoToolsPrompt', () => {
 
     // A finder whose message lists files must open them. That takes the place of the sentence on following paths, and
     // lets it name a related repo for the lines listed from it. Nothing else changes, and no other call is told so.
-    const open = 'Before you answer, open the file of each use listed under "Uses Outside the Diff" that is not in the file of its declaration, and of each line listed under an "In the ... Repos" heading, up to 5 files for each section.';
+    const open = 'Before you answer, open the file of each use that "Uses Outside the Diff" lists in a file the PR does not change, and of each line that "In the Reference Repos" lists, up to 5 files for each section.';
     const follow = 'Use the tools to follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome.';
     const listed = repoToolsPrompt({ root: '/work/repo', steps: 15, related, listed: true }, 'Read, Grep and Glob');
     expect(listed).toContain(`\n\n${open} Check each claim you make against the code. You have 15 tool steps`);

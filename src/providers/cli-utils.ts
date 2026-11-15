@@ -512,7 +512,7 @@ export function stepHookCommand(dir: string, steps: number): MankiCommand {
 /** Tells the model which tools it has, with `fileTools` naming the ones that read files, and how to use them. */
 export function repoToolsPrompt({ root, steps, related, checking, listed }: RepoTools, fileTools: string): string {
   const task = listed
-    ? `Before you answer, open the file of each use listed under "Uses Outside the Diff" that is not in the file of its declaration, and of each line listed under an "In the ... Repos" heading, up to ${LISTED_FILES_TO_OPEN} files for each section.`
+    ? `Before you answer, open the file of each use that "Uses Outside the Diff" lists in a file the PR does not change, and of each line that "In the Reference Repos" lists, up to ${LISTED_FILES_TO_OPEN} files for each section.`
     : 'Use the tools to follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome.';
   return `## Tools
 
