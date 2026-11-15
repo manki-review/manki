@@ -887,12 +887,12 @@ export async function runReview(
   const relatedTools = related && { ...related, ...(guides && { guides }) };
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;
+  const readingUses = uses.readingSection + relatedUses.readingSection;
   // The quick check has too few tool steps to open the listed files, and a finder without repository tools can open
-  // none, so both get the copy that asks for none.
+  // none, so neither is told to open them.
   const opensFiles = (finder: Finder) => finder.prompt !== TRIVIAL_VERIFIER_AGENT && !!workspace && !!finderClients.get(finder.name)?.repoTools;
-  // Only the uses and the reference lines come with the sentence that says to open files.
-  const openListed = !!(uses.finderSection || relatedUses.record?.reference);
-  const usesFor = (finder: Finder) => (opensFiles(finder) ? { usesOutsideDiff: finderUses, openListed } : { usesOutsideDiff });
+  const openListed = readingUses !== finderUses;
+  const usesFor = (finder: Finder) => (opensFiles(finder) && openListed ? { usesOutsideDiff: readingUses, openListed } : { usesOutsideDiff: finderUses });
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;
   // Only a retry or a second ask passes `retryNote`, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({

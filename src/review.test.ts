@@ -2291,7 +2291,7 @@ describe('runReview', () => {
     expect(uses).toContain('### `ComputeFee`, also searched as `CalcFee`\n\n```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\no/ref:legacy.cpp:1: int CalcFee(int n);\n```');
     expect(uses).toContain('## In the Consumer Repos');
     expect(uses).toContain('### `ComputeFee`\n\n```\no/app:app.ts:1: const fee = computeFee(2);\n```');
-    // The finders get their own copy of both sections, which tells them to open the files. The judge's copy does not.
+    // A finder that can open files gets the copy of both sections that tells it to open them. The judge's copy does not.
     expect(uses).not.toContain('Before you answer');
     const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls;
     expect(finderCalls.length).toBeGreaterThan(0);
@@ -2332,7 +2332,7 @@ describe('runReview', () => {
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
 
     // The quick check of a trivial PR has too few tool steps to open the listed files, and a finder without repository
-    // tools can open none, so both get the copy that asks for none.
+    // tools can open none, so both get the finders' list without the sentence that asks for it.
     const limit = (value: number) => `export function bodyLimit(): number {\n  return ${value};\n}\n`;
     const generated = gitWorkspace({ 'src/limits.generated.ts': limit(1), 'src/server.ts': 'const cap = bodyLimit();\n' }, { 'src/limits.generated.ts': limit(2) });
     const trivial = JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' });
@@ -2342,8 +2342,9 @@ describe('runReview', () => {
       const quick = await runReview(quickClients, { config: makeConfig(), diff: generated.diff, rawDiff: 'raw diff', repoContext: '', workspace: generated.root });
       expect(quick.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
       const [[, message, sent]] = jest.mocked(quickClients.reviewer.sendMessage).mock.calls;
+      const findersCopy = ', a line of each file before a second line of any file: other packages first, then other files, then the same file, and generated code, mocks and vendored code last. Each line is quoted from the head commit, so a finding that cites one rests on code shown here. Check that every use still holds after the change.';
       expect(message).toContain('src/server.ts:1: const cap = bodyLimit();');
-      expect(message).toContain('Check that every use still holds after the change.');
+      expect(message).toContain(findersCopy);
       expect(message).not.toContain('Before you answer');
       expect(sent?.repoTools).toEqual({ root: generated.root, steps: 8, related: undefined });
 
@@ -2357,7 +2358,7 @@ describe('runReview', () => {
       expect(toolsSent?.repoTools?.listed).toBe(true);
       const [[, plain, plainSent]] = jest.mocked(withoutTools.sendMessage).mock.calls;
       expect(plain).toContain('src/server.ts:1: const cap = bodyLimit();');
-      expect(plain).toContain('Check that every use still holds after the change.');
+      expect(plain).toContain(findersCopy);
       expect(plain).not.toContain('Before you answer');
       expect(plainSent?.repoTools).toBeUndefined();
     } finally {
