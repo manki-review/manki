@@ -486,7 +486,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('"status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain"');
     // A new defect in the fix is a finding of its own, and only a failure the thread named keeps the thread open.
     expect(prompt).toContain('Manki replies there with what remains. Name in `remaining` only failures the original concern named.\n- **not_addressed**');
-    expect(prompt).toContain('\n\nJudge a thread only against the failures its own concern names. A defect the fix itself adds, or any other finding of this round in the same code, is its own finding and does not keep the thread open. When a finding of this round names a failure the concern already named, mark the thread `partly_addressed` or `not_addressed`, never `addressed`.\n\nAn outdated thread shows');
+    expect(prompt).toContain('\n\nJudge a thread only against the failures its own concern names. A defect the fix itself adds, or any other finding of this round in the same code, is its own finding and does not keep the thread open. But when a finding of this round that you keep names a failure the concern already named, mark the thread `partly_addressed` or `not_addressed`, never `addressed`.\n\nAn outdated thread shows');
     // The judge has no field for a grade of its own on a thread either.
     expect(prompt.slice(prompt.indexOf('"threadEvaluations"'), prompt.indexOf('## Open Thread Evaluation'))).not.toContain('"grade"');
   });
