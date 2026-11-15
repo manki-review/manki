@@ -2218,8 +2218,9 @@ describe('runReview', () => {
       // One state directory for the round, so a repo is fetched once whichever stage names it first.
       const related = tools.get('finder')!.related!;
       expect(related).toEqual({ repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') });
+      // The finder's message lists files, so its prompt tells it to open them. No other stage is told so.
       expect(Object.fromEntries(tools)).toEqual({
-        finder: { root, steps: expect.any(Number), related },
+        finder: { root, steps: expect.any(Number), related, listed: true },
         compare: { root, steps: 12, related },
         claim: { root, steps: 12, related },
         sweep: { root, steps: 15, related },
@@ -2290,9 +2291,18 @@ describe('runReview', () => {
     expect(uses).toContain('### `ComputeFee`, also searched as `CalcFee`\n\n```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\no/ref:legacy.cpp:1: int CalcFee(int n);\n```');
     expect(uses).toContain('## In the Consumer Repos');
     expect(uses).toContain('### `ComputeFee`\n\n```\no/app:app.ts:1: const fee = computeFee(2);\n```');
-    const finderMessages = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[1]);
-    expect(finderMessages.length).toBeGreaterThan(0);
-    for (const message of finderMessages) expect(message).toContain(uses);
+    // A finder that can open files gets the copy of both sections that tells it to open them. The judge's copy does not.
+    expect(uses).not.toContain('Before you answer');
+    const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls;
+    expect(finderCalls.length).toBeGreaterThan(0);
+    for (const [, message, sent] of finderCalls) {
+      expect(message).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files, and check that every use still holds after the change.');
+      expect(message).toContain("Each line is quoted from the reference's fetched commit. Before you answer, open the file of each line, up to 5 files. Cite one as");
+      expect(message).toContain(uses!.slice(uses!.indexOf('### `ComputeFee` (function)'), uses!.indexOf('## In the Reference Repos')));
+      // The consumer section asks for no reading, so the finders get it as the judge does.
+      expect(message).toContain(uses!.slice(uses!.indexOf('## In the Consumer Repos')));
+      expect(sent?.repoTools?.listed).toBe(true);
+    }
     expect(result.usesOutsideDiff).toEqual({
       symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }],
       reference: [{ name: 'ComputeFee', lines: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], as: ['CalcFee'] }],
@@ -2318,8 +2328,42 @@ describe('runReview', () => {
     });
     // The finders are pointed to a guide only for the fetched repo whose checkout holds one, and the round record names it.
     const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
-    expect(finderGuides).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
+    expect(finderGuides).toEqual(finderCalls.map(() => ({ 'o/ref': 'AGENTS.md' })));
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
+
+    // The quick check of a trivial PR has too few tool steps to open the listed files, and a finder without repository
+    // tools can open none, so both get the finders' list without the sentence that asks for it.
+    const limit = (value: number) => `export function bodyLimit(): number {\n  return ${value};\n}\n`;
+    const generated = gitWorkspace({ 'src/limits.generated.ts': limit(1), 'src/server.ts': 'const cap = bodyLimit();\n' }, { 'src/limits.generated.ts': limit(2) });
+    const trivial = JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' });
+    const quickClients = { ...makeClients(), planner: { sendMessage: jest.fn().mockResolvedValue({ content: trivial }) } as unknown as import('./providers').LLMClient };
+    Object.assign(quickClients.reviewer, { repoTools: true });
+    try {
+      const quick = await runReview(quickClients, { config: makeConfig(), diff: generated.diff, rawDiff: 'raw diff', repoContext: '', workspace: generated.root });
+      expect(quick.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
+      const [[, message, sent]] = jest.mocked(quickClients.reviewer.sendMessage).mock.calls;
+      const findersCopy = ', a line of each file before a second line of any file: other packages first, then other files, then the same file, and generated code, mocks and vendored code last. Each line is quoted from the head commit, so a finding that cites one rests on code shown here. Check that every use still holds after the change.';
+      expect(message).toContain('src/server.ts:1: const cap = bodyLimit();');
+      expect(message).toContain(findersCopy);
+      expect(message).not.toContain('Before you answer');
+      expect(sent?.repoTools).toEqual({ root: generated.root, steps: 8, related: undefined });
+
+      const mixed = makeClients();
+      Object.assign(mixed.reviewer, { repoTools: true });
+      const withoutTools = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
+      mixed.reviewerByModel = new Map([['claude-opus-5-5', withoutTools]]);
+      await runReview(mixed, { config: makeConfig(), diff: generated.diff, rawDiff: 'raw diff', repoContext: '', workspace: generated.root });
+      const [[, withTools, toolsSent]] = jest.mocked(mixed.reviewer.sendMessage).mock.calls;
+      expect(withTools).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files');
+      expect(toolsSent?.repoTools?.listed).toBe(true);
+      const [[, plain, plainSent]] = jest.mocked(withoutTools.sendMessage).mock.calls;
+      expect(plain).toContain('src/server.ts:1: const cap = bodyLimit();');
+      expect(plain).toContain(findersCopy);
+      expect(plain).not.toContain('Before you answer');
+      expect(plainSent?.repoTools).toBeUndefined();
+    } finally {
+      rmSync(generated.root, { recursive: true, force: true });
+    }
   }, GIT_TEST_TIMEOUT_MS);
 
   it('asks a finder that opened none of the listed files once more, and keeps its first answer when the second ask fails', async () => {
@@ -2433,6 +2477,10 @@ describe('runReview', () => {
       expect(uses).toMatch(/^## In the Dependency Repos\n\nManki searched each fetched `dependency` related repo for the names the diff's added comments mention and those it calls or reads, /);
       expect(uses).toContain('### `roundUp`\n\n```\no/lib:round.ts:1: export function roundUp(n: number): number { return n; }\n```');
       expect(result.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }] });
+      // A dependency section asks the finder to open no file, so the prompt of its tools does not either.
+      const [, dependencyMessage, dependencySent] = jest.mocked(clients.reviewer.sendMessage).mock.calls.at(-1)!;
+      expect(dependencyMessage).toContain(uses);
+      expect(dependencySent?.repoTools).toEqual({ root, steps: expect.any(Number), related: expect.objectContaining({ repos: [reference, dependency] }) });
       // The names searched in a dependency are its own, so no model is asked to translate even a mentioned one for it.
       const named = await run([dependency], mentioned);
       expect(named.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }], dependencyMissing: ['MAX_ROUND'] });

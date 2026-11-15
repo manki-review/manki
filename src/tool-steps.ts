@@ -11,6 +11,9 @@ export const STALE_TIMEOUT_MS = 90_000;
 /** How many tool steps before the end of its budget a model is told to wrap up. */
 export const WRAP_UP_STEPS = 3;
 
+/** How many files a finder must open before it answers, of the uses and again of the reference lines its message lists. */
+export const LISTED_FILES_TO_OPEN = 5;
+
 /** What happens to one tool call: refused once the budget is used up, or run with a note to wrap up. */
 export interface StepCheck {
   refusal?: string;

@@ -56,10 +56,11 @@ export function relatedRepoTools(repos: RelatedRepo[] | undefined, asOf?: string
 
 /**
  * Returns the read-only tools of a call on the checkout at `root`. Every stage builds its `RepoTools` here, so each one
- * states its related repos. `use` is `check` for a call that checks one finding or statement, and `find` for one that reports findings.
+ * states its related repos. `use` is `check` for a call that checks one finding or statement, `find` for one that reports
+ * findings, and `read` for a finder whose message lists files to open.
  */
-export function repoTools(root: string, steps: number, related: RelatedRepoTools | undefined, use: 'find' | 'check' = 'find'): RepoTools {
-  return { root, steps, related, ...(use === 'check' && { checking: true as const }) };
+export function repoTools(root: string, steps: number, related: RelatedRepoTools | undefined, use: 'find' | 'read' | 'check' = 'find'): RepoTools {
+  return { root, steps, related, ...(use === 'check' && { checking: true as const }), ...(use === 'read' && { listed: true as const }) };
 }
 
 /**
