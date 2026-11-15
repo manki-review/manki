@@ -2476,6 +2476,10 @@ describe('runReview', () => {
       expect(uses).toMatch(/^## In the Dependency Repos\n\nManki searched each fetched `dependency` related repo for the names the diff's added comments mention and those it calls or reads, /);
       expect(uses).toContain('### `roundUp`\n\n```\no/lib:round.ts:1: export function roundUp(n: number): number { return n; }\n```');
       expect(result.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }] });
+      // A dependency section asks the finder to open no file, so the prompt of its tools does not either.
+      const [, dependencyMessage, dependencySent] = jest.mocked(clients.reviewer.sendMessage).mock.calls.at(-1)!;
+      expect(dependencyMessage).toContain(uses);
+      expect(dependencySent?.repoTools).toEqual({ root, steps: expect.any(Number), related: expect.objectContaining({ repos: [reference, dependency] }) });
       // The names searched in a dependency are its own, so no model is asked to translate even a mentioned one for it.
       const named = await run([dependency], mentioned);
       expect(named.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }], dependencyMissing: ['MAX_ROUND'] });
