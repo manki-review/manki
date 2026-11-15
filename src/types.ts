@@ -1132,6 +1132,8 @@ export interface ReviewResult {
   agentRetryCount?: Map<string, number>;
   /** Why each failed attempt of an agent failed, in order, kept when a retry then succeeded. */
   agentWarnings?: Map<string, string[]>;
+  /** The finders asked once more, since their first answer opened none of the files the lists in their message name. */
+  agentsAskedAgain?: string[];
   plannerDurationMs?: number;
   /** Set when the round had no finding, open thread or carried warning to judge, so no judge was called. */
   judgeSkipped?: true;
@@ -2220,6 +2222,8 @@ export interface RoundAgentMetric {
   outputTokens?: number;
   /** Number of CLI/SDK retries this agent triggered. Zero on the success-on-first-try path. */
   retryCount?: number;
+  /** Set when the finder was asked once more, since its first answer opened none of the files the lists in its message name. */
+  askedAgain?: true;
   /** Last-failure reason recorded by the reviewer loop. Present only when retries exhausted. */
   failureReason?: string;
   /** Model the agent ran on. Present whenever the agent ran. */
