@@ -400,7 +400,7 @@ interface FinderSteps {
   toolSteps: number;
   /** Distinct files the finder's tool calls read, over all its calls. */
   filesRead: number;
-  /** Set when the finder was asked once more, since its first answer opened none of the listed files. */
+  /** Set when the finder was asked once more, since its first answer opened none of the listed files outside the diff. */
   askedAgain?: true;
 }
 
