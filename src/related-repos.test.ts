@@ -453,6 +453,8 @@ describe('relatedRepoLoader', () => {
       // A call that checks one finding or statement is marked, so its prompt gives it no rules for grading.
       expect(repoTools('/work/head', 15, first, 'check')).toStrictEqual({ root: '/work/head', steps: 15, related: first, checking: true });
       expect(repoTools('/work/head', 15, first, 'find')).toStrictEqual(repoTools('/work/head', 15, first));
+      // A finder whose message lists files to open is marked, so its prompt tells it to open them.
+      expect(repoTools('/work/head', 15, first, 'read')).toStrictEqual({ root: '/work/head', steps: 15, related: first, listed: true });
     } finally {
       for (const { stateDir } of [first, second]) rmSync(stateDir, { recursive: true, force: true });
     }

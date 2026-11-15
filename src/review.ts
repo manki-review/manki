@@ -886,10 +886,11 @@ export async function runReview(
   const guides = pointedTo.guides = relatedRepoGuides(checkouts);
   const relatedTools = related && { ...related, ...(guides && { guides }) };
   const usesOutsideDiff = uses.section + relatedUses.section;
+  const finderUses = uses.finderSection + relatedUses.finderSection;
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;
   // Only a retry or a second ask passes `retryNote`, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
-    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, usesOutsideDiff,
+    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, usesOutsideDiff: finderUses,
     lockfileChanges, instructionFiles: options.instructionFiles,
     ...(retryNote && { retryNote }),
   });
@@ -1956,7 +1957,7 @@ async function runReviewerOnSlice(
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
-    ...(tools && { repoTools: repoTools(workspace!, finder.steps, related), timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
+    ...(tools && { repoTools: repoTools(workspace!, finder.steps, related, usesOutsideDiff ? 'read' : 'find'), timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
   };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {

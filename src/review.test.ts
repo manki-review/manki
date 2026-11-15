@@ -2218,8 +2218,9 @@ describe('runReview', () => {
       // One state directory for the round, so a repo is fetched once whichever stage names it first.
       const related = tools.get('finder')!.related!;
       expect(related).toEqual({ repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') });
+      // The finder's message lists files, so its prompt tells it to open them. No other stage is told so.
       expect(Object.fromEntries(tools)).toEqual({
-        finder: { root, steps: expect.any(Number), related },
+        finder: { root, steps: expect.any(Number), related, listed: true },
         compare: { root, steps: 12, related },
         claim: { root, steps: 12, related },
         sweep: { root, steps: 15, related },
@@ -2290,9 +2291,16 @@ describe('runReview', () => {
     expect(uses).toContain('### `ComputeFee`, also searched as `CalcFee`\n\n```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\no/ref:legacy.cpp:1: int CalcFee(int n);\n```');
     expect(uses).toContain('## In the Consumer Repos');
     expect(uses).toContain('### `ComputeFee`\n\n```\no/app:app.ts:1: const fee = computeFee(2);\n```');
-    const finderMessages = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[1]);
-    expect(finderMessages.length).toBeGreaterThan(0);
-    for (const message of finderMessages) expect(message).toContain(uses);
+    // The finders get their own copy of both sections, which tells them to open the files. The judge's copy does not.
+    expect(uses).not.toContain('Before you answer');
+    const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls;
+    expect(finderCalls.length).toBeGreaterThan(0);
+    for (const [, message, sent] of finderCalls) {
+      expect(message).toContain('Before you answer, open the file of each use that is not in the file of its declaration, up to 5 files, and check that every use still holds after the change.');
+      expect(message).toContain("Each line is quoted from the reference's fetched commit. Before you answer, open the file of each line, up to 5 files. Cite one as");
+      expect(message).toContain(uses!.slice(uses!.indexOf('### `ComputeFee` (function)'), uses!.indexOf('## In the Reference Repos')));
+      expect(sent?.repoTools?.listed).toBe(true);
+    }
     expect(result.usesOutsideDiff).toEqual({
       symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }],
       reference: [{ name: 'ComputeFee', lines: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], as: ['CalcFee'] }],
@@ -2318,7 +2326,7 @@ describe('runReview', () => {
     });
     // The finders are pointed to a guide only for the fetched repo whose checkout holds one, and the round record names it.
     const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
-    expect(finderGuides).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
+    expect(finderGuides).toEqual(finderCalls.map(() => ({ 'o/ref': 'AGENTS.md' })));
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
   }, GIT_TEST_TIMEOUT_MS);
 

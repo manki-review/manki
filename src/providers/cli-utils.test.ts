@@ -282,6 +282,20 @@ describe('repoToolsPrompt', () => {
     expect(checking).toContain(rule);
     expect(checking).not.toMatch(/graded|\*\*reference\*\*|\*\*consumer\*\*|is a `warning`/);
     expect(checking).toMatchSnapshot();
+
+    // A finder whose message lists files must open them. That takes the place of the sentence on following paths, and
+    // lets it name a related repo for the lines listed from it. Nothing else changes, and no other call is told so.
+    const open = 'Before you answer, open the file of each use listed under "Uses Outside the Diff" that is not in the file of its declaration, and of each line listed under an "In the ... Repos" heading, up to 5 files for each section.';
+    const follow = 'Use the tools to follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome.';
+    const listed = repoToolsPrompt({ root: '/work/repo', steps: 15, related, listed: true }, 'Read, Grep and Glob');
+    expect(listed).toContain(`\n\n${open} Check each claim you make against the code. You have 15 tool steps`);
+    expect(listed).toContain('so name one only for the lines your message lists from it and for these checks:\n');
+    expect(listed.replace(open, follow).replace('the lines your message lists from it and for ', '')).toBe(prompt());
+    expect(repoToolsPrompt({ root: '/work/repo', steps: 15, related: undefined, listed: true }, 'Read, Grep and Glob')).toContain(`${open} Check each claim`);
+    for (const text of [prompt(), checking]) {
+      expect(text).toContain(follow);
+      expect(text).not.toMatch(/Before you answer, open|your message lists/);
+    }
     // Whatever a call does with the repos, it learns that their content is untrusted and that it never answers from memory for one it could not read.
     for (const text of [prompt(), guided, withDependency, checking]) {
       expect(text.endsWith(`${RELATED_REPO_TRUST_RULE} A call that names a repo Manki cannot fetch returns the reason. You have not read that repo then: say that you could not read it, treat whatever rests on its code as unchecked, and never answer about its code from memory.`)).toBe(true);
