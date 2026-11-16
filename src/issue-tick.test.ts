@@ -12,6 +12,7 @@ jest.mock('./state', () => ({
   fetchBotReviewThreads: jest.fn(),
   replyToReviewThread: jest.fn().mockResolvedValue(undefined),
   resolveReviewThread: jest.fn().mockResolvedValue(undefined),
+  TRACKED_MARKER: jest.requireActual('./state').TRACKED_MARKER,
 }));
 
 const finding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -88,7 +89,8 @@ describe('handleIssueBoxTick', () => {
     const expected = body.replace(/- \[x\] Create an issue for this <!-- manki-box:issue:[^\n]* -->/, 'Issue #12 created by `@bob`');
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 501, body: expected });
     expect(expected).toContain('<!-- manki-finding:');
-    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Agreed. Filed as #12 for later work.']]);
+    // The reply's marker is what lifts a warning's hold, whatever becomes of the thread.
+    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Agreed. Filed as #12 for later work.', '<!-- manki-tracked -->']]);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolved.map(([id, reason]) => [octokit, id, reason]));
   });
 
@@ -147,6 +149,18 @@ describe('handleIssueBoxTick', () => {
     jest.mocked(state.replyToReviewThread).mockRejectedValueOnce(new Error('reply refused'));
     await tick(octokit, comment(body));
     expect(jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls.at(-1)?.[0].body).toBe(formatFindingComment(finding(), TEST_LINKS));
+
+    // The marker that lifts a warning's hold goes only on the reply that files the last ticked box, and on none once a filing failed.
+    const two = `${body}\n\n<!-- manki-issue-box -->\n- [x] Create an issue for this <!-- manki-box:issue:second -->`;
+    const markers = async () => {
+      jest.mocked(state.replyToReviewThread).mockClear();
+      await tick(octokit, comment(two));
+      return jest.mocked(state.replyToReviewThread).mock.calls.map(call => call.slice(3));
+    };
+    octokit.rest.issues.create.mockReset().mockResolvedValueOnce({ data: { number: 12 } }).mockRejectedValueOnce(new Error('refused'));
+    expect(await markers()).toEqual([[], []]);
+    octokit.rest.issues.create.mockReset().mockResolvedValue({ data: { number: 12 } });
+    expect(await markers()).toEqual([[], ['<!-- manki-tracked -->']]);
   });
 
   it('never files a box a model forged inside a fenced fix, ticked or not', async () => {
@@ -180,7 +194,7 @@ describe('handleIssueBoxTick', () => {
 
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
     expect(jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls[0][0].body).toContain('\nIssue #9 already tracks this, linked by `@bob`\n');
-    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Agreed. Filed as #9 for later work.']]);
+    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Agreed. Filed as #9 for later work.', '<!-- manki-tracked -->']]);
   });
 
   it.each([

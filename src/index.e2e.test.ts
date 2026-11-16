@@ -99,7 +99,7 @@ const MATH_TS = 'export function add(a: number, b: number): number {\n  const su
 interface FakeUser { login: string; type: string }
 interface FakeComment { id: number; body: string; user: FakeUser; created_at: string; updated_at: string; reactions?: { eyes: number } }
 interface FakeReview { id: number; body: string; state: string; commit_id: string; user: FakeUser; submitted_at: string }
-interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string }; originalCommit?: { oid: string } }
+interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string }; originalCommit?: { oid: string }; createdAt?: string }
 interface FakeThread { id: string; isResolved: boolean; resolvedBy: { login: string } | null; path: string; line: number; startLine: number | null; originalLine: number; comments: FakeThreadComment[] }
 /** A status the API answers matching requests with, for the next `times` of them or for all. */
 interface FakeFailure { method: string; path: RegExp; status: number; times?: number; message?: string; headers?: Record<string, string> }
@@ -148,6 +148,13 @@ class FakeGitHub {
   /** The bodies Manki sent to the token service's `/state/report`. */
   stateReports: unknown[] = [];
   private nextId = 1000;
+  private lastStamp = 0;
+
+  /** The time of a write, later than every one before it, so a reply written after a review is dated after it. */
+  private stamp(): string {
+    this.lastStamp = Math.max(Date.now(), this.lastStamp + 1);
+    return new Date(this.lastStamp).toISOString();
+  }
 
   fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
     init.signal?.throwIfAborted();
@@ -214,7 +221,7 @@ class FakeGitHub {
     if (method === 'POST' && (match = route.match(new RegExp(`^/pulls/${PR_NUMBER}/comments/(\\d+)/replies$`)))) {
       const thread = this.threads.find(t => t.comments.some(c => c.databaseId === Number(match![1])));
       if (!thread) return json({ message: 'Not Found' }, 404);
-      const reply = { databaseId: this.nextId++, body: body.body, url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } };
+      const reply = { databaseId: this.nextId++, body: body.body, url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') }, createdAt: this.stamp() };
       thread.comments.push(reply);
       return json({ id: reply.databaseId }, 201);
     }
@@ -253,7 +260,7 @@ class FakeGitHub {
     }
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}/reviews`) return this.page(url, this.reviews, searchParams);
     if (method === 'POST' && route === `/pulls/${PR_NUMBER}/reviews`) {
-      const review = { id: this.nextId++, body: body.body, state: REVIEW_STATES[body.event], commit_id: body.commit_id, user, submitted_at: now };
+      const review = { id: this.nextId++, body: body.body, state: REVIEW_STATES[body.event], commit_id: body.commit_id, user, submitted_at: this.stamp() };
       this.reviews.push(review);
       for (const c of body.comments ?? []) this.addThread(c.path, c.line, c.body, login, false, body.commit_id);
       return json(review);
@@ -369,7 +376,7 @@ class FakeGitHub {
     }
     if (query.includes('addPullRequestReviewThreadReply')) {
       const thread = this.threads.find(t => t.id === variables.threadId);
-      thread?.comments.push({ databaseId: this.nextId++, body: String(variables.body), url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } });
+      thread?.comments.push({ databaseId: this.nextId++, body: String(variables.body), url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') }, createdAt: this.stamp() });
       return { addPullRequestReviewThreadReply: { comment: { id: 'C_reply' } } };
     }
     if (query.includes('reviewThreads(')) {
@@ -1349,7 +1356,7 @@ describe('runFullReview end to end', () => {
     expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in f1f1f1f\./);
   });
 
-  it('posts a warning on code an earlier round reviewed in a thread that holds the approval, the next round leaves it there, and the PR author\'s answer lifts the hold', async () => {
+  it('posts a warning on code an earlier round reviewed in a thread that holds the approval, the next round leaves it there, and only an answer Manki accepts lifts the hold', async () => {
     await reviewRound();
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
 
@@ -1369,7 +1376,7 @@ describe('runFullReview end to end', () => {
 
     const late = postedReviews().at(-1)!;
     expect(late.state).toBe('COMMENTED');
-    expect(late.body).toMatch(/^\u26A0\uFE0F \*\*1 warning to address\.\*\* Fix it, explain in its thread why it needs no fix, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
+    expect(late.body).toMatch(/^\u26A0\uFE0F \*\*1 warning to address\.\*\* Fix it, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
     // The approval of the first round is taken back.
     expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'COMMENTED']);
     expect(late.body.replace(/<!--[\s\S]*?-->/g, '')).not.toMatch(/Missed by an earlier review|Sum is never range checked/);
@@ -1391,10 +1398,19 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.threads).toHaveLength(1);
     expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', posted: 'earlier_thread', threadId: 'PRRT_1' })]);
 
-    // The PR author answers with a reason. Manki keeps the finding, and the approval follows without a new round.
+    // The PR author answers with a reason. Manki keeps the finding, so the hold stays, and the answer says what lifts it.
     await replyInThread(mockGitHub.threads[0], 'Sums stay far below the limit here.', 'Kept. Nothing bounds `b` before `src/math.ts:3` returns the sum.');
     expect(mockGitHub.threads[0].comments.at(-1)?.body).toMatch(/^Kept\./);
+    expect(mockGitHub.threads[0].comments.at(-1)?.body).toContain('\n\nThis warning holds the approval until it is fixed, tracked with `Create an issue for this`, or resolved by someone with the `maintain` role or a higher one.\n\n');
     expect(mockGitHub.threads[0].isResolved).toBe(false);
+    expect(postedReviews().at(-1)!.state).toBe('COMMENTED');
+
+    // The author defers it and Manki agrees. That answer came after the round that named the warning again, so the
+    // approval follows without a new round.
+    await replyInThread(mockGitHub.threads[0], 'I will bound the sum in the follow-up PR.', 'Agreed. Bounding the sum in the follow-up PR is fine.');
+    expect(mockGitHub.threads[0].comments.at(-1)?.body).toMatch(/^Agreed\./);
+    expect(mockGitHub.threads[0].comments.at(-1)?.body).not.toContain('This warning holds the approval');
+    expect(mockGitHub.threads[0].isResolved).toBe(true);
     expect(postedReviews().at(-1)!.state).toBe('APPROVED');
   });
 

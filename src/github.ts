@@ -244,7 +244,7 @@ export type ConfigHold = 'base' | 'head';
 
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
- * model read some of its files, or `count` warnings wait for a fix or an answer. Of those, `unthreaded` have no thread
+ * model read some of its files, or `count` warnings wait for a fix or an accepted answer. Of those, `unthreaded` have no thread
  * and `security` are security warnings with a thread. Without `count` the warning threads could not be read.
  */
 export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number; security?: number; unthreaded?: number };
@@ -295,7 +295,7 @@ export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic
 /**
  * Returns the line that says why Manki does not approve. `autoApprove` is the `auto_approve` setting. With it off the
  * approval check approves nothing, so the lines for a draft and for warnings name the Review again box and promise no
- * approval for marking the PR ready or for an answer in a thread.
+ * approval for marking the PR ready or for an accepted answer in a thread.
  */
 export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string {
   if (hold.reason === 'draft') {
@@ -322,9 +322,10 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
     const noThread = (n: number) => `${n === 1 ? 'has no thread and holds' : 'have no thread and hold'} until a later review round no longer finds ${n === 1 ? 'it' : 'them'}.`;
     if (threaded === 0) return `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}`;
     // Neither a reply nor the issue box clears a security warning, which needs a fix or a resolve by someone allowed to
-    // clear it. The box is named only when every holding warning has a thread to tick it in.
+    // clear it. The box is named only when every holding warning has a thread to tick it in. A reply lifts a hold only
+    // when Manki accepts it, so the line promises nothing for an explanation alone.
     const security = hold.security ?? 0;
-    const explain = 'explain in its thread why it needs no fix';
+    const explain = 'reply in its thread with a reason Manki accepts';
     const ways = security === threaded ? 'or have a maintainer resolve its thread'
       : unthreaded > 0 ? `or ${explain}` : `${explain}, or tick \`${ISSUE_BOX_LABEL}\` to track it for later`;
     const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve its thread.' : '';
@@ -1339,8 +1340,8 @@ function isPreExisting(finding: Pick<Finding, 'tags'>): boolean {
 }
 
 /**
- * Whether a warning holds an approval until it is fixed or answered. It takes a finding or a round record entry. A
- * pre-existing defect never holds, and neither does a warning that goes into its answered thread.
+ * Whether a warning holds an approval by itself. It takes a finding or a round record entry. A pre-existing defect
+ * never holds. Neither does a warning that goes into its answered thread, since that thread holds for it.
  */
 export function holdsApproval(finding: { severity: FindingSeverity | 'unknown'; tags?: string[]; answeredIn?: Finding['answeredIn'] }): boolean {
   return finding.severity === 'warning' && !isPreExisting(finding) && !finding.answeredIn;
@@ -1571,8 +1572,8 @@ function formatCarriedWarnings(carried: FindingFingerprintEntry[]): string | nul
 function formatUnthreadedWarnings(warnings: Finding[], links: CodeLinks): string | null {
   if (warnings.length === 0) return null;
   const clears = warnings.length === 1
-    ? 'There is no thread to answer it in, so it holds the approval until a later review round no longer finds it.'
-    : 'There is no thread to answer them in, so each one holds the approval until a later review round no longer finds it.';
+    ? 'It has no thread, so it holds the approval until a later review round no longer finds it.'
+    : 'They have no thread, so each one holds the approval until a later review round no longer finds it.';
   return `**Warnings that could not be posted as threads:**\n\n${warnings.map(f => formatFindingBlock(f, links, true, true)).join('\n\n')}\n\n${clears}`;
 }
 
@@ -2080,7 +2081,7 @@ export async function postReview(
     const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
       : hold?.reason === 'config' ? (hold.file === 'base' ? 'The base branch config did not load' : 'The PR\'s own config does not load')
       : hold?.reason === 'unread' ? 'No model read some of the changed files'
-      : hold?.reason === 'warnings' ? 'Warnings wait for a fix or an answer' : 'The PR is a draft';
+      : hold?.reason === 'warnings' ? 'Warnings wait for a fix or an accepted answer' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
