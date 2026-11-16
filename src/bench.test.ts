@@ -10,6 +10,7 @@ import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
 import { cutLegacyCommands, sanitizeLogOutput } from './providers';
 import type { LLMClient } from './providers';
+import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { VERDICT_READER_NAME } from './types';
@@ -550,6 +551,19 @@ describe('scoreRun on a follow-up case', () => {
     expect(score).toMatchObject({
       verdictCorrect: true, falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, followUp: { resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2 },
     });
+    // P3 and P4 are no open threads, so the report leaves them out. It holds no reason of any thread.
+    expect(score.followUp?.threads).toEqual([{ id: 'P1', status: 'addressed' }, { id: 'P2', status: 'addressed' }]);
+    const kept = review();
+    kept.result.findings = [{ ...findings[0], threadId: 'P1' }, findings[1], { ...findings[2], threadId: 'P1' }, makeFinding({ severity: 'blocker', file: 'src/old.rs', title: 'Earlier blocker', relisted: true, threadId: 'P1' })];
+    kept.result.threadEvaluations = [
+      { threadId: 'P1', status: 'not_addressed', reason: NAMED_AGAIN_REASON },
+      { threadId: 'P2', status: 'uncertain', reason: `The push did not change \`src/conn.rs\`${UNCONFIRMED_FIX_ENDING}`, grade: 'warning' },
+    ];
+    expect((await scoreRun(followUp, kept, matcher)).followUp).toMatchObject({
+      resolved: [], threads: [{ id: 'P1', status: 'not_addressed', keptOpenBy: 'named', findings: ['blocker', 'blocker'] }, { id: 'P2', status: 'uncertain', keptOpenBy: 'unconfirmed', grade: 'warning' }],
+    });
+    kept.result.threadEvaluations = [{ threadId: 'P2', status: 'partly_addressed', reason: `Part remains${UNCONFIRMED_FIX_ENDING}`, grade: 'note' }];
+    expect((await scoreRun(followUp, kept, matcher)).followUp?.threads).toEqual([{ id: 'P1', status: 'none', findings: ['blocker', 'blocker'] }, { id: 'P2', status: 'partly_addressed', grade: 'note' }]);
     expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
     // No model raised a blocker the review lists again from an earlier round, so it is neither a finding nor a repeat.
     const relisting = review();
@@ -579,6 +593,12 @@ describe('scoreRun on a follow-up case', () => {
       { id: 'P3', tier: 'must_not_repeat', severity: 'note', caught: 0, partial: 0, runs: 1 },
     ]);
     expect(report.variants[0].summary).toMatchObject({ atGradeRecall: 0.5, resolvedRight: 1, resolvedWrong: 1, repeats: 2 });
+    // A report scored again against a changed key keeps the threads its review left, and one stored without them gets none.
+    const rekeyed = { ...followUp, keyVersion: followUp.keyVersion + 1 };
+    expect((await rescoreReport(report, [rekeyed], matcher)).report.variants[0].cases[0].runs[0].followUp).toEqual(score.followUp);
+    const { threads: _threads, ...older } = score.followUp!;
+    const stored = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [{ ...score, followUp: older }] }] }]);
+    expect((await rescoreReport(stored, [rekeyed], matcher)).report.variants[0].cases[0].runs[0].followUp).toEqual(older);
     const summary = formatBenchSummary(report);
     expect(summary).toContain('  P2 keep open warning: 0/1\n');
     expect(summary).toContain(', 0 duplicates, resolved 1 right and 1 wrong, 2 repeats, files read');

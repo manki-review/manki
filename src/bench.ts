@@ -10,8 +10,9 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { isClaimCheck } from './pr-claims';
 import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
+import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, isGradeCell, isSecurityFinding, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, VERDICT_READER_NAME, VerdictReason } from './types';
+import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, isGradeCell, isSecurityFinding, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, VERDICT_READER_NAME, VerdictReason } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -427,9 +428,27 @@ interface GradeRoute {
   byClaimCheck?: true;
 }
 
+/** How a round left one earlier open thread, without any text of the thread or of the review. */
+interface ThreadOutcome {
+  id: string;
+  /** The status the round ended on, or `none` when the round holds no evaluation of the thread. */
+  status: ThreadEvaluation['status'] | 'none';
+  /**
+   * Set when the judge found the thread fixed and `confirmFixes` kept it open: `named` when a blocker of the round names
+   * the thread again, `unconfirmed` when the push changed none of the thread's files.
+   */
+  keptOpenBy?: 'named' | 'unconfirmed';
+  /** The grade a partial fix leaves the thread at. */
+  grade?: FindingSeverity;
+  /** The grades of the round's findings posted under the thread, in the order of the review. */
+  findings?: FindingSeverity[];
+}
+
 interface FollowUpScore {
   /** The earlier open threads the round resolved. */
   resolved: string[];
+  /** Each earlier open thread as the round left it. A report from a ref that does not store it has none. */
+  threads?: ThreadOutcome[];
   /** Earlier threads the round resolved that the key says the push fixes. */
   resolvedRight: number;
   /** Earlier threads the round resolved that the key says stay open. */
@@ -525,12 +544,14 @@ interface ScoredReview {
   complete: boolean;
   /** The earlier open threads the round resolved, for a complete round of a follow-up case. */
   resolved?: string[];
+  /** Each earlier open thread as the round left it, for a complete round of a follow-up case scored from its review. */
+  threads?: ThreadOutcome[];
 }
 
 type KeyScore = Pick<RunScore, 'matches' | 'mustCatchRecall' | 'weightedRecall' | 'verdictCorrect' | 'falseBlockers' | 'unexpectedWarnings' | 'extraFindings' | 'duplicates' | 'followUp'>;
 
 /** Matches the findings of one review to the case's key and returns the part of its score that the key decides. */
-async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
+async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved, threads }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
   const matches: ItemMatch[] = [];
   const repeats = repeatItems(benchCase);
   for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) {
@@ -564,6 +585,7 @@ async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: rev
     ...(resolved && {
       followUp: {
         resolved,
+        ...(threads && { threads }),
         resolvedRight: resolved.filter(id => benchCase.mustResolve.includes(id)).length,
         resolvedWrong: resolved.filter(id => !benchCase.mustResolve.includes(id)).length,
         repeats: restated.size,
@@ -586,12 +608,12 @@ function raisedFindings(review: LocalReview): Finding[] {
 export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
   const { outcome, reviewComplete: complete } = review.result;
   const findings = raisedFindings(review);
-  const resolved = benchCase.priorRound && complete ? resolvedThreads(benchCase, review) : undefined;
+  const followUp = benchCase.priorRound && complete ? { resolved: resolvedThreads(benchCase, review), threads: threadOutcomes(benchCase, review) } : undefined;
   return {
     ...reviewFacts(review),
     complete,
     ...(!complete && { error: review.result.summary || 'The review did not complete.' }),
-    ...await scoreKey(benchCase, { findings, outcome, complete, ...(resolved && { resolved }) }, matcher),
+    ...await scoreKey(benchCase, { findings, outcome, complete, ...followUp }, matcher),
   };
 }
 
@@ -615,6 +637,17 @@ function expectedVerdict(benchCase: BenchCase): 'block' | 'approve' | undefined 
 function resolvedThreads(benchCase: BenchCase, review: LocalReview): string[] {
   const open = new Set(benchCase.priorRound!.findings.filter(f => f.thread === 'open').map(f => f.id));
   return [...new Set((review.result.threadEvaluations ?? []).filter(e => e.status === 'addressed' && open.has(e.threadId)).map(e => e.threadId))];
+}
+
+/** Returns each earlier open thread as the round left it: its status, why `confirmFixes` kept it open, and the grades of the findings posted under it. */
+function threadOutcomes(benchCase: BenchCase, review: LocalReview): ThreadOutcome[] {
+  return benchCase.priorRound!.findings.filter(f => f.thread === 'open').map(({ id }): ThreadOutcome => {
+    const evaluation = review.result.threadEvaluations?.find(e => e.threadId === id);
+    const keptOpenBy = evaluation?.reason === NAMED_AGAIN_REASON ? 'named' as const
+      : evaluation?.status === 'uncertain' && evaluation.reason.endsWith(UNCONFIRMED_FIX_ENDING) ? 'unconfirmed' as const : undefined;
+    const under = raisedFindings(review).filter(f => f.threadId === id).map(f => f.severity);
+    return { id, status: evaluation?.status ?? 'none', ...(keptOpenBy && { keptOpenBy }), ...(evaluation?.grade && { grade: evaluation.grade }), ...(under.length > 0 && { findings: under }) };
+  });
 }
 
 /** Returns how `f` got its grade, without any text of the finding. */
@@ -944,7 +977,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
       const scoreAgain = async (): Promise<RunScore[]> => {
         const runs: RunScore[] = [];
         for (const run of c.runs) {
-          const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved }) };
+          const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved, ...(run.followUp.threads && { threads: run.followUp.threads }) }) };
           runs.push(run.complete ? { ...run, ...await twice(() => scoreKey(benchCase, review, matcher)) } : run);
         }
         return runs;
