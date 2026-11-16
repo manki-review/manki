@@ -13,7 +13,7 @@ import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
+import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
@@ -2115,6 +2115,11 @@ async function handleReviewStateCheck(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
     core.info('No pull request in payload — skipping auto-approve check');
+    return;
+  }
+
+  if (eventPrClosed()) {
+    core.info(`PR #${pr.number} is merged or closed, skipping the state check`);
     return;
   }
 

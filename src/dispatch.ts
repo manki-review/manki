@@ -60,6 +60,15 @@ export function dispatchedNumber(): number {
 }
 
 /**
+ * Whether the pull request of the event is merged or closed. Manki then still answers a person, and neither reopens
+ * nor resolves a thread, nor learns from one. A payload that holds no state for a pull request counts as open.
+ */
+export function eventPrClosed(): boolean {
+  const { pull_request: pr, issue } = github.context.payload;
+  return (pr ?? (issue?.pull_request ? issue : undefined))?.state === 'closed';
+}
+
+/**
  * Replaces the `workflow_dispatch` context with the event the inputs name, read from the API.
  * Only the event kind and the ids come from the inputs, since anyone with write access can dispatch by hand.
  * Throws on an input that does not validate or an object from another PR.

@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { restoreDispatchedEvent } from './dispatch';
+import { eventPrClosed, restoreDispatchedEvent } from './dispatch';
 
 jest.mock('@actions/core', () => ({
   ...jest.requireActual('@actions/core'),
@@ -161,5 +161,24 @@ describe('restoreDispatchedEvent', () => {
     await expect(failure).rejects.toThrow(message);
     await expect(failure).rejects.not.toThrow(/stop-commands|rm|a1b2c3d|a b/);
     expect(octokit.rest.pulls.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('eventPrClosed', () => {
+  it.each<[string, Record<string, unknown>, boolean]>([
+    ['a merged PR', { pull_request: { ...PR, state: 'closed' } }, true],
+    ['a closed PR that was not merged', { pull_request: { ...PR, state: 'closed', merged: false } }, true],
+    ['an open PR', { pull_request: { ...PR, state: 'open', merged: false } }, false],
+    ['a comment on a merged or closed PR', { comment: ISSUE_COMMENT, issue: { ...ISSUE, state: 'closed' } }, true],
+    ['a comment on an open PR', { comment: ISSUE_COMMENT, issue: { ...ISSUE, state: 'open' } }, false],
+    // A closed issue is no pull request, so its commands run as before.
+    ['a comment on a closed issue', { comment: ISSUE_COMMENT, issue: { number: 7, state: 'closed', user: ALICE } }, false],
+    // A payload without the state changes nothing.
+    ['a PR whose state the payload does not hold', { pull_request: PR }, false],
+    ['a payload without a PR', {}, false],
+  ])('tells %s', (_label, payload, closed) => {
+    github.context.payload = payload;
+
+    expect(eventPrClosed()).toBe(closed);
   });
 });

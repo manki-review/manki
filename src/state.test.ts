@@ -568,6 +568,8 @@ describe('checkAndAutoApprove', () => {
     diffs?: Record<string, string>;
     mergeable?: boolean | null;
     draft?: boolean;
+    state?: 'open' | 'closed';
+    merged?: boolean;
   } = {}) {
     const prHeadSha = overrides.prHeadSha ?? testSha('abc123');
     // A thread was posted on the head unless it names another commit, and the round on the head posted the threads unless `existingReviews` says otherwise.
@@ -584,7 +586,7 @@ describe('checkAndAutoApprove', () => {
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' }, mergeable: overrides.mergeable, draft: overrides.draft } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' }, mergeable: overrides.mergeable, draft: overrides.draft, state: overrides.state ?? 'open', merged: overrides.merged ?? false } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: namingCommit(existingReviews) }),
         },
@@ -1034,6 +1036,32 @@ describe('checkAndAutoApprove', () => {
 
     expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
     expect(createReviewMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['merged', true],
+    ['closed', false],
+  ])('approves nothing on a %s PR whose threads are all resolved, and says so', async (word, merged) => {
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const createCommentMock = jest.fn().mockResolvedValue({});
+    const checks = { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) };
+    const octokit = makeMockOctokit({
+      // The PR author resolved the blocking thread with a role that clears it, which an open PR says in the thread.
+      threads: [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true, resolvedBy: 'author' })],
+      role: 'admin', state: 'closed', merged, createReviewFn: createReviewMock, createCommentFn: createCommentMock, checks,
+    });
+
+    const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+
+    expect(result.approved).toBe(false);
+    expect(await (result as { why: () => Promise<string> }).why()).toBe(`This pull request is ${word}, so Manki approves nothing on it.`);
+    expect(createReviewMock).not.toHaveBeenCalled();
+    expect(createCommentMock).not.toHaveBeenCalled();
+    expect(checks.create).not.toHaveBeenCalled();
+    expect(dismissPreviousReviews).not.toHaveBeenCalled();
+    // Nothing is written to a thread either, such as the note that the PR author dismissed a finding.
+    expect(jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('mutation'))).toEqual([]);
+    expect(jest.mocked(authModule.reportPrState)).not.toHaveBeenCalled();
   });
 
   it('holds the approval of a PR that conflicts with its base, with one notice and one neutral check per head, and reports each outcome', async () => {
