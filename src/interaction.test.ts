@@ -1382,7 +1382,7 @@ describe('handleReviewCommentReply', () => {
 
   const WITHDRAWN = 'Withdrawn. `parse` returns early on an empty id.';
 
-  it.each<[string, string, string, FindingKind, 'open' | 'author-resolved' | 'missing' | 'unreadable' | 'resolve-fails' | 'note-fails', boolean]>([
+  it.each<[string, string, string, FindingKind, 'open' | 'author-resolved' | 'missing' | 'unreadable' | 'resolve-fails' | 'save-fails' | 'note-fails', boolean]>([
     ['saves a narrow learning when a writer gets the finding withdrawn', WITHDRAWN, 'owner', 'blocker', 'open', true],
     ['saves a learning when the PR author gets a warning withdrawn', WITHDRAWN, 'pr-author', 'warning', 'open', true],
     ['saves no learning for a withdrawn security finding', 'Withdrawn. The token is masked first.', 'owner', 'security', 'open', false],
@@ -1396,6 +1396,7 @@ describe('handleReviewCommentReply', () => {
     ['saves no learning when the thread is not found', WITHDRAWN, 'owner', 'blocker', 'missing', false],
     ['saves no learning when the thread cannot be read', WITHDRAWN, 'owner', 'blocker', 'unreadable', false],
     ['saves no learning when the thread cannot be resolved', WITHDRAWN, 'owner', 'blocker', 'resolve-fails', false],
+    ['leaves the answer as it is when the learning cannot be saved', WITHDRAWN, 'owner', 'blocker', 'save-fails', false],
     ['keeps the learning when the answer cannot be edited to name it', WITHDRAWN, 'owner', 'blocker', 'note-fails', true],
   ])('%s', async (_name, reply, sender, kind, threadCase, saves) => {
     setContext({
@@ -1418,6 +1419,7 @@ describe('handleReviewCommentReply', () => {
     // Manki reopens a thread the PR author resolved only once, so this resolve gets no reopen note.
     jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
     if (threadCase === 'resolve-fails') jest.mocked(state.resolveReviewThread).mockRejectedValueOnce(new Error('GraphQL timeout'));
+    if (threadCase === 'save-fails') jest.mocked(memory.writeLearning).mockRejectedValueOnce(new Error('memory repo is down'));
     if (threadCase === 'note-fails') octokit.rest.pulls.updateReviewComment.mockRejectedValue(new Error('GitHub is down'));
 
     try {
@@ -1432,11 +1434,12 @@ describe('handleReviewCommentReply', () => {
     // The answer is the same either way, and is posted before anything is saved.
     expect(body.startsWith(reply)).toBe(true);
     expect(body).not.toContain('Saved a learning');
-    const opens = threadCase === 'open' || threadCase === 'note-fails' || threadCase === 'resolve-fails';
+    const opens = ['open', 'resolve-fails', 'save-fails', 'note-fails'].includes(threadCase);
     const resolves = opens && (sender === 'owner' || (sender === 'pr-author' && kind === 'warning'));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toHaveLength(resolves ? 1 : 0);
     if (!saves) {
-      expect(memory.writeLearning).not.toHaveBeenCalled();
+      expect(memory.writeLearning).toHaveBeenCalledTimes(threadCase === 'save-fails' ? 1 : 0);
+      if (threadCase === 'save-fails') expect(core.warning).toHaveBeenCalledWith('Failed to save the learning of a withdrawn finding: Error: memory repo is down');
       expect(octokit.rest.pulls.updateReviewComment).not.toHaveBeenCalled();
       return;
     }
