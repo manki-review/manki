@@ -43,6 +43,11 @@ export function offerQueuedCheck(octokit: Octokit, check: QueuedCheck): void {
   queuedChecks.set(octokit, check);
 }
 
+/** Whether the queued check offered for the run of `octokit` sits on `headSha` and no check has taken it yet. */
+export function hasQueuedCheck(octokit: Octokit, headSha: string): boolean {
+  return queuedChecks.get(octokit)?.headSha === headSha;
+}
+
 /** Takes the queued check offered for the run of `octokit` when it sits on `headSha`. A check is offered once, whatever its head. */
 function takeQueuedCheck(octokit: Octokit, headSha: string): QueuedCheck | undefined {
   const queued = queuedChecks.get(octokit);
