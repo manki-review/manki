@@ -1499,7 +1499,6 @@ export async function runReview(
   // Below blocker, a finding on code the PR did not change is posted only once a later check confirms it, so it starts none.
   const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
   if (sweepSources.length > 0) {
-    const callsBefore = llmCalls.length;
     const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
       rawDiff, effort: comparisonEffort, workspace, related: relatedTools,
     });
@@ -1516,7 +1515,7 @@ export async function runReview(
     });
     // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
     const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
-    const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
+    const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
     sweepRaw = unmatched.filter((_, i) => !restated.has(i)).map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
@@ -1552,8 +1551,6 @@ export async function runReview(
         return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The judge failed on the findings of the sweep. ${RETRY_HINT}`);
       }
     }
-    // No other dedup or judge call runs between the sweeps and here, so each one since them ran for what they reported.
-    for (const call of llmCalls.slice(callsBefore)) if (call.stage === 'dedup' || call.stage === 'judge') call.sweep = true;
   }
 
   // Memory suppressions apply after the judge, so the judge's severity and security tag decide what they may hide.
