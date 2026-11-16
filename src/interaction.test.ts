@@ -418,7 +418,8 @@ function createMockOctokit() {
       pulls: {
         get: jest.fn().mockResolvedValue({ data: { title: 'Retry uploads', body: 'Retries a failed upload\nthree times.', base: { ref: 'main' } } }),
         getReviewComment: jest.fn().mockResolvedValue({ data: { user: MANKI_USER, body: '<!-- manki -->\nOriginal comment', path: 'src/file.ts', line: 10 } }),
-        createReplyForReviewComment: jest.fn().mockResolvedValue({ data: {} }),
+        createReplyForReviewComment: jest.fn().mockResolvedValue({ data: { id: 501 } }),
+        updateReviewComment: jest.fn().mockResolvedValue({ data: {} }),
         createReview: jest.fn().mockResolvedValue({ data: { id: 1 } }),
       },
     },
@@ -1077,7 +1078,7 @@ describe('handleReviewCommentReply', () => {
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, MEMORY, undefined, { ...CONFIG, related_repos: [{ repo: 'acme/reports', kind: 'consumer' }] });
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
-    expect(body.split('\n\n<!-- manki -->')[0].split('\n\nSaved a learning')[0]).toBe(posted);
+    expect(body.split('\n\n<!-- manki -->')[0]).toBe(posted);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
     // Only an answer that is still "Withdrawn." after the checks teaches the reviewers anything.
     expect(jest.mocked(memory.writeLearning).mock.calls).toHaveLength(posted.startsWith('Withdrawn.') && kind !== 'security' ? 1 : 0);
@@ -1379,25 +1380,67 @@ describe('handleReviewCommentReply', () => {
     }
   });
 
-  it.each([
-    ['saves a narrow learning when a writer gets the finding withdrawn', 'Withdrawn. `parse` returns early on an empty id.', 'OWNER', 'owner', false, true],
-    ['saves no learning for a withdrawn security finding', 'Withdrawn. The token is masked first.', 'OWNER', 'owner', true, false],
-    ['saves no learning for a reply from someone without write access', 'Withdrawn. `parse` returns early on an empty id.', 'MEMBER', 'reader', false, false],
-    ['saves no learning for any other outcome', 'Agreed. The follow-up PR handles it.', 'OWNER', 'owner', false, false],
-  ])('%s', async (_name, reply, association, sender, isSecurity, saves) => {
-    setContext({ comment: { id: 1, body: 'The caller always validates this upstream, so the check is not needed here.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association }, pull_request: { number: 7 }, sender: { login: sender } });
+  const WITHDRAWN = 'Withdrawn. `parse` returns early on an empty id.';
+
+  it.each<[string, string, string, FindingKind, 'open' | 'author-resolved' | 'missing' | 'unreadable' | 'resolve-fails' | 'save-fails' | 'note-fails', boolean]>([
+    ['saves a narrow learning when a writer gets the finding withdrawn', WITHDRAWN, 'owner', 'blocker', 'open', true],
+    ['saves a learning when the PR author gets a warning withdrawn', WITHDRAWN, 'pr-author', 'warning', 'open', true],
+    ['saves no learning for a withdrawn security finding', 'Withdrawn. The token is masked first.', 'owner', 'security', 'open', false],
+    ['saves no learning for a reply from someone without write access', WITHDRAWN, 'reader', 'blocker', 'open', false],
+    ['saves no learning for any other outcome', 'Agreed. The follow-up PR handles it.', 'owner', 'blocker', 'open', false],
+    // The thread of a blocker stays open for a PR author, so the finding is not settled.
+    ['saves no learning when the PR author gets a blocker withdrawn that they cannot clear', WITHDRAWN, 'pr-author', 'blocker', 'open', false],
+    // The PR author's own resolve clears a blocker only with a role that GitHub confirmed.
+    ['saves no learning on a blocker the PR author resolved with a role that cannot be read', WITHDRAWN, 'pr-author', 'blocker', 'author-resolved', false],
+    ['saves a learning on a blocker the PR author cleared with a role that may', WITHDRAWN, 'pr-author', 'blocker', 'author-resolved', true],
+    ['saves no learning when the thread is not found', WITHDRAWN, 'owner', 'blocker', 'missing', false],
+    ['saves no learning when the thread cannot be read', WITHDRAWN, 'owner', 'blocker', 'unreadable', false],
+    ['saves no learning when the thread cannot be resolved', WITHDRAWN, 'owner', 'blocker', 'resolve-fails', false],
+    ['leaves the answer as it is when the learning cannot be saved', WITHDRAWN, 'owner', 'blocker', 'save-fails', false],
+    ['keeps the learning when the answer cannot be edited to name it', WITHDRAWN, 'owner', 'blocker', 'note-fails', true],
+  ])('%s', async (_name, reply, sender, kind, threadCase, saves) => {
+    setContext({
+      comment: { id: 1, body: 'The caller always validates this upstream, so the check is not needed here.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
+      pull_request: { number: 7, user: { login: 'pr-author' } },
+      sender: { login: sender },
+    });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment(isSecurity ? 'security' : 'blocker'), path: 'src/fi`le.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment(kind), path: 'src/fi`le.ts', line: 10 } });
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(reply) });
-    jest.mocked(memory.writeLearning).mockClear();
+    const authorResolved = threadCase === 'author-resolved';
+    const thread = {
+      id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, ...(authorResolved && { resolvedByLogin: 'pr-author', writerResolverLogin: 'pr-author' }),
+      isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This',
+    };
+    if (threadCase === 'unreadable') jest.mocked(state.fetchBotReviewThreads).mockRejectedValue(new Error('GraphQL timeout'));
+    else jest.mocked(state.fetchBotReviewThreads).mockResolvedValue(threadCase === 'missing' ? [] : [thread]);
+    jest.mocked(ghUtils.authorClearRole).mockResolvedValue(authorResolved && saves ? 'maintain' : undefined);
+    // Manki reopens a thread the PR author resolved only once, so this resolve gets no reopen note.
+    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    if (threadCase === 'resolve-fails') jest.mocked(state.resolveReviewThread).mockRejectedValueOnce(new Error('GraphQL timeout'));
+    if (threadCase === 'save-fails') jest.mocked(memory.writeLearning).mockRejectedValueOnce(new Error('memory repo is down'));
+    if (threadCase === 'note-fails') octokit.rest.pulls.updateReviewComment.mockRejectedValue(new Error('GitHub is down'));
 
-    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 7, MEMORY);
+    try {
+      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 7, MEMORY, undefined, CONFIG);
+    } finally {
+      jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([]);
+      jest.mocked(ghUtils.authorClearRole).mockResolvedValue(undefined);
+    }
 
-    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    const [[{ body }], ...more] = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls as [[{ body: string }], ...unknown[]];
+    expect(more).toEqual([]);
+    // The answer is the same either way, and is posted before anything is saved.
+    expect(body.startsWith(reply)).toBe(true);
+    expect(body).not.toContain('Saved a learning');
+    const opens = ['open', 'resolve-fails', 'save-fails', 'note-fails'].includes(threadCase);
+    const resolves = opens && (sender === 'owner' || (sender === 'pr-author' && kind === 'warning'));
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toHaveLength(resolves ? 1 : 0);
     if (!saves) {
-      expect(memory.writeLearning).not.toHaveBeenCalled();
-      expect(body).not.toContain('Saved a learning');
+      expect(memory.writeLearning).toHaveBeenCalledTimes(threadCase === 'save-fails' ? 1 : 0);
+      if (threadCase === 'save-fails') expect(core.warning).toHaveBeenCalledWith('Failed to save the learning of a withdrawn finding: Error: memory repo is down');
+      expect(octokit.rest.pulls.updateReviewComment).not.toHaveBeenCalled();
       return;
     }
     const learning = jest.mocked(memory.writeLearning).mock.calls[0][1];
@@ -1405,7 +1448,10 @@ describe('handleReviewCommentReply', () => {
       id: expect.stringMatching(/^learn-\d+$/), scope: 'repo', path: 'src/fi`le.ts', source: 'test-owner/test-repo#7', created_at: expect.any(String),
       content: 'Findings like "Token leaks into logs" do not apply on `src/fi\'le.ts`: The caller always validates this upstream, so the check is not needed here.',
     });
-    expect(body).toContain(`\n\nSaved a learning for \`src/fi'le.ts\`, so findings like this one are not raised there again. \`/manki forget ${learning.id}\` removes it.\n\n<!-- manki -->`);
+    // The posted answer is edited to name the learning, above the markers it already had.
+    const note = `Saved a learning for \`src/fi'le.ts\`, so findings like this one are not raised there again. \`/manki forget ${learning.id}\` removes it.`;
+    expect(octokit.rest.pulls.updateReviewComment.mock.calls).toEqual([[{ owner: 'test-owner', repo: 'test-repo', comment_id: 501, body: body.replace('\n\n<!-- manki -->', `\n\n${note}\n\n<!-- manki -->`) }]]);
+    expect(jest.mocked(core.warning).mock.calls).toEqual(threadCase === 'note-fails' ? [['Saved the learning, but failed to say so in the answer: Error: GitHub is down']] : []);
   });
 
   it('throws when a reply gets no answer, and says so in the thread only when the thread is Manki\'s', async () => {

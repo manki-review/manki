@@ -417,8 +417,9 @@ async function answerOrSayWhy(octokit: Octokit, owner: string, repo: string, iss
  * the `related_repos` of `config`. The model also gets the PR's title and description as they are now. `checkReply`
  * checks the model's answer in code before anything acts on it, and a statement about the description counts only by
  * its own look at that text. With `config`, a reply in a guarded thread the PR author resolved reopens the thread, and
- * the answer says why. On a merged or closed PR the reply is answered and nothing else happens. Throws when the reply
- * gets no answer, after saying so in a thread that is Manki's.
+ * the answer says why. A "Withdrawn." saves a learning in `memory` only once the thread is resolved, and the posted
+ * answer is then edited to say so. On a merged or closed PR the reply is answered and nothing else happens. Throws when
+ * the reply gets no answer, after saying so in a thread that is Manki's.
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
@@ -554,25 +555,14 @@ export async function handleReviewCommentReply(
     const answer = leftOpen ? fixReviewNote(reply, filePath, parseFindingData(findingBody)?.evidenceFiles) : reply;
     const settled = leftOpen && !filePath ? undefined : outcome;
 
-    // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
-    let saved: string | undefined;
-    const path = filePath;
-    if (WITHDRAWN_REPLY_RE.test(reply) && !closed && !isSecurity && path && memory && await commenterCanWrite(octokit, owner, repo)) {
-      const title = parseFindingData(findingBody)?.title ?? path;
-      saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, path, title, comment.body ?? '')
-        .catch((error: unknown) => {
-          core.warning(`Failed to save the learning of a withdrawn finding: ${error}`);
-          return undefined;
-        });
-    }
-
     // A thread gets one Manki fix confirmation per head, but a writer's "Fixed." can still resolve it.
+    let addNote: ((note: string) => Promise<unknown>) | undefined;
     if (!posts) {
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
       // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
       const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(saved ? [saved] : []), ...(closed && settled ? [REPLY_PR_CLOSED] : [])];
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : [])];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
@@ -580,22 +570,39 @@ export async function handleReviewCommentReply(
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
       // open, and names a review as a way out only when a review can clear it.
       const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(isSecurity, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
-      await octokit.rest.pulls.createReplyForReviewComment({
+      const text = [answer, ...checks, ...notes];
+      const markers = [BOT_MARKER, response.record(decision, statementChecks(checked)), ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []), ...(noted ? [REOPENED_MARKER] : [])];
+      const { data: posted } = await octokit.rest.pulls.createReplyForReviewComment({
         owner,
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers([answer, ...checks, ...notes].join('\n\n'), BOT_MARKER, response.record(decision, statementChecks(checked)), ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []), ...(noted ? [REOPENED_MARKER] : [])),
+        body: withMarkers(text.join('\n\n'), ...markers),
       });
+      addNote = note => octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: posted.id, body: withMarkers([...text, note].join('\n\n'), ...markers) });
       core.info('Posted reply to review comment');
     }
 
+    let cleared = false;
     if (settled && thread && mayResolve && !noted) {
       try {
-        await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[settled], mayClear, undefined, clears);
+        // A resolved thread that keeps blocking is left resolved, and `staysOpen` says that it is not cleared.
+        cleared = await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[settled], mayClear, undefined, clears) && !staysOpen;
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
+    }
+
+    // A finding whose thread is not cleared is not settled, so it leaves no learning. A security finding never teaches
+    // the reviewers to skip a pattern, and only a writer's reply can change memory.
+    if (cleared && addNote && WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && filePath && memory && await commenterCanWrite(octokit, owner, repo)) {
+      const title = parseFindingData(findingBody)?.title ?? filePath;
+      const saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, filePath, title, comment.body ?? '')
+        .catch((error: unknown) => {
+          core.warning(`Failed to save the learning of a withdrawn finding: ${error}`);
+          return undefined;
+        });
+      if (saved) await addNote(saved).catch((error: unknown) => core.warning(`Saved the learning, but failed to say so in the answer: ${error}`));
     }
   } catch (error) {
     if (ownThread) {
