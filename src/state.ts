@@ -853,6 +853,10 @@ async function approveOrSayWhy(
     repo,
     pull_number: prNumber,
   });
+  if (pr.state === 'closed') {
+    core.info('Skipping auto-approve — the PR is merged or closed');
+    return withheld(`This pull request is ${pr.merged ? 'merged' : 'closed'}, so Manki approves nothing on it.`);
+  }
   const prAuthorLogin = pr.user?.login;
   const clearRole = config?.author_clear_role;
   const listReviews = () => octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });

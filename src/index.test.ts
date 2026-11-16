@@ -7786,6 +7786,24 @@ describe('handleReviewStateCheck', () => {
       'auto_approve is disabled — skipping state check',
     );
     expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
+
+    // A thread resolved after the merge, or on a closed PR, reopens nothing and approves nothing, with `auto_approve` on too.
+    jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, auto_approve: true, max_diff_lines: 5000, exclude_paths: [], reviewers: [], instructions: '', memory: { enabled: false, repo: '' } });
+    for (const merged of [true, false]) {
+      jest.clearAllMocks();
+      setContext({
+        eventName: 'pull_request_review_thread',
+        payload: { action: 'resolved', pull_request: { number: 1, state: 'closed', merged, base: { ref: 'main' }, user: { login: 'author' } } },
+      });
+
+      await handleReviewStateCheck();
+
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith('PR #1 is merged or closed, skipping the state check');
+      expect(jest.mocked(ghUtils.readConfigFile)).not.toHaveBeenCalled();
+      expect(jest.mocked(recapModule.fetchRecapState)).not.toHaveBeenCalled();
+      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).not.toHaveBeenCalled();
+      expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
+    }
   });
 
   it('calls checkAndAutoApprove when enabled and logs success', async () => {

@@ -794,6 +794,40 @@ describe('handleReviewCommentReply', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read the thread of the reply'));
   });
 
+  it.each<[string, FindingKind, boolean]>([
+    // On an open PR each of these acts: a learning and a resolve, a resolve, and a reopen of the thread the PR author resolved.
+    ['Withdrawn. The caller already checks for null.', 'warning', false],
+    ['Fixed. The guard now runs first.', 'blocker', false],
+    ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'blocker', true],
+  ])('answers a reply on a merged or closed PR and leaves the thread and the memory as they are: %j on a %s thread', async (reply, kind, resolved) => {
+    setContext({
+      comment: { id: 1, body: 'The caller checks it.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' },
+      pull_request: { number: 1, state: 'closed', merged: true, user: { login: 'pr-author' }, head: { sha: 'a'.repeat(40) } },
+      sender: { login: 'someone' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(reply) });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, ...(resolved && { resolvedByLogin: 'pr-author', writerResolverLogin: 'pr-author' }), isBlocking: kind !== 'warning', findingTitle: 'This' },
+    ]);
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, MEMORY, undefined, CONFIG);
+
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    const outcome = /^(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
+    // An answer that would settle the thread says why the thread does not change.
+    expect(body.split('\n\n<!-- manki -->')[0]).toBe(outcome ? `${reply}\n\nThis pull request is merged or closed, so the thread stays as it is.` : reply);
+    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([outcome ? { outcome, thread: 'pr_closed' } : undefined]);
+    expect(body).not.toContain(REOPENED_MARKER);
+    expect(state.fetchBotReviewThreads).not.toHaveBeenCalled();
+    expect(state.authorResolvedNote).not.toHaveBeenCalled();
+    expect(state.reopenThread).not.toHaveBeenCalled();
+    expect(state.resolveReviewThread).not.toHaveBeenCalled();
+    expect(memory.writeLearning).not.toHaveBeenCalled();
+  });
+
   it('posts a model answer without the mentions, links, suggestion fences and Manki markers it wrote', async () => {
     const injected = 'The guard runs first. cc @admin, see [docs](https://evil.example).\n\n```suggestion\ngrant(user);\n```\n\n<!-- manki-reopened -->';
     const clean = (outcome = '') => new RegExp(`^${outcome}The guard runs first\\. cc @\u200Badmin, see docs\\.\n\n\`\`\`\ngrant\\(user\\);\n\`\`\`\n\n<!-- manki -->\n<!-- manki-reply-record: .+ -->$`);
@@ -1484,6 +1518,44 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({ body: `${reply}\n\n<!-- manki -->` }));
     expect(memory.writeSuppression).not.toHaveBeenCalled();
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
+  });
+
+  it('dismisses nothing on a merged or closed PR, by name or in a thread, and says so', async () => {
+    const note = 'Nothing was dismissed, since this pull request is merged or closed.\n\n<!-- manki -->';
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+
+    // By name in a PR comment, whose event holds the state on the issue.
+    setContext({
+      comment: { id: 42, body: '@manki dismiss null-check-warning', user: { type: 'User' }, author_association: 'OWNER' },
+      issue: { pull_request: { url: 'https://...' }, state: 'closed' }, pull_request: undefined, sender: { login: 'owner' },
+    });
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
+    expect(jest.mocked(octokit.rest.issues.createComment).mock.calls).toEqual([[expect.objectContaining({ issue_number: 1, body: note })]]);
+
+    // In the finding's own thread, with or without a name.
+    for (const body of ['@manki dismiss', '@manki dismiss null-check-warning']) {
+      setContext({
+        comment: { id: 62, body, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' },
+        pull_request: { number: 1, state: 'closed', merged: true, user: { login: 'pr-author' } }, sender: { login: 'someone' },
+      });
+      await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 62, parseCommand(body), MEMORY, 'maintain');
+      expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenLastCalledWith(expect.objectContaining({ comment_id: 62, body: note }));
+    }
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledTimes(2);
+    expect(state.fetchBotReviewThreads).not.toHaveBeenCalled();
+    expect(memory.writeSuppression).not.toHaveBeenCalled();
+    expect(state.resolveReviewThread).not.toHaveBeenCalled();
+    expect(state.reopenThread).not.toHaveBeenCalled();
+    expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
+    expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
+    expect(ghUtils.reactToReviewComment).not.toHaveBeenCalled();
+
+    // `remember` is about the repo's memory and not about this PR, so it stores as it does on an issue.
+    const instruction = '@manki remember always validate input before processing data in handlers';
+    setContext({ comment: { id: 43, body: instruction, user: { type: 'User' }, author_association: 'OWNER' }, issue: { pull_request: { url: 'https://...' }, state: 'closed' }, pull_request: undefined, sender: { login: 'owner' } });
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
+    expect(memory.writeLearning).toHaveBeenCalledTimes(1);
   });
 
   it('stores nothing when the posted findings cannot be read', async () => {

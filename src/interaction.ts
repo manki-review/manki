@@ -8,6 +8,7 @@ import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, remo
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
 import { parsePRDiff } from './diff';
+import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
@@ -103,10 +104,10 @@ type ReplyOutcome = 'Fixed' | 'Agreed' | 'Withdrawn';
  * reply that settles nothing records nothing.
  */
 function replyDecision(
-  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | undefined, mayResolve: boolean, staysOpen: boolean, held = false,
+  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | 'pr_closed' | undefined, mayResolve: boolean, staysOpen: boolean, held = false,
 ): ReplyDecision | undefined {
   if (!outcome) return undefined;
-  if (thread === 'lookup_failed') return { outcome, thread };
+  if (typeof thread === 'string') return { outcome, thread };
   const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : thread.isResolved && !held ? 'already_resolved' : !mayResolve ? 'no_permission' : 'resolves';
   return { outcome, thread: fate };
 }
@@ -159,6 +160,10 @@ const DISMISS_NO_FINDING = `Nothing was dismissed, since no finding was named.\n
 const DISMISS_TOO_SHORT = `No suppression was stored, since a finding name needs at least 3 characters.\n\n${DISMISS_USAGE}`;
 
 const DISMISS_FAILED = 'Could not resolve this thread. The run log has the reason.';
+
+const DISMISS_PR_CLOSED = 'Nothing was dismissed, since this pull request is merged or closed.';
+
+const REPLY_PR_CLOSED = 'This pull request is merged or closed, so the thread stays as it is.';
 
 const DISMISS_LOOKUP_FAILED = 'Could not read the findings Manki posted on this PR, so nothing was dismissed. The run log has the reason.';
 
@@ -412,7 +417,8 @@ async function answerOrSayWhy(octokit: Octokit, owner: string, repo: string, iss
  * the `related_repos` of `config`. The model also gets the PR's title and description as they are now. `checkReply`
  * checks the model's answer in code before anything acts on it, and a statement about the description counts only by
  * its own look at that text. With `config`, a reply in a guarded thread the PR author resolved reopens the thread, and
- * the answer says why. Throws when the reply gets no answer, after saying so in a thread that is Manki's.
+ * the answer says why. On a merged or closed PR the reply is answered and nothing else happens. Throws when the reply
+ * gets no answer, after saying so in a thread that is Manki's.
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
@@ -510,9 +516,11 @@ export async function handleReviewCommentReply(
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);
+    // Without the thread, nothing below reopens it, resolves it or says when it clears.
+    const closed = eventPrClosed();
     // The live thread also counts a found-again reply that made it block, which the first comment does not show.
     let lookupFailed = false;
-    const live = await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
+    const live = closed ? undefined : await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
       core.warning(`Failed to read the thread of the reply: ${error}`);
       lookupFailed = true;
       return undefined;
@@ -549,7 +557,7 @@ export async function handleReviewCommentReply(
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
     const path = filePath;
-    if (WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && path && memory && await commenterCanWrite(octokit, owner, repo)) {
+    if (WITHDRAWN_REPLY_RE.test(reply) && !closed && !isSecurity && path && memory && await commenterCanWrite(octokit, owner, repo)) {
       const title = parseFindingData(findingBody)?.title ?? path;
       saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, path, title, comment.body ?? '')
         .catch((error: unknown) => {
@@ -564,8 +572,8 @@ export async function handleReviewCommentReply(
     } else {
       // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
       const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(saved ? [saved] : [])];
-      const decision = replyDecision(settled, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(saved ? [saved] : []), ...(closed && settled ? [REPLY_PR_CLOSED] : [])];
+      const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       const list = statementList(checked);
@@ -743,7 +751,7 @@ async function handleExplain(
 /**
  * Stores a suppression for the finding `findingRef` names. Returns the note to post, and whether the suppression was
  * stored, or `undefined` when `findingRef` names none. A suppression hides findings on every PR, so only text that matches
- * a finding Manki posted on this PR is stored. `named` says whether it matched one.
+ * a finding Manki posted on this PR is stored, and nothing on a merged or closed PR. `named` says whether it matched one.
  */
 async function handleDismiss(
   octokit: Octokit,
@@ -754,6 +762,7 @@ async function handleDismiss(
   findingRef: string,
   memory?: MemoryStore,
 ): Promise<{ note: string; named: boolean; stored: boolean } | undefined> {
+  if (eventPrClosed()) return { note: DISMISS_PR_CLOSED, named: false, stored: false };
   if (!findingRef.trim()) return undefined;
   const sanitizedPattern = findingRef
     .replace(/</g, '').replace(/>/g, '')
@@ -810,14 +819,15 @@ async function handleDismiss(
 /**
  * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
  * On a blocking or security thread the PR author may do so too when their role is at least `clearRole`, the repo's `author_clear_role`.
- * Returns whether the thread is resolved, with a note when it is not, or `undefined` outside a Manki finding's thread.
+ * Returns whether the thread is resolved, with a note when it is not, or `undefined` outside a Manki finding's thread
+ * and on a merged or closed PR.
  */
 async function resolveDismissedThread(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined,
 ): Promise<{ resolved: boolean; note?: string } | undefined> {
   const payload = github.context.payload;
   const inReplyTo = payload.comment?.in_reply_to_id;
-  if (!inReplyTo) return undefined;
+  if (!inReplyTo || eventPrClosed()) return undefined;
   const senderLogin = payload.sender?.login;
   try {
     const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
