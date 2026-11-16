@@ -58,7 +58,7 @@ body: |
 
   Closes #30
   Part of manki-review/manki#1036
-key_version: 3
+key_version: 2
 prior_round:
   head: 3b4d551c3da94003dce64abcb76bdc504b9ebfca
   findings:
@@ -87,13 +87,7 @@ prior_round:
       state: open
       description: "`revertBoxes` sets each box to `!ticked` on the comment as it is now. Take an outsider who ticks Pause and then unticks it. Both edits queue. The first revert leaves Pause unticked. The second revert ticks it again. The comment now shows Pause ticked while `settings.paused` is `false`, and a writer who unticks it changes nothing. Set `pause` to `this.reported().settings.paused` and every one-shot box to unticked, so the comment always matches what applies."
       suggested_fix: "    const reverted = setBoxes(body ?? '', changes.map(({ box }) => ({ box, ticked: box === 'pause' ? this.reported().settings.paused : false })));"
-must_resolve: [P2, P3]
-must_keep_open:
-  - id: P1
-    severity: warning
-    mechanism: "A Pause tick or untick that arrives or is redelivered after a newer edit of another box, such as a Full review tick, is still not applied. `settings.paused` then keeps the old value, and a Pause untick lost this way keeps automatic reviews held on a PR the writer resumed."
-    locations: ["src/coordinator.ts", "applySettings", "settings.paused"]
-    fix: "c8319a240a6b0dec401d1a3c452af9647d15908e"
+must_resolve: [P1, P2, P3]
 must_catch:
   - id: K1
     severity: warning
