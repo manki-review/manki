@@ -362,6 +362,8 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 
 The service starts no run for anything Manki or another bot did, a PR closed without merging, or a comment that neither mentions `@manki` or `/manki` nor replies in a review thread.
 
+So a PR that a bot opens or pushes to, such as a Dependabot update, gets no automatic review and no `Manki` check. A person with write access can still ask for a review with `@manki review` in a PR comment. Where `Manki` is a required check, name the bot in `skip_authors`: its PRs then get a `Manki` check that completes as skipped, which passes (see [Skipping PRs](how-reviews-work.md#skipping-prs)).
+
 Manki itself decides who can start it from a comment, on a PR, an issue or a review thread. A comment counts when its author has write access to the repository. Manki asks the GitHub API about every commenter, with the workflow's own `GITHUB_TOKEN`, since the role an event reports does not show write access: an org member with read access shows as `MEMBER`, and a private member with write access as `CONTRIBUTOR` or `NONE`. Anyone can comment on a public repository, so Manki checks the commenter before it fetches the App token, uses a provider credential or calls a model. It refuses without posting anything, and the run ends at once. A tick in the settings block, or in a finding's issue box, edits Manki's own comment, so Manki checks the person who ticked, who needs write access.
 
 ### What the service does
