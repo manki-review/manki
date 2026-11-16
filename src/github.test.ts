@@ -2163,11 +2163,15 @@ describe('postReview body lead', () => {
       thread('Cleared by a maintainer', 'r2'),
       thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', role: 'maintain', announced: true }),
     ];
-    const line = '**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by `@owner` (`admin` role), '
-      + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by `@owner` (`maintain` role).';
+    const list = '**Findings dismissed by the PR author** `@owner`:\n\n- [Token leaks into logs](https://github.com/o/r/pull/1#r1) (`admin` role)\n'
+      + '- [Secret in the URL](https://github.com/o/r/pull/1#r3) (`maintain` role)';
 
     const approved = await postedBody(ready, threads);
-    expect(approved.body.split('\n')).toContain(line);
+    expect(approved.body).toContain(list);
+    // One role for every dismissal is named once, in the heading.
+    const sameRole = await postedBody(ready, [threads[0], thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', role: 'admin', announced: true })]);
+    expect(sameRole.body).toContain('**Findings dismissed by the PR author** `@owner` (`admin` role):\n\n- [Token leaks into logs](https://github.com/o/r/pull/1#r1)\n- [Secret in the URL](https://github.com/o/r/pull/1#r3)');
+    expect(sameRole.body.split('\n')).toContain('- [Secret in the URL](https://github.com/o/r/pull/1#r3)');
     expect((await postedBody(ready, [thread('Cleared by a maintainer', 'r2')])).body).not.toContain('dismissed by the PR author');
     const blocked = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] }, threads);
     expect(blocked.body).not.toContain('dismissed by the PR author');

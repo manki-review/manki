@@ -1160,8 +1160,8 @@ describe('checkAndAutoApprove', () => {
     // The resolver's write access is asked once for both threads, and the role lookup of an author who resolved reuses that answer.
     expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(1);
     if (approves) {
-      const line = `**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by \`@author\` (\`${role}\` role), [Off by one](https://github.com/o/r/pull/1#r2) by \`@author\` (\`${role}\` role).`;
-      expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(byAuthor);
+      const list = `**Findings dismissed by the PR author** \`@author\` (\`${role}\` role):\n\n- [Token leaks into logs](https://github.com/o/r/pull/1#r1)\n- [Off by one](https://github.com/o/r/pull/1#r2)`;
+      expect(createReviewMock.mock.calls[0][0].body.includes(list)).toBe(byAuthor);
     }
   });
 

@@ -2552,15 +2552,20 @@ function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: s
   return `**Related work:** open PRs and issues this PR may duplicate or fix. None of them blocks.\n\n${lines.join('\n')}`;
 }
 
-/** Returns one line naming the guarded findings a PR author dismissed on their own PR, with the role that allowed it, or null when there are none. */
+/**
+ * Returns the guarded findings a PR author dismissed on their own PR as a list, with the role that allowed it, or null
+ * when there are none. The role is named once when every dismissal had the same one.
+ */
 function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threadUrl?: string; login: string; role: AuthorClearRole }>): string | null {
   if (overrides.length === 0) return null;
-  const entries = overrides.map(o => {
+  const [{ login, role }] = overrides;
+  const oneRole = overrides.every(o => o.role === role);
+  const items = overrides.map(o => {
     const title = sanitizeMarkdown(o.title || '(untitled)');
     const url = safeThreadUrl(o.threadUrl);
-    return `${url ? `[${title}](${url})` : title} by \`@${o.login}\` (\`${o.role}\` role)`;
+    return `- ${url ? `[${title}](${url})` : title}${oneRole ? '' : ` (\`${o.role}\` role)`}`;
   });
-  return `**Findings dismissed by the PR author:** ${entries.join(', ')}.`;
+  return `**Findings dismissed by the PR author** \`@${login}\`${oneRole ? ` (\`${role}\` role)` : ''}:\n\n${items.join('\n')}`;
 }
 
 function formatLabelled(label: string, text: string): string {
