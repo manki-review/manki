@@ -91,10 +91,15 @@ must_resolve: [P2, P3]
 must_keep_open:
   - id: P1
     severity: warning
-    mechanism: "`applySettings` now skips a whole settings edit whose comment `updated_at` is older than `settings_at`, but an applied edit of any box sets `settings_at`. So an edit that arrives or is redelivered after a newer edit of another box is dropped, whichever box it changed. A late Pause tick or untick after a newer Full review tick leaves `settings.paused` at the old value, and a Pause untick lost this way keeps automatic reviews held on a PR the writer resumed. A late Full, Deeper, Draft, Force or Cancel tick after a newer Pause edit is dropped too, and the requested review or cancel never happens."
-    locations: ["src/coordinator.ts", "applySettings", "settings_at"]
+    mechanism: "A Pause tick or untick that arrives or is redelivered after a newer edit of another box, such as a Full review tick, is still not applied. `settings.paused` then keeps the old value, and a Pause untick lost this way keeps automatic reviews held on a PR the writer resumed."
+    locations: ["src/coordinator.ts", "applySettings", "settings.paused"]
     fix: "c8319a240a6b0dec401d1a3c452af9647d15908e"
 must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`applySettings` skips a whole settings edit whose comment `updated_at` is older than `settings_at`, the time of the last edit applied for any box. A writer's Full, Deeper, Draft, Force or Cancel tick that the reconciler redelivers after a newer Pause edit was applied is therefore dropped, and the requested review or cancel never happens."
+    locations: ["src/coordinator.ts", "applySettings", "settings_at"]
+    fix: "c8319a240a6b0dec401d1a3c452af9647d15908e"
   - id: K2
     severity: warning
     mechanism: "`cancelReview` cancels whichever review is running when the settings item is processed. A Cancel tick delivered late, after its run ended and a newer one started, cancels the newer run that the writer never saw."
