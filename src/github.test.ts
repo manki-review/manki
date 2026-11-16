@@ -2161,13 +2161,14 @@ describe('postReview body lead', () => {
     const threads = [
       thread('Token leaks into logs', 'r1', { login: 'owner', via: 'resolve', role: 'admin', announced: false }),
       thread('Cleared by a maintainer', 'r2'),
-      thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', role: 'maintain', announced: true }),
+      thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', role: 'admin', announced: true }),
     ];
-    const line = '**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by `@owner` (`admin` role), '
-      + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by `@owner` (`maintain` role).';
+    const list = '**Findings dismissed by the PR author** `@owner` (`admin` role):\n\n- [Token leaks into logs](https://github.com/o/r/pull/1#r1)\n'
+      + '- [Secret in the URL](https://github.com/o/r/pull/1#r3)';
 
     const approved = await postedBody(ready, threads);
-    expect(approved.body.split('\n')).toContain(line);
+    expect(approved.body).toContain(list);
+    expect(approved.body.split('\n')).toContain('- [Secret in the URL](https://github.com/o/r/pull/1#r3)');
     expect((await postedBody(ready, [thread('Cleared by a maintainer', 'r2')])).body).not.toContain('dismissed by the PR author');
     const blocked = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] }, threads);
     expect(blocked.body).not.toContain('dismissed by the PR author');
