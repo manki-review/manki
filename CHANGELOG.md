@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.5.2] - 2026-11-16
+
+Manki 7.5.2 makes approvals, checks and threads do what they say. A warning holds the approval until Manki accepts an answer to it, a run that finds its commit already reviewed reports the `Manki` check, a merged PR is left as it is, and a withdrawn finding leaves a learning only once its thread is cleared.
+
+### Review loop and verdicts
+
+- A warning thread holds the approval until its warning is settled. In 7.5.0 and 7.5.1 any reply from the PR author lifted the hold, also one that Manki answered with Kept or Unverified. The hold now lifts only when Manki answers a reply with Fixed, Withdrawn or Agreed, when a round finds the warning fixed, when the `Create an issue for this` box files it, or when a person with the `author_clear_role` role resolves the thread. A Kept or Unverified answer, a reply without an answer, `/manki dismiss` and a resolve by anyone below that role leave it. A round that names the warning again makes the thread hold again. The held review, the `Manki` check and Manki's answers say what lifts the hold. On a PR that is open at the upgrade, a warning thread holds again when it was only replied to, resolved by someone below that role, or tracked with the issue box before the upgrade, until one of the four happens ([#1713](https://github.com/manki-review/manki/pull/1713)).
+- A run that ends because its commit already has a review now completes the waiting `Manki` check with that review's result: success for an approval, failure for requested changes, and neutral when a draft, a conflict or an open warning holds the approval. Before, the check ended as "Review did not run" on a commit with a valid review. When the review or the hold cannot be read, the check is left as it is ([#1709](https://github.com/manki-review/manki/pull/1709)).
+- On a merged or closed PR Manki still answers a reply or a command, and changes nothing about the review. It resolves and reopens no thread, approves nothing, dismisses no review and stores no suppression. Before, a thread resolved after the merge could still bring an approval or a reopened thread ([#1708](https://github.com/manki-review/manki/pull/1708)).
+
+### Review memory
+
+- A reply that gets a finding withdrawn saves its learning only once the thread is cleared. A blocker thread that stays open on a reply from the PR author leaves none, and neither does a thread Manki cannot find, read or resolve. Manki adds the "Saved a learning" line to its answer after the thread is resolved ([#1712](https://github.com/manki-review/manki/pull/1712)).
+
+### Docs
+
+- `docs/getting-started.md` says that a PR a bot opens or pushes to gets no automatic review and no `Manki` check, and that `@manki review` still starts one ([#1707](https://github.com/manki-review/manki/pull/1707)).
+
+### Internal
+
+- `bench/README.md` describes `followUp.threads` of the benchmark report ([#1702](https://github.com/manki-review/manki/pull/1702)).
+- A hold-out follow-up case keys an earlier thread that the push fixed only in part as kept open ([#1704](https://github.com/manki-review/manki/pull/1704)).
+
 ## [7.5.1] - 2026-11-16
 
 Manki 7.5.1 makes finders read more of the code around a change, asks whether a fix reaches the root cause of its problem, and lets the judge see a blocker's fix on a large PR. It also reviews a rebased PR that an earlier version skipped, removes settings that did nothing and fixes a set of small problems.
