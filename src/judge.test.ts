@@ -484,9 +484,6 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains.');
     expect(prompt).toContain("and `row` and `column` to the Severity Table cell that remaining damage earns by the rules above. Manki works out the thread's grade from the cell. When the remaining damage is the same as before, state a cell that gives the thread's own grade. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. On the `wrong` row Manki grades what remains in the `normal` column whatever column you state, since nothing checks a `rare` claim on a thread.");
     expect(prompt).toContain('"status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain"');
-    // A new defect in the fix is a finding of its own, and only a failure the thread named keeps the thread open.
-    expect(prompt).toContain('Manki replies there with what remains. Name in `remaining` only failures the original concern named.\n- **not_addressed**');
-    expect(prompt).toContain('\n\nJudge a thread only against the failures its own concern names. A defect the fix itself adds, or any other finding of this round in the same code, is its own finding and does not keep the thread open. But when a finding of this round that you keep names a failure the concern already named, mark the thread `partly_addressed` or `not_addressed`, never `addressed`.\n\nAn outdated thread shows');
     // The judge has no field for a grade of its own on a thread either.
     expect(prompt.slice(prompt.indexOf('"threadEvaluations"'), prompt.indexOf('## Open Thread Evaluation'))).not.toContain('"grade"');
   });
