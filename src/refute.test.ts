@@ -86,7 +86,7 @@ describe('refuteBlockers', () => {
     }, undefined, { 'Confirmed without proof': 0, 'Unsettled': 11, 'Lead unsettled': 12, 'Disproved by an unrelated file': 15, 'Blocking lead unsettled': 16, 'Disproved in its own file': 11, 'Disproved': 12, 'Confirmed': 15 });
     const findings = [
       finding('Disproved'),
-      finding('Confirmed'),
+      finding('Confirmed', { reviewers: ['Sweep 1'] }),
       finding('Confirmed without proof'),
       finding('Unsettled'),
       finding('Lead confirmed', { severity: 'warning', notChecked: true, lead }),
@@ -166,6 +166,8 @@ describe('refuteBlockers', () => {
     // Every blocker and lead was asked once, and the warning never.
     expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven disproved', 'Unproven lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15, checking: true }, timeoutMs: 600_000 });
+    // The call for a finding a sweep raised is marked, so its record counts as the sweep's cost.
+    expect(client.calls.filter(([, options]) => options?.sweep).map(([title]) => title)).toEqual(['Confirmed']);
     // Every refuter sees the same list of uses the finders and the judge saw, after the finding.
     expect(client.calls.every(([, , user]) => user.endsWith('\n\n## Uses Outside the Diff\n\nsrc/api.ts:9 checks both inputs.'))).toBe(true);
     // A lead whose reviewer left a part empty says so, so no line of the message ends without a value.

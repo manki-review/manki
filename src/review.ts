@@ -1515,7 +1515,7 @@ export async function runReview(
     });
     // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
     const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
-    const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
+    const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
     sweepRaw = unmatched.filter((_, i) => !restated.has(i)).map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));

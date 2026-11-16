@@ -122,6 +122,8 @@ export interface LLMCall extends LLMUsage {
   effort?: SendMessageOptions['effort'];
   /** Set when a fallback model answered after a safety filter refused the stage's own model. */
   fallback?: boolean;
+  /** Set on a refuter's call for a finding a sweep raised. The dedup and judge calls on what the sweeps reported have the agent `sweep`. */
+  sweep?: true;
   /** Position among the calls of the same stage and agent, so above 1 means a retry or another pass. */
   attempt: number;
   failed?: boolean;
@@ -187,6 +189,8 @@ export interface SendMessageOptions {
    * hashes it in place of the system prompt, so the digest changes only when the template does. No provider sends it.
    */
   promptTemplate?: string;
+  /** Marks a call that runs for a finding a sweep raised, so the call's record shows it. No provider sends it. */
+  sweep?: true;
 }
 
 export interface LLMClient {

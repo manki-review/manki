@@ -95,6 +95,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
         ...label, ...(opts?.effort && { effort: client.sentEffort?.(opts.effort) ?? opts.effort }), attempt,
         promptDigest: promptDigest(opts?.promptTemplate ?? systemPrompt),
         ...(stepBudget !== undefined && { stepBudget }),
+        ...(opts?.sweep && { sweep: true as const }),
       };
       const start = Date.now();
       try {

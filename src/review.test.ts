@@ -3203,6 +3203,8 @@ describe('runReview', () => {
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
     expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
+    // The dedup call on the places near a judged finding names the sweep as its agent, so its cost counts as the sweep's.
+    expect(result.llmCalls?.filter(c => c.agent === 'sweep').map(c => c.stage)).toEqual(['dedup']);
 
     // A judge that fails on the sweep's findings ends the round incomplete, so no blocker the sweep found is lost
     // behind an approval. The record keeps what the first judge call graded, and nothing is posted.
@@ -7276,6 +7278,10 @@ describe('recordCalls', () => {
     const capped: LLMCall[] = [];
     await recordCalls({ ...fallback, sentEffort: effort => (effort === 'xhigh' ? 'high' : effort) }, finder, capped).sendMessage('sys', 'user', { effort: 'xhigh' });
     expect(capped[0].effort).toBe('high');
+    // A call marked as one for a sweep's finding keeps the mark in its record.
+    const marked: LLMCall[] = [];
+    await recordCalls(fallback, finder, marked).sendMessage('sys', 'user', { sweep: true });
+    expect([marked[0].sweep, capped[0].sweep]).toEqual([true, undefined]);
     expect(calls).toEqual([
       { stage: 'judge', effort: 'high', attempt: 1, promptDigest, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
       { stage: 'judge', attempt: 2, promptDigest, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },
