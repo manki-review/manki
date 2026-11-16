@@ -24,7 +24,7 @@ body: |
   - `src/index.test.ts`: a round that only reused a stored second answer still records `models.refuterPair`.
 
   Part of #1242
-key_version: 1
+key_version: 2
 prior_round:
   head: 4cd46a4f90dea7b5f55154e4e72d4bb4db6c70ad
   findings:
@@ -68,14 +68,15 @@ prior_round:
       posted: thread
       state: open
       description: The new condition records the current `models.refuterPair` whenever a finding carries a `pairRefutation`. But `priorRefutation` reuses a stored answer without checking which model gave it, and `Refutation` has no model field. After someone changes `models.refuter_pair`, a round that only reused earlier answers says the new model checked findings it never saw.
-must_resolve: [P1, P3, P4]
-must_not_repeat: [P2, P5]
-must_catch:
-  - id: K1
+must_resolve: [P3, P4]
+must_keep_open:
+  - id: P1
     severity: warning
-    mechanism: "`computeStats` counts a refutation answer once by `JSON.stringify([title, refuter, refutation])`. `priorRefutation` reuses a stored answer when the titles only overlap through `titlesMatch`, and the round record cuts entry titles to 200 characters but keeps judge drop titles whole. So the same stored answer comes back under another title in a later round and is counted again in `refutations` and `pairRefutations`."
+    mechanism: "`computeStats` now counts a refutation answer once by `JSON.stringify([title, refuter, refutation])`, so a reused answer is still counted again when its finding's title differs between rounds. `priorRefutation` reuses a stored answer when the titles only overlap through `titlesMatch`, and the round record cuts entry titles to 200 characters but keeps judge drop titles whole. So the same stored answer comes back under another title in a later round and is counted again in `refutations` and `pairRefutations`."
     locations: ["scripts/review-stats.ts", "computeStats", "fresh"]
     fix: "2d0adff4e43eb08981c6ee433c385f1f7564562d"
+must_not_repeat: [P2, P5]
+must_catch:
   - id: K2
     severity: warning
     mechanism: "`pairRefutationLines` returns `No second refuter.` when no `pairRefutation` was recorded, before it reads `pairRefutationCalls`. When `refute_pair` calls ran and none gave an answer, the report says no second refuter ran and hides what those calls cost."
