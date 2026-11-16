@@ -2553,19 +2553,18 @@ function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: s
 }
 
 /**
- * Returns the guarded findings a PR author dismissed on their own PR as a list, with the role that allowed it, or null
- * when there are none. The role is named once when every dismissal had the same one.
+ * Returns the guarded findings a PR author dismissed on their own PR as a list, or null when there are none. The heading
+ * names the author and the role that allowed it. Every entry carries the same two, since both are the PR author's.
  */
 function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threadUrl?: string; login: string; role: AuthorClearRole }>): string | null {
   if (overrides.length === 0) return null;
   const [{ login, role }] = overrides;
-  const oneRole = overrides.every(o => o.role === role);
   const items = overrides.map(o => {
     const title = sanitizeMarkdown(o.title || '(untitled)');
     const url = safeThreadUrl(o.threadUrl);
-    return `- ${url ? `[${title}](${url})` : title}${oneRole ? '' : ` (\`${o.role}\` role)`}`;
+    return `- ${url ? `[${title}](${url})` : title}`;
   });
-  return `**Findings dismissed by the PR author** \`@${login}\`${oneRole ? ` (\`${role}\` role)` : ''}:\n\n${items.join('\n')}`;
+  return `**Findings dismissed by the PR author** \`@${login}\` (\`${role}\` role):\n\n${items.join('\n')}`;
 }
 
 function formatLabelled(label: string, text: string): string {
