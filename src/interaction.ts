@@ -541,7 +541,9 @@ export async function handleReviewCommentReply(
       return;
     }
     const reopenNote = config && live?.isResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live.id) : undefined;
-    const posts = !(outcome === 'Fixed' && head && thread?.fixedOn?.includes(head));
+    const repeats = outcome === 'Fixed' && head && thread?.fixedOn?.includes(head) ? thread : undefined;
+    // A second "Fixed." on a head is posted only when its record lifts a warning's hold that the first one left.
+    const posts = !repeats || (mayResolve && !closed && !!await warningHoldNote(octokit, bot, owner, repo, repeats, config?.author_clear_role));
     // A guarded thread the PR author resolved keeps blocking, also once Manki has reopened it and has no reopen note left to give.
     const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
     // An answer that settles such a thread for someone who may clear it clears it, as on an open thread.
@@ -555,15 +557,15 @@ export async function handleReviewCommentReply(
     const answer = leftOpen ? fixReviewNote(reply, filePath, parseFindingData(findingBody)?.evidenceFiles) : reply;
     const settled = leftOpen && !filePath ? undefined : outcome;
 
-    // A thread gets one Manki fix confirmation per head, but a writer's "Fixed." can still resolve it.
+    // A thread gets one Manki fix confirmation per head unless a second lifts a hold, but a writer's "Fixed." can still resolve it.
     let addNote: ((note: string) => Promise<unknown>) | undefined;
     if (!posts) {
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
       // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
       const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
-      // An answer that accepts nothing lifts no hold, so a warning thread hears what does.
-      const holdNote = !outcome && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
+      // An answer that accepts nothing lifts no hold, and neither does one to someone Manki resolves no thread for, so a warning thread hears what does.
+      const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
       const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.

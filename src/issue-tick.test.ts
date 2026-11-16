@@ -158,7 +158,8 @@ describe('handleIssueBoxTick', () => {
       await tick(octokit, comment(two));
       return jest.mocked(state.replyToReviewThread).mock.calls.map(call => call.slice(3));
     };
-    octokit.rest.issues.create.mockReset().mockResolvedValueOnce({ data: { number: 12 } }).mockRejectedValueOnce(new Error('refused'));
+    // The first box fails and the last one files, so only the earlier failure keeps the marker off the last reply.
+    octokit.rest.issues.create.mockReset().mockRejectedValueOnce(new Error('refused')).mockResolvedValueOnce({ data: { number: 12 } });
     expect(await markers()).toEqual([[], []]);
     octokit.rest.issues.create.mockReset().mockResolvedValue({ data: { number: 12 } });
     expect(await markers()).toEqual([[], ['<!-- manki-tracked -->']]);

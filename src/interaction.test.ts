@@ -1210,7 +1210,9 @@ describe('handleReviewCommentReply', () => {
     ['a "Fixed." already confirmed on this head', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null],
     // In a thread the PR author resolved, that "Fixed." clears it: Manki opens the thread and resolves it itself.
     ['a "Fixed." already confirmed on this head, in a thread the PR author resolved', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null, true],
-  ] as Array<[string, string, string, string, string | undefined, boolean, string | undefined | null, boolean?]>)('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer, authorResolved = false) => {
+    // On a warning thread that still holds, the earlier confirmation lifted nothing, so this one is posted with its record.
+    ['a "Fixed." already confirmed on this head, in a warning thread that still holds', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', false, undefined, false, true],
+  ] as Array<[string, string, string, string, string | undefined, boolean, string | undefined | null, boolean?, boolean?]>)('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer, authorResolved = false, holds = false) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in 7e3f21d.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: `2026-11-06T${repliedAt}Z` },
@@ -1227,8 +1229,9 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(answer) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: blocking, findingTitle: 'This', ...(pointer === null && { fixedOn: [head] }) },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: blocking, findingTitle: 'This', ...((pointer === null || holds) && { fixedOn: [head] }) },
     ]);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(holds ? 'This warning holds the approval until it is fixed.' : undefined);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(true);
@@ -1251,6 +1254,11 @@ describe('handleReviewCommentReply', () => {
       expect(body.startsWith(answer)).toBe(true);
       // A "Fixed." answer records the head it confirms, so the round on that head adds no "Fixed in" line.
       expect(body.includes(`<!-- manki-fixed:${head} -->`)).toBe(answer.startsWith('Fixed'));
+    }
+    if (holds) {
+      expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'resolves' }]);
+      expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'ADDRESSED']]);
+      jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
     }
   });
 
@@ -1317,9 +1325,11 @@ describe('handleReviewCommentReply', () => {
     ['Kept. `src/file.ts:12` still logs the token.', true],
     ['Unverified. I can\'t verify from the code how the API behaves.', true],
     ['Agreed. Handling it in the follow-up PR is fine.', false],
-  ])('says what lifts the hold of a warning thread only in an answer that accepts nothing: %s', async (answer, noted) => {
+    // An accepting answer to someone Manki resolves no thread for lifts nothing either.
+    ['Agreed. Handling it in the follow-up PR is fine.', true, 'reader'],
+  ] as Array<[string, boolean, string?]>)('says what lifts the hold of a warning thread only in an answer that lifts nothing: %s', async (answer, noted, sender = 'pr-author') => {
     const HOLD = 'This warning holds the approval until it is fixed.';
-    setContext({ comment: { id: 1, body: 'This cannot happen.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' }, pull_request: { number: 1, user: { login: 'pr-author' } }, sender: { login: 'pr-author' } });
+    setContext({ comment: { id: 1, body: 'This cannot happen.', user: { type: 'User' }, in_reply_to_id: 99, author_association: sender === 'reader' ? 'CONTRIBUTOR' : 'OWNER' }, pull_request: { number: 1, user: { login: 'pr-author' } }, sender: { login: sender } });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
     const live = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Token' };
