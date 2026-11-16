@@ -585,7 +585,7 @@ export async function handleReviewCommentReply(
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers([answer, ...checks, ...notes].join('\n\n'), BOT_MARKER, response.record(decision, statementChecks(checked)), ...(settled === 'Fixed' && head ? [fixedMarker(head)] : []), ...(noted ? [REOPENED_MARKER] : [])),
+        body: withMarkers([answer, ...checks, ...notes].join('\n\n'), BOT_MARKER, response.record(decision, statementChecks(checked)), ...(settled === 'Fixed' && head && !closed ? [fixedMarker(head)] : []), ...(noted ? [REOPENED_MARKER] : [])),
       });
       core.info('Posted reply to review comment');
     }

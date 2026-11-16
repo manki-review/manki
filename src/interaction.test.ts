@@ -821,6 +821,8 @@ describe('handleReviewCommentReply', () => {
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(outcome ? `${reply}\n\nThis pull request is merged or closed, so the thread stays as it is.` : reply);
     expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([outcome ? { outcome, thread: 'pr_closed' } : undefined]);
     expect(body).not.toContain(REOPENED_MARKER);
+    // A "Fixed." confirms no fix for a later round either, should the PR be opened again on this head.
+    expect(body).not.toContain('<!-- manki-fixed:');
     expect(state.fetchBotReviewThreads).not.toHaveBeenCalled();
     expect(state.authorResolvedNote).not.toHaveBeenCalled();
     expect(state.reopenThread).not.toHaveBeenCalled();
