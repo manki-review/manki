@@ -3203,6 +3203,9 @@ describe('runReview', () => {
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
     expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
+    // The dedup call on the places near a judged finding ran only for the sweep, and is marked so its cost counts as the sweep's.
+    expect(result.llmCalls?.filter(c => c.sweep).map(c => c.stage)).toEqual(['dedup']);
+    expect(off.result.llmCalls?.some(c => c.sweep)).toBe(false);
 
     // A judge that fails on the sweep's findings ends the round incomplete, so no blocker the sweep found is lost
     // behind an approval. The record keeps what the first judge call graded, and nothing is posted.

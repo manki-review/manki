@@ -98,7 +98,7 @@ interface SweepStats {
   /** The findings of a sweep the rounds recorded without posting, and those the judge dropped. */
   unposted: number;
   dropped: number;
-  /** The sweep calls and the judge calls on their findings. */
+  /** The sweep calls, and the dedup, judge and refuter calls on what they reported. */
   calls: LLMCall[];
 }
 
@@ -390,7 +390,8 @@ function tallySweeps({ sweeps }: ReviewStats, round: RoundContext): void {
   }
   sweeps.unposted += (round.findings?.unposted ?? []).filter(fromSweep).length;
   sweeps.dropped += (round.judge?.dropped ?? []).filter(fromSweep).length;
-  sweeps.calls.push(...(round.usage?.llmCalls ?? []).filter(c => c.stage === 'sweep' || (c.stage === 'judge' && c.agent === 'sweep')));
+  // A record from before `LLMCall.sweep` names only the sweep calls and the judge call on their findings.
+  sweeps.calls.push(...(round.usage?.llmCalls ?? []).filter(c => c.stage === 'sweep' || c.sweep || c.agent === 'sweep'));
 }
 
 /** Adds the decisions one round records to the tallies. Records from before a field existed add nothing for it. */
@@ -527,7 +528,8 @@ function pairRefutationLines({ pairRefutations, pairRefutationCalls }: ReviewSta
 
 /**
  * Returns the lines on the sweeps: how they ended, where the places they reported went, what became of their findings
- * against every other finding, and what they cost. The fix rate is keyed by the first reviewer a finding names.
+ * against every other finding, and what the sweeps and the calls on what they reported cost. The fix rate is keyed by the
+ * first reviewer a finding names.
  */
 function sweepLines({ sweeps, rounds, fixRate, costPerRound }: ReviewStats): string[] {
   if (sweeps.rounds === 0) return ['No sweeps.'];
@@ -546,8 +548,8 @@ function sweepLines({ sweeps, rounds, fixRate, costPerRound }: ReviewStats): str
     `- Rounds that started a sweep: ${share(sweeps.rounds, rounds)}`,
     `- Sweeps: ${SWEEP_STATUSES.map(status => `${sweeps.statuses[status]} ${status}`).join(', ')}`,
     `- Sweeps that reported another place: ${share(sweeps.withPlaces, sweeps.statuses.answered)} of those answered, ${sweeps.places} places in all`,
-    `- Findings of a sweep: ${posted} posted${bySeverity.length > 0 ? ` (${bySeverity.join(', ')})` : ''}, ${sweeps.unposted} recorded without posting, ${sweeps.dropped} dropped by the judge. A place that restates another finding is counted in none of the three.`,
-    `- Cost of the sweep calls and the judge calls on their findings: ${cost.text}${total > 0 ? `, ${Math.round((cost.usd / total) * 100)}% of the cost of all rounds` : ''}`,
+    `- Findings of a sweep: ${posted} posted${bySeverity.length > 0 ? ` (${bySeverity.join(', ')})` : ''}, ${sweeps.unposted} recorded without posting, ${sweeps.dropped} dropped by the judge. A place that restates another finding, one a memory suppression hid and one the judge left as an open lead count in none of the three.`,
+    `- Cost of the sweep calls and of the dedup, judge and refuter calls on what they reported: ${cost.text}${total > 0 ? `, ${Math.round((cost.usd / total) * 100)}% of the cost of all rounds` : ''}`,
     '',
     ...renderTable('raised by', fates),
   ];

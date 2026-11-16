@@ -52,6 +52,8 @@ describe('review stats', () => {
           { ...call('gpt-5', 2), agent: 'Sonnet', fallback: true },
           { ...call('gpt-5', 5), stage: 'judge', agent: 'refute_pair', costUsd: 0.12 },
           { ...call('claude-sonnet', 6), stage: 'sweep', agent: 'Sweep 1', costUsd: 0.1 }, { ...call('j', 0), stage: 'judge', agent: 'sweep', costUsd: 0.05 },
+          // The refuter and dedup calls on what a sweep reported count as its cost. A record from before the mark has only the two above.
+          { ...call('j', 4), stage: 'judge', agent: 'refute', costUsd: 0.2, sweep: true }, { ...call('d', 0), stage: 'dedup', costUsd: 0.01, sweep: true },
         ],
       },
     });
@@ -199,8 +201,8 @@ describe('review stats', () => {
       '- Rounds that started a sweep: 29% (2 of 7)',
       '- Sweeps: 2 answered, 1 too_specific, 1 failed, 1 cut',
       '- Sweeps that reported another place: 50% (1 of 2) of those answered, 2 places in all',
-      '- Findings of a sweep: 1 posted (1 warning), 1 recorded without posting, 1 dropped by the judge. A place that restates another finding is counted in none of the three.',
-      '- Cost of the sweep calls and the judge calls on their findings: 0.15 USD, 9% of the cost of all rounds',
+      '- Findings of a sweep: 1 posted (1 warning), 1 recorded without posting, 1 dropped by the judge. A place that restates another finding, one a memory suppression hid and one the judge left as an open lead count in none of the three.',
+      '- Cost of the sweep calls and of the dedup, judge and refuter calls on what they reported: 0.36 USD, 21% of the cost of all rounds',
       '',
       '| raised by | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
       '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',

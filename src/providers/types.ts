@@ -122,6 +122,8 @@ export interface LLMCall extends LLMUsage {
   effort?: SendMessageOptions['effort'];
   /** Set when a fallback model answered after a safety filter refused the stage's own model. */
   fallback?: boolean;
+  /** Set on a `dedup` or `judge` call that ran only for what the round's sweeps reported, which includes the refuters' calls on it. */
+  sweep?: true;
   /** Position among the calls of the same stage and agent, so above 1 means a retry or another pass. */
   attempt: number;
   failed?: boolean;
