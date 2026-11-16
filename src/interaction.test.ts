@@ -965,6 +965,8 @@ describe('handleReviewCommentReply', () => {
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, false, true, 'pr-author'],
     // A warning thread the PR author resolved needs no clearing, and neither does a thread someone else resolved.
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'warning', undefined, true, false, true, 'pr-author'],
+    // An answer to someone Manki resolves no thread for records that, also on a resolved thread, so it lifts no warning's hold.
+    ['Agreed. Deferring it to the follow-up is fine.', 'CONTRIBUTOR', 'reader', 'pr-author', 'warning', undefined, true, false, true, 'pr-author'],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', undefined, true, false, true, 'other'],
     // A thread that could not be opened stays resolved, with no note and no marker, so a later check can open it.
     ['Agreed. Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true, false],
@@ -1013,7 +1015,7 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
     const outcome = /^\**(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
-    const fate = noted || keepsBlocking ? 'stays_open' : reason ? 'resolves' : resolved ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
+    const fate = noted || keepsBlocking ? 'stays_open' : reason ? 'resolves' : resolved && sender !== 'reader' ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
     expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
     // Only a resolved thread is looked up, and the answer that reopens one carries the marker that stops a second reopen.
     expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
@@ -2025,7 +2027,7 @@ describe('handleReviewCommentCommand', () => {
       return jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.map((call: unknown[]) => (call[0] as { body: string }).body);
     };
     expect(await dismiss('This warning holds the approval until it is fixed.')).toEqual([
-      'The thread is resolved, but a dismissal does not lift a warning\'s hold. This warning holds the approval until it is fixed.\n\n<!-- manki -->',
+      'The thread is resolved, but a dismissal does not lift a warning\'s hold. This warning holds the approval until it is fixed. Reopen the thread before you resolve it by hand.\n\n<!-- manki -->',
     ]);
     // A warning that holds nothing after the dismissal, such as one Manki already accepted a reply on, gets no note.
     expect(await dismiss(undefined)).toEqual([]);

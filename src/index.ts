@@ -2264,10 +2264,10 @@ async function handleIssueTick(): Promise<void> {
     return;
   }
   if (!comment || !await handleIssueBoxTick(octokit, bot, owner, repo, pr.number, comment as Parameters<typeof handleIssueBoxTick>[5], sender.login)) return;
-  // Manki's own resolve starts no approval check, so it runs here, as it does after a person resolves a thread.
+  // Neither Manki's own resolve nor its reply starts an approval check, so it runs here, as it does after a person resolves a thread.
   const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(pr.base?.ref, 'base branch'));
   if (held || !config.auto_approve) return;
-  if (await checkAndAutoApprove(octokit, bot, owner, repo, pr.number, config)) core.info(`PR #${pr.number} auto-approved after a ticked issue box resolved its thread`);
+  if (await checkAndAutoApprove(octokit, bot, owner, repo, pr.number, config)) core.info(`PR #${pr.number} auto-approved after a ticked issue box`);
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {

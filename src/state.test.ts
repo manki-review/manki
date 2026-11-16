@@ -328,8 +328,8 @@ describe('fetchBotReviewThreads', () => {
     await expect(unreadWith([resolvedOne, preExisting])).rejects.toThrow('Not every round record could be read');
     expect(await unreadWith([preExisting])).toEqual([]);
 
-    // A round not posted yet that puts a warning into a thread holds it again, whatever cleared it before: a resolve
-    // by a person with the role, or an answer of Manki's that accepted a reply.
+    // A round not posted yet that puts a warning into a thread takes back an answer of Manki's that accepted a reply.
+    // A resolve by a person with the role stands, since a round puts a finding only into a thread it read as open or as resolved by Manki.
     const cleared = () => makeGraphqlFetchResponse([
       makeGraphqlFetchThreadNode({ id: 'r', body: formatFindingComment(finding('warning', 'Resolved by hand'), TEST_LINKS), isResolved: true, resolvedBy: 'maria' }),
       makeGraphqlFetchThreadNode({ id: 'a', body: formatFindingComment(finding('warning', 'Answered'), TEST_LINKS), replies: [{ body: answerBody('Agreed. Fine.', { outcome: 'Agreed', thread: 'resolves' }), author: { login: 'manki-review[bot]' } }] }),
@@ -340,7 +340,7 @@ describe('fetchBotReviewThreads', () => {
     const heldWith = async (round?: RoundContext) =>
       (await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(cleared()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', 'write', round)).map(t => t.id);
     expect(await heldWith()).toEqual([]);
-    expect(await heldWith(raises('warning'))).toEqual(['r', 'a']);
+    expect(await heldWith(raises('warning'))).toEqual(['a']);
     // A note that goes into the thread raises no warning.
     expect(await heldWith(raises('note'))).toEqual([]);
   });
@@ -1299,6 +1299,8 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread Manki could not read when it answered', [warning('t1', { replies: [reply('author'), accepted('Agreed', 'lookup_failed')] })]],
       ['a warning thread Manki could not find when it answered', [warning('t1', { replies: [reply('author'), accepted('Agreed', 'not_found')] })]],
       ['a warning thread Manki answered on a merged or closed PR', [warning('t1', { replies: [reply('author'), accepted('Agreed', 'pr_closed')] })]],
+      // Manki resolves no thread for a stranger or for someone whose permission it could not read, so its answer to one lifts nothing.
+      ['a warning thread whose reply by someone without write access Manki accepted', [warning('t1', { replies: [reply('bob'), accepted('Agreed', 'no_permission')] })]],
       ['a security warning thread whose reply by the PR author Manki accepted', [warning('t1', { replies: [reply('author'), accepted()] }, ['security'])]],
       ['a security warning thread the PR author resolved without the role', [warning('t1', { isResolved: true, resolvedBy: 'author' }, ['security'])]],
       ['a second warning thread nobody answered', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('author'), accepted()] }), warning('t2')]],
@@ -1342,7 +1344,6 @@ describe('checkAndAutoApprove', () => {
       // Only a later round that raises the warning again takes an accepted answer back, never a later answer.
       ['answered "Agreed." by Manki before a later "Kept."', [warning('t1', { replies: [reply('author'), accepted(), reply('bob'), kept] })]],
       ['answered "Agreed." by Manki after the PR author resolved it by hand', [warning('t1', { isResolved: true, resolvedBy: 'author', replies: [reply('author'), accepted('Agreed', 'already_resolved')] })]],
-      ['answered "Agreed." by Manki for someone it resolves no thread for', [warning('t1', { replies: [reply('bob'), accepted('Agreed', 'no_permission')] })]],
       ['tracked with its issue box', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply(manki, tracked)] })]],
       ['resolved by a person with the role `author_clear_role` allows', [warning('t1', { isResolved: true, resolvedBy: 'maria' })], 'maintain'],
       ['resolved by a PR author with the role', [warning('t1', { isResolved: true, resolvedBy: 'author', replies: [reply('author'), kept] })], 'admin'],

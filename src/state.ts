@@ -84,8 +84,6 @@ interface ReviewThread {
    * counts only when it came after the latest round that made the thread a warning or put a finding into it.
    */
   holdLifted?: 'answer' | 'fixed';
-  /** Set on a warning thread that the round not posted yet puts a finding into, so no earlier resolve clears it. */
-  raisedByPending?: true;
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
@@ -110,8 +108,8 @@ const THREAD_COMMENTS_LIMIT = 100;
 /** Marks Manki's reply that the thread's finding is filed as an issue, which lifts the hold of a warning thread. */
 const TRACKED_MARKER = '<!-- manki-tracked -->';
 
-/** What a reply record says happened to the thread when the answer that accepts a reply settles it. Any other value leaves a warning's hold in place. */
-const SETTLING_FATES: ReadonlySet<string> = new Set(['resolves', 'already_resolved', 'no_permission']);
+/** What a reply record says happened to the thread when Manki accepted a reply of the PR author or of someone with write access. Any other value leaves a warning's hold in place. */
+const SETTLING_FATES: ReadonlySet<string> = new Set(['resolves', 'already_resolved']);
 
 /**
  * Whether `body`, one of Manki's own replies in a thread, settles a warning: it carries `TRACKED_MARKER`, or its reply
@@ -246,7 +244,6 @@ async function fetchBotReviewThreads(
       // The record of a fix counts only from the rounds after the latest one that put a finding into the thread.
       const fixed = isWarning && byManki(thread) && judgeAddressedThreadIds(rounds.filter(r => r.meta.round > (raisedIn ?? 0)), true).has(thread.id);
       const holdLifted = answered ? 'answer' as const : fixed ? 'fixed' as const : undefined;
-      const raisedByPending = isWarning && !!pending && raisedIn === pending.meta.round;
       const findingTitle = data?.title?.trim() || (markerSlug?.replace(/-/g, ' ') ?? 'Unknown');
       const commit = thread.comments.nodes[0]?.originalCommit?.oid;
       const place = thread.path && markerSlug
@@ -272,7 +269,6 @@ async function fetchBotReviewThreads(
         ...(mayCarryBlocker && { mayCarryBlocker }),
         ...(isWarning && { isWarning: true as const }),
         ...(holdLifted && { holdLifted }),
-        ...(raisedByPending && { raisedByPending: true as const }),
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
         findingTitle,
@@ -414,16 +410,16 @@ function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLog
 
 /**
  * Returns the warning threads that hold an approval. A thread stops holding only when that is certain: `holdLifted`
- * gives a reason, or a person whom GitHub confirms in `clearRole` resolved it and `raisedByPending` is not set. A reply
- * Manki did not accept, an unanswered reply and a resolve by anyone else lift nothing. A security thread clears only as
- * a blocking one does, by `settledBy`.
+ * gives a reason, or a person whom GitHub confirms in `clearRole` resolved it. A reply Manki did not accept, an
+ * unanswered reply and a resolve by anyone else lift nothing. A security thread clears only as a blocking one does,
+ * by `settledBy`.
  */
 async function heldWarnings(
   octokit: Octokit, owner: string, repo: string, threads: ReviewThread[], bot: BotIdentity,
   prAuthorLogin: string | undefined, prAuthorRole: AuthorClearRole | undefined, clearRole: AuthorClearRole | undefined,
 ): Promise<ReviewThread[]> {
   const resolvedWithRole = async (t: ReviewThread): Promise<boolean> =>
-    t.isResolved && !t.raisedByPending && !!t.resolvedByLogin && !isBotLogin(bot, t.resolvedByLogin) && !!await authorClearRole(octokit, owner, repo, t.resolvedByLogin, clearRole);
+    t.isResolved && !!t.resolvedByLogin && !isBotLogin(bot, t.resolvedByLogin) && !!await authorClearRole(octokit, owner, repo, t.resolvedByLogin, clearRole);
   const held: ReviewThread[] = [];
   for (const t of threads.filter(t => t.isWarning)) {
     const cleared = t.isSecurity ? !!settledBy(t, bot, prAuthorLogin, prAuthorRole) : !!t.holdLifted || await resolvedWithRole(t);

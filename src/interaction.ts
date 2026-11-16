@@ -108,7 +108,7 @@ function replyDecision(
 ): ReplyDecision | undefined {
   if (!outcome) return undefined;
   if (typeof thread === 'string') return { outcome, thread };
-  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : thread.isResolved && !held ? 'already_resolved' : !mayResolve ? 'no_permission' : 'resolves';
+  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : !mayResolve ? 'no_permission' : thread.isResolved && !held ? 'already_resolved' : 'resolves';
   return { outcome, thread: fate };
 }
 
@@ -854,7 +854,7 @@ async function resolveDismissedThread(
       // A dismissal lifts no warning hold, so the thread is read again as the resolve left it.
       const now = thread.isWarning ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch(() => undefined) : undefined;
       const holds = now && await warningHoldNote(octokit, bot, owner, repo, now, clearRole);
-      return { resolved: true, ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}` }) };
+      return { resolved: true, ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}${clearRole ? ' Reopen the thread before you resolve it by hand.' : ''}` }) };
     }
     // Without an override the PR author may not clear the thread. Anyone else's dismissal failed: an override was not recorded, or the thread was not reopened.
     return { resolved: false, note: authorOverride || mayClear ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false, clearRole, thread.isResolved) };

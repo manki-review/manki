@@ -68,16 +68,17 @@ describe('handleIssueBoxTick', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it.each([
-    ['a warning thread is resolved', { isBlocking: false }, [['PRRT_1', 'WONT_FIX']]],
-    ['a blocker thread stays open', { isBlocking: true }, []],
-    ['a security thread below a blocker stays open', { isBlocking: false, isSecurity: true }, []],
-  ])('files the finding once, links it in place of the box and replies, and %s', async (_case, grade, resolved) => {
+    ['a warning thread is resolved', { isBlocking: false }, [['PRRT_1', 'WONT_FIX']], true],
+    ['a warning thread that is already resolved stays as it is', { isBlocking: false, isResolved: true }, [], true],
+    ['a blocker thread stays open', { isBlocking: true }, [], false],
+    ['a security thread below a blocker stays open', { isBlocking: false, isSecurity: true }, [], false],
+  ])('files the finding once, links it in place of the box and replies, and %s', async (_case, grade, resolved, checkDue) => {
     const octokit = makeOctokit();
     const body = ticked(finding());
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, ...grade, findingTitle: 'x' }]);
 
-    // Only a resolve can lift a hold, so the caller runs the approval check only then.
-    expect(await tick(octokit, comment(body))).toBe(resolved.length > 0);
+    // The reply lifts a warning's hold on a resolved thread too, so the caller runs the approval check for both.
+    expect(await tick(octokit, comment(body))).toBe(checkDue);
 
     expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.issues.listForRepo, { owner: 'o', repo: 'r', creator: 'manki-review[bot]', state: 'open', per_page: 100 });
     // The issue holds the finding as posted, without the box or Manki's hidden markers.
