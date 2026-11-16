@@ -190,6 +190,10 @@ export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 export const FOLLOW_UP_TAG = 'follow-up' as const;
 /** Names the verdict reader as the reviewer of the blockers it reports. */
 export const VERDICT_READER_NAME = 'Verdict reader';
+/** Returns the reviewer name of a round's sweep number `n`, which the findings of that sweep carry. */
+export const sweepName = (n: number): string => `Sweep ${n}`;
+/** Whether `reviewer` is the name of a sweep. */
+export const isSweepName = (reviewer: string): boolean => /^Sweep \d+$/.test(reviewer);
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
 

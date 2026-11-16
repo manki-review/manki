@@ -30,9 +30,16 @@ describe('review stats', () => {
             ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker,
           },
           // The thread this finding opens belongs to its own review, so the finding counts as posted.
-          { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor' }), origin: 'new' },
+          { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor' }), origin: 'new', reviewers: ['Sweep 1'] },
         ],
       },
+      // The first sweep reported two places, of which the round posted one. The fourth was past the round's cap.
+      sweeps: [
+        { reviewer: 'Sweep 1', source: 'src/a.ts:10', severity: 'blocker', status: 'answered', class: 'c', findings: 2 },
+        { reviewer: 'Sweep 2', source: 'src/a.ts:20', severity: 'warning', status: 'answered', class: 'c', findings: 0 },
+        { reviewer: 'Sweep 3', source: 'src/a.ts:30', severity: 'warning', status: 'too_specific', class: 'c' },
+        { reviewer: 'Sweep 4', source: 'src/a.ts:40', severity: 'warning', status: 'cut' },
+      ],
       reviewers: {
         agents: ['Sonnet', 'Opus'],
         agentMetrics: [{ name: 'Sonnet', model: 'claude-sonnet', findingsRaw: 3, keptOnly: 1, keptShared: 1 }, { name: 'Opus', model: 'claude-opus', findingsRaw: 1, keptOnly: 0, keptShared: 1 }],
@@ -44,6 +51,7 @@ describe('review stats', () => {
           // A fallback that answered for the Sonnet finder on another model still counts for that finder.
           { ...call('gpt-5', 2), agent: 'Sonnet', fallback: true },
           { ...call('gpt-5', 5), stage: 'judge', agent: 'refute_pair', costUsd: 0.12 },
+          { ...call('claude-sonnet', 6), stage: 'sweep', agent: 'Sweep 1', costUsd: 0.1 }, { ...call('j', 0), stage: 'judge', agent: 'sweep', costUsd: 0.05 },
         ],
       },
     });
@@ -55,7 +63,7 @@ describe('review stats', () => {
         dropped: [{
           title: 't', file: 'a', line: 1, reviewers: [],
           refutation: unsettled('first'), pairRefutation: { outcome: 'unsettled', defect: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
-        }],
+        }, { title: 'u', file: 'a', line: 2, reviewers: ['Sweep 1'] }],
       },
       // The blocker's answers are reused from round 1, so they count once. A lead left unsettled counts, a posted one does not.
       findings: {
@@ -70,8 +78,9 @@ describe('review stats', () => {
           // Neither is one that matches a thread the first review opened, a few lines away.
           { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor', lineStart: 12 }), origin: 'reviewed' },
         ],
-        unposted: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker }],
+        unposted: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker, reviewers: ['Sweep 1'] }],
       },
+      sweeps: [{ reviewer: 'Sweep 1', source: 'src/a.ts:10', severity: 'blocker', status: 'failed' }],
       leads: [
         { ...lead, outcome: 'unsettled', refutation: unsettled('lead first'), pairRefutation: unsettled('lead second') },
         { ...lead, outcome: 'confirmed', posted: true, refutation: confirmedBlocker },
@@ -134,7 +143,7 @@ describe('review stats', () => {
 
     const unreviewed = prRecords('o/r', 3, { reviews: [{ id: 200, body: 'A person\'s review.', user: person }], threadComments: [] });
     const fixRate = (pr: number, posted: number) => JSON.stringify({
-      pr, counts: [{ severity: 'warning', specialist: 'Sonnet', posted, fixed: 1, dismissed: 0, untouched: posted - 1 }],
+      pr, counts: [{ severity: 'warning', specialist: 'Sonnet', posted, fixed: 1, dismissed: 0, untouched: posted - 1 }, { severity: 'warning', specialist: 'Sweep 1', posted: 1, fixed: 0, dismissed: 1, untouched: 0 }],
       calibration: [{ severity: 'warning', checkStatus: 'proven', posted, fixed: 1, dismissed: 0, untouched: posted - 1 }],
     });
     // A fix-rate line of a PR outside the report does not count.
@@ -175,7 +184,7 @@ describe('review stats', () => {
       '| note | 2 | 0.29 | 2 | 1.00 | 0% (0 of 1) |',
       '| all | 8 | 1.14 | 3 | 1.50 | 75% (3 of 4) |',
     ].join('\n'));
-    expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 2 | 1 | 0 | 1 | 50% | 0% |\n\n| checkStatus | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| proven | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
+    expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 3 | 1 | 1 | 1 | 33% | 33% |\n\n| checkStatus | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| proven | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
     // The split and the answer the first refuter left unsettled both changed the outcome. The lead's two answers agreed.
     expect(report).toContain([
@@ -184,6 +193,19 @@ describe('review stats', () => {
       '- Agreed with the first refuter: 33% (1 of 3)',
       '- Split, one confirmed and one disproved: 33% (1 of 3)',
       '- Changed the outcome the first refuter alone gave: 67% (2 of 3)',
+    ].join('\n'));
+    expect(report).toContain([
+      '## Sweeps', '',
+      '- Rounds that started a sweep: 29% (2 of 7)',
+      '- Sweeps: 2 answered, 1 too_specific, 1 failed, 1 cut',
+      '- Sweeps that reported another place: 50% (1 of 2) of those answered, 2 places in all',
+      '- Findings of a sweep: 1 posted (1 warning), 1 recorded without posting, 1 dropped by the judge. A place that restates another finding is counted in none of the three.',
+      '- Cost of the sweep calls and the judge calls on their findings: 0.15 USD, 9% of the cost of all rounds',
+      '',
+      '| raised by | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+      '| any other source | 2 | 1 | 0 | 1 | 50% | 0% |',
+      '| a sweep | 1 | 0 | 1 | 0 | 0% | 100% |',
     ].join('\n'));
     expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
     expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | 1 | mean 10.0, median 10.0, max 10.0 | 100% (1 of 1) |');
@@ -350,6 +372,7 @@ describe('review stats', () => {
     expect(report).toContain('### Findings recorded without posting (per reason and severity)\n\nNone recorded.');
     expect(report).toContain('No refutations.');
     expect(report).toContain('No second refuter.');
+    expect(report).toContain('## Sweeps\n\nNo sweeps.');
     // Calls that gave no answer still show what they cost.
     const failed = makeRoundContext(1, { usage: { llmCalls: [{ ...call('gpt-5', 2), stage: 'judge', agent: 'refute_pair', costUsd: 0.05, failed: true }] } });
     const silent = computeStats([prRecords('o/r', 4, { reviews: [review(300, failed)], threadComments: [] })]);

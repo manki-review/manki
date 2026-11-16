@@ -429,6 +429,7 @@ To see whether a change to the review helps, run `npm run review-stats -- --repo
 - per finder model, the raw findings, the kept findings only that model raised and those it raised with another finder, and the tool steps per call;
 - the verdict reader's blockers, and the refutation outcomes per severity, counting the findings a disproof dropped, unposted ones and leads left unsettled, and an answer a later round reused only once;
 - for the second refuter on `models.refuter_pair`: what it cost, with the number of calls that had no known price, how often it agreed with the first refuter, how often the two split with one confirming and one disproving, and how often it changed the outcome the first refuter alone gave, with a count per pair of outcomes;
+- for the [sweeps](#sweeping-for-a-defect-class) of `review.sweep`: the rounds that started one, how the sweeps ended, the places they reported, how many of those the rounds posted, recorded without posting or the judge dropped, what the sweep calls and the judge calls on their findings cost, and with `--fix-rate` the fix rate of the findings a sweep raised beside that of every other finding;
 - the cost per PR and per round, and the share of follow-up rounds whose inter-round diff was cut or unknown;
 - how often each finder model was told to wrap up, the files changed since the last round, the fix claims, the memory loaded and the slices per round;
 - per related repository, the rounds it was configured in and the rounds that read it, the reads per such round, and its fetch failures and skipped rounds;

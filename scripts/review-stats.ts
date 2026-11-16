@@ -18,8 +18,8 @@ import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
 import { findingPlace, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
-import { outcomeOf, SEVERITY_ORDER } from '../src/types';
-import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
+import { isSweepName, outcomeOf, SEVERITY_ORDER } from '../src/types';
+import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, RoundSweep, TokenServiceCall } from '../src/types';
 import { aggregate, renderTable } from './fix-rate-report';
 import { githubToken, historyLines } from './review-history';
 
@@ -83,6 +83,25 @@ interface SeverityStats {
 
 const noFindings = (): SeverityStats => ({ posted: 0, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 });
 
+const SWEEP_STATUSES: readonly RoundSweep['status'][] = ['answered', 'too_specific', 'failed', 'cut'];
+
+/** What the sweeps of the rounds did. A round with `review.sweep` off has none. */
+interface SweepStats {
+  /** Rounds that started at least one sweep. */
+  rounds: number;
+  statuses: Record<RoundSweep['status'], number>;
+  /** Sweeps that reported another place, and the places they reported, before dedup and the judge. */
+  withPlaces: number;
+  places: number;
+  /** The findings of a sweep the rounds posted, per severity, counted as `SeverityStats.posted` counts. */
+  posted: Map<string, number>;
+  /** The findings of a sweep the rounds recorded without posting, and those the judge dropped. */
+  unposted: number;
+  dropped: number;
+  /** The sweep calls and the judge calls on their findings. */
+  calls: LLMCall[];
+}
+
 /** The decision tallies the report lists, each as a table of how often each value occurred. */
 const DECISIONS = [
   'Prompt versions (rounds per stage and digest)',
@@ -133,6 +152,7 @@ export interface ReviewStats {
   pairRefutations: Map<string, number>;
   /** The second refuter's calls. */
   pairRefutationCalls: LLMCall[];
+  sweeps: SweepStats;
   costPerPr: number[];
   costPerRound: number[];
   followUpRounds: number;
@@ -247,7 +267,9 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
     prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, approvedRounds: 0, roundsAfterApproval: [], severities: {},
     fixRate: aggregate(fixRateLines, new Set(prs.map(pr => pr.number))),
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), readerRounds: 0, readerBlockers: 0,
-    refutations: new Map(), pairRefutations: new Map(), pairRefutationCalls: [], costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
+    refutations: new Map(), pairRefutations: new Map(), pairRefutationCalls: [],
+    sweeps: { rounds: 0, statuses: { answered: 0, too_specific: 0, failed: 0, cut: 0 }, withPlaces: 0, places: 0, posted: new Map(), unposted: 0, dropped: 0, calls: [] },
+    costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
     decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
     relatedRepos: new Map(), limits: new Map(),
   };
@@ -283,6 +305,7 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         if (carried || entry.relisted) continue;
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
+        if (fromSweep(entry)) increment(stats.sweeps.posted, entry.severity);
         if (approved) severity.inApprovedRounds++;
         // A finding with the origin `earlier` restates one an earlier round listed.
         if (round.meta.round > 1 && !round.findings?.originsWithoutPrior && entry.origin && entry.origin !== 'earlier') {
@@ -350,8 +373,29 @@ function tokenCallKey(call: TokenServiceCall): string {
   return call.status !== undefined && call.status < 300 ? `${call.endpoint} ok` : `${call.endpoint} failed: ${call.status ?? call.error ?? 'unknown'}`;
 }
 
+function fromSweep(finding: { reviewers?: string[] }): boolean {
+  return !!finding.reviewers?.some(isSweepName);
+}
+
+/** Adds what one round's sweeps did, except the findings of theirs it posted, which `computeStats` counts with the round's other findings. */
+function tallySweeps({ sweeps }: ReviewStats, round: RoundContext): void {
+  if (!round.sweeps?.length) return;
+  sweeps.rounds++;
+  for (const sweep of round.sweeps) {
+    sweeps.statuses[sweep.status]++;
+    if (sweep.findings) {
+      sweeps.withPlaces++;
+      sweeps.places += sweep.findings;
+    }
+  }
+  sweeps.unposted += (round.findings?.unposted ?? []).filter(fromSweep).length;
+  sweeps.dropped += (round.judge?.dropped ?? []).filter(fromSweep).length;
+  sweeps.calls.push(...(round.usage?.llmCalls ?? []).filter(c => c.stage === 'sweep' || (c.stage === 'judge' && c.agent === 'sweep')));
+}
+
 /** Adds the decisions one round records to the tallies. Records from before a field existed add nothing for it. */
 function tallyRound(stats: ReviewStats, round: RoundContext): void {
+  tallySweeps(stats, round);
   for (const [stage, digests] of Object.entries(round.meta.promptVersions ?? {})) {
     for (const digest of digests) tally(stats, 'Prompt versions (rounds per stage and digest)', `${stage} ${digest}`);
   }
@@ -453,6 +497,12 @@ function share(part: number, whole: number): string {
   return whole > 0 ? `${Math.round((part / whole) * 100)}% (${part} of ${whole})` : '-';
 }
 
+/** Returns the priced cost of `calls` in USD, and the same as text that also counts the calls without a known price. */
+function pricedCost(calls: LLMCall[]): { usd: number; text: string } {
+  const { estimatedCostUsd, unpricedCalls } = summarizeCalls(calls);
+  return { usd: estimatedCostUsd, text: `${estimatedCostUsd.toFixed(2)} USD${unpricedCalls > 0 ? ` plus ${unpricedCalls} unpriced ${unpricedCalls === 1 ? 'call' : 'calls'}` : ''}` };
+}
+
 /**
  * Returns the lines on the second refuter: how often it agreed with the first, split from it, and changed the outcome
  * the first alone would give, which it does on a split or when it settles what the first left unsettled or never answered.
@@ -463,9 +513,8 @@ function pairRefutationLines({ pairRefutations, pairRefutationCalls }: ReviewSta
   if (checked === 0 && pairRefutationCalls.length === 0) return ['No second refuter.'];
   const count = (test: (p: { first: string; second: string }) => boolean) => pairs.filter(test).reduce((sum, p) => sum + p.n, 0);
   const split = (p: { first: string; second: string }) => [p.first, p.second].sort().join() === 'confirmed,disproved';
-  const { estimatedCostUsd, unpricedCalls } = summarizeCalls(pairRefutationCalls);
   return [
-    `- Findings checked: ${checked}, for ${estimatedCostUsd.toFixed(2)} USD${unpricedCalls > 0 ? ` plus ${unpricedCalls} unpriced ${unpricedCalls === 1 ? 'call' : 'calls'}` : ''}`,
+    `- Findings checked: ${checked}, for ${pricedCost(pairRefutationCalls).text}`,
     `- Agreed with the first refuter: ${share(count(p => p.first === p.second), checked)}`,
     `- Split, one confirmed and one disproved: ${share(count(split), checked)}`,
     `- Changed the outcome the first refuter alone gave: ${share(count(p => split(p) || (p.second !== 'unsettled' && ['none', 'unsettled'].includes(p.first))), checked)}`,
@@ -473,6 +522,34 @@ function pairRefutationLines({ pairRefutations, pairRefutationCalls }: ReviewSta
     '| first / second | count |',
     '| --- | ---: |',
     ...pairs.sort((a, b) => b.n - a.n).map(p => `| ${p.key} | ${p.n} |`),
+  ];
+}
+
+/**
+ * Returns the lines on the sweeps: how they ended, where the places they reported went, what became of their findings
+ * against every other finding, and what they cost. The fix rate is keyed by the first reviewer a finding names.
+ */
+function sweepLines({ sweeps, rounds, fixRate, costPerRound }: ReviewStats): string[] {
+  if (sweeps.rounds === 0) return ['No sweeps.'];
+  const posted = [...sweeps.posted.values()].reduce((sum, n) => sum + n, 0);
+  const bySeverity = [...SEVERITIES, ...[...sweeps.posted.keys()].filter(s => !SEVERITIES.includes(s))].flatMap(s => sweeps.posted.has(s) ? [`${sweeps.posted.get(s)} ${s}`] : []);
+  const fates = new Map<string, { posted: number; fixed: number; dismissed: number; untouched: number }>();
+  for (const [specialist, totals] of fixRate.get('specialist') ?? []) {
+    const row = isSweepName(specialist) ? 'a sweep' : 'any other source';
+    const sum = fates.get(row) ?? { posted: 0, fixed: 0, dismissed: 0, untouched: 0 };
+    for (const key of ['posted', 'fixed', 'dismissed', 'untouched'] as const) sum[key] += totals[key];
+    fates.set(row, sum);
+  }
+  const cost = pricedCost(sweeps.calls);
+  const total = costPerRound.reduce((sum, n) => sum + n, 0);
+  return [
+    `- Rounds that started a sweep: ${share(sweeps.rounds, rounds)}`,
+    `- Sweeps: ${SWEEP_STATUSES.map(status => `${sweeps.statuses[status]} ${status}`).join(', ')}`,
+    `- Sweeps that reported another place: ${share(sweeps.withPlaces, sweeps.statuses.answered)} of those answered, ${sweeps.places} places in all`,
+    `- Findings of a sweep: ${posted} posted${bySeverity.length > 0 ? ` (${bySeverity.join(', ')})` : ''}, ${sweeps.unposted} recorded without posting, ${sweeps.dropped} dropped by the judge. A place that restates another finding is counted in none of the three.`,
+    `- Cost of the sweep calls and the judge calls on their findings: ${cost.text}${total > 0 ? `, ${Math.round((cost.usd / total) * 100)}% of the cost of all rounds` : ''}`,
+    '',
+    ...renderTable('raised by', fates),
   ];
 }
 
@@ -537,6 +614,10 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     '## Second refuter',
     '',
     ...pairRefutationLines(stats),
+    '',
+    '## Sweeps',
+    '',
+    ...sweepLines(stats),
     '',
     '## Cost and inter-round diffs',
     '',
