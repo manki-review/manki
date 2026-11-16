@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { BotIdentity, buildLineLink, findingLocation, linked, reviewedCommit, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutDetachedNote } from './recap';
-import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
+import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread, TRACKED_MARKER } from './state';
 import { ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -87,7 +87,9 @@ function filedLine(id: string, filed: { number: number; existing: boolean } | un
 /**
  * Files each finding whose issue box `editor` ticked in Manki's `comment`, or links the issue Manki already filed for
  * it. The box line becomes a link to the issue, the thread gets a reply, and a thread that does not block is resolved.
- * The caller has checked that `editor` has write access. Returns whether it resolved the thread.
+ * Once every ticked box is filed, the reply carries `TRACKED_MARKER`.
+ * The caller has checked that `editor` has write access. Returns whether an approval check is due: every ticked box
+ * is filed on a thread that does not block. The reply lifts a warning's hold on a thread that is already resolved too.
  */
 export async function handleIssueBoxTick(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, comment: TickedComment, editor: string,
@@ -125,11 +127,13 @@ export async function handleIssueBoxTick(
     const { data: current } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: comment.id });
     await octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: comment.id, body: replaceIssueBox(current.body, id, filedLine(id, filed, editor)) });
     // Opening with "Agreed." records the deferral, so a later round does not raise the finding in a new thread.
-    if (filed && thread) await replyToReviewThread(octokit, thread.id, `Agreed. Filed as #${filed.number} for later work.`);
+    // `TRACKED_MARKER` lifts a warning's hold, so only the reply that files the last ticked box carries it.
+    const tracked = allFiled && id === ids.at(-1) ? [TRACKED_MARKER] : [];
+    if (filed && thread) await replyToReviewThread(octokit, thread.id, `Agreed. Filed as #${filed.number} for later work.`, ...tracked);
   }
   // A deferred finding no longer needs this PR, but only someone other than the author clears a blocker or a security finding.
-  if (!thread || !allFiled || isGuarded(thread) || thread.isResolved) return false;
-  await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
+  if (!thread || !allFiled || isGuarded(thread)) return false;
+  if (!thread.isResolved) await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
   return true;
 }
 

@@ -86,6 +86,7 @@ jest.mock('./state', () => ({
   reopenThread: jest.fn().mockResolvedValue(true),
   resolveReviewThread: jest.fn().mockResolvedValue(undefined),
   unclearedThreads: jest.requireActual('./state').unclearedThreads,
+  warningHoldNote: jest.fn().mockResolvedValue(undefined),
 }));
 
 describe('parseCommand', () => {
@@ -964,6 +965,8 @@ describe('handleReviewCommentReply', () => {
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, false, true, 'pr-author'],
     // A warning thread the PR author resolved needs no clearing, and neither does a thread someone else resolved.
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'warning', undefined, true, false, true, 'pr-author'],
+    // An answer to someone Manki resolves no thread for records that, also on a resolved thread, so it lifts no warning's hold.
+    ['Agreed. Deferring it to the follow-up is fine.', 'CONTRIBUTOR', 'reader', 'pr-author', 'warning', undefined, true, false, true, 'pr-author'],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', undefined, true, false, true, 'other'],
     // A thread that could not be opened stays resolved, with no note and no marker, so a later check can open it.
     ['Agreed. Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true, false],
@@ -1012,7 +1015,7 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
     const outcome = /^\**(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
-    const fate = noted || keepsBlocking ? 'stays_open' : reason ? 'resolves' : resolved ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
+    const fate = noted || keepsBlocking ? 'stays_open' : reason ? 'resolves' : resolved && sender !== 'reader' ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
     expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
     // Only a resolved thread is looked up, and the answer that reopens one carries the marker that stops a second reopen.
     expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
@@ -1207,7 +1210,9 @@ describe('handleReviewCommentReply', () => {
     ['a "Fixed." already confirmed on this head', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null],
     // In a thread the PR author resolved, that "Fixed." clears it: Manki opens the thread and resolves it itself.
     ['a "Fixed." already confirmed on this head, in a thread the PR author resolved', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null, true],
-  ] as Array<[string, string, string, string, string | undefined, boolean, string | undefined | null, boolean?]>)('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer, authorResolved = false) => {
+    // On a warning thread that still holds, the earlier confirmation lifted nothing, so this one is posted with its record.
+    ['a "Fixed." already confirmed on this head, in a warning thread that still holds', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', false, undefined, false, true],
+  ] as Array<[string, string, string, string, string | undefined, boolean, string | undefined | null, boolean?, boolean?]>)('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer, authorResolved = false, holds = false) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in 7e3f21d.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: `2026-11-06T${repliedAt}Z` },
@@ -1224,8 +1229,9 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(answer) });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: blocking, findingTitle: 'This', ...(pointer === null && { fixedOn: [head] }) },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: authorResolved, isBlocking: blocking, findingTitle: 'This', ...((pointer === null || holds) && { fixedOn: [head] }) },
     ]);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(holds ? 'This warning holds the approval until it is fixed.' : undefined);
     jest.mocked(state.authorResolvedNote).mockResolvedValue(authorResolved ? 'Reopened. The PR author cannot resolve it.' : undefined);
     jest.mocked(state.resolveReviewThread).mockClear();
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(true);
@@ -1248,6 +1254,11 @@ describe('handleReviewCommentReply', () => {
       expect(body.startsWith(answer)).toBe(true);
       // A "Fixed." answer records the head it confirms, so the round on that head adds no "Fixed in" line.
       expect(body.includes(`<!-- manki-fixed:${head} -->`)).toBe(answer.startsWith('Fixed'));
+    }
+    if (holds) {
+      expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'resolves' }]);
+      expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'ADDRESSED']]);
+      jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
     }
   });
 
@@ -1308,6 +1319,32 @@ describe('handleReviewCommentReply', () => {
     expect(body.startsWith(kept ? 'Kept. ' : 'Unverified. ')).toBe(true);
     expect(body.includes('I could not point to lines that show the problem still happens, so a maintainer should decide and resolve this thread.\n\n')).toBe(!kept);
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Kept. `src/file.ts:12` still logs the token.', true],
+    ['Unverified. I can\'t verify from the code how the API behaves.', true],
+    ['Agreed. Handling it in the follow-up PR is fine.', false],
+    // An accepting answer to someone Manki resolves no thread for lifts nothing either.
+    ['Agreed. Handling it in the follow-up PR is fine.', true, 'reader'],
+  ] as Array<[string, boolean, string?]>)('says what lifts the hold of a warning thread only in an answer that lifts nothing: %s', async (answer, noted, sender = 'pr-author') => {
+    const HOLD = 'This warning holds the approval until it is fixed.';
+    setContext({ comment: { id: 1, body: 'This cannot happen.', user: { type: 'User' }, in_reply_to_id: 99, author_association: sender === 'reader' ? 'CONTRIBUTOR' : 'OWNER' }, pull_request: { number: 1, user: { login: 'pr-author' } }, sender: { login: sender } });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    const live = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Token' };
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([live]);
+    jest.mocked(state.warningHoldNote).mockClear().mockResolvedValue(HOLD);
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured(answer) });
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, DEFAULT_CONFIG);
+
+    // The note is asked for the thread as the answer leaves it, with the role of the base branch's config.
+    expect(jest.mocked(state.warningHoldNote).mock.calls).toEqual(noted ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', live, 'maintain']] : []);
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    expect(body.split('\n\n<!-- manki -->')[0].endsWith(`\n\n${HOLD}`)).toBe(noted);
+    jest.mocked(state.warningHoldNote).mockResolvedValue(undefined);
   });
 
   it('checks the point with 15 tool steps on the PR head, fetched only for a Manki thread and a client with tools', async () => {
@@ -1976,6 +2013,34 @@ describe('handleReviewCommentCommand', () => {
     );
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.reactToReviewComment).mock.calls).toEqual(resolves ? [[octokit, 'test-owner', 'test-repo', 62, '+1']] : []);
+  });
+
+  it('says that a dismissed warning thread still holds the approval, read as the resolve left it', async () => {
+    setContext({
+      comment: { id: 62, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'NONE' },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: 'pr-author' },
+    });
+    const open = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Token' };
+    const resolved = { ...open, isResolved: true, resolvedByLogin: 'manki-review[bot]' };
+    const dismiss = async (note: string | undefined) => {
+      const octokit = createMockOctokit();
+      octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+      jest.mocked(state.fetchBotReviewThreads).mockResolvedValueOnce([open]).mockResolvedValueOnce([resolved]);
+      jest.mocked(state.warningHoldNote).mockClear().mockResolvedValueOnce(note);
+      jest.mocked(state.resolveReviewThread).mockClear();
+      jest.mocked(ghUtils.reactToReviewComment).mockClear();
+      await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 62, parseCommand('@manki dismiss'), undefined, 'maintain');
+      expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'WONT_FIX']]);
+      expect(jest.mocked(state.warningHoldNote).mock.calls).toEqual([[octokit, TEST_BOT, 'test-owner', 'test-repo', resolved, 'maintain']]);
+      expect(jest.mocked(ghUtils.reactToReviewComment).mock.calls).toEqual([[octokit, 'test-owner', 'test-repo', 62, '+1']]);
+      return jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.map((call: unknown[]) => (call[0] as { body: string }).body);
+    };
+    expect(await dismiss('This warning holds the approval until it is fixed.')).toEqual([
+      'The thread is resolved, but a dismissal does not lift a warning\'s hold. This warning holds the approval until it is fixed. Reopen the thread before you resolve it by hand.\n\n<!-- manki -->',
+    ]);
+    // A warning that holds nothing after the dismissal, such as one Manki already accepted a reply on, gets no note.
+    expect(await dismiss(undefined)).toEqual([]);
   });
 
   // The approval check counts a resolved thread as cleared only by who resolved it, so Manki resolves a thread the PR author resolved itself.

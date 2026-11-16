@@ -395,7 +395,8 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled', instructions: repoContext,
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
     // An earlier warning thread holds as in a pull request round, unless this round found it fixed or graded it lower.
-    // No reply is known here, so an open one holds, and so does a resolved security one that no round found fixed.
+    // No reply is known here, so an open one holds. A resolve counts as one by a person with `author_clear_role`, so of
+    // the resolved ones only a security one that no round found fixed holds.
     const evaluationOf = (threadId?: string) => result.threadEvaluations?.find(e => e.threadId === threadId);
     const preExisting = new Set(input.earlier?.findings.filter(f => f.preExisting).map(f => f.id));
     const threadHolds = (followUp?.previousFindings ?? []).filter(p => !preExisting.has(p.threadId ?? '')).some(p => {

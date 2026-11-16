@@ -1438,7 +1438,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     it.each([
       ['a conflict', () => jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValue({ reason: 'conflict', baseRef: 'main' }), 'Approval held: the PR conflicts with its base'],
       ['a draft', () => jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValue({ reason: 'draft' }), 'Approval held: the PR is a draft'],
-      ['a warning thread', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValue([warning]), 'Approval held: warnings wait for a fix or an answer'],
+      ['a warning thread', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValue([warning]), 'Approval held: warnings wait for a fix or an accepted answer'],
     ])('reports an approval that %s holds as held, and posts no notice', async (_label, hold, title) => {
       seed('Already approved on this commit', 'APPROVED', true);
       hold();
@@ -2238,8 +2238,8 @@ describe('runFullReview orchestration', () => {
       ['draft', 'Approval held: the PR is a draft'],
       ['config', 'Approval held: a config file did not load'],
       ['unread', 'Approval held: some changed files were not read'],
-      ['warnings', 'Approval held: warnings wait for a fix or an answer'],
-      ['unread warnings', 'Approval held: warnings wait for a fix or an answer'],
+      ['warnings', 'Approval held: warnings wait for a fix or an accepted answer'],
+      ['unread warnings', 'Approval held: warnings wait for a fix or an accepted answer'],
       ['config with warnings', 'Approval held: a config file did not load'],
       ['refused', 'Approval held: GitHub refused the approval'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {

@@ -156,12 +156,6 @@ function withoutCode(body: string): string {
 /** A command to Manki as `parseCommand` reads it, in lower-cased text without code. */
 const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/;
 
-/**
- * A reply that addresses Manki: `@manki` or `@manki-review` as a word, or `/manki` opening a line. A path or a link that
- * holds `/manki`, such as `src/manki.ts`, is no command.
- */
-const BOT_COMMAND_PATTERN = /(?:^|[^\w@/.-])@manki(?:-review)?(?![\w-])|^[ \t]*\/manki(?=\s|$)/m;
-
 /** A reply that opens with a `dismiss` command. */
 const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
 
@@ -745,16 +739,6 @@ interface ThreadFacts extends OverrideCandidate {
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
 function personReplies<T extends { author?: { login: string; __typename?: string } | null }>(bot: BotIdentity, comments: T[]): T[] {
   return comments.slice(1).filter(c => !isBotLogin(bot, c.author?.login) && c.author?.__typename !== 'Bot');
-}
-
-/**
- * Whether a person's reply answers a warning: it has text, does not end in a question mark, and outside code neither
- * addresses Manki nor holds a command that `parseCommand` would run.
- */
-function answersWarning(body: string): boolean {
-  const text = body.trim();
-  const lower = withoutCode(text).toLowerCase();
-  return !!text && !BOT_COMMAND_PATTERN.test(lower) && !BOT_PREFIX_PATTERN.test(lower) && !text.endsWith('?');
 }
 
 /** The latest reply in a thread that neither Manki nor another bot wrote. */
@@ -1430,4 +1414,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { answersWarning, BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, isLogin, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, personReplies, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

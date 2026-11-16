@@ -11,7 +11,7 @@ import { parsePRDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, checkReply, statementList, statementRecords, statementSummary } from './reply-check';
@@ -108,7 +108,7 @@ function replyDecision(
 ): ReplyDecision | undefined {
   if (!outcome) return undefined;
   if (typeof thread === 'string') return { outcome, thread };
-  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : thread.isResolved && !held ? 'already_resolved' : !mayResolve ? 'no_permission' : 'resolves';
+  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : !mayResolve ? 'no_permission' : thread.isResolved && !held ? 'already_resolved' : 'resolves';
   return { outcome, thread: fate };
 }
 
@@ -541,7 +541,9 @@ export async function handleReviewCommentReply(
       return;
     }
     const reopenNote = config && live?.isResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live.id) : undefined;
-    const posts = !(outcome === 'Fixed' && head && thread?.fixedOn?.includes(head));
+    const repeats = outcome === 'Fixed' && head && thread?.fixedOn?.includes(head) ? thread : undefined;
+    // A second "Fixed." on a head is posted only when its record lifts a warning's hold that the first one left.
+    const posts = !repeats || (mayResolve && !closed && !!await warningHoldNote(octokit, bot, owner, repo, repeats, config?.author_clear_role));
     // A guarded thread the PR author resolved keeps blocking, also once Manki has reopened it and has no reopen note left to give.
     const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
     // An answer that settles such a thread for someone who may clear it clears it, as on an open thread.
@@ -555,14 +557,16 @@ export async function handleReviewCommentReply(
     const answer = leftOpen ? fixReviewNote(reply, filePath, parseFindingData(findingBody)?.evidenceFiles) : reply;
     const settled = leftOpen && !filePath ? undefined : outcome;
 
-    // A thread gets one Manki fix confirmation per head, but a writer's "Fixed." can still resolve it.
+    // A thread gets one Manki fix confirmation per head unless a second lifts a hold, but a writer's "Fixed." can still resolve it.
     let addNote: ((note: string) => Promise<unknown>) | undefined;
     if (!posts) {
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
       // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
       const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : [])];
+      // An answer that accepts nothing lifts no hold, and neither does one to someone Manki resolves no thread for, so a warning thread hears what does.
+      const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
@@ -826,8 +830,8 @@ async function handleDismiss(
 /**
  * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
  * On a blocking or security thread the PR author may do so too when their role is at least `clearRole`, the repo's `author_clear_role`.
- * Returns whether the thread is resolved, with a note when it is not, or `undefined` outside a Manki finding's thread
- * and on a merged or closed PR.
+ * Returns whether the thread is resolved, with a note when it is not or when it is a warning that still holds the
+ * approval, or `undefined` outside a Manki finding's thread and on a merged or closed PR.
  */
 async function resolveDismissedThread(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined,
@@ -848,7 +852,12 @@ async function resolveDismissedThread(
     const role = isGuarded(thread) && !mayClear && isPrAuthor && senderLogin ? await authorClearRole(octokit, owner, repo, senderLogin, clearRole) : undefined;
     const authorOverride = role && senderLogin ? { login: senderLogin, role } : undefined;
     const held = await resolveIsHeld(octokit, bot, owner, repo, thread, prAuthorLogin, clearRole);
-    if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, authorOverride, held)) return { resolved: true };
+    if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, authorOverride, held)) {
+      // A dismissal lifts no warning hold, so the thread is read again as the resolve left it.
+      const now = thread.isWarning ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch(() => undefined) : undefined;
+      const holds = now && await warningHoldNote(octokit, bot, owner, repo, now, clearRole);
+      return { resolved: true, ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}${clearRole ? ' Reopen the thread before you resolve it by hand.' : ''}` }) };
+    }
     // Without an override the PR author may not clear the thread. Anyone else's dismissal failed: an override was not recorded, or the thread was not reopened.
     return { resolved: false, note: authorOverride || mayClear ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false, clearRole, thread.isResolved) };
   } catch (error) {
@@ -1222,7 +1231,7 @@ export async function handleReviewCommentCommand(
     case 'dismiss': {
       const dismissal = await handleDismiss(octokit, bot, owner, repo, prNumber, command.args, memory);
       const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, clearRole);
-      // A resolved thread needs no note, and outside a Manki finding's thread only a named finding can be dismissed.
+      // A resolved thread needs no note unless it still holds the approval, and outside a Manki finding's thread only a named finding can be dismissed.
       // Once the thread is resolved, text that named no posted finding was a remark, not a failed dismiss.
       const threadNote = thread ? thread.note : dismissal ? undefined : DISMISS_NO_FINDING;
       const dismissalNote = thread?.resolved && !dismissal?.named ? undefined : dismissal?.note;

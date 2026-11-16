@@ -77,7 +77,7 @@ const HELD_TITLES: Record<Exclude<ApprovalHeld, false>, string> = {
   draft: 'Approval held: the PR is a draft',
   config: 'Approval held: a config file did not load',
   unread: 'Approval held: some changed files were not read',
-  warnings: 'Approval held: warnings wait for a fix or an answer',
+  warnings: 'Approval held: warnings wait for a fix or an accepted answer',
   refused: 'Approval held: GitHub refused the approval',
 };
 
