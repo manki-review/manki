@@ -252,9 +252,10 @@ export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
  * Retries while GitHub has not computed whether the PR conflicts with its base. When the PR can't be read,
- * `draftWhenUnread` decides whether it counts as a draft.
+ * `draftWhenUnread` decides whether it counts as a draft. With `strict` it throws instead when the PR can't be read or
+ * GitHub still has not computed the conflict, so the caller never takes an unknown state for no hold.
  */
-export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number, draftWhenUnread = false): Promise<ApprovalHold | undefined> {
+export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number, draftWhenUnread = false, strict = false): Promise<ApprovalHold | undefined> {
   for (let attempt = 1; attempt <= MERGEABLE_ATTEMPTS; attempt++) {
     if (attempt > 1) await new Promise(resolve => setTimeout(resolve, MERGEABLE_RETRY_MS));
     try {
@@ -263,10 +264,12 @@ export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: s
       if (data.mergeable === false || data.mergeable_state === 'dirty') return { reason: 'conflict', baseRef: data.base.ref };
       if (data.mergeable !== null) return undefined;
     } catch (error) {
+      if (strict) throw error;
       core.warning(`Mergeable lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
       return draftWhenUnread ? { reason: 'draft' } : undefined;
     }
   }
+  if (strict) throw new Error(`GitHub has not computed whether PR #${prNumber} conflicts with its base`);
   core.info(`GitHub has not computed whether PR #${prNumber} conflicts with its base, proceeding`);
   return undefined;
 }
@@ -3812,6 +3815,9 @@ type StandingVerdict = {
   commitSha: string;
 };
 
+/** The verdict of a posted review, by its state on GitHub. A comment and a dismissed review have none. */
+const REVIEW_STATE_VERDICTS: Partial<Record<string, StandingVerdict['verdict']>> = { APPROVED: 'APPROVE', CHANGES_REQUESTED: 'REQUEST_CHANGES' };
+
 /**
  * Returns the verdict of the latest bot review and the commit it reviewed. An
  * approval that a push dismissed still counts as APPROVE. Returns `undefined`
@@ -3823,8 +3829,8 @@ async function fetchStandingVerdict(
   const latest = (await fetchBotReviews(octokit, bot, owner, repo, prNumber, true)).at(-1);
   const commitSha = latest?.commitId;
   if (!latest || !commitSha) return undefined;
-  if (latest.state === 'APPROVED') return { verdict: 'APPROVE', commitSha };
-  if (latest.state === 'CHANGES_REQUESTED') return { verdict: 'REQUEST_CHANGES', commitSha };
+  const verdict = REVIEW_STATE_VERDICTS[latest.state];
+  if (verdict) return { verdict, commitSha };
   if (latest.state !== 'DISMISSED') return undefined;
   // The reviews API reports only `DISMISSED`. The timeline keeps the state
   // before the dismissal and, for a push, the commit that caused it.
@@ -3845,5 +3851,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

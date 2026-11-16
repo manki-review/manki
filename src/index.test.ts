@@ -244,6 +244,9 @@ jest.mock('./github', () => ({
   hasWriteAccess: jest.fn().mockResolvedValue(true),
   isApprovedOnCommit: jest.fn().mockResolvedValue(false),
   hasBotReviewOnCommit: jest.fn().mockResolvedValue(false),
+  findBotReviewOnCommit: jest.fn().mockResolvedValue(undefined),
+  fetchApprovalHold: jest.fn().mockResolvedValue(undefined),
+  REVIEW_STATE_VERDICTS: jest.requireActual('./github').REVIEW_STATE_VERDICTS,
   fetchStandingVerdict: jest.fn().mockResolvedValue(undefined),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
@@ -312,7 +315,7 @@ import * as interaction from './interaction';
 import * as ghUtils from './github';
 import { PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
 import * as diffModule from './diff';
-import { offerQueuedCheck } from './check-run';
+import { offerQueuedCheck, reportCheck } from './check-run';
 import * as configModule from './config';
 import * as reviewModule from './review';
 import { routingDigest } from './routing';
@@ -1371,6 +1374,135 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
     );
     expect(skipCalls).toHaveLength(0);
+  });
+
+  describe('with a waiting check on the reviewed head', () => {
+    const head = prPayload.pull_request.head.sha;
+    const found = (state: string) => ({ id: 5, state, commitId: head, htmlUrl: '', body: '' });
+    const pullRequest = async (action = 'opened') => {
+      setContext({ eventName: 'pull_request', payload: { ...prPayload, action } });
+      await handlePullRequest();
+    };
+    const exits = {
+      'Already approved on this commit': () => pullRequest(),
+      'Bot already reviewed commit': () => pullRequest(),
+      'a run queued behind the review': () => runFullReview('test-owner', 'test-repo', 1, head, 'main', { title: 'Test PR', body: '', baseBranch: 'main' }),
+      'a review command': async () => {
+        mockPullsGet.mockResolvedValueOnce({ data: { head: { sha: head }, base: { ref: 'main' }, title: 't', body: '', user: { login: 'a' } } });
+        setContext({ eventName: 'issue_comment', payload: commentPayload });
+        await handleCommentTrigger();
+      },
+    };
+    const warning = { id: 'T1', isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Retry never stops' };
+
+    /** Seeds the review `state` found on the head, with `newest` saying whether it is Manki's newest review, and a waiting check on `queuedOn`. */
+    function seed(exit: keyof typeof exits, state: string | undefined, newest: boolean, queuedOn = head): void {
+      jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValue(newest);
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(exit !== 'Already approved on this commit');
+      jest.mocked(ghUtils.findBotReviewOnCommit).mockResolvedValue(state ? found(state) : undefined);
+      offerQueuedCheck(mockOctokitInstance as never, { id: 77, headSha: queuedOn });
+    }
+
+    afterEach(() => {
+      jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValue(false);
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(false);
+      jest.mocked(ghUtils.findBotReviewOnCommit).mockResolvedValue(undefined);
+      jest.mocked(ghUtils.readConfigFile).mockResolvedValue(null);
+      jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValue(undefined);
+      jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValue([]);
+      jest.mocked(stateModule.checkAndAutoApprove).mockResolvedValue(false);
+      // A check no exit took is offered on a head no other test reviews.
+      offerQueuedCheck(mockOctokitInstance as never, { id: 0, headSha: 'no-head' });
+    });
+
+    it.each([
+      ['Already approved on this commit', 'APPROVED', true, 'success', 'Approved'],
+      ['Bot already reviewed commit', 'CHANGES_REQUESTED', false, 'failure', 'Changes requested'],
+      ['a run queued behind the review', 'CHANGES_REQUESTED', false, 'failure', 'Changes requested'],
+      ['a run queued behind the review', 'APPROVED', true, 'success', 'Approved'],
+      ['a review command', 'CHANGES_REQUESTED', false, 'failure', 'Changes requested'],
+      ['a review command', 'APPROVED', true, 'success', 'Approved'],
+    ] as const)('%s completes it with the verdict of the %s review found', async (exit, state, newest, conclusion, title) => {
+      seed(exit, state, newest);
+
+      await exits[exit]();
+
+      expect(jest.mocked(ghUtils.findBotReviewOnCommit)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, head);
+      expect(mockChecksUpdate.mock.calls).toEqual([[expect.objectContaining({
+        check_run_id: 77, status: 'completed', conclusion, output: { title, summary: 'This commit already has a review.' },
+      })]]);
+      expect(mockChecksCreate).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a conflict', () => jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValue({ reason: 'conflict', baseRef: 'main' }), 'Approval held: the PR conflicts with its base'],
+      ['a draft', () => jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValue({ reason: 'draft' }), 'Approval held: the PR is a draft'],
+      ['a warning thread', () => jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValue([warning]), 'Approval held: warnings wait for a fix or an answer'],
+    ])('reports an approval that %s holds as held, and posts no notice', async (_label, hold, title) => {
+      seed('Already approved on this commit', 'APPROVED', true);
+      hold();
+
+      await exits['Already approved on this commit']();
+
+      // The lookup is strict, so a draft or conflict state that cannot be read never counts as no hold.
+      expect(jest.mocked(ghUtils.fetchApprovalHold)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 1, false, true);
+      expect(jest.mocked(stateModule.holdApproval)).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+      expect(mockChecksUpdate.mock.calls).toEqual([[expect.objectContaining({ check_run_id: 77, conclusion: 'neutral', output: { title, summary: 'This commit already has a review.' } })]]);
+    });
+
+    it.each([
+      ['the review found is a comment', 'Bot already reviewed commit', 'COMMENTED', false, () => {}],
+      ['the reviews cannot be read again', 'Already approved on this commit', undefined, true, () => {}],
+      ['a newer review of another commit overrides the approval found', 'Bot already reviewed commit', 'APPROVED', false, () => {}],
+      ['the base branch config cannot be read', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited'))],
+      ['the config of the run did not load', 'a run queued behind the review', 'APPROVED', true, () => jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited'))],
+      ['the draft or conflict state of the PR is unknown', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(ghUtils.fetchApprovalHold).mockRejectedValue(new Error('GitHub has not computed whether PR #1 conflicts with its base'))],
+      ['the warning threads cannot be read', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValue(new Error('rate limited'))],
+    ] as const)('leaves the check as it is when %s', async (_label, exit, state, newest, fail) => {
+      seed(exit, state, newest);
+      fail();
+
+      await exits[exit]();
+
+      expect(jest.mocked(ghUtils.findBotReviewOnCommit)).toHaveBeenCalled();
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
+      expect(mockChecksCreate).not.toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    });
+
+    it.each(Object.keys(exits) as Array<keyof typeof exits>)('%s reports nothing and reads nothing when the waiting check sits on another head', async exit => {
+      seed(exit, 'CHANGES_REQUESTED', exit === 'Already approved on this commit', 'def4567890123');
+
+      await exits[exit]();
+
+      expect(jest.mocked(ghUtils.findBotReviewOnCommit)).not.toHaveBeenCalled();
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
+      expect(mockChecksCreate).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['reports the review found after an approval check that reported nothing', 'declines', 'failure'],
+      ['reports the review found after an approval check that failed', 'fails', 'failure'],
+      ['reports nothing more after an approval check that completed the waiting check', 'approves', 'success'],
+    ])('on a PR marked ready, %s', async (_label, check, conclusion) => {
+      seed('Bot already reviewed commit', 'CHANGES_REQUESTED', false);
+      jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...configModule.loadConfig(undefined), auto_approve: true });
+      jest.mocked(stateModule.checkAndAutoApprove).mockImplementation(async octokit => {
+        expect(mockChecksUpdate).not.toHaveBeenCalled();
+        if (check === 'fails') throw new Error('Server Error');
+        if (check === 'approves') await reportCheck(octokit, 'test-owner', 'test-repo', head, { conclusion: 'success', title: 'Approved', summary: 'All blocking threads are resolved.' });
+        return check === 'approves';
+      });
+
+      const run = pullRequest('ready_for_review');
+      await (check === 'fails' ? expect(run).rejects.toThrow('Server Error') : run);
+
+      expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledTimes(1);
+      expect(mockChecksUpdate.mock.calls).toEqual([[expect.objectContaining({ check_run_id: 77, conclusion })]]);
+      expect(jest.mocked(ghUtils.findBotReviewOnCommit).mock.calls.length).toBe(check === 'approves' ? 0 : 1);
+    });
   });
 
   it('proceeds when there is no prior bot review on the head SHA (default mock returns false)', async () => {

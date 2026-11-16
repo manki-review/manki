@@ -10,7 +10,7 @@ import { BENCH_COMMAND, runBenchCommand } from './bench';
 import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
-import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
+import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, hasQueuedCheck, outcomeReport, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
@@ -76,6 +76,9 @@ import {
   titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
+  findBotReviewOnCommit,
+  fetchApprovalHold,
+  REVIEW_STATE_VERDICTS,
   fetchPRComments,
   fetchReviewThreadNodes,
   isFailedProgress,
@@ -103,6 +106,7 @@ const MAX_FIXING_COMMITS = 20;
 
 /** The outcome a standing review reports on a no-op push. A COMMENT never stands, so it runs a full round instead. */
 const STANDING_OUTCOMES: Record<StandingVerdict['verdict'], RoundOutcome> = { APPROVE: 'READY', REQUEST_CHANGES: 'ADDRESS_FIRST' };
+const ALREADY_REVIEWED_TEXT = 'This commit already has a review.';
 
 /**
  * Build `RoundMeta.trigger` from the current GitHub Actions event. The event
@@ -451,8 +455,48 @@ async function showAlreadyReviewed(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string, settings: PrState, draft = false,
 ): Promise<void> {
   await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
-    head: commitSha, draft, status: 'up to date', text: 'This commit already has a review.', lastReviewed: commitSha,
+    head: commitSha, draft, status: 'up to date', text: ALREADY_REVIEWED_TEXT, lastReviewed: commitSha,
   });
+}
+
+/**
+ * Answers the waiting `Manki` check of a run that ends because `target.commitSha` already has a review. It reports the
+ * verdict of that review and never a better one. An approval counts only while it is Manki's newest review, and it is
+ * reported as held while a draft, a conflict or a warning thread holds it. It posts nothing on the PR. It reports nothing
+ * when the run has no waiting check on the commit, when the review is a comment, or when the PR, the config or the
+ * warning threads cannot be read. `loaded` is the base branch's config when the run has read it, and `held` says that it
+ * did not load.
+ */
+async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | undefined, loaded?: { config: ReviewConfig; held: boolean }): Promise<void> {
+  const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
+  // Without a waiting check the head keeps the check of its review, which says more than this report would.
+  if (!hasQueuedCheck(octokit, commitSha)) return;
+  const shortSha = commitSha.slice(0, 7);
+  const review = await findBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha);
+  const verdict = review && REVIEW_STATE_VERDICTS[review.state];
+  if (!verdict) {
+    core.info(`No review of ${shortSha} gives a verdict a check can report, leaving its check as it is`);
+    return;
+  }
+  let held: ApprovalHeld = false;
+  if (verdict === 'APPROVE') {
+    try {
+      // A newer review of another commit overrides this approval, and without the config nothing says what holds it.
+      const base = await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha) ? loaded ?? await loadEventConfig(octokit, owner, repo, baseRef) : undefined;
+      if (!base || base.held) {
+        core.info(`Cannot tell whether the approval of ${shortSha} stands, leaving its check as it is`);
+        return;
+      }
+      // The strict lookup throws on a PR whose draft or conflict state is unknown, so an unknown state is never taken for no hold.
+      const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, false, true);
+      held = hold ? hold.reason : (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, base.config.author_clear_role)).length > 0 && 'warnings';
+    } catch (error) {
+      core.warning(`Could not read what holds the approval of ${shortSha}, leaving its check as it is: ${error instanceof Error ? error.message : error}`);
+      return;
+    }
+  }
+  core.info(`Reporting the ${verdict} of the review of ${shortSha} as its check`);
+  await reportCheck(octokit, owner, repo, commitSha, outcomeReport(STANDING_OUTCOMES[verdict], ALREADY_REVIEWED_TEXT, held));
 }
 
 /** Returns the branch the event names as `what`. Throws when it names none, so a config is never read from a guessed branch. */
@@ -486,16 +530,23 @@ async function handlePullRequest(): Promise<void> {
   const settings = await loadSettings(owner, repo, prNumber);
   const { forced, fullReview, deeper } = reviewModes(settings);
   const { octokit, bot } = await getAuth();
+  const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef: pr.base.ref };
   if (!forced && await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info('Already approved on this commit — skipping review');
+    await reportReviewedCheck(target, pr.user?.login);
     return;
   }
 
   if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info(`Bot already reviewed commit ${commitSha.slice(0, 7)} — skipping serialized sibling run`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, commitSha, settings, draft);
-    // The review of a draft held its approval, so a PR marked ready gets the approval check on that review.
-    if (github.context.payload.action === 'ready_for_review') await handleReviewStateCheck();
+    try {
+      // The review of a draft held its approval, so a PR marked ready gets the approval check on that review.
+      if (github.context.payload.action === 'ready_for_review') await handleReviewStateCheck();
+    } finally {
+      // The approval check answers a waiting check when it approves or holds. Otherwise the review found does, also after a failed approval check.
+      await reportReviewedCheck(target, pr.user?.login);
+    }
     return;
   }
 
@@ -585,6 +636,7 @@ async function handleCommentTrigger(settingsTick = false): Promise<void> {
   if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
     core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, pr.head.sha, settings, draft);
+    await reportReviewedCheck({ octokit, bot, owner, repo, prNumber, commitSha: pr.head.sha, baseRef: pr.base.ref }, pr.user?.login);
     return;
   }
 
@@ -849,6 +901,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   if (!forceReview && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, commitSha, settings, draft);
+    await reportReviewedCheck(target, prAuthorLogin, { config, held: configBroken });
     return true;
   }
 
