@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.5.1] - 2026-11-16
+
+Manki 7.5.1 makes finders read more of the code around a change, asks whether a fix reaches the root cause of its problem, and lets the judge see a blocker's fix on a large PR. It also reviews a rebased PR that an earlier version skipped, removes settings that did nothing and fixes a set of small problems.
+
+### Breaking changes and migration
+
+- The `config_path` action input is gone. Manki reads `.manki.yml` at the root of the base branch only, as the token service always did, and GitHub warns in the run log when a workflow still passes the input ([#1665](https://github.com/manki-review/manki/pull/1665)).
+- The deprecated settings `nit_handling`, `review_level`, `review_thresholds`, `stats` and `planner.paired` are gone. A config that still sets one gets the usual unknown key warning ([#1662](https://github.com/manki-review/manki/pull/1662)).
+- A Manki review counts for a commit only when its own text names that commit in full. A PR whose newest Manki review names none gets one more review on its next push. That is a review from before 7.1.0, or an approval that 7.5.0 or earlier posted again after a rebase ([#1694](https://github.com/manki-review/manki/pull/1694)).
+- `manki review` without a base now stops when `origin/HEAD` is not set, instead of guessing `main`. Name the base, as in `manki review main`, or run `git remote set-head origin --auto` ([#1659](https://github.com/manki-review/manki/pull/1659)).
+
+### Review loop and verdicts
+
+- A round with no finding, no open thread and no carried warning skips the judge call. The verdict reader still reads the whole diff and can still request changes, and the round record says the judge was skipped ([#1661](https://github.com/manki-review/manki/pull/1661)).
+- The judge also sees the code a finding cites outside the diff in its evidence lines, not only in its proof lines, so such a finding is no longer left out as unproven every round ([#1658](https://github.com/manki-review/manki/pull/1658)).
+- The next round's judge sees a premise a check confirmed as confirmed, also when the check left open or disproved the finding's consequence ([#1660](https://github.com/manki-review/manki/pull/1660)).
+- An approval held for a config that does not load or for unread files now also says when the PR is a draft or conflicts with its base ([#1664](https://github.com/manki-review/manki/pull/1664)).
+
+### How finders search
+
+- On a follow-up round, finders get the diff since the last reviewed head, with the files of open threads first, and are asked what the fix commits themselves break. They still review the whole PR as a first round would ([#1677](https://github.com/manki-review/manki/pull/1677)).
+- Once a finder finds a defect, it checks which other inputs reach the same lines and which other places in the change make the same mistake, and lists every case in that one finding, with a fix that covers each ([#1669](https://github.com/manki-review/manki/pull/1669)).
+- Manki also reads the contributing guide from `.github/CONTRIBUTING.md` and `docs/CONTRIBUTING.md`, taking the first one it finds in GitHub's order, so its rules are checked in repositories that keep it there ([#1657](https://github.com/manki-review/manki/pull/1657)).
+- Finders ask of every fix whether it reaches the root cause of the problem or only works around its symptom. A finding about a workaround cites the code that causes the problem and says what change there would replace the PR's fix, or names the input or path that still fails ([#1691](https://github.com/manki-review/manki/pull/1691)).
+- A finding's fix advice goes to the root cause of the problem. It no longer advises repeating the PR's own handling on another path when one change at the root cause covers every path ([#1687](https://github.com/manki-review/manki/pull/1687), [#1690](https://github.com/manki-review/manki/pull/1690)).
+- The lists of uses outside the diff and of lines in related repositories point finders at more files: the best line of each file comes before a second line of any file, and generated code, mocks and vendored code come last. A finder that can open files is told to open the listed files before it answers. The judge and the refuter get the lists as before ([#1683](https://github.com/manki-review/manki/pull/1683)).
+- A finder that opened none of the listed files outside the changed files is asked once more, and its second answer replaces the first. The round record marks it with `askedAgain` ([#1682](https://github.com/manki-review/manki/pull/1682)).
+
+### Earlier threads
+
+- On a large PR, the judge reads the files of open threads before other changed files and gets the diff since the last round with those files first, so a correct blocker fix is no longer left open because the judge never saw it. When a fix may still fall past the cut, the judge is told so and does not call the thread fixed ([#1655](https://github.com/manki-review/manki/pull/1655)).
+- A warning listed only in an earlier review body leaves "Earlier warnings, code unchanged" once the judge, which now gets it with the diff since the last round, finds it fixed. Before, a fix a few lines away kept it listed every round ([#1658](https://github.com/manki-review/manki/pull/1658)).
+- A reply in a thread about the PR description is checked against the PR's current title and description. Before, it got "Unverified", because the description is not part of the checked-out code ([#1681](https://github.com/manki-review/manki/pull/1681)).
+
+### Review format
+
+- Style suggestions come after every other suggestion, so a style point is posted only when fewer other suggestions than `review.notes` exist ([#1663](https://github.com/manki-review/manki/pull/1663)).
+
+### Reliability
+
+- After a force push that only rebases a PR, GitHub can list an earlier Manki approval under the new head. Manki took the new head for approved, started nothing, and its check ended as "Review did not run". Manki now reads the reviewed commit from the review's own text, so such a push keeps the earlier verdict with a passing check, and a rebase that changes the PR gets a review ([#1694](https://github.com/manki-review/manki/pull/1694)).
+- Logged model output keeps text like `std::fmt::Display`. Only a workflow command where it starts a line is neutralized, which the OpenAI client now does the same way as the others ([#1654](https://github.com/manki-review/manki/pull/1654)).
+- Issue commands such as `remember` read `.manki.yml` from the repository's default branch, not from a branch named `main` ([#1659](https://github.com/manki-review/manki/pull/1659)).
+- A stored refuter check is no longer reused when text moves between two cited files. Every stored fingerprint changes, so the first round after the upgrade checks each earlier finding once more ([#1671](https://github.com/manki-review/manki/pull/1671)).
+- When the claim lines are skipped, the round record names the step that was still running and the limit that ended the wait ([#1666](https://github.com/manki-review/manki/pull/1666)).
+- `manki review --record` writes `approval` like a pull request round ([#1673](https://github.com/manki-review/manki/pull/1673)). Local and benchmark follow-up rounds count a push to a file a finding cited, as a pull request round does, with the new `evidence_files` field of a follow-up case ([#1670](https://github.com/manki-review/manki/pull/1670)).
+
+### Docs
+
+- `docs/how-reviews-work.md` says that a PR which only deletes binaries is "Not reviewed" and waits for a person, and that a deleted LFS pointer or submodule is read like a deleted text file ([#1674](https://github.com/manki-review/manki/pull/1674)).
+- `CONTRIBUTING.md` says which grading changes need which replay ([#1667](https://github.com/manki-review/manki/pull/1667)).
+
+### Internal
+
+- Tests that start real `git` processes get a 30 s limit, and the live `mixed-worth` fixture accepts a note or a warning for its docstring finding ([#1672](https://github.com/manki-review/manki/pull/1672)).
+- The title parser no longer reads the `: fix, explain or track` label, which no released version posted ([#1656](https://github.com/manki-review/manki/pull/1656)).
+- A benchmark follow-up run stores how each earlier open thread ended in `followUp.threads` of its report: the final status, whether `confirmFixes` kept it open, and the grades of the findings posted under it ([#1700](https://github.com/manki-review/manki/pull/1700)).
+
 ## [7.5.0] - 2026-11-14
 
 Manki 7.5 makes reviews quieter. A finding is now a blocker, a warning or a suggestion, a warning that nothing proves is held back, apart from a few kinds such as security warnings, and a review posts at most three of the model's suggestions by default. In return, an open warning holds the approval until it is fixed, explained, resolved or tracked. Manki also checks what the PR text and a thread reply claim against the code instead of taking it on trust, and every stage with repository tools can read the related repositories.
