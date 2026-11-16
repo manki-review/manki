@@ -2749,6 +2749,12 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
   return rank(judged) > rank(carried) && !touched ? carried : judged;
 }
 
+/** The reason `confirmFixes` gives a thread it keeps open because a blocker of the round names it again. */
+export const NAMED_AGAIN_REASON = 'This round names the same blocker again.';
+
+/** How the reason ends that `confirmFixes` gives a guarded thread it keeps open because the push changed none of its files. */
+export const UNCONFIRMED_FIX_ENDING = ', so the fix is not confirmed.';
+
 /**
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
  * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A guarded thread counts as
@@ -2763,10 +2769,10 @@ function confirmFixes(
 ): ThreadEvaluation[] | undefined {
   const confirm = (e: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
     if (e.status !== 'addressed') return e;
-    if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: 'This round names the same blocker again.' };
+    if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: NAMED_AGAIN_REASON };
     if (thread && guardedThreadStaysOpen(thread, pushChangedFiles)) {
       const why = thread.file ? `The push did not change ${[thread.file, ...(thread.evidenceFiles ?? [])].map(f => `\`${f}\``).join(' or ')}` : 'This thread is not tied to a file, which only a person can clear';
-      return { ...e, status: 'uncertain', reason: `${why}, so the fix is not confirmed.` };
+      return { ...e, status: 'uncertain', reason: `${why}${UNCONFIRMED_FIX_ENDING}` };
     }
     return e;
   };
