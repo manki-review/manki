@@ -120,7 +120,9 @@ Reasoning models (o-series and GPT-5 onwards, such as `gpt-5.6-terra` or `gpt-6.
 
 #### Codex CLI OAuth Token (subscription, experimental)
 
-> **Status: experimental for CI.** The Codex CLI keeps subscription auth in `~/.codex/auth.json` and refreshes it during a run once the tokens are about 8 days old. A refresh rotates the tokens and writes them back to `auth.json` on the runner. Manki deletes the `auth.json` it wrote when the run ends, also on a persistent self-hosted runner, and leaves alone one that was there before the run. The secret still holds the old tokens, so later runs fail to authenticate until you bootstrap again and re-upload the secret. Concurrent jobs, or a local Codex that refreshes the same login, invalidate it the same way. An API key has none of these problems, and [OpenAI's CI/CD auth guide](https://learn.chatgpt.com/docs/auth/ci-cd-auth) recommends it for most CI jobs.
+> **Where this login may be used:** this path signs the Codex CLI in with your ChatGPT account instead of an API key. [OpenAI's guide for this login in CI/CD](https://learn.chatgpt.com/docs/auth/ci-cd-auth) sets limits on it. Use it only on a private runner that you trust. Do not use it for a public or open-source repository. Prefer an API key: the guide recommends one for most CI/CD jobs, and describes this login as an advanced setup for work that has to run as your own Codex account. For a public repository, set `openai_api_key` instead.
+
+> **Status: experimental for CI.** The Codex CLI keeps subscription auth in `~/.codex/auth.json` and refreshes it during a run once the tokens are about 8 days old. A refresh rotates the tokens and writes them back to `auth.json` on the runner. Manki deletes the `auth.json` it wrote when the run ends, also on a persistent self-hosted runner, and leaves alone one that was there before the run. The secret still holds the old tokens, so later runs fail to authenticate until you bootstrap again and re-upload the secret. Concurrent jobs, or a local Codex that refreshes the same login, invalidate it the same way. An API key has none of these problems.
 
 If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
 
@@ -492,7 +494,7 @@ Provide credentials for the providers you actually use. The model ID in `.manki.
 | Provider | API key | OAuth alternative |
 |----------|---------|-------------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) |
-| OpenAI | `OPENAI_API_KEY` | `OPENAI_OAUTH_TOKEN` (base64 of `~/.codex/auth.json`) |
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_OAUTH_TOKEN` (base64 of `~/.codex/auth.json`). Experimental, and only for a trusted private runner, not for a public or open-source repository, see [where this login may be used](#codex-cli-oauth-token-subscription-experimental). |
 | Gemini | `GEMINI_API_KEY` | `GEMINI_OAUTH_TOKEN` (base64 of `~/.gemini/oauth_creds.json`) |
 
 When both are set for a provider, OAuth takes precedence (the action checks the OAuth input before the API key for each provider).
