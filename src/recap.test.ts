@@ -2590,6 +2590,24 @@ describe('parseFindingFromComment', () => {
       const body = late.replace(notes![0], `${order.map(i => notes![i]).join('\n\n')}\n\n`);
       expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     }
+    // A thread on the finding's file opens with a link to the finding's line, which is no part of the description either.
+    // The description is the one the same thread gives without that line, as a thread posted before the line existed has it.
+    const long = 'The logic is duplicated. '.repeat(40).trim();
+    for (const description of ['The logic is duplicated.', long]) {
+      const onFile = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/a.ts', line: 2, description, reviewers: [] }, TEST_LINKS, 'file');
+      const lineNote = 'This is on [line 2](https://github.com/o/r/blob/sha/src/a.ts#L2). A comment on that line is not possible, so the thread is on the file.\n\n';
+      expect(onFile).toContain(`**Extract helper**\n\n${lineNote}**What goes wrong:** The logic is duplicated.`);
+      const before = onFile.replace(lineNote, '').replace(',"lineNote":true', '');
+      expect(before).toBe(formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/a.ts', line: 0, description, reviewers: [] }, TEST_LINKS, 'file').replace('src/a.ts:0:', 'src/a.ts:2:').replace('"line":0', '"line":2'));
+      const parsed = parseFindingFromComment(before);
+      expect(parsed.description).toMatch(/^The logic is duplicated\./);
+      for (const posted of [onFile, highlightCode(onFile, new Set(['This', 'comment', 'thread', 'file', 'line']))]) {
+        expect(parseFindingFromComment(posted)).toEqual(parsed);
+      }
+    }
+    // Without the word of the finding data, such a sentence is the description.
+    const lineSentence = 'This is on line 2. A comment on that line is not possible, so the thread is on the file.';
+    expect(parseFindingFromComment(formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 0, description: lineSentence, reviewers: [] }, TEST_LINKS, 'file')).description).toBe(lineSentence);
     // When the title line is not at the top, the layout is not Manki's own, and no line is dropped on the word of the finding data.
     const edited = `Edited by hand.\n\n${formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/**Warning**: x.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] }, TEST_LINKS, 'detached')}`;
     expect(parseFindingFromComment(edited).description).toBe('The logic is duplicated.');

@@ -29,15 +29,16 @@ function severityMarker(body: string): RegExpMatchArray | null {
 
 /**
  * `detached` marks a thread posted on another file than its finding's, where `file` and `line` name the finding's own
- * place. `evidenceFiles` are the other files the finding cited, without `file`.
+ * place. `lineNote` marks a thread on the file of its finding that opens with a link to the finding's line.
+ * `evidenceFiles` are the other files the finding cited, without `file`.
  */
-export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean; evidenceFiles?: string[] } | undefined {
+export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean; lineNote?: boolean; evidenceFiles?: string[] } | undefined {
   const json = ownMarker(body, FINDING_DATA_OPENER);
   if (json === undefined) return undefined;
   try {
     const parsed: unknown = JSON.parse(json);
     if (!parsed || typeof parsed !== 'object') return undefined;
-    const { title, fix, howToFix, tags, flaggedBy, file, line, detached, evidenceFiles } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown; evidenceFiles?: unknown };
+    const { title, fix, howToFix, tags, flaggedBy, file, line, detached, lineNote, evidenceFiles } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown; lineNote?: unknown; evidenceFiles?: unknown };
     const cited = isStringArray(evidenceFiles) ? plainCitedFiles(evidenceFiles, typeof file === 'string' ? file : undefined) : [];
     return {
       ...(typeof title === 'string' && { title }),
@@ -48,6 +49,7 @@ export function parseFindingData(body: string): { title?: string; fix?: string; 
       ...(isStringArray(tags) && { tags }),
       ...(isStringArray(flaggedBy) && { flaggedBy }),
       ...(detached === true && { detached }),
+      ...(lineNote === true && { lineNote }),
       ...(cited.length > 0 && { evidenceFiles: cited }),
     };
   } catch {
@@ -272,13 +274,14 @@ function matchTitleLine(body: string): RegExpMatchArray | null {
 }
 
 /**
- * Returns `body` without the line that opens a detached thread and says where its finding is. The line is taken by its
- * place, since posting can change its text, and only below a title line at the top of the body, where no text of the
- * finding can stand.
+ * Returns `body` without the line that opens a thread off its finding's line and says where the finding is: a `detached`
+ * thread, or one with a `lineNote`. The line is taken by its place, since posting can change its text, and only below a
+ * title line at the top of the body, where no text of the finding can stand.
  */
-export function withoutDetachedNote(body: string): string {
+export function withoutPlaceNote(body: string): string {
   const title = matchTitleLine(body);
-  if (!title || title.index !== 0 || !parseFindingData(body)?.detached) return body;
+  const data = parseFindingData(body);
+  if (!title || title.index !== 0 || !(data?.detached || data?.lineNote)) return body;
   const rest = body.slice(title[0].length).trimStart();
   return `${title[0]}\n${rest.slice(rest.split('\n', 1)[0].length).trimStart()}`;
 }
@@ -955,7 +958,7 @@ const OLD_MISSED_EARLIER_NOTES = [
  * unexpected layouts skip extraction rather than emit garbage.
  */
 function parseFindingFromComment(posted: string): FindingMetadata {
-  const body = withoutDetachedNote(posted);
+  const body = withoutPlaceNote(posted);
   const titleMatch = matchTitleLine(body);
   if (!titleMatch || titleMatch.index === undefined) return {};
   const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);

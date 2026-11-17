@@ -3305,12 +3305,21 @@ function detachedNote(finding: Finding, linkTo: LineLink): string {
 }
 
 /**
+ * Returns the line that opens a thread on the file of `finding`, linking the line the finding names. It is always written
+ * with `lineNote` in the finding data, which is how `parseFindingFromComment` knows the line is there.
+ */
+function lineNote(finding: Finding, linkTo: LineLink): string {
+  return `This is on ${linked(`line ${finding.line}`, linkTo(finding.file, finding.line))}. A comment on that line is not possible, so the thread is on the file.`;
+}
+
+/**
  * Formats a finding's thread comment. `place` says where the thread sits: on the finding's line, on its file as a
  * file-level thread, or `detached` on another file than the finding's.
  */
 function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' | 'file' | 'detached' = 'line'): string {
   const detached = place === 'detached';
-  let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
+  const onLine = place === 'file' && finding.line > 0 ? `${lineNote(finding, links.linkTo)}\n\n` : '';
+  let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n${onLine}`;
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
@@ -3323,7 +3332,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const checks = checksSection(finding, links, place === 'line' ? 'commented' : 'flagged');
   const label = labelDescription(finding, '');
   const open = `${suggestion ? `\n\n${suggestion}` : ''}\n\n${formatFold(fix, '', checks)}`;
-  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(open));
+  // The line note takes no room, so a thread shows the same description with it as without it.
+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - (comment.length - onLine.length) - label.length - visibleLength(open));
   const description = sanitizeMarkdown(finding.description);
   const { lead, rest } = splitLead(description, 3, room);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
@@ -3346,6 +3356,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
     ...(detached && { detached: true }),
+    ...(onLine && { lineNote: true }),
     ...(cited.length > 0 && { evidenceFiles: cited }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;

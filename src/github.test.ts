@@ -224,7 +224,16 @@ describe('formatFindingComment', () => {
       const offLine = formatFindingComment(onOwnLine, links, place);
       expect(offLine).not.toContain('suggestion\n');
       expect(offLine).toContain('**How to fix it**\n```ts\nif (value != null) { use(value); }\n```\n\n**Checked in the code**\nOn the flagged line: Reads `value` unchecked');
-      expect(parseFindingData(offLine)).toEqual(expect.objectContaining({ fix: 'if (value != null) { use(value); }', ...(place === 'detached' && { detached: true }) }));
+      expect(parseFindingData(offLine)).toEqual(expect.objectContaining({ fix: 'if (value != null) { use(value); }', ...(place === 'detached' ? { detached: true } : { lineNote: true }) }));
+    }
+    // A thread on the finding's file shows no line of its own, so it opens with a link to the finding's line at the
+    // reviewed commit. A finding that names no line gets no such link, and neither does a thread on the line or on another file.
+    const lineNote = `**${baseFinding.title}**\n\nThis is on [line 42](https://github.com/o/r/blob/sha/src/main.ts#L42). A comment on that line is not possible, so the thread is on the file.\n\n**What goes wrong:**`;
+    expect(formatFindingComment(baseFinding, links, 'file')).toContain(lineNote);
+    expect(formatFindingComment(baseFinding, { ...links, linkTo: () => undefined }, 'file')).toContain(`**${baseFinding.title}**\n\nThis is on line 42. A comment`);
+    for (const elsewhere of [formatFindingComment({ ...baseFinding, line: 0 }, links, 'file'), render(baseFinding), formatFindingComment(baseFinding, links, 'detached')]) {
+      expect(elsewhere).not.toContain('This is on');
+      expect(parseFindingData(elsewhere)).not.toHaveProperty('lineNote');
     }
     // The finding data names the other files the checks link, each once and without the finding's own, which a later
     // round counts as the thread's. That includes a file the review did not read. Only a plain repository path is
@@ -5709,7 +5718,8 @@ describe('postReview non-blocking findings', () => {
     // A late warning off the changed lines gets a file-level thread with the same notes.
     const [offDiff] = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
     expect([offDiff.path, offDiff.subject_type]).toEqual(['src/a.ts', 'file']);
-    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning**\n\n**Old code off the diff**\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
+    const lineNote = 'This is on [line 40](https://github.com/owner/repo/blob/sha/src/a.ts#L40). A comment on that line is not possible, so the thread is on the file.';
+    expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning**\n\n**Old code off the diff**\n\n${lineNote}\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
     expect(review.body).not.toContain('Old code off the diff');
     // Each origin gets its section with exact counts, and the sections follow each other under rules. A security note on
     // reviewed code stays listed.
