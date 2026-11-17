@@ -1391,11 +1391,6 @@ export interface ReviewConfig {
      * automatic review is paused until a review is started by hand. `0` disables the cap.
      */
     max_auto_rounds?: number;
-    /**
-     * Automatic rounds a review started by hand turns back on while automatic review is paused, when the cap allows fewer.
-     * `0` grants none, so after a round-cap pause a review started by hand reviews only its own round.
-     */
-    rounds_after_restart?: number;
     /** Glob patterns for test files. Notes on these paths are dropped on round 2+. */
     test_path_patterns?: string[];
     /** When true, a prior-round finding whose thread a human resolved, or Manki resolved as judge-addressed, suppresses matching current findings. */

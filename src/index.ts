@@ -1192,7 +1192,7 @@ function pauseReport({ reason }: PauseState): StateReport['pause'] {
 
 /** Says why automatic review is paused and what a review started by hand turns back on, above `blockers`, the list of blocking threads still open. */
 function pauseText({ reason, restart }: PauseState, blockers: string | null): string {
-  return `${reason} Automatic review is paused.${restart ? ` ${restart}` : ''}${blockers ? `\n\n${blockers}` : ''}`;
+  return `${reason} Automatic review is paused. ${restart}${blockers ? `\n\n${blockers}` : ''}`;
 }
 
 /**

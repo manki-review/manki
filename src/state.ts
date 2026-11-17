@@ -488,6 +488,9 @@ function approvedSince(round: RoundContext, lastApprovalAt: string | undefined):
     || (lastApprovalAt !== undefined && Date.parse(round.meta.timestamp) <= Date.parse(lastApprovalAt));
 }
 
+/** Automatic rounds a review started by hand turns back on while automatic review is paused, when the round cap allows fewer. */
+const ROUNDS_AFTER_RESTART = 3;
+
 /** Whether a person started `round` with a review command or a settings box. */
 function startedByHand(round: RoundContext): boolean {
   const reason = round.meta.cap?.bypassReason;
@@ -499,14 +502,13 @@ function startedByHand(round: RoundContext): boolean {
  * change, and `left` is how many automatic rounds remain before the round cap pauses automatic review, `Infinity` with the
  * cap off. Draft rounds don't count. The round cap stops fix loops, so a round after an approval, such as on a rebase,
  * starts the count again. A round a person started while automatic review was paused restarts it: it counts like any
- * other round, then `left` becomes the larger of the rounds still left and `rounds_after_restart`. `sinceRestart` counts
+ * other round, then `left` becomes the larger of the rounds still left and `ROUNDS_AFTER_RESTART`. `sinceRestart` counts
  * the rounds with new changes after the last restart, and is `undefined` without one.
  */
 function countRounds(
   priorRounds: RoundContext[], lastApprovalAt: string | undefined, config: ReviewConfig,
 ): { total: number; left: number; sinceRestart?: number; approved: boolean } {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const roundsAfterRestart = config.convergence?.rounds_after_restart ?? 0;
   let start = priorRounds.length;
   while (start > 0 && !approvedSince(priorRounds[start - 1], lastApprovalAt)) start--;
   let total = 0;
@@ -522,7 +524,7 @@ function countRounds(
       if (sinceRestart !== undefined) sinceRestart++;
     }
     if (paused && startedByHand(round)) {
-      left = Math.max(left, roundsAfterRestart);
+      left = Math.max(left, ROUNDS_AFTER_RESTART);
       sinceRestart = 0;
     }
   }
@@ -545,10 +547,9 @@ interface PauseState {
 /** Ends the reason of a round-cap pause, since rounds that keep finding problems point at the design. */
 const RETHINK_LINE = 'Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes.';
 
-/** Says how many automatic rounds a review started by hand turns back on, or `undefined` when it turns none on. */
-function restartLine(rounds: number): string | undefined {
-  if (rounds <= 0) return undefined;
-  const next = rounds === Infinity ? '' : rounds === 1 ? ' for the next round' : ` for the next ${rounds} rounds`;
+/** Says how many automatic rounds a review started by hand turns back on. */
+function restartLine(rounds: number): string {
+  const next = rounds === Infinity ? '' : ` for the next ${rounds} rounds`;
   return `A review you start by hand also turns automatic review back on${next}.`;
 }
 
@@ -568,7 +569,7 @@ function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRoun
     ? `Manki has reviewed new changes in ${reviewed}. ${RETHINK_LINE}`
     : lastRound?.meta.outcome === 'NOT_CONVERGING' && !approvedSince(lastRound, lastApprovalAt) ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
   // The restart usually reviews a new change, which uses one of the rounds still left.
-  const restart = reason && restartLine(Math.max(roundsLeft - 1, config.convergence?.rounds_after_restart ?? 0));
+  const restart = reason && restartLine(Math.max(roundsLeft - 1, ROUNDS_AFTER_RESTART));
   return { capRounds, roundsLeft, capReached, paused: reason !== undefined, ...(reason && { reason }), ...(restart && { restart }) };
 }
 
@@ -600,7 +601,7 @@ async function autoReviewHalt(
   const pause = pauseState(rounds ?? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
   const { reason, restart } = pause;
   if (reason) {
-    return { cause: 'automatic_pause', pause, text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`/manki review\`, to review it.${restart ? ` ${restart}` : ''}` };
+    return { cause: 'automatic_pause', pause, text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`/manki review\`, to review it. ${restart}` };
   }
   return boxTicked === undefined
     ? { cause: 'pause_unknown', text: 'Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `/manki review`.' }

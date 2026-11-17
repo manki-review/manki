@@ -193,8 +193,7 @@ memory:
 | `reviewers[].name` | string | required | The check's name. |
 | `reviewers[].focus` | string | required | What the finders check for. |
 | `convergence` | map | see below | How rounds end. See [Severity tiers](how-reviews-work.md#severity-tiers). |
-| `convergence.max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, and the notice asks the author to reconsider the approach. `0` turns the cap off. |
-| `convergence.rounds_after_restart` | non-negative integer | `3` | Automatic rounds that a review started by hand, with `/manki review` or a settings box, turns back on while automatic review is paused. A restart never leaves fewer rounds than the cap still allows. When they pass without an approval, automatic review pauses again until the next one. `0` grants none, so after a round-cap pause a restart reviews only the round asked for. |
+| `convergence.max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, with `/manki review` or a settings box, and the notice asks the author to reconsider the approach. Such a review also turns automatic review back on for 3 rounds, or for the rounds the cap still allows if that is more. `0` turns the cap off. |
 | `convergence.test_path_patterns` | list of globs | `["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]` | Test files. From the second round, notes on them are dropped, except security findings and tool alerts. |
 | `convergence.suppress_resolved_threads` | boolean | `true` | A finding whose thread a person resolved, or Manki resolved as addressed, suppresses matching findings in later rounds. |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |

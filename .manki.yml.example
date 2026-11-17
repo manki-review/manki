@@ -212,10 +212,9 @@
 
 # How rounds end. After `max_auto_rounds` automatic rounds since Manki's last
 # approval, automatic review pauses until a review is started by hand, which
-# turns it back on for `rounds_after_restart` rounds. 0 turns the cap off.
+# turns it back on for 3 rounds. 0 turns the cap off.
 # convergence:
 #   max_auto_rounds: 10
-#   rounds_after_restart: 3
 #   test_path_patterns: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]   # test files, where later rounds drop the notes
 #   suppress_resolved_threads: true   # a resolved thread suppresses matching findings in later rounds
 

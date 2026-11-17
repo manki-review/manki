@@ -1376,7 +1376,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
 
     // While automatic review is paused, the answer adds the text of the pause notice and who clears the threads it lists.
-    const paused = { ...configModule.loadConfig(undefined), author_clear_role: 'maintain' as const, convergence: { max_auto_rounds: 5, rounds_after_restart: 3 } };
+    const paused = { ...configModule.loadConfig(undefined), author_clear_role: 'maintain' as const, convergence: { max_auto_rounds: 5 } };
     const rounds = [1, 2].map(round => roundContextFromLegacy({ round, commitSha: `sha${round}`, timestamp: '2025-01-01T00:00:00Z', findings: [] }));
     rounds[1].meta.outcome = 'NOT_CONVERGING';
     const thread = (title: string, severity: 'blocker' | 'warning', n: number) => ({
@@ -7058,7 +7058,7 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
       const link = (n: number) => `([view thread](https://github.com/test-owner/test-repo/pull/42#discussion_r${n}))`;
       expect(pauseNotice()).toBe(withSettingsBlock([
-        'Manki has reviewed new changes in 5/5 rounds on this PR. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes. Automatic review is paused.',
+        'Manki has reviewed new changes in 5/5 rounds on this PR. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes. Automatic review is paused. A review you start by hand also turns automatic review back on for the next 3 rounds.',
         '',
         '**Still open from earlier reviews:**',
         `- \`src/app.ts:1\`: Null check missing ${link(1)}`,
@@ -7153,9 +7153,8 @@ describe('runFullReview orchestration', () => {
       );
     });
 
-    it('turns automatic review back on for `rounds_after_restart` rounds after a review started by hand, then pauses again', async () => {
-      const config = memoryEnabledConfig(5);
-      jest.mocked(configModule.loadConfig).mockReturnValue({ ...config, convergence: { ...config.convergence, rounds_after_restart: 3 } });
+    it('turns automatic review back on for three rounds after a review started by hand, then pauses again', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       const rounds = priorRounds(9).map(roundContextFromLegacy);
       rounds[5].meta.cap = { priorRoundCount: 5, maxAutoRounds: 5, skipCap: true, forceReview: false, bypassReason: 'manual_review_command' };
       const runs = jest.mocked(reviewModule.runReview).mock.calls;

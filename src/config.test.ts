@@ -43,7 +43,6 @@ describe('config', () => {
 
     it('exposes default convergence settings', () => {
       expect(DEFAULT_CONFIG.convergence?.max_auto_rounds).toBe(10);
-      expect(DEFAULT_CONFIG.convergence?.rounds_after_restart).toBe(3);
       expect(DEFAULT_CONFIG.convergence?.suppress_resolved_threads).toBe(true);
       expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/*.test.*');
       expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/__tests__/**');
@@ -54,14 +53,12 @@ describe('config', () => {
     it('merges user-provided convergence overrides with defaults', () => {
       const config = loadConfigFromContent('convergence:\n  max_auto_rounds: 3\n');
       expect(config.convergence?.max_auto_rounds).toBe(3);
-      expect(config.convergence?.rounds_after_restart).toBe(3);
       expect(config.convergence?.suppress_resolved_threads).toBe(true);
-      expect(loadConfigFromContent('convergence:\n  rounds_after_restart: 0\n').convergence?.rounds_after_restart).toBe(0);
     });
 
-    it.each(['max_auto_rounds', 'rounds_after_restart'])('rejects a negative, fractional or non-numeric %s', key => {
+    it('rejects a negative, fractional or non-numeric max_auto_rounds', () => {
       for (const value of ['-1', '1.5', 'three']) {
-        expect(() => loadConfigFromContent(`convergence:\n  ${key}: ${value}\n`)).toThrow(`\`convergence.${key}\` must be a non-negative integer`);
+        expect(() => loadConfigFromContent(`convergence:\n  max_auto_rounds: ${value}\n`)).toThrow('`convergence.max_auto_rounds` must be a non-negative integer');
       }
     });
 
