@@ -65,7 +65,7 @@
 #   judge: claude-opus-5-5         # precise, single judge
 #   second_refuter: gpt-6.1-sol    # a second refuter on another model, beside the first on the judge's model (default: off, needs the Claude or Codex CLI)
 #   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
-#   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: the first model of the `full` group other than the stage's own)
+#   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused or whose model reached a limit (default: the first model of the `full` group other than the stage's own)
 #
 # To use OpenAI, set `openai_api_key` (or `openai_oauth_token` for Codex CLI) and override the models and the groups:
 # models:

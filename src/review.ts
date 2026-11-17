@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
@@ -376,7 +376,7 @@ export interface ReviewClients {
   refuterPair?: LLMClient;
   planner: LLMClient;
   dedup?: LLMClient;
-  /** Where each stage moves when a safety filter refuses it. The verdict reader uses `judge`'s. */
+  /** Where each stage moves when a safety filter refuses it or its model reaches a limit. The verdict reader uses `judge`'s. */
   fallbacks?: {
     planner?: FallbackClient;
     /** Keyed like `reviewerByModel`. */
@@ -686,14 +686,23 @@ export async function runReview(
   // Searched while the planner runs, since no model call depends on it before the finders.
   const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths, dependencyNames: config.related_repos?.some(r => r.kind === 'dependency') });
   const modelFallbacks: RoundModelFallback[] = [];
+  // How many finders of the round read on each model: on their own, on a fallback a refusal moved them to, or on one a
+  // limit holds for them. A count, so giving back what a limit held never frees a model another finder still reads on.
+  const readingModels = new Map<string, number>();
+  const addReader = (model: string, step: 1 | -1): void => { readingModels.set(model, (readingModels.get(model) ?? 0) + step); };
   const llmCalls: LLMCall[] = [];
-  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient => {
+  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined): LLMClient => {
     const label = { stage, ...(agent && { agent }) };
     const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
-    return withSignal(withRefusalFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
-      core.warning(`A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
-      modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: error.reason });
-    }), signal);
+    return withSignal(withModelFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
+      const limit = error instanceof QuotaError;
+      core.warning(limit
+        ? `The ${agent ?? stage} call reached a limit (${error.limit}), so ${fallback!.model} answered in its place`
+        : `A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
+      modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: limit ? error.limit : error.reason, ...(limit && { limit: true as const }) });
+      // A limit already holds its fallback model for the finder.
+      if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
+    }, movesOnLimit), signal);
   };
   // Classified while the review runs, since only the posted note reads it.
   const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
@@ -745,7 +754,26 @@ export async function runReview(
   }
 
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
-  const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
+  for (const finder of team.finders) addReader(modelIdentity(finder.model), 1);
+  // Two reads by one model are weaker than the group, so a limit moves a finder only to a model that reads for no finder of the round.
+  // The model is held from the moment the finder is sent there, so two finders that reach a limit at once never both get it.
+  const finderClients = new Map(team.finders.map(f => {
+    const stage = pickReviewerClient(clients, f.model);
+    const movesOnLimit = (): (() => void) | undefined => {
+      const model = modelIdentity(stage.fallback!.model);
+      if ((readingModels.get(model) ?? 0) > 0) {
+        core.info(`${f.name} reached a limit and is not sent to ${stage.fallback!.model}, which already reads for a finder of this round`);
+        return undefined;
+      }
+      addReader(model, 1);
+      let held = true;
+      return () => {
+        if (held) addReader(model, -1);
+        held = false;
+      };
+    };
+    return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit)];
+  }));
   // The sibling comparisons, claim checks and sweeps run on the model of the group's first reader.
   const comparisonModel = team.finders[0].model;
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
@@ -1178,10 +1206,9 @@ export async function runReview(
   let judgeDurationMs: number | undefined;
   let judgeRetryCount = 0;
   const judgeWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
-  // Its own label keeps the refutation calls out of the judge's retry count. A fallback without tools could not read the
-  // code, so without one a refused call fails and the finding keeps its grade.
+  // Its own label keeps the refutation calls out of the judge's retry count.
   const refutation = workspace && clients.judge.repoTools ? {
-    client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
+    client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'refute'),
     workspace,
     related: relatedTools,
     ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
@@ -2564,8 +2591,8 @@ function confirmFixes(
 }
 
 /**
- * Returns the tool budget the judge gets, and logs why a configured budget goes unused. The judge is told it has tools,
- * so a refused call must not move to a fallback that has none, or that fallback would grade as if it had read code.
+ * Returns the tool budget the judge gets, and logs why a configured budget goes unused. A call made with tools never moves
+ * to a fallback that has none (`withModelFallback`), so a judge whose fallback has none grades without tools and keeps that fallback.
  */
 function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHead: boolean): number {
   const steps = config.judge?.tool_steps ?? 0;

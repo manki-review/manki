@@ -1,8 +1,10 @@
 import { createHash } from 'crypto';
 
+import * as core from '@actions/core';
+
 import { wrapUpNoted } from '../tool-steps';
 import { estimateCostUsd } from './model-registry';
-import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, RefusalError, TimeoutError, UsageSummary, ZERO_USAGE } from './types';
+import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, QuotaError, RefusalError, SendMessageOptions, TimeoutError, UsageSummary, ZERO_USAGE } from './types';
 import { readingsOf, sanitizeLogOutput } from './cli-utils';
 
 export interface UsageTotals {
@@ -41,29 +43,72 @@ export function wrapClientForUsage(client: LLMClient): {
  * request to `fallback`. A refusal on `fallback` and any other error are thrown unchanged.
  * A refused request with a `timeoutMs` gets only the time the refused call left of it on `fallback`,
  * and fails with a `TimeoutError` when none is left.
+ *
+ * A request that fails with a `QuotaError` is sent to `fallback` once too, with the time the failed call left.
+ * Later requests go to `fallback` only after it answered one. The `QuotaError` is thrown unchanged when `fallback`
+ * fails as well, when no time is left, or when `movesOnLimit` returns undefined. `movesOnLimit` takes `fallback` for
+ * the stage and returns the function that gives it back. That function runs once, when every fallback call the stage
+ * started after a limit failed and the stage has not moved. A request with no time left takes nothing.
+ *
+ * A request made with repository tools (`repoTools` in its options) never goes to a `fallback` without them. It is sent to
+ * `client` and fails with its own error, also after the stage moved, since such a `fallback` would answer as if it had read the code.
+ *
+ * `onFallback` is called once, when the stage moves: at the first refusal, or when `fallback` first answers after a limit.
  */
-export function withRefusalFallback(
+export function withModelFallback(
   client: LLMClient,
   fallback: LLMClient | undefined,
-  onFallback: (error: RefusalError) => void,
+  onFallback: (error: RefusalError | QuotaError) => void,
+  movesOnLimit: () => (() => void) | undefined = () => () => {},
 ): LLMClient {
   if (!fallback) return client;
-  let refused = false;
+  let moved = false;
+  let giveBack: (() => void) | undefined;
+  let trying = 0;
+  const needsMissingTools = (opts: SendMessageOptions | undefined): boolean => !!opts?.repoTools && !fallback.repoTools;
   return {
     sendMessage: async (sys, user, opts) => {
-      if (refused) return fallback.sendMessage(sys, user, opts);
+      if (needsMissingTools(opts)) return client.sendMessage(sys, user, opts);
+      if (moved) return fallback.sendMessage(sys, user, opts);
       const start = Date.now();
       try {
         return await client.sendMessage(sys, user, opts);
       } catch (error) {
-        if (!(error instanceof RefusalError)) throw error;
+        const limit = error instanceof QuotaError;
+        if (!limit && !(error instanceof RefusalError)) throw error;
+        const timeoutMs = opts?.timeoutMs || undefined;
+        const usedMs = Date.now() - start;
+        const outOfTime = timeoutMs !== undefined && usedMs >= timeoutMs;
+        const resend = () => fallback.sendMessage(sys, user, timeoutMs === undefined ? opts : { ...opts, timeoutMs: timeoutMs - usedMs });
+        if (limit) {
+          if (outOfTime) throw error;
+          giveBack ??= movesOnLimit();
+          if (!giveBack) throw error;
+          trying += 1;
+          try {
+            const response = await resend();
+            if (!moved) onFallback(error);
+            moved = true;
+            return response;
+          } catch (failure) {
+            // The limit of the configured model stays the stage's error, whatever stops the fallback.
+            core.warning(`The fallback model failed too, so the call fails with "${error.limit}": ${sanitizeLogOutput(String((failure as Error)?.message ?? failure)).slice(0, 300)}`);
+            throw error;
+          } finally {
+            trying -= 1;
+            // Another fallback call of the stage can still answer, and a stage that moved keeps the fallback.
+            if (trying === 0 && !moved) {
+              const release = giveBack;
+              giveBack = undefined;
+              release?.();
+            }
+          }
+        }
         // Parallel calls can all be refused before the first one returns, and the stage moves only once.
-        if (!refused) onFallback(error);
-        refused = true;
-        if (!opts?.timeoutMs) return fallback.sendMessage(sys, user, opts);
-        const leftMs = opts.timeoutMs - (Date.now() - start);
-        if (leftMs <= 0) throw new TimeoutError(`The refused call used up its ${opts.timeoutMs / 1000}s, so it is not sent to the fallback model`, { cause: error });
-        return fallback.sendMessage(sys, user, { ...opts, timeoutMs: leftMs });
+        if (!moved) onFallback(error);
+        moved = true;
+        if (outOfTime) throw new TimeoutError(`The refused call used up its ${timeoutMs / 1000}s, so it is not sent to the fallback model`, { cause: error });
+        return resend();
       }
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
