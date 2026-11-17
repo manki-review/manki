@@ -230,7 +230,7 @@ export class OpenAIClient implements LLMClient {
 
   async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     if (this.auth.kind === 'oauth') {
-      return this.sendViaOAuth(systemPrompt, userMessage, options);
+      return this.sendViaCLI(systemPrompt, userMessage, options);
     }
     return this.sendViaAPI(systemPrompt, userMessage, options);
   }
@@ -279,7 +279,7 @@ export class OpenAIClient implements LLMClient {
     }
   }
 
-  private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
+  private async sendViaCLI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const repoTools = options?.repoTools;
     const toolsPrompt = repoTools ? `\n\n${repoToolsPrompt(repoTools, '`read_file`, `grep` and `glob`')}` : '';
     const instructions = `${systemPrompt}${toolsPrompt}`;

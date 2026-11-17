@@ -413,7 +413,7 @@ describe('sendMessage (API path)', () => {
   });
 });
 
-describe('sendViaOAuth (Codex CLI path)', () => {
+describe('sendViaCLI (Codex CLI path)', () => {
   let savedCodexHome: string | undefined;
 
   beforeEach(() => {
@@ -859,7 +859,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   });
 });
 
-describe('sendViaOAuth — extended coverage', () => {
+describe('sendViaCLI — extended coverage', () => {
   let savedCodexHome: string | undefined;
 
   beforeEach(() => {
