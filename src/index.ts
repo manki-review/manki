@@ -503,7 +503,7 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
 /**
  * Answers a review command that started no round because `target.commitSha` already has a review, and says what starts
  * one. While automatic review is paused, the answer adds the text of the pause notice. It leaves the pause out when the
- * base branch's config is `held` or the PR's rounds cannot be read.
+ * base branch's config is `held` or the PR's rounds and threads cannot all be read.
  */
 async function answerAlreadyReviewed(target: RunTarget, prAuthorLogin: string | undefined, { config, held }: { config: ReviewConfig; held: boolean }): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
@@ -512,10 +512,12 @@ async function answerAlreadyReviewed(target: RunTarget, prAuthorLogin: string | 
     // Without the config nothing says how many rounds the round cap allows.
     if (!held) {
       const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
-      const pause = pauseState(recap, config);
+      // Rounds or threads read only in part can give a wrong pause or miss a blocking thread.
+      const partial = recap.priorRoundsIncomplete || recap.openThreadsState === 'fetch_failed';
+      const pause = partial ? undefined : pauseState(recap, config);
       const blockers = formatOpenBlockers(recap.previousFindings);
       // Every thread the list names blocks, so the PR author alone clears none of them.
-      if (pause.paused) parts.push(pauseText(pause, blockers && `${blockers}\n\n${authorClearLine(config.author_clear_role)}`));
+      if (pause?.paused) parts.push(pauseText(pause, blockers && `${blockers}\n\n${authorClearLine(config.author_clear_role)}`));
     }
   } catch (error) {
     core.warning(`Could not read whether automatic review is paused, answering without it: ${error instanceof Error ? error.message : error}`);

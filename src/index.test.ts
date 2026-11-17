@@ -1367,10 +1367,18 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [thread('Retry never stops', 'warning', 2)], priorRounds: rounds });
     expect(await command()).toEqual(answer(pauseLine));
 
-    // A pause that cannot be read is left out, and so is one counted without the base branch's config.
-    jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
-    jest.mocked(recapModule.fetchRecapState).mockRejectedValue(new Error('rate limited'));
-    expect(await command()).toEqual(answer());
+    // A pause that cannot be read is left out, also when only a round record or the threads could not be read.
+    const blocked = { previousFindings: [thread('Null check missing', 'blocker', 1)], priorRounds: rounds };
+    for (const unread of [
+      () => jest.mocked(recapModule.fetchRecapState).mockRejectedValue(new Error('rate limited')),
+      () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, priorRoundsIncomplete: true }),
+      () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, openThreadsState: 'fetch_failed' }),
+    ]) {
+      jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
+      unread();
+      expect(await command()).toEqual(answer());
+    }
+    // So is a pause counted without the base branch's config.
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
     jest.mocked(recapModule.fetchRecapState).mockClear();
     jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('rate limited'));
