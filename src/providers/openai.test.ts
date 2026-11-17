@@ -924,10 +924,29 @@ describe('sendViaCLI (Codex CLI path)', () => {
       expect(full).toMatchObject({ message: `OpenAI model at capacity: ${capacity}`, limit: 'OpenAI model at capacity', resetsAt: undefined, credential: undefined });
     }
 
-    // Only that exact line at the end of stderr counts. The same words in the prompt, in the model's text or inside another error stay a plain error.
+    // Once a request of the run has used tokens, Codex 0.166.0 ends stderr with its error twice, then `tokens used` and the count.
+    const rateLimit = 'ERROR: rate limit exceeded: Rate limit reached for gpt-5.5 in organization org-test on tokens per min (TPM): Limit 30000, Used 29500, Requested 2000. Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.';
+    for (const [busy, line, typed] of [
+      [client, capacity, { limit: 'OpenAI model at capacity', credential: undefined }],
+      [endpoint, capacity, { limit: 'OpenAI model at capacity', credential: undefined }],
+      [endpoint, rateLimit, { limit: 'OpenAI endpoint limit reached', resetsAt: 'in 3s', credential: 'key' }],
+      [client, usageLimit, { limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' }],
+    ] as const) {
+      setupSpawnMock('', { exitCode: 1, stderr: codexStderr('review this', '', line, line, 'tokens used', '1,011') });
+      const afterTokens = await busy.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(afterTokens).toBeInstanceOf(QuotaError);
+      expect(afterTokens).toMatchObject({ message: `${typed.limit}: ${line}`, ...typed });
+    }
+
+    // Only that exact line at the end of stderr counts, or twice above the token count. The same words in the prompt,
+    // in the model's text, inside another error or above anything else stay a plain error.
     for (const [elsewhere, shown] of [
       [codexStderr(capacity, 'ERROR: stream disconnected before completion: stream closed before response.completed'), 'ERROR: stream disconnected before completion: stream closed before response.completed'],
       [codexStderr('review this', 'codex', capacity, 'tokens used', '2'), capacity],
+      [codexStderr('review this', capacity, `${capacity} Or wait.`, 'tokens used', '2'), `${capacity} Or wait.`],
+      [codexStderr('review this', capacity, capacity, 'tokens used', 'many'), capacity],
+      [codexStderr('review this', capacity, capacity, 'tokens used', '2', 'codex'), capacity],
+      [codexStderr('review this', capacity, capacity, 'tokens spent', '2'), capacity],
       [codexStderr('review this', ` ${capacity}`), capacity],
       [codexStderr('review this', `${capacity} Or wait.`), `${capacity} Or wait.`],
       [codexStderr('review this', 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'), 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'],

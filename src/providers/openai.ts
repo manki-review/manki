@@ -198,12 +198,16 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
 // The line Codex ends its stderr with when the provider reports an overload.
 const CAPACITY_ERROR = 'ERROR: Selected model is at capacity. Please try a different model.';
 
+// Once a request of the run has used tokens, Codex prints their count below its error, which it prints twice.
+const ERROR_ABOVE_TOKENS = /\n(ERROR:[^\n]*)\r?\n\1\r?\ntokens used\r?\n\d[\d,]*\s*$/;
+
 /**
  * Returns the `ERROR:` line that ends Codex's stderr, or `undefined` when stderr ends on any other line. Codex prints
- * its own error last. It also writes the prompt and the model's text to stderr, so no earlier line counts as its error.
+ * its own error last, above the token count when it prints one. It also writes the prompt and the model's text to
+ * stderr, so no earlier line counts as its error.
  */
 function codexFinalError(stderr: string): string | undefined {
-  const line = lastLine(stderr);
+  const line = ERROR_ABOVE_TOKENS.exec(stderr)?.[1] ?? lastLine(stderr);
   return /^ERROR:\s/.test(line) ? extractCliErrorSnippet(line) : undefined;
 }
 
