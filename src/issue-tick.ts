@@ -51,8 +51,8 @@ async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string,
 }
 
 /**
- * Returns `posted` up to the anchor of the box of `id`, without Manki's hidden markers. The line that opens a detached
- * thread is left out too, since it is about the thread and the issue names the finding's place itself.
+ * Returns `posted` up to the anchor of the box of `id`, without Manki's hidden markers. The line that opens a thread
+ * off its finding's line is left out too, since it is about the thread and the issue names the finding's place itself.
  */
 function postedText(posted: string, id: string): string {
   const text = withoutPlaceNote(posted);

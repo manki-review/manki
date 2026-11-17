@@ -132,6 +132,15 @@ describe('handleIssueBoxTick', () => {
     await tick(octokit, { ...comment(whole), original_line: 1 });
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[4][0].body).toContain('Found by Manki in #5 at [`src/store.ts`](https://github.com/o/r/blob/abc123/src/store.ts). Requested by @bob. See');
 
+    // A thread on the finding's own file opens with a link to the finding's line, which the issue leaves out as well.
+    const onFile = formatFindingComment(finding({ severity: 'blocker', line: 30 }), TEST_LINKS, 'file').replace('- [ ] Create an issue', '- [x] Create an issue');
+    await tick(octokit, { ...comment(onFile), original_line: 1 });
+    const onFileIssue: string = jest.mocked(octokit.rest.issues.create).mock.calls[5][0].body;
+    expect(onFile).toContain('**Retry has no limit**\n\nThis is on [line 30](https://github.com/o/r/blob/sha/src/net.ts#L30). A comment on that line is not possible, so the thread is on the file.\n\n');
+    expect(onFileIssue).toMatch(/^\S+ \*\*Blocker\*\*[^\n]*\n\n\*\*Retry has no limit\*\*\n\n\*\*What goes wrong:\*\* It retries forever\./);
+    expect(onFileIssue).toContain('Found by Manki in #5 at [`src/net.ts:30`](https://github.com/o/r/blob/abc123/src/net.ts#L30).');
+    expect(onFileIssue).not.toContain('thread is');
+
     // A mention of a bot's `name[bot]` would notify the account `name`, so any name that is no plain login is shown as code.
     for (const [editor, shown] of [['mona-cat_corp', '@mona-cat_corp'], ['dependabot[bot]', '`dependabot[bot]`'], ['a` [x](https://evil.example) @octocat', '`a\' x @\u200Boctocat`']]) {
       await tick(octokit, comment(ticked(finding())), editor);
