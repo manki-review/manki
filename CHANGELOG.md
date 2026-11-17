@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.0] - 2026-11-17
+
+Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long Codex calls hold up: a silent call is no longer ended after 90 seconds, a model at capacity is named and its session resumed, and the judge gets 15 minutes. A review command that starts no round now gets an answer, and a held approval reports its `Manki` check. Nothing breaks on the upgrade.
+
+### OpenAI-compatible endpoints
+
+- New action input `openai_base_url`. With it and `openai_api_key`, every OpenAI model call runs through the Codex CLI against that OpenAI-compatible endpoint, with the same repository tools, step budget and related repositories as on the Codex subscription path. `openai_base_url` without `openai_api_key`, together with `openai_oauth_token`, or with a value that is no `http` or `https` URL stops the run with a message that names the problem. The local `manki review` command and `npm run smoke` read the endpoint from `OPENAI_BASE_URL` ([#1727](https://github.com/manki-review/manki/pull/1727)).
+- A Codex call on an endpoint whose stream fails is resumed in the same session, so the call keeps everything it already read. Before, Codex sat out any wait the endpoint named in silence, which could be more than five minutes at a time and ended a finder in a timeout. Manki now resumes at once after a dropped connection, after 15, 30 and then 60 seconds when the model is at capacity, and after the wait a rate limit names, up to 8 times and always inside the call's time limit. A used-up quota, a rate limit that names no wait and any other error are not resumed. The tool step limit holds across the resumed runs, and each resume logs one line. The ChatGPT login path is unchanged ([#1741](https://github.com/manki-review/manki/pull/1741)).
+- A rate limit or used-up quota on an endpoint reads "OpenAI endpoint limit reached" and suggests another key, instead of "ChatGPT subscription limit reached" ([#1727](https://github.com/manki-review/manki/pull/1727)).
+
+### Review loop and verdicts
+
+- A `@manki review` comment on a commit that already has a complete review gets a reply that says so. Before, it started no round and got no answer. While automatic review is paused, the reply adds the pause notice with the open blockers and who may clear them ([#1728](https://github.com/manki-review/manki/pull/1728)).
+- A run that ends because its commit already has a review now also completes the waiting `Manki` check when that review held its approval. The check is neutral with the hold as its title while something still holds the approval, and Manki approves once nothing does. Before, the check ended as "Review did not run", which a required status check then read ([#1732](https://github.com/manki-review/manki/pull/1732)).
+
+### Review format
+
+- A finding on a line that takes no comment gets a thread on its file, and that thread now opens with a link to the finding's line at the reviewed commit ([#1736](https://github.com/manki-review/manki/pull/1736)).
+- An approval that relies on findings the PR author dismissed lists them, with the author and the role named once in the heading. Before, it was one long sentence that repeated both for each finding ([#1716](https://github.com/manki-review/manki/pull/1716)).
+- An issue filed from a `Create an issue for this` box names the person who ticked it, as a mention, so GitHub notifies them. A tick that finds an open issue for the same finding still only links it ([#1730](https://github.com/manki-review/manki/pull/1730)).
+
+### Reliability
+
+- The judge has 15 minutes per attempt, with or without tools. A judge without tools had 5 minutes per call, which a slow model, such as a GPT model through the Codex CLI at high effort, ran past, and the round ended incomplete. The calls of one attempt share the 15 minutes. A judge with tools that fails grades once more without them in the time that is left, and never in less than 5 minutes, so the judge takes at most 15 minutes without tools and 20 with them. A judge that runs out of time ends the round with "The judge ran out of time" in place of "The judge failed". On every stage, a call that moves to the fallback model after a refusal gets only the time the refused call left, and a request on an OpenAI API key gets the call's limit, where it had a fixed 5 minutes ([#1745](https://github.com/manki-review/manki/pull/1745)).
+- A Codex or Gemini CLI call is no longer ended as stale after 90 seconds without output. Those CLIs print the answer at the end, so a healthy call that thought for longer failed with "CLI stale". Such a call now ends only by the time limit of its stage, and the calls that had none get the limit their stage already uses with tools ([#1725](https://github.com/manki-review/manki/pull/1725)).
+- A Codex call that ends because the provider reports the model at capacity now fails as "OpenAI model at capacity" instead of a generic CLI failure, and a call that ran out of time while Codex waited on the provider says so, with the retry it was on. Manki reads Codex's own final error line only, also when Codex prints its token count below it, so text from a pull request is never taken for a Codex error ([#1738](https://github.com/manki-review/manki/pull/1738), [#1740](https://github.com/manki-review/manki/pull/1740)).
+
+### Docs
+
+- `docs/getting-started.md` says where the ChatGPT login (`openai_oauth_token`) may be used: only on a private runner that you trust, and not for a public or open-source repository, where `openai_api_key` is the right choice. `docs/security.md` and `action.yml` point to that section ([#1733](https://github.com/manki-review/manki/pull/1733)).
+
+### Internal
+
+- `review-stats` gets a "Sweeps" section: how the sweeps of the merged PRs ended, what they reported, what was posted and what they cost. The dedup and refuter calls that run only for a sweep's findings are marked in the round record, so the cost is complete ([#1719](https://github.com/manki-review/manki/pull/1719)).
+- Manki's own reviews run with `review.sweep: warnings` as a trial. The default stays `off` ([#1720](https://github.com/manki-review/manki/pull/1720)).
+
 ## [7.5.2] - 2026-11-16
 
 Manki 7.5.2 makes approvals, checks and threads do what they say. A warning holds the approval until Manki accepts an answer to it, a run that finds its commit already reviewed reports the `Manki` check, a merged PR is left as it is, and a withdrawn finding leaves a learning only once its thread is cleared.
