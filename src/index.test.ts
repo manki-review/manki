@@ -176,6 +176,7 @@ jest.mock('./recap', () => ({
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
   currentFindingLine: jest.requireActual('./recap').currentFindingLine,
+  parseContextBlocks: jest.requireActual('./recap').parseContextBlocks,
   replyShownToJudge: jest.requireActual('./recap').replyShownToJudge,
   collectResolvedThreadIds: jest.requireActual('./recap').collectResolvedThreadIds,
   sanitize: jest.requireActual('./recap').sanitize,
@@ -308,7 +309,7 @@ jest.mock('./related-work', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { buildRoundRecap } from './round-context';
-import type { Finding, ParsedDiff, PrState, ReviewConfig, RunMode, ThreadEvaluation } from './types';
+import type { Finding, ParsedDiff, PrState, ReviewConfig, RoundContext, RunMode, ThreadEvaluation } from './types';
 import { SettingsView, withSettingsBlock } from './settings';
 import { registerSecret, withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec, removeSeededAuthFiles } from './providers';
@@ -333,6 +334,7 @@ import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
 import * as relatedWorkModule from './related-work';
 import { citedLine } from './finding-fingerprint';
+import { formatReviewRecord } from './review-record';
 import { LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_BOT } from './test-utils';
 
 /**
@@ -1554,6 +1556,14 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
         await reportCheck(octokit, 'test-owner', 'test-repo', head, report);
         return result;
       });
+    /** The body of a comment review whose round record is `round`, on the head unless `commitSha` names another commit. */
+    const recorded = (round: Partial<RoundContext>, commitSha = head) =>
+      `<!-- manki -->\n${formatReviewRecord(makeRoundContext(1, { ...round, meta: { ...makeRoundContext(1).meta, commitSha } }))}`;
+    const heldBody = recorded({ verdict: 'APPROVE', approval: { held: 'warnings', warningsHeld: true } });
+    const seedComment = (exit: keyof typeof exits, body: string) => {
+      seed(exit, 'COMMENTED', false);
+      jest.mocked(ghUtils.findBotReviewOnCommit).mockResolvedValue({ ...found('COMMENTED'), body });
+    };
     const heldTitle = 'Approval held: warnings wait for a fix or an accepted answer';
     const conflictReport = { conclusion: 'neutral' as const, title: 'Approval held: the PR conflicts with its base', summary: 'This PR conflicts with `main`.' };
 
@@ -1576,18 +1586,40 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       ['`auto_approve` is off', 'Bot already reviewed commit', () => { autoApprove(false); declines('warnings'); }, 0, []],
       ['the base branch config cannot be read', 'Bot already reviewed commit', () => { autoApprove(); declines('warnings'); jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited')); }, 0, []],
     ] as const)('for a review that held its approval, reports what the approval check decides when %s', async (_label, exit, setup, checks, reports) => {
-      seed(exit, 'COMMENTED', false);
+      seedComment(exit, heldBody);
       setup();
 
       await exits[exit]();
 
-      expect(jest.mocked(stateModule.approveOrSayWhy).mock.calls).toEqual(Array.from({ length: checks }, () => [expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.objectContaining({ auto_approve: true })]));
+      // The approval check gets the commit, so it decides nothing once the PR's head is another one.
+      expect(jest.mocked(stateModule.approveOrSayWhy).mock.calls).toEqual(Array.from({ length: checks }, () => [expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.objectContaining({ auto_approve: true }), head]));
       // Only the approval check reads what holds the approval.
       expect(jest.mocked(ghUtils.fetchApprovalHold)).not.toHaveBeenCalled();
       expect(jest.mocked(stateModule.fetchHeldWarnings)).not.toHaveBeenCalled();
       expect(mockChecksUpdate.mock.calls).toEqual(reports.map(([conclusion, title, summary]) => [expect.objectContaining({ check_run_id: 77, status: 'completed', conclusion, output: { title, summary } })]));
       expect(mockChecksCreate).not.toHaveBeenCalled();
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    });
+
+    // GitHub turns a request for changes it refuses into a comment review, so only the record tells a held approval apart.
+    it.each([
+      ['is of a request for changes that GitHub refused, with a warning thread open', recorded({ verdict: 'REQUEST_CHANGES' }), 'warnings'],
+      ['is of a request for changes that GitHub refused, on a draft', recorded({ verdict: 'REQUEST_CHANGES' }), 'draft'],
+      ['cannot be parsed', '<!-- manki -->\n<!-- manki-context: {"meta": -->', 'warnings'],
+      ['is missing', '<!-- manki -->\nNothing blocks this change.', 'warnings'],
+      ['is of another commit', recorded({ verdict: 'APPROVE', approval: { held: 'warnings' } }, 'def4567890123'), 'warnings'],
+      ['says that the approval was not held', recorded({ verdict: 'APPROVE', approval: { held: false } }), 'warnings'],
+      ['says that the round approved nothing', recorded({ verdict: 'REQUEST_CHANGES', approval: { held: 'warnings' } }), 'warnings'],
+    ] as const)('leaves the check of a comment review as it is, and runs no approval check, when its round record %s', async (_label, body, hold) => {
+      seedComment('Bot already reviewed commit', body);
+      autoApprove();
+      declines(hold);
+
+      await exits['Bot already reviewed commit']();
+
+      expect(jest.mocked(stateModule.approveOrSayWhy)).not.toHaveBeenCalled();
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
+      expect(mockChecksCreate).not.toHaveBeenCalled();
     });
 
     it.each(Object.keys(exits) as Array<keyof typeof exits>)('%s reports nothing and reads nothing when the waiting check sits on another head', async exit => {

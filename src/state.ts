@@ -906,7 +906,10 @@ async function checkAndAutoApprove(
   return (await approveOrSayWhy(octokit, bot, owner, repo, prNumber, config)).approved;
 }
 
-/** Post an approval review if all findings are resolved, and return the decision with its reason. */
+/**
+ * Post an approval review if all findings are resolved, and return the decision with its reason. With `head`, it decides
+ * and writes nothing unless that commit is still the PR's head.
+ */
 async function approveOrSayWhy(
   octokit: Octokit,
   bot: BotIdentity,
@@ -914,6 +917,7 @@ async function approveOrSayWhy(
   repo: string,
   prNumber: number,
   config?: ReviewConfig,
+  head?: string,
 ): Promise<ApprovalCheck> {
   const withheld = (why: string | (() => Promise<string>), held?: Exclude<ApprovalHeld, false>): ApprovalCheck =>
     ({ approved: false, why: typeof why === 'string' ? async () => why : why, ...(held && { held }) });
@@ -935,6 +939,10 @@ async function approveOrSayWhy(
   if (pr.state === 'closed') {
     core.info('Skipping auto-approve — the PR is merged or closed');
     return withheld(`This pull request is ${pr.merged ? 'merged' : 'closed'}, so Manki approves nothing on it.`);
+  }
+  if (head && pr.head.sha !== head) {
+    core.info(`Skipping auto-approve — the head is ${pr.head.sha.slice(0, 7)}, no longer ${head.slice(0, 7)}`);
+    return withheld(`The head of this pull request is no longer \`${head.slice(0, 7)}\`, so Manki decides nothing for that commit.`);
   }
   const prAuthorLogin = pr.user?.login;
   const clearRole = config?.author_clear_role;
