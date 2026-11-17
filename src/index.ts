@@ -1122,6 +1122,11 @@ function pauseReport({ reason }: PauseState): StateReport['pause'] {
   return reason ? { reason } : null;
 }
 
+/** Says why automatic review is paused and what a review started by hand turns back on, above `blockers`, the list of blocking threads still open. */
+function pauseText({ reason, restart }: PauseState, blockers: string | null): string {
+  return `${reason} Automatic review is paused.${restart ? ` ${restart}` : ''}${blockers ? `\n\n${blockers}` : ''}`;
+}
+
 /**
  * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
  * Each push during the same pause updates the notice from after `lastRoundAt` instead of adding another.
@@ -1131,14 +1136,13 @@ async function postPauseNotice(
   target: RunTarget, progress: RunProgress, pause: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
 ): Promise<CheckReport> {
-  const { capReached, capRounds, reason, restart } = pause;
+  const { capReached, capRounds, reason } = pause;
   core.info(capReached
     ? `Round cap reached (${capRounds} rounds with new changes since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
   const settings = progressSettings(target, progress, 'automatic review paused');
-  const blockers = formatOpenBlockers(previousFindings);
   const body = withSettingsBlock(
-    withMarkers(`${reason} Automatic review is paused.${restart ? ` ${restart}` : ''}${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER),
+    withMarkers(pauseText(pause, formatOpenBlockers(previousFindings)), PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER),
     settings,
   );
   await replaceWithNotice(target, progress, PAUSE_NOTICE_MARKER, body, lastRoundAt);

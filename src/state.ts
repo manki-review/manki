@@ -712,6 +712,11 @@ function rolePhrase(role: AuthorClearRole, orHigher = false): string {
   return `the \`${role}\` role${orHigher && role !== 'admin' ? ' or a higher one' : ''}`;
 }
 
+/** Says that the PR author may not clear a blocking thread, or only with `clearRole`, the repo's `author_clear_role`. */
+function authorClearLine(clearRole: AuthorClearRole | undefined): string {
+  return `The PR author may not clear a blocking thread${clearRole ? ` without ${rolePhrase(clearRole, true)}` : ''}.`;
+}
+
 /**
  * Lists the threads `open` that hold an approval, for a person who asks why there is none. `named` holds the threads
  * the covering review blocks on whatever grade they show. `instead` replaces the last line when resolving them is not enough.
@@ -725,7 +730,7 @@ function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, b
     return `- ${threadLink(t)}${note}`;
   }).join('\n');
   const one = open.length === 1;
-  const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. The PR author may not clear a blocking thread${clearRole ? ` without ${rolePhrase(clearRole, true)}` : ''}.`;
+  const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. ${authorClearLine(clearRole)}`;
   return `${one ? '1 thread blocks' : `${open.length} threads block`} the approval:\n${list}\n\n${instead ?? lifts}`;
 }
 
