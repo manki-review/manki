@@ -1769,7 +1769,7 @@ describe('runFullReview end to end', () => {
 
     it('answers a reply in a Manki thread as the person who wrote it, and reopens the thread once when she resolved it', async () => {
       // One automatic round is the cap, so automatic review is paused after the first one.
-      mockGitHub.configs = { main: 'convergence:\n  max_auto_rounds: 1\n' };
+      mockGitHub.configs = { main: 'max_auto_rounds: 1\n' };
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
       const [thread] = mockGitHub.threads;

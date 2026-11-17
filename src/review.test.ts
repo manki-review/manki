@@ -66,9 +66,7 @@ const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   max_diff_lines: 50000,
   instructions: '',
   memory: { enabled: false, repo: '' },
-  convergence: {
-    max_auto_rounds: 5,
-  },
+  max_auto_rounds: 5,
   ...overrides,
 });
 

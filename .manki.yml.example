@@ -207,8 +207,7 @@
 # How rounds end. After `max_auto_rounds` automatic rounds since Manki's last
 # approval, automatic review pauses until a review is started by hand, which
 # turns it back on for 3 rounds. 0 turns the cap off.
-# convergence:
-#   max_auto_rounds: 10
+# max_auto_rounds: 10
 
 # Review memory: stores learnings and suppressions to improve reviews over time.
 # With memory on, a merge also counts per severity and finder how many posted

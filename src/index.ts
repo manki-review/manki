@@ -2088,7 +2088,7 @@ async function runFullReview(
     const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
-    const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
+    const maxAutoRounds = config.max_auto_rounds ?? 0;
     const pause = pauseState(recap, config);
     const { roundsLeft, paused } = pause;
     if (paused && !skipCap && !forceReview) {

@@ -508,7 +508,7 @@ function startedByHand(round: RoundContext): boolean {
 function countRounds(
   priorRounds: RoundContext[], lastApprovalAt: string | undefined, config: ReviewConfig,
 ): { total: number; left: number; sinceRestart?: number; approved: boolean } {
-  const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
+  const maxAutoRounds = config.max_auto_rounds ?? 0;
   let start = priorRounds.length;
   while (start > 0 && !approvedSince(priorRounds[start - 1], lastApprovalAt)) start--;
   let total = 0;
@@ -558,7 +558,7 @@ function restartLine(rounds: number): string {
  * automatic review is paused by the cap or by a last round that ended `NOT_CONVERGING` with no approval since.
  */
 function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>, config: ReviewConfig): PauseState {
-  const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
+  const maxAutoRounds = config.max_auto_rounds ?? 0;
   const { total: capRounds, left: roundsLeft, sinceRestart, approved } = countRounds(priorRounds, lastApprovalAt, config);
   const capReached = roundsLeft <= 0;
   const lastRound = priorRounds.at(-1);

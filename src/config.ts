@@ -54,9 +54,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     repo: '',
   },
   drafts: 'skip',
-  convergence: {
-    max_auto_rounds: 10,
-  },
+  max_auto_rounds: 10,
   related_repos: [],
 };
 
@@ -83,7 +81,7 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'static_analysis',
   'related_repos',
   'drafts',
-  'convergence',
+  'max_auto_rounds',
 ]);
 
 const MAX_JUDGE_TOOL_STEPS = 100;
@@ -100,7 +98,6 @@ const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'analyzers']);
-const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds']);
 const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
@@ -259,17 +256,9 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     errors.push('`drafts` must be one of: skip, review');
   }
 
-  if ('convergence' in config) {
-    const convergence = config.convergence as Record<string, unknown>;
-    if (!convergence || typeof convergence !== 'object' || Array.isArray(convergence)) {
-      errors.push('`convergence` must be an object');
-    } else {
-      warnUnknownKeys(convergence, CONVERGENCE_KEYS, 'convergence', warnings);
-      const maxAutoRounds = convergence.max_auto_rounds;
-      if ('max_auto_rounds' in convergence && (typeof maxAutoRounds !== 'number' || !Number.isInteger(maxAutoRounds) || maxAutoRounds < 0)) {
-        errors.push('`convergence.max_auto_rounds` must be a non-negative integer');
-      }
-    }
+  const maxAutoRounds = config.max_auto_rounds;
+  if ('max_auto_rounds' in config && (typeof maxAutoRounds !== 'number' || !Number.isInteger(maxAutoRounds) || maxAutoRounds < 0)) {
+    errors.push('`max_auto_rounds` must be a non-negative integer');
   }
 
   if ('memory' in config) {
@@ -533,8 +522,6 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.judge = { ...defaults.judge, ...(value as Record<string, unknown>) } as ReviewConfig['judge'];
     } else if (key === 'static_analysis' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.static_analysis = { ...defaults.static_analysis, ...(value as Record<string, unknown>) } as ReviewConfig['static_analysis'];
-    } else if (key === 'convergence' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
     } else {
       (result as Record<string, unknown>)[key] = value;
     }

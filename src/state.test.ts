@@ -2391,7 +2391,7 @@ describe('pauseState', () => {
     expect(state([...capped, blockedAgain])).toMatchObject({ roundsLeft: 3, paused: true, reason: 'The last Manki round found a blocker that came back after a fix.' });
 
     // With the cap off, a restart turns automatic review back on with no limit.
-    const uncapped = { ...DEFAULT_CONFIG, convergence: { ...DEFAULT_CONFIG.convergence, max_auto_rounds: 0 } };
+    const uncapped = { ...DEFAULT_CONFIG, max_auto_rounds: 0 };
     expect(state(early, uncapped)).toMatchObject({ roundsLeft: Infinity, restart: 'A review you start by hand also turns automatic review back on.' });
   });
 });

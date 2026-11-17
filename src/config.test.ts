@@ -35,20 +35,20 @@ describe('config', () => {
       expect(DEFAULT_CONFIG.models).toEqual({ planner: 'claude-haiku-5-5', judge: 'claude-opus-5-5', dedup: 'claude-haiku-5-5' });
     });
 
-    it('exposes default convergence settings', () => {
-      expect(DEFAULT_CONFIG.convergence?.max_auto_rounds).toBe(10);
+    it('caps automatic rounds at 10 by default', () => {
+      expect(DEFAULT_CONFIG.max_auto_rounds).toBe(10);
     });
   });
 
-  describe('convergence config', () => {
-    it('merges user-provided convergence overrides with defaults', () => {
-      const config = loadConfigFromContent('convergence:\n  max_auto_rounds: 3\n');
-      expect(config.convergence?.max_auto_rounds).toBe(3);
+  describe('max_auto_rounds', () => {
+    it('takes the cap the config sets, 0 included', () => {
+      expect(loadConfigFromContent('max_auto_rounds: 3\n').max_auto_rounds).toBe(3);
+      expect(loadConfigFromContent('max_auto_rounds: 0\n').max_auto_rounds).toBe(0);
     });
 
     it('rejects a negative, fractional or non-numeric max_auto_rounds', () => {
       for (const value of ['-1', '1.5', 'three']) {
-        expect(() => loadConfigFromContent(`convergence:\n  max_auto_rounds: ${value}\n`)).toThrow('`convergence.max_auto_rounds` must be a non-negative integer');
+        expect(() => loadConfigFromContent(`max_auto_rounds: ${value}\n`)).toThrow('`max_auto_rounds` must be a non-negative integer');
       }
     });
   });
@@ -317,30 +317,39 @@ unknown_key: some_value
 another_unknown: 123
 nit_handling: comments
 review_level: large
-planner:
-  paired: never
+review_passes: 3
+planner: { enabled: false }
+slice_lines: 200
+reviewers: [{ name: Protocol, focus: consensus rules }]
+convergence: { max_auto_rounds: 2, rounds_after_restart: 1, suppress_resolved_threads: false, test_path_patterns: [] }
+metrics: { fix_rate: true }
+static_analysis: { wait_timeout_seconds: 5 }
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.auto_review).toBe(true);
+      expect(config).toEqual({ ...DEFAULT_CONFIG, static_analysis: { ...DEFAULT_CONFIG.static_analysis, wait_timeout_seconds: 5 } });
       expect(jest.mocked(core.warning).mock.calls.map(c => c[0])).toEqual([
         'Unknown config key: "unknown_key"',
         'Unknown config key: "another_unknown"',
         'Unknown config key: "nit_handling"',
         'Unknown config key: "review_level"',
+        'Unknown config key: "review_passes"',
         'Unknown config key: "planner"',
+        'Unknown config key: "slice_lines"',
+        'Unknown config key: "reviewers"',
+        'Unknown config key: "convergence"',
+        'Unknown config key: "metrics"',
+        'Unknown config key: "static_analysis.wait_timeout_seconds"',
       ]);
     });
 
     it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
       loadConfigFromContent(`
 static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], analyzers: all, check: false }
-convergence: { max_auto_rounds: 3, max_rounds: 2 }
 memory: { enabled: false, repo: '', repository: x/y }
 `);
       const unknown = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).filter(m => m.startsWith('Unknown config key'));
       expect(unknown).toEqual([
         'Unknown config key: "static_analysis.check"',
-        'Unknown config key: "convergence.max_rounds"',
         'Unknown config key: "memory.repository"',
       ]);
     });

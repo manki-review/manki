@@ -1384,13 +1384,11 @@ export interface ReviewConfig {
   related_repos?: RelatedRepo[];
   /** `skip` reviews a draft PR only on request, `review` reviews it automatically. A draft review never approves. */
   drafts?: 'skip' | 'review';
-  convergence?: {
-    /**
-     * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
-     * automatic review is paused until a review is started by hand. `0` disables the cap.
-     */
-    max_auto_rounds?: number;
-  };
+  /**
+   * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
+   * automatic review is paused until a review is started by hand. `0` disables the cap.
+   */
+  max_auto_rounds?: number;
 }
 
 export interface DiffFile {
