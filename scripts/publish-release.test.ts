@@ -229,7 +229,7 @@ describe('publish-release.sh --dry-run', () => {
     expect(result.stderr).toContain(`release commit ${fx.release} is not on origin/main`);
   });
 
-  it('takes a later main commit at the same version only when it edits CHANGELOG.md', () => {
+  it('takes a later main commit at the same version only when it changes CHANGELOG.md alone', () => {
     fx = setup();
     const buildOnMain = (): string => {
       fx.git('push', '-q', 'origin', 'main');
@@ -249,11 +249,23 @@ describe('publish-release.sh --dry-run', () => {
     buildOnMain();
     const refused = publish(fx, 'v1.2.3');
     expect(refused.status).toBe(1);
-    expect(refused.stderr).toContain(`release commit ${feature} doesn't edit CHANGELOG.md`);
+    expect(refused.stderr).toContain(`release commit ${feature} neither bumps the version to 1.2.3 nor changes CHANGELOG.md alone`);
     expect(refused.stdout).not.toContain('dry-run:');
 
     const changelog = path.join(fx.work, 'CHANGELOG.md');
-    fs.writeFileSync(changelog, fs.readFileSync(changelog, 'utf8').replace('Notes for 1.2.3.', 'Rewritten notes.'));
+    const rewrite = (from: string, to: string): void =>
+      fs.writeFileSync(changelog, fs.readFileSync(changelog, 'utf8').replace(from, to));
+    rewrite('Notes for 1.2.3.', 'Notes of a feature.');
+    fs.writeFileSync(path.join(fx.work, 'feature.txt'), 'feature\n');
+    fx.git('add', '.');
+    fx.git('commit', '-q', '-m', 'feature with notes');
+    const mixed = fx.git('rev-parse', 'HEAD');
+    buildOnMain();
+    const refusedMixed = publish(fx, 'v1.2.3');
+    expect(refusedMixed.status).toBe(1);
+    expect(refusedMixed.stderr).toContain(`release commit ${mixed} neither bumps the version to 1.2.3 nor changes CHANGELOG.md alone`);
+
+    rewrite('Notes of a feature.', 'Rewritten notes.');
     fx.git('commit', '-q', '-a', '-m', 'rewrite the notes');
     const build = buildOnMain();
     const taken = publish(fx, 'v1.2.3');
@@ -262,6 +274,19 @@ describe('publish-release.sh --dry-run', () => {
     expect(taken.stdout).toContain(`dry-run: git tag -fa v1.2.3 ${build} -m v1.2.3`);
     expect(taken.stdout).toContain('- Rewritten notes.');
     expect(taken.stdout).not.toContain('Notes for 1.2.3.');
+  });
+
+  it('refuses a release commit once a later main commit edits CHANGELOG.md', () => {
+    fx = setup();
+    const changelog = path.join(fx.work, 'CHANGELOG.md');
+    fs.writeFileSync(changelog, fs.readFileSync(changelog, 'utf8').replace('Notes for 1.2.3.', 'Rewritten notes.'));
+    fx.git('commit', '-q', '-a', '-m', 'rewrite the notes');
+    fx.git('push', '-q', 'origin', 'main');
+    const later = fx.git('rev-parse', '--short', 'HEAD');
+    const result = publish(fx, 'v1.2.3', 'absent', `--verified=${fx.build}`);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`origin/main has a later commit that edits CHANGELOG.md (${later})`);
+    expect(result.stdout).not.toContain('dry-run:');
   });
 
   it('refuses a release branch whose name does not match package.json', () => {

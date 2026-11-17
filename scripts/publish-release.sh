@@ -118,8 +118,12 @@ read -r -a parents <<<"$(git rev-list --parents -n 1 "$BUILD")"
 RELEASE_COMMIT="${parents[1]}"
 git merge-base --is-ancestor "$RELEASE_COMMIT" "refs/remotes/$REMOTE/main" ||
   die "release commit $RELEASE_COMMIT is not on $REMOTE/main"
-[ -n "$(git diff --name-only "$RELEASE_COMMIT^" "$RELEASE_COMMIT" -- CHANGELOG.md)" ] ||
-  die "release commit $RELEASE_COMMIT doesn't edit CHANGELOG.md. Point $BRANCH at the release PR's commit."
+prev_version=$(git show "$RELEASE_COMMIT^:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+[ "$prev_version" != "$VERSION" ] || [ "$(git diff --name-only "$RELEASE_COMMIT^" "$RELEASE_COMMIT")" = "CHANGELOG.md" ] ||
+  die "release commit $RELEASE_COMMIT neither bumps the version to $VERSION nor changes CHANGELOG.md alone. Point $BRANCH at a commit that does."
+later=$(git log --format=%h "$RELEASE_COMMIT..refs/remotes/$REMOTE/main" -- CHANGELOG.md)
+[ -z "$later" ] ||
+  die "$REMOTE/main has a later commit that edits CHANGELOG.md ($(echo $later)). Point $BRANCH at the newest one."
 if has_dist "$RELEASE_COMMIT"; then
   die "release commit $RELEASE_COMMIT already contains dist/"
 fi

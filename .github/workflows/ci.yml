@@ -24,11 +24,12 @@ jobs:
           base=$(git show HEAD^1:package.json | node -p "JSON.parse(require('fs').readFileSync(0)).version")
           head=$(node -p "require('./package.json').version")
           [ "$base" != "$head" ] && exit 0
-          # A release that is merged but has no tag yet may still get its notes rewritten.
-          # Only the exit status 2 of `ls-remote` says for sure that the tag does not exist.
+          # A release that is merged but has no tag yet may still get its notes rewritten, by a
+          # PR that changes nothing else. Only the exit status 2 of `ls-remote` says for sure
+          # that the tag does not exist.
           tag_status=0
           git ls-remote --exit-code --tags origin "refs/tags/v$head" >/dev/null || tag_status=$?
-          [ "$tag_status" -eq 2 ] && exit 0
+          [ "$tag_status" -eq 2 ] && [ "$(git diff --name-only HEAD^1 HEAD)" = "CHANGELOG.md" ] && exit 0
           echo "::error file=CHANGELOG.md::Only release PRs edit CHANGELOG.md. Put what users need to know in the PR title and body, and the release PR collects it."
           exit 1
       - uses: actions/setup-node@v7  # first-party GitHub action
