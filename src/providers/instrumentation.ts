@@ -54,12 +54,14 @@ export function wrapClientForUsage(client: LLMClient): {
  * `client` and fails with its own error, also after the stage moved, since such a `fallback` would answer as if it had read the code.
  *
  * `onFallback` is called once, when the stage moves: at the first refusal, or when `fallback` first answers after a limit.
+ * `onNoTime` is called for each request that is not sent to `fallback` because the failed call left no time.
  */
 export function withModelFallback(
   client: LLMClient,
   fallback: LLMClient | undefined,
   onFallback: (error: RefusalError | QuotaError) => void,
   movesOnLimit: () => (() => void) | undefined = () => () => {},
+  onNoTime: () => void = () => {},
 ): LLMClient {
   if (!fallback) return client;
   let moved = false;
@@ -80,6 +82,7 @@ export function withModelFallback(
         const usedMs = Date.now() - start;
         const outOfTime = timeoutMs !== undefined && usedMs >= timeoutMs;
         const resend = () => fallback.sendMessage(sys, user, timeoutMs === undefined ? opts : { ...opts, timeoutMs: timeoutMs - usedMs });
+        if (outOfTime) onNoTime();
         if (limit) {
           if (outOfTime) throw error;
           giveBack ??= movesOnLimit();
@@ -116,11 +119,23 @@ export function withModelFallback(
   };
 }
 
-/** Sends every request to `client` with `signal`, so its abort stops the call in flight. Without `signal`, returns `client`. */
-export function withSignal(client: LLMClient, signal: AbortSignal | undefined): LLMClient {
-  if (!signal) return client;
+/**
+ * Sends every request to `client` with `signal`, so its abort stops the call in flight. With `deadline`, a time in ms since
+ * the epoch, a request gets no more time than is left until then, and one made at or after it is not sent and fails with a
+ * `TimeoutError`. Without either, returns `client`.
+ */
+export function withSignal(client: LLMClient, signal: AbortSignal | undefined, deadline?: number): LLMClient {
+  if (!signal && deadline === undefined) return client;
   return {
-    sendMessage: (sys, user, opts) => client.sendMessage(sys, user, { ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, signal]) : signal }),
+    sendMessage: async (sys, user, opts) => {
+      const leftMs = deadline === undefined ? undefined : deadline - Date.now();
+      if (leftMs !== undefined && leftMs <= 0) throw new TimeoutError('No time is left for the call, so it is not sent');
+      return client.sendMessage(sys, user, {
+        ...opts,
+        ...(signal && { signal: opts?.signal ? AbortSignal.any([opts.signal, signal]) : signal }),
+        ...(leftMs !== undefined && { timeoutMs: Math.min(opts?.timeoutMs || leftMs, leftMs) }),
+      });
+    },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
     ...(client.repoTools ? { repoTools: true } : {}),
   };

@@ -1159,6 +1159,8 @@ export interface ReviewResult {
   plannerFallbackReason?: string;
   /** Stages that moved to a fallback model, after a safety filter refused them or their model reached a limit. */
   modelFallbacks?: RoundModelFallback[];
+  /** The retries, moves to a fallback model and judge calls the round did not start, in the order it decided. */
+  notStarted?: RoundNotStarted[];
   /** Triage the team was built from, after the pin and the sensitive-path rule. */
   triage?: Triage;
   /** Whether the diff touches a security-sensitive path. */
@@ -1665,6 +1667,8 @@ export interface AgentProgressEntry {
   findingCount?: number;
   durationMs?: number;
   retryCount?: number;
+  /** Why a retry or a move to the fallback model of the finder was not started, one line each. */
+  notStarted?: string[];
 }
 
 export interface DashboardData {
@@ -1809,6 +1813,8 @@ export interface RoundContext {
   prClaims?: RoundPrClaims;
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
+  /** The retries, moves to a fallback model and judge calls the round did not start, and why. */
+  notStarted?: RoundNotStarted[];
   /**
    * Set on a round that approved: whether the approval was held, and why: a conflict with the base, a draft, a config
    * that failed to load, files the review could not read, open warning threads, or GitHub refusing the approval. `held`
@@ -2080,6 +2086,16 @@ export interface RoundModelFallback {
   reason: string;
   /** Set when the stage's model reached a limit. Unset after a safety refusal. */
   limit?: true;
+}
+
+/** A retry of a finder, a move to a fallback model or a judge call that the round did not start, and why. */
+export interface RoundNotStarted {
+  /** `retry` for a finder's retry, `fallback` for a stage's move to its fallback model, `judge` for the judge's call. */
+  kind: 'retry' | 'fallback' | 'judge';
+  stage: RoundModelFallback['stage'];
+  /** Finder or check whose retry or move was not started. */
+  agent?: string;
+  reason: string;
 }
 
 /**

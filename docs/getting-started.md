@@ -169,6 +169,8 @@ A resumed run has the same sandbox, model, effort and tools as the first one, an
 
 With a ChatGPT login the Codex CLI keeps its own retries, and Manki resumes nothing. While the provider asks the CLI to wait, the CLI waits, which can run a call into its time limit. The timeout message then says that the CLI was waiting on the provider. When the CLI gives up on a model at capacity, the stage fails with "OpenAI model at capacity" there too.
 
+When the Codex CLI cannot reach the endpoint or OpenAI at all, for example because the connection is refused or the host name does not resolve, it prints `ERROR: Reconnecting... waiting for network` and tries again after a wait that grows to about a minute, without ever giving up. A run that prints nothing but that line for 2 minutes is ended, and the call fails as a failed connection without a resume, since the resumed run would wait for the same network. A finder that fails this way is retried once when [the round has the time](how-reviews-work.md#review-pipeline), and a call that ran out of its own time is not retried.
+
 ### Gemini
 
 #### Gemini API Key
@@ -439,7 +441,7 @@ Manki itself decides who can start it from a comment, on a PR, an issue or a rev
 - **Resolving a thread can approve the PR.** Resolving the last open thread by hand runs the auto-approve check at once.
 - **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open, non-draft PR from your repository, updated in the last day and not opened by a bot, whose head has no Manki review yet.
 
-`timeout-minutes: 30` ends a run that hangs, for example on a model call that never returns. A higher value gains nothing: the service cancels a run after 40 minutes, so the PR's queue moves on. A full review usually takes a few minutes. A review with slow models on every stage can still reach this limit, since a call of a finder or the verdict reader has 15 minutes and the judge has up to 20, and GitHub then cancels the run before it posts a verdict.
+`timeout-minutes: 30` ends a run that hangs, for example on a model call that never returns. A higher value gains nothing: the service cancels a run after 40 minutes, so the PR's queue moves on. A full review usually takes a few minutes. Manki cannot read the job's `timeout-minutes`, so it ends the model calls of a review 25 minutes after the action started and posts the round, incomplete when a stage did not fit (see [the round's time](how-reviews-work.md#review-pipeline)). With a lower `timeout-minutes`, GitHub can stop a slow review before it posts anything.
 
 ### Pull requests from forks
 

@@ -3730,18 +3730,20 @@ describe('buildDashboard', () => {
     expect(afterRetry).toContain('2/3 agents complete');
   });
 
-  it('renders failed agent without retry count as before', () => {
+  it('renders failed agent without retry count as before, with why a retry or fallback was not started', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 100, agentCount: 3,
       rawFindingCount: 5,
       agentProgress: [
         { name: 'Security & Safety', status: 'failed', durationMs: 2000 },
         { name: 'Architecture & Design', status: 'done', findingCount: 3, durationMs: 4000 },
+        { name: 'GPT 6.1 Sol', status: 'failed', durationMs: 900_000, notStarted: ['not moved to the fallback model: the failed call left no time', 'not retried: OpenAI endpoint limit reached'] },
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}🔴 Security & Safety: failed (2s)`);
+    expect(md).toContain(`${INDENT}🔴 Security & Safety: failed (2s)\n`);
     expect(md).not.toContain('attempts');
+    expect(md).toContain(`${INDENT}🔴 GPT 6.1 Sol: failed (15m 0s). Not moved to the fallback model: the failed call left no time. Not retried: OpenAI endpoint limit reached`);
   });
 });
 
