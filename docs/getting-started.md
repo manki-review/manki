@@ -421,7 +421,7 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 
 On a merged or closed PR the approval check does nothing, and a reply or a command is answered without resolving or reopening a thread, approving, or storing a dismissal or a learning from the thread. The fix rate of a merge is still recorded.
 
-The service starts no run for anything Manki or another bot did, a PR closed without merging, or a comment that neither names Manki with `/manki` or `@manki-review` nor replies in a review thread.
+The service starts no run for anything Manki or another bot did, a PR closed without merging, or a comment that neither mentions Manki nor replies in a review thread. A comment mentions Manki with `/manki`, or with the older `@manki-review` or `@manki`. `/manki` is the form to write.
 
 So a PR that a bot opens or pushes to, such as a Dependabot update, gets no automatic review and no `Manki` check. A person with write access can still ask for a review with `/manki review` in a PR comment. Where `Manki` is a required check, name the bot in `skip_authors`: its PRs then get a `Manki` check that completes as skipped, which passes (see [Skipping PRs](how-reviews-work.md#skipping-prs)).
 
