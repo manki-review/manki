@@ -12,7 +12,7 @@ import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv
 import type { LLMClient, ProviderInputs } from './providers';
 import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, isGradeCell, isSecurityFinding, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, VERDICT_READER_NAME, VerdictReason } from './types';
+import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, gradedAbove, isGradeCell, isSecurityFinding, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, VERDICT_READER_NAME, VerdictReason } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -454,8 +454,13 @@ interface FollowUpScore {
   resolvedRight: number;
   /** Earlier threads the round resolved that the key says stay open. */
   resolvedWrong: number;
-  /** Findings that restate an earlier finding the key says the round must not post again. */
+  /**
+   * Findings that restate an earlier finding the key says the round must not post again. A finding folded into the open
+   * thread of the item it restates is not posted again, unless the run lacks `foldsStored`.
+   */
   repeats: number;
+  /** Set when the run stores `foldedInto` on its findings. A report from a ref that does not store it has none. */
+  foldsStored?: true;
 }
 
 interface RunScore {
@@ -466,8 +471,8 @@ interface RunScore {
   complete: boolean;
   /** Why the run failed or the review did not complete. */
   error?: string;
-  /** Each finding with the text the matcher read. A report from a ref that kept no finding text holds no `description`, and one from a ref that stored no route holds no `route`. */
-  findings: Array<Omit<MatchedFinding, 'description'> & Partial<Pick<MatchedFinding, 'description'>> & { route?: GradeRoute }>;
+  /** Each finding with the text the matcher read. A report from a ref that kept no finding text holds no `description`, and one from a ref that stored no route holds no `route`. `foldedInto` is the id of the earlier open thread the round folded the finding into, by `foldedThread`. */
+  findings: Array<Omit<MatchedFinding, 'description'> & Partial<Pick<MatchedFinding, 'description'>> & { route?: GradeRoute; foldedInto?: string }>;
   matches: ItemMatch[];
   /** Must-catch items matched, over all must-catch items. `null` for a clean case and an incomplete run. */
   mustCatchRecall: number | null;
@@ -533,6 +538,14 @@ function matchedFindings(matches: ItemMatch[], isRepeat: (item: string) => boole
   return new Set(matches.flatMap(m => (!isRepeat(m.item) || m.verdict === 'MATCH' ? m.findings : [])));
 }
 
+/**
+ * Returns the indexes of the findings `matches` grade MATCH, which for an earlier finding's item are posted again. A
+ * finding folded into the open thread of the item it matches is not, and `foldedInto` gives each finding's thread.
+ */
+function restatedFindings(matches: ItemMatch[], foldedInto: (n: number) => string | undefined = () => undefined): Set<number> {
+  return new Set(matches.filter(m => m.verdict === 'MATCH').flatMap(m => m.findings.filter(n => foldedInto(n) !== m.item)));
+}
+
 /** Whether the run matched `item` at its grade or above. */
 function foundAtGrade(item: Pick<KeyItem, 'id' | 'severity'>, run: Pick<RunScore, 'matches'>): boolean {
   return run.matches.some(m => m.item === item.id && m.verdict === 'MATCH' && severityCredit(m.severity, item.severity) === 1);
@@ -540,19 +553,21 @@ function foundAtGrade(item: Pick<KeyItem, 'id' | 'severity'>, run: Pick<RunScore
 
 /** What a score reads of a review besides the case's key. */
 interface ScoredReview {
-  findings: MatchedFinding[];
+  findings: Array<MatchedFinding & { foldedInto?: string }>;
   outcome: string;
   complete: boolean;
   /** The earlier open threads the round resolved, for a complete round of a follow-up case. */
   resolved?: string[];
   /** Each earlier open thread as the round left it, for a complete round of a follow-up case scored from its review. */
   threads?: ThreadOutcome[];
+  /** Whether `findings` store `foldedInto`. */
+  foldsStored?: true;
 }
 
 type KeyScore = Pick<RunScore, 'matches' | 'mustCatchRecall' | 'weightedRecall' | 'verdictCorrect' | 'falseBlockers' | 'unexpectedWarnings' | 'extraFindings' | 'duplicates' | 'followUp'>;
 
 /** Matches the findings of one review to the case's key and returns the part of its score that the key decides. */
-async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved, threads }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
+async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved, threads, foldsStored }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
   const matches: ItemMatch[] = [];
   const repeats = repeatItems(benchCase);
   for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) {
@@ -568,7 +583,7 @@ async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: rev
   }
   const isRepeat = (id: string) => repeats.some(item => item.id === id);
   const keyMatches = matches.filter(m => !isRepeat(m.item));
-  const restated = new Set(matches.filter(m => isRepeat(m.item) && m.verdict === 'MATCH').flatMap(m => m.findings));
+  const restated = restatedFindings(matches.filter(m => isRepeat(m.item)), n => findings[n].foldedInto);
   const matched = matchedFindings(matches, isRepeat);
   const strict = (item: KeyItem) => matches.find(m => m.item === item.id && m.verdict === 'MATCH');
   const { mustCatch } = benchCase;
@@ -590,6 +605,7 @@ async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: rev
         resolvedRight: resolved.filter(id => benchCase.mustResolve.includes(id)).length,
         resolvedWrong: resolved.filter(id => !benchCase.mustResolve.includes(id)).length,
         repeats: restated.size,
+        ...(foldsStored && { foldsStored }),
       },
     }),
   };
@@ -605,13 +621,22 @@ function raisedFindings(review: LocalReview): Finding[] {
   return review.result.findings.filter(f => !f.relisted);
 }
 
+/**
+ * Returns the id of the earlier open thread a pull request round leaves `f` to, as `postReview` does, so the round posts
+ * it no second time. A variant goes into its thread as a reply, and a finding graded above its thread is posted.
+ */
+function foldedThread(earlier: EarlierRound | undefined, f: Finding): string | undefined {
+  const thread = f.threadId && !f.variantOf && !f.answeredIn ? earlier?.findings.find(e => e.id === f.threadId && e.thread === 'open') : undefined;
+  return thread && !gradedAbove(f.severity, thread) ? thread.id : undefined;
+}
+
 /** Matches the findings of one review to the case's key and scores it. */
 export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
   const { outcome, reviewComplete: complete } = review.result;
-  const findings = raisedFindings(review);
-  const followUp = benchCase.priorRound && complete ? { resolved: resolvedThreads(benchCase, review), threads: threadOutcomes(benchCase, review) } : undefined;
+  const findings = raisedFindings(review).map(f => ({ ...f, foldedInto: foldedThread(benchCase.priorRound, f) }));
+  const followUp = benchCase.priorRound && complete ? { resolved: resolvedThreads(benchCase, review), threads: threadOutcomes(benchCase, review), foldsStored: true as const } : undefined;
   return {
-    ...reviewFacts(review),
+    ...reviewFacts(review, benchCase.priorRound),
     complete,
     ...(!complete && { error: review.result.summary || 'The review did not complete.' }),
     ...await scoreKey(benchCase, { findings, outcome, complete, ...followUp }, matcher),
@@ -673,8 +698,8 @@ function gradeRoute(f: Finding): GradeRoute {
   };
 }
 
-/** What a run records about its review whether or not the findings could be matched. */
-function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'verdictReason' | 'findings' | 'finders' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+/** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'findings' | 'finders' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   const { outcome, verdictReason } = review.result;
   return {
@@ -682,7 +707,8 @@ function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'verdictRe
     ...(verdictReason && { verdictReason }),
     findings: raisedFindings(review).map((f) => {
       const { severity, title, file, line, description, howToFix, suggestedFix } = f;
-      return { severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), route: gradeRoute(f) };
+      const foldedInto = foldedThread(earlier, f);
+      return { severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), route: gradeRoute(f), ...(foldedInto && { foldedInto }) };
     }),
     finders: finderSteps(review),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
@@ -794,6 +820,7 @@ function caseReport(benchCase: BenchCase, runs: RunScore[]): CaseReport {
   });
   const caught = (item: KeyItem) => (run: RunScore) => verdict(run, item.id) === 'MATCH';
   const resolved = (id: string, run: RunScore) => !!run.followUp?.resolved.includes(id);
+  const repeated = (id: string, run: RunScore) => restatedFindings(run.matches.filter(m => m.item === id), n => run.findings[n]?.foldedInto).size > 0;
   const earlier = (id: string) => benchCase.priorRound!.findings.find(f => f.id === id)! as Pick<KeyItem, 'id' | 'severity'>;
   return {
     id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
@@ -801,8 +828,8 @@ function caseReport(benchCase: BenchCase, runs: RunScore[]): CaseReport {
       ...benchCase.mustCatch.map(item => report(item, 'must_catch', caught(item))),
       ...benchCase.niceToHave.map(item => report(item, 'nice_to_have', caught(item))),
       ...benchCase.mustResolve.map(id => report(earlier(id), 'must_resolve', run => resolved(id, run))),
-      ...benchCase.mustKeepOpen.map(item => report(item, 'must_keep_open', run => !resolved(item.id, run) && verdict(run, item.id) !== 'MATCH')),
-      ...benchCase.mustNotRepeat.map(id => report(earlier(id), 'must_not_repeat', run => !resolved(id, run) && verdict(run, id) !== 'MATCH')),
+      ...benchCase.mustKeepOpen.map(item => report(item, 'must_keep_open', run => !resolved(item.id, run) && !repeated(item.id, run))),
+      ...benchCase.mustNotRepeat.map(id => report(earlier(id), 'must_not_repeat', run => !resolved(id, run) && !repeated(id, run))),
     ],
     runs,
   };
@@ -978,7 +1005,8 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
       const scoreAgain = async (): Promise<RunScore[]> => {
         const runs: RunScore[] = [];
         for (const run of c.runs) {
-          const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved, ...(run.followUp.threads && { threads: run.followUp.threads }) }) };
+          const { followUp } = run;
+          const review = { findings: run.findings as ScoredReview['findings'], outcome: run.outcome, complete: true, ...(followUp && { resolved: followUp.resolved, ...(followUp.threads && { threads: followUp.threads }), ...(followUp.foldsStored && { foldsStored: followUp.foldsStored }) }) };
           runs.push(run.complete ? { ...run, ...await twice(() => scoreKey(benchCase, review, matcher)) } : run);
         }
         return runs;
@@ -1065,6 +1093,22 @@ function gateSide(variants: VariantReport[], shared: string[]): GateSide {
   };
 }
 
+/**
+ * Returns both sides with the repeats of a case counted with folded findings, as a ref that stores no `foldedInto` counts
+ * them, on each variant's case where a run of either side lacks `foldsStored`. The gate then never compares a case
+ * scored both ways.
+ */
+function repeatsScoredAlike(baseline: BenchReport[], candidate: BenchReport[]): [BenchReport[], BenchReport[]] {
+  const key = (variant: string, id: string) => JSON.stringify([variant, id]);
+  const older = new Set([...baseline, ...candidate].flatMap(r => r.variants.flatMap(v => v.cases
+    .filter(c => c.runs.some(run => run.followUp && !run.followUp.foldsStored)).map(c => key(v.name, c.id)))));
+  const alike = (reports: BenchReport[]) => reports.map(r => ({ ...r, variants: r.variants.map(v => ({ ...v, cases: v.cases.map(c => (!older.has(key(v.name, c.id)) ? c : {
+    ...c,
+    runs: c.runs.map(run => (run.followUp?.foldsStored ? { ...run, followUp: { ...run.followUp, repeats: restatedFindings(run.matches.filter(m => repeatItemIds(c).has(m.item))).size } } : run)),
+  })) })) }));
+  return [alike(baseline), alike(candidate)];
+}
+
 /** Joins the parts of one sentence: the first keeps its capital, and the others start lower case. */
 function joinParts(parts: string[], last = ' and '): string {
   const [first, ...rest] = parts;
@@ -1085,6 +1129,7 @@ function figure(value: number): string {
  */
 export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
   if (baseline.length === 0 || candidate.length === 0) throw new Error('The gate needs a baseline and a candidate report');
+  [baseline, candidate] = repeatsScoredAlike(baseline, candidate);
   const all = [...baseline, ...candidate];
   for (const [side, reports] of [['baseline', baseline], ['candidate', candidate]] as const) {
     const reviewed = new Set(reports.map(r => r.commit).filter(Boolean));

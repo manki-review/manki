@@ -571,6 +571,36 @@ describe('scoreRun on a follow-up case', () => {
     expect(await scoreRun(followUp, relisting, matcher)).toEqual(score);
     const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
     expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
+    // A finding folded into the open thread of the item it restates is not posted again: it is no repeat, and the thread counts as kept open.
+    const scored = (runs: Array<Awaited<ReturnType<typeof scoreRun>>>) => buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs }] }]);
+    const restating = async (first: Partial<Finding>) => {
+      const local = review();
+      local.result.findings = [{ ...findings[0], ...first }, ...findings.slice(1)];
+      local.result.threadEvaluations = [];
+      const run = await scoreRun(followUp, local, matcher);
+      const keptOpen = scored([run]).variants[0].cases[0].items.find(item => item.id === 'P2')!.caught;
+      return { run, seen: { repeats: run.followUp?.repeats, foldedInto: run.findings[0].foldedInto, keptOpen } };
+    };
+    const folded = await restating({ severity: 'warning', threadId: 'P2' });
+    expect(folded.seen).toEqual({ repeats: 1, foldedInto: 'P2', keptOpen: 1 });
+    expect(folded.run.followUp?.foldsStored).toBe(true);
+    // A finding posted on its own, graded above its thread, posted as a variant in the thread's replies, or folded into another thread still counts.
+    expect((await restating({ severity: 'warning' })).seen).toEqual({ repeats: 2, foldedInto: undefined, keptOpen: 0 });
+    expect((await restating({ threadId: 'P2' })).seen).toEqual({ repeats: 2, foldedInto: undefined, keptOpen: 0 });
+    expect((await restating({ severity: 'warning', threadId: 'P2', variantOf: 'src/conn.rs:40:40:no-timeout' })).seen).toEqual({ repeats: 2, foldedInto: undefined, keptOpen: 0 });
+    expect((await restating({ severity: 'warning', threadId: 'P1' })).seen).toEqual({ repeats: 2, foldedInto: 'P1', keptOpen: 0 });
+    // A thread that is not open carries nothing.
+    expect((await restating({ severity: 'warning', threadId: 'P4' })).seen).toEqual({ repeats: 2, foldedInto: undefined, keptOpen: 0 });
+    // A report scored again keeps the folds it stored, and a report from a ref that stored none is scored as before.
+    const rescoredRun = async (r: BenchReport) => (await rescoreReport(r, [{ ...followUp, keyVersion: followUp.keyVersion + 1 }], matcher)).report.variants[0].cases[0];
+    const again = await rescoredRun(scored([folded.run]));
+    expect(again.runs[0].followUp).toEqual(folded.run.followUp);
+    expect(again.items.find(item => item.id === 'P2')!.caught).toBe(1);
+    const unfolded: BenchReport = JSON.parse(JSON.stringify(scored([folded.run]), (key, value: unknown) => (key === 'foldedInto' || key === 'foldsStored' ? undefined : value)));
+    const before = await rescoredRun(unfolded);
+    expect(before.runs[0].followUp).toMatchObject({ repeats: 2 });
+    expect(before.runs[0].followUp).not.toHaveProperty('foldsStored');
+    expect(before.items.find(item => item.id === 'P2')!.caught).toBe(0);
     const incomplete = await scoreRun(followUp, review(false), matcher);
     const listed = (benchCase: BenchCase, sets?: Array<BenchCase['set']>) => formatUnmatched(buildReport(
       { startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' },
@@ -1134,6 +1164,26 @@ describe('mergeReports and gateReports', () => {
     expect(formatGate([firstRoundOnOneSide])).toContain('Left out, scored as a follow-up round on one side and as a first round on the other: demo-1\n');
     const onlyUnlike = report([[first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0 } }]]]);
     expect(gateReports([report([[first, [await run(first, 'blocker')]]])], [onlyUnlike])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [], unlike: ['demo-1'] });
+    // A run that stores no folds counts a restatement folded into its own thread as posted, so on such a case the gate counts it on both sides.
+    const followUpCase = parseCase(FOLLOW_UP_YAML, 'demo-1.yml', 'holdout');
+    const restating = async (folded: number, posted: number) => {
+      const restatements = [
+        ...Array.from({ length: folded }, () => makeFinding({ file: 'src/conn.rs', threadId: 'P2' })),
+        ...Array.from({ length: posted }, () => makeFinding({ file: 'src/conn.rs' })),
+      ];
+      const matcher: Matcher = async item => (item.id === 'P2' ? { verdict: 'MATCH', findings: restatements.map((_, i) => i), reason: 'restates' } : { verdict: 'NONE', findings: [], reason: 'none' });
+      return report([[followUpCase, [await scoreRun(followUpCase, makeReview('ADDRESS_FIRST', restatements), matcher)]]]);
+    };
+    const withoutFolds = (r: BenchReport): BenchReport => JSON.parse(JSON.stringify(r, (key, value: unknown) => (key === 'foldedInto' || key === 'foldsStored' ? undefined : value)));
+    const candidateFolds = await restating(2, 2);
+    expect(candidateFolds.variants[0].cases[0].runs[0].followUp?.repeats).toBe(2);
+    const olderBaseline = withoutFolds(await restating(0, 2));
+    expect(gateReports([olderBaseline, again(olderBaseline)], [candidateFolds])[0]).toMatchObject({
+      verdict: 'FAIL', shared: ['demo-1'], baseline: { repeats: 2 }, candidate: { repeats: 4 }, reason: 'Earlier findings posted again rose from 2 to 4 per run, by more than 1.',
+    });
+    const baselineFolds = await restating(0, 2);
+    expect(gateReports([baselineFolds, again(baselineFolds)], [candidateFolds])[0]).toMatchObject({ verdict: 'PASS', baseline: { repeats: 2 }, candidate: { repeats: 2 } });
+    expect(gateReports([baselineFolds, again(baselineFolds)], [withoutFolds(await restating(0, 3))])[0]).toMatchObject({ verdict: 'RERUN', baseline: { repeats: 2 }, candidate: { repeats: 3 } });
     expect(gateReports([await followUps({ resolvedRight: 1 }), again(await followUps({ resolvedRight: 1 }))], [await followUps({ resolvedRight: 0 })])[0]).toMatchObject({
       verdict: 'RERUN', reason: 'Earlier threads resolved as the key says fell from 1 to 0 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
     });
