@@ -56,29 +56,30 @@ auto_review_max_lines: 8000
 max_diff_lines: 15000
 slice_lines: 1500
 
-# Per-stage model selection
+# Per-stage model selection. The finders are in `review.groups`.
 models:
   planner: claude-haiku-5-5      # fast pre-review planning pass
-  reviewer: claude-sonnet-5-5    # the finder on every round
-  reviewer_pair: claude-opus-5-5 # the second finder on paired rounds (default: the other Claude tier)
   judge: claude-opus-5-5         # precise, single judge
-  refuter_pair: gpt-6.1-sol      # a second refuter beside the judge's (default: off)
+  second_refuter: gpt-6.1-sol    # a second refuter beside the judge's (default: off)
   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
-  fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: reviewer)
+  fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: the first model of `full` other than the stage's own)
 
 # Planner stage (default: enabled). A fast pre-review pass triages the
 # change (trivial, subtle, paired) and picks the judge effort and PR type.
 planner:
   enabled: true
 
-# Review groups per class of PR (default: the built-ins). Read from the base
-# branch, never from the PR. See "Review groups" in docs/how-reviews-work.md.
+# Who reviews each class of PR (default: the built-ins). A config that sets
+# `groups` defines `trivial`, `solo` and `full`. Read from the base branch,
+# never from the PR. See "Review groups" in docs/how-reviews-work.md.
 # review:
 #   groups:
-#     deep:
-#       reviewers:
-#         - { model: claude-opus-5-5, effort: high }
-#         - { model: gpt-5.5, effort: high }
+#     trivial: [claude-sonnet-5-5]                  # the quick check of a trivial change
+#     solo: [claude-sonnet-5-5]                     # a low-risk change, one finder
+#     full: [claude-sonnet-5-5, claude-opus-5-5]    # everything else
+#     deep:                                         # a group of your own
+#       - { model: claude-opus-5-5, effort: high }
+#       - { model: gpt-5.5, effort: high }
 #   routing:
 #     security: deep
 #   rules: warn    # a broken required rule of the instruction files is at least a warning. `block` makes it a blocker. `auto`, the default, grades it by its damage
@@ -158,29 +159,24 @@ memory:
 | `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with Review again in its settings block. Read from the base branch. |
 | `max_diff_lines` | positive integer | `15000` | Reviewable lines above which Manki never reviews a PR, even when forced. Read from the base branch. |
 | `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder or the verdict reader reads in one call. A larger diff is read in slices of about this size, and of at most 200,000 characters, four at a time. Read from the base branch. |
-| `models` | map | see below | The model of each stage. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
+| `models` | map | see below | The model of each stage. The finders are not here: `review.groups` says who reviews. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
 | `models.planner` | model id | `claude-haiku-5-5` | The planner, a fast pass that triages the change before the review. |
-| `models.reviewer` | model id | `claude-sonnet-5-5` | The finder of the built-in review groups, and `@reviewer` in a group of your own. |
-| `models.reviewer_pair` | model id | the other Claude tier of `models.reviewer` | The second finder of the built-in `pair` group, and `@reviewer_pair` in a group of your own. |
 | `models.judge` | model id | `claude-opus-5-5` | The judge, which filters the findings and sets their severity, the verdict reader and the refuter. |
-| `models.refuter_pair` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons. Two disproofs lower a blocker only when the judge alone raised it above every finder's grade. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
+| `models.second_refuter` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons. Two disproofs lower a blocker only when the judge alone raised it above every finder's grade. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `models.dedup` | model id | `claude-haiku-5-5` | The dedup pass against resolved findings from earlier rounds, and the small side calls: same-defect checks, related work and name translation. |
-| `models.fallback` | model id | `models.reviewer` | Reruns a stage once when a provider's safety filter refuses it. A stage already on this model moves to its other Claude tier. |
+| `models.fallback` | model id | the first model of the `full` group other than the stage's own | Reruns a stage once when a provider's safety filter refuses it. Without it, or for a stage already on this model, the stage moves to the first model of the `full` group that is another model than its own. When `full` has no other model, the stage is not rerun. |
 | `planner` | map | see below | The planner stage. |
 | `planner.enabled` | boolean | `true` | Run the planner. Without it, every round takes the side that adds review: two finders at high effort. |
 | `judge` | map | see below | The judge stage. |
 | `judge.effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | The judge's effort, which the refuter follows. `auto` takes the level the planner picks for the change, low, medium or high, and high without a planner. A fixed level replaces that pick on every round. Read from the base branch. |
 | `judge.tool_steps` | integer from 0 to 100 | `0` | Read-only repository tool calls the judge may make while it grades, on a judge that runs on the Claude or Codex CLI. With them the judge reads the code a finding rests on itself, at the cost of a longer judge call. A round whose judge fallback model has no tools runs the judge without them. `0` gives it none. |
 | `review` | map | the built-in groups | Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](how-reviews-work.md#review-groups). |
-| `review.groups` | map of groups | `trivial`, `solo` and `pair` | Each group lists its `reviewers`, one or more. A group with a built-in name replaces it. |
-| `review.groups.<name>.reviewers[].model` | model id | `@reviewer` | A model id, `provider/model`, or `@reviewer` or `@reviewer_pair`, which resolve through `models`. |
-| `review.groups.<name>.reviewers[].effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | `auto` is high when the planner answers `subtle: true`, otherwise medium. A Deeper review runs an `auto` finder at xhigh, and never below the effort the finder has without it. |
-| `review.groups.<name>.reviewers[].focus` | string | none | A line added to this finder's prompt. |
-| `review.groups.<name>.reviewers[].role` | `finder` or `verifier` | `finder` | `verifier` is the quick check of a trivial change. |
+| `review.groups` | map of groups | `trivial`, `solo` and `full` | Each group is a list of one or more reviewers. An entry is a model id, or a map with `model`, `effort` and `focus`. A config that sets `groups` defines all three of `trivial`, `solo` and `full`, and may add groups under other names. The readers of `trivial` run the quick check of a trivial change. The sibling comparisons, claim checks and sweeps run on the first reviewer of the group that reads the PR. |
+| `review.groups.<name>[].model` | model id | required | A model id or `provider/model`. |
+| `review.groups.<name>[].effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | `auto` is high when the planner answers `subtle: true`, otherwise medium. A Deeper review runs an `auto` finder at xhigh, and never below the effort the finder has without it. |
+| `review.groups.<name>[].focus` | string | none | A line added to this finder's prompt. |
 | `review.classes` | map of classes | the built-in classes | Classes of your own, each with a unique `rank` and a `match` on `paths_any`, `triage` or both. On `security`, `supply_chain` and `data_contract`, `match.paths_any` adds paths to the built-in rule. |
-| `review.routing` | map of class to group | the built-in routes | The group per class. A class left out keeps its built-in group. |
-| `review.default_group` | group name | `pair` | The group for a class with no route. |
-| `review.allow_weaker` | list of class names | none | Floor classes allowed to route to a group below the floor. Without it, a config with such a route does not load: Manki reviews with the defaults and holds the approval. |
+| `review.routing` | map of class to group | the built-in routes | The group per class. A built-in class left out keeps its built-in group, and a class of your own with no route goes to `full`. A config that routes a floor class to a group below the floor does not load: Manki reviews with the defaults and holds the approval. |
 | `review.critical_paths` | list of globs | none | Critical areas, where any wrong result is severe even in a rare internal edge case. Globs or the path aliases. The judge grades a wrong result there as severe damage. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.outside_input` | string | none | What counts as outside input in your repository. The judge treats a failure this input can trigger as reachable. |
 | `review.examples` | map with `blocker` and `not_blocker` lists | none | Worked examples from your repository, which the judge reads next to its built-in examples. |

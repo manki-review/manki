@@ -458,7 +458,7 @@ Manki tried to disprove this by reading the code and could not. Each member's id
 <p dir="auto"><strong>Planner</strong> (5s)<br>
     fix · 125 lines · 2 agents<br>
     judge effort: medium</p>
-<p dir="auto"><strong>Review (behavior · pair):</strong> 1 finding<br>
+<p dir="auto"><strong>Review (behavior · full):</strong> 1 finding<br>
     ✅ Claude Sonnet 5.5 · high: 0 findings (1m 33s)<br>
     ✅ Claude Opus 5.5 · high: 1 finding (1m 23s)</p>
 <p dir="auto"><strong>Judge:</strong> 0 kept · 1 dropped (52s)<br>
@@ -574,19 +574,19 @@ Manki tried to disprove this by reading the code and could not. Each member's id
   <span class="v">and error handling.</span>
 
 <span class="k">models:</span>
-  <span class="k">planner:</span>       <span class="o">claude-haiku-5-5</span>
-  <span class="k">reviewer:</span>      <span class="o">claude-sonnet-5-5</span>
-  <span class="k">reviewer_pair:</span> <span class="o">claude-opus-5-5</span>
-  <span class="k">judge:</span>         <span class="o">claude-opus-5-5</span>
-  <span class="k">dedup:</span>         <span class="o">claude-haiku-5-5</span>
+  <span class="k">planner:</span> <span class="o">claude-haiku-5-5</span>
+  <span class="k">judge:</span>   <span class="o">claude-opus-5-5</span>
+  <span class="k">dedup:</span>   <span class="o">claude-haiku-5-5</span>
 
 <span class="c"># two strong readers on risky paths</span>
 <span class="k">review:</span>
   <span class="k">groups:</span>
+    <span class="k">trivial:</span> [<span class="o">claude-sonnet-5-5</span>]
+    <span class="k">solo:</span>    [<span class="o">claude-sonnet-5-5</span>]
+    <span class="k">full:</span>    [<span class="o">claude-sonnet-5-5</span>, <span class="o">claude-opus-5-5</span>]
     <span class="k">deep:</span>
-      <span class="k">reviewers:</span>
-        - { <span class="k">model:</span> <span class="o">claude-opus-5-5</span>, <span class="k">effort:</span> <span class="v">high</span> }
-        - { <span class="k">model:</span> <span class="o">gpt-5.5</span>, <span class="k">effort:</span> <span class="v">high</span> }
+      - { <span class="k">model:</span> <span class="o">claude-opus-5-5</span>, <span class="k">effort:</span> <span class="v">high</span> }
+      - { <span class="k">model:</span> <span class="o">gpt-5.5</span>, <span class="k">effort:</span> <span class="v">high</span> }
   <span class="k">routing:</span>
     <span class="k">security:</span> <span class="v">deep</span>
     <span class="k">data_contract:</span> <span class="v">deep</span>

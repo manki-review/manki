@@ -395,7 +395,7 @@ export interface Finding {
   doubts?: Doubt[];
   /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings checked for a doubt the judge named. */
   refutation?: Refutation;
-  /** How the second refuter, on `models.refuter_pair`, came out. Set beside `refutation` when that model checked the finding. */
+  /** How the second refuter, on `models.second_refuter`, came out. Set beside `refutation` when that model checked the finding. */
   pairRefutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
@@ -1212,17 +1212,18 @@ export interface Finder {
 
 /** One reader in a review group. `auto` effort is `high` when the triage says `subtle`, else `medium`. A Deeper review runs it at `xhigh`. */
 export interface GroupReviewer {
-  /** A model id, `provider/model`, `@reviewer` or `@reviewer_pair`. Unset means `@reviewer`. */
-  model?: string;
+  /** A model id or `provider/model`. */
+  model: string;
   /** Unset means `auto`. */
   effort?: EffortLevel | 'auto';
   /** One more line for this finder to check, added to its prompt like a `reviewers` entry. */
   focus?: string;
-  role?: 'finder' | 'verifier';
 }
 
 export interface ReviewGroup {
   reviewers: GroupReviewer[];
+  /** Set on the group named `trivial`. Its readers run the quick check and are no finders. */
+  quickCheck?: true;
 }
 
 /** Conditions a PR must meet to fall in a review class. Every condition set must hold. */
@@ -1276,16 +1277,12 @@ export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
 
 /** The `review` block of `.manki.yml`. Unset keys keep the built-ins. */
 export interface ReviewRoutingConfig {
-  /** Group for a class with no route, and for every class when `groups` is set without `routing`. */
-  default_group?: string;
-  /** Adds groups, or replaces a built-in group of the same name. */
-  groups?: Record<string, ReviewGroup>;
+  /** The review groups, each a list of readers: a model id, or a reader with its effort and focus. Replaces the built-in groups. */
+  groups?: Record<string, Array<string | GroupReviewer>>;
   /** Adds classes. On a built-in path class, `match.paths_any` adds paths to the built-in rule. */
   classes?: Record<string, { rank?: number; match?: ReviewClassMatch }>;
   /** Group per class, over the built-in routing. */
   routing?: Record<string, string>;
-  /** Floor classes that may route to a group below the floor. */
-  allow_weaker?: string[];
   /** Globs or path aliases where any wrong result is severe damage, even in a rare internal edge case, for the judge. */
   critical_paths?: string[];
   /** What counts as outside input in this repository, for the judge. */
@@ -1317,9 +1314,7 @@ export interface TeamRouting {
   floor?: string;
   /** Routed group the floor, or a deeper review, moved the PR up from. */
   escalatedFrom?: string;
-  /** Floor classes `review.allow_weaker` let run below the floor. */
-  weakerAllowed?: string[];
-  /** A Deeper review ran: two finders on every group, at xhigh effort or one level above a configured effort. */
+  /** A Deeper review ran: a group with fewer than two finders moved up to `full`, and every finder ran at xhigh effort or one level above a configured effort. */
   deeper?: true;
   /** Finders of a Deeper review whose model receives no more effort than without one. */
   deeperSameEffort?: string[];
@@ -1373,14 +1368,11 @@ export interface ReviewConfig {
   };
   models?: {
     planner?: string;
-    reviewer?: string;
-    /** Model of the second finder. Unset means the other Claude tier of `reviewer`. */
-    reviewer_pair?: string;
     judge?: string;
     /** Model of a second refuter that checks each blocker beside the judge's. Unset means no second refuter. */
-    refuter_pair?: string;
+    second_refuter?: string;
     dedup?: string;
-    /** Model a stage moves to when a safety filter refuses it. Unset means `reviewer`. */
+    /** Model a stage moves to when a safety filter refuses it. Unset means the first model of the `full` group other than the stage's own. */
     fallback?: string;
   };
   planner?: {
@@ -1761,7 +1753,8 @@ export interface JudgeDecision {
 
 export interface ReviewMetadata {
   config: {
-    reviewerModel: string;
+    /** Model of the first reader of the review group. Unset when no group read the PR. */
+    reviewerModel?: string;
     judgeModel: string;
     /** Triage answers and where they came from, as one readable line. */
     triage: string;
@@ -1994,7 +1987,7 @@ export interface FullReviewOptions {
   settings?: PrState;
   /** Reviews the whole PR as new, so every finding counts as new code. */
   fullReview?: boolean;
-  /** A Deeper review: two finders on every group, at xhigh effort or one level above a configured effort. */
+  /** A Deeper review: a group with fewer than two finders moves up to `full`, and every finder runs at xhigh effort or one level above a configured effort. */
   deeper?: boolean;
 }
 
@@ -2024,10 +2017,8 @@ export interface StateReport {
 /** Model spec each pipeline stage runs on. */
 export interface ReviewModels {
   planner: string;
-  reviewer: string;
-  reviewerPair: string;
   judge: string;
-  /** Model of the second refuter, when `models.refuter_pair` is set. */
+  /** Model of the second refuter, when `models.second_refuter` is set. */
   refuterPair?: string;
   dedup: string;
 }
@@ -2096,7 +2087,8 @@ export interface RoundDiff {
 /** Resolved model IDs per pipeline stage. */
 export interface RoundModels {
   planner?: string;
-  reviewer: string;
+  /** Model of the first reader of the round's review group. The sibling comparisons, claim checks and sweeps ran on it too. */
+  reviewer?: string;
   judge: string;
   /** Model of the second refuter, on rounds where it checked a finding or an earlier round's answer of it was reused. */
   refuterPair?: string;
@@ -2686,8 +2678,8 @@ export interface RoundContextFlatAliases {
   findingsKept: number;
   findingsDropped: number;
   severity: Record<string, number>;
-  model: string;
-  reviewerModel: string;
+  model?: string;
+  reviewerModel?: string;
   judgeModel: string;
 }
 

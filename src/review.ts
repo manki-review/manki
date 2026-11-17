@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
+import { DEFAULT_CONFIG } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
@@ -16,7 +16,7 @@ import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, order
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
-import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
+import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
@@ -252,7 +252,7 @@ const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
  * and each reader in the group becomes one finder. Every floor class the PR matches is checked after routing.
- * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group, where a finder the
+ * A `deeper` review moves a group with fewer than two finders up to the `full` group, where a finder the
  * earlier group had runs at least at that group's effort.
  * With `clients`, each finder is named and recorded by the effort its client sends. With `workspace`, the PR head
  * checked out for the tools, a finder whose client has repository tools also gets the checks on the related repos.
@@ -260,14 +260,14 @@ const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
 export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients, workspace?: string): TeamRoster {
   const routing = resolveRouting(config.review);
   const classification = classifyPr(diff, triage, routing.classes);
-  let choice: GroupChoice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
+  let choice: GroupChoice = chooseGroup(routing, classification);
   let escalatedFrom: ReviewGroup | undefined;
-  if (deeper && choice.group.reviewers.filter(r => r.role !== 'verifier').length < 2) {
+  if (deeper && findersOf(choice.group).length < 2) {
     escalatedFrom = choice.group;
-    choice = { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'deeper_review', escalatedFrom: choice.name };
+    choice = { name: FULL_GROUP, group: routing.groups[FULL_GROUP], source: 'deeper_review', escalatedFrom: choice.name };
   }
   const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
-  const finders = buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper, clients, escalatedFrom, workspace);
+  const finders = buildFinders(choice.group, config, classification.triage, deeper, clients, escalatedFrom, workspace);
   const sameEffort = finders.filter(f => f.deeperSameEffort).map(f => f.name);
   return {
     finders,
@@ -279,7 +279,6 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
       groupSource: choice.source,
       ...(classification.floor && { floor: classification.floor }),
       ...(choice.escalatedFrom && { escalatedFrom: choice.escalatedFrom }),
-      ...(choice.weakerAllowed && { weakerAllowed: choice.weakerAllowed }),
       ...(deeper && { deeper: true }),
       ...(sameEffort.length > 0 && { deeperSameEffort: sameEffort }),
     },
@@ -314,19 +313,18 @@ function askedEffort(reviewer: GroupReviewer, triage: Triage, deeper: boolean): 
 }
 
 /**
- * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
- * gets the most tool steps. `escalatedFrom` is the group the PR had before a `deeper` review moved it up to `group`.
+ * Builds one finder per reader of `group`, all on the same checklist. A group with two or more finders gets the most
+ * tool steps. `escalatedFrom` is the group the PR had before a `deeper` review moved it up to `group`.
  */
-function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean, clients?: ReviewClients, escalatedFrom?: ReviewGroup, workspace?: string): Finder[] {
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, deeper: boolean, clients?: ReviewClients, escalatedFrom?: ReviewGroup, workspace?: string): Finder[] {
   const names = new Set<string>();
-  const finders = group.reviewers.filter(r => r.role !== 'verifier');
-  const risky = floor || finders.length >= 2;
+  const finders = findersOf(group);
+  const risky = finders.length >= 2;
   // A group a deeper review moves up has at most one finder. The first finder of `group` on its model is that finder.
-  const identity = (r: GroupReviewer): string => modelIdentity(resolveReviewerModel(config, r.model));
-  const earlier = escalatedFrom?.reviewers.find(r => r.role !== 'verifier');
-  const kept = earlier && finders.find(r => identity(r) === identity(earlier));
+  const earlier = escalatedFrom && findersOf(escalatedFrom)[0];
+  const kept = earlier && finders.find(r => modelIdentity(r.model) === modelIdentity(earlier.model));
   return group.reviewers.map(reviewer => {
-    const model = resolveReviewerModel(config, reviewer.model);
+    const { model } = reviewer;
     const client = clients && pickReviewerClient(clients, model).client;
     const sent = (tier: EffortLevel): EffortLevel | undefined => (client?.sentEffort ? client.sentEffort(tier) : tier);
     // A reader the deeper review added has no effort without it to compare with.
@@ -335,11 +333,11 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     // No effort sent ranks below every tier.
     const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
     const deeperEffort = askedEffort(reviewer, triage, deeper);
-    // The built-in pair can ask for less than the earlier group set, and a deeper review never lowers a finder's effort.
+    // The `full` group can ask for less than the earlier group set, and a deeper review never lowers a finder's effort.
     const effort = deeper && usualEffort && rank(usualEffort) > rank(deeperEffort) ? usualEffort : deeperEffort;
     // A model that takes no effort keeps the asked tier in its name and record.
     const sentEffort = sent(effort) ?? effort;
-    const verifier = reviewer.role === 'verifier';
+    const verifier = !!group.quickCheck;
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
     // A finder reads a related repo only through repository tools on the checked-out PR head.
     const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom, workspace && client?.repoTools ? config.related_repos : []);
@@ -356,13 +354,12 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
 
 /**
  * Returns every model a finder can run on this round, so each gets a client before the round:
- * the routed groups, the default group and the floor's fallback group.
+ * the routed groups, and the `full` group of a class with no route, a floor or a deeper review.
  */
 export function teamModels(config: ReviewConfig): string[] {
   const routing = resolveRouting(config.review);
-  const groups = [...Object.values(routing.routing), routing.defaultGroup].map(name => routing.groups[name]);
-  const refs = [...groups, BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP]].flatMap(g => g.reviewers.map(r => r.model));
-  return [...new Set(refs.map(ref => resolveReviewerModel(config, ref)))];
+  const groups = [...Object.values(routing.routing), FULL_GROUP].map(name => routing.groups[name]);
+  return [...new Set(groups.flatMap(g => g.reviewers.map(r => r.model)))];
 }
 
 export function shuffleDiffFiles(diff: ParsedDiff): ParsedDiff {
@@ -415,7 +412,7 @@ export interface ReviewClients {
   /** Clients keyed by finder model. A finder whose model is missing runs on `reviewer`. */
   reviewerByModel?: ReadonlyMap<string, LLMClient>;
   judge: LLMClient;
-  /** The second refuter, on `models.refuter_pair`. */
+  /** The second refuter, on `models.second_refuter`. */
   refuterPair?: LLMClient;
   planner?: LLMClient;
   dedup?: LLMClient;
@@ -695,7 +692,7 @@ export interface ReviewOptions {
   finalRound?: boolean;
   /** The checked-out PR head, which finders and the judge on a client with `repoTools` read with read-only tools. */
   workspace?: string;
-  /** A Deeper review: two finders on every group, at xhigh effort or one level above a configured effort. */
+  /** A Deeper review: a group with fewer than two finders moves up to `full`, and every finder runs at xhigh effort or one level above a configured effort. */
   deeper?: boolean;
   /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
   excludedPaths?: string[];
@@ -780,9 +777,6 @@ export async function runReview(
   const { routing } = team;
   const movedUp = routing.groupSource === 'deeper_review' ? 'for a deeper review' : `to meet the ${routing.floor} floor`;
   core.info(`Review class: ${routing.class ?? 'none'}, group: ${routing.group} (${routing.groupSource}${routing.escalatedFrom ? `, moved up from ${routing.escalatedFrom} ${movedUp}` : ''})`);
-  if (routing.weakerAllowed) {
-    core.warning(`\`review.allow_weaker\` lets this ${routing.weakerAllowed.join(', ')} change run on the ${routing.group} group, below the floor of two finders on two models`);
-  }
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')}, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
   if (routing.deeperSameEffort) core.info(`The deeper review adds no effort for ${routing.deeperSameEffort.join(', ')}: the model receives no more effort than without it`);
   if (trivial) {
@@ -802,7 +796,8 @@ export async function runReview(
 
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
-  const comparisonModel = resolveReviewerModel(config, undefined);
+  // The sibling comparisons, claim checks and sweeps run on the model of the group's first reader.
+  const comparisonModel = team.finders[0].model;
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
   // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them. The
   // second refuter runs only next to a judge with tools, so its own tools offer nothing.
@@ -842,8 +837,8 @@ export async function runReview(
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
   if (related && unread) return incomplete(unread);
-  // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
-  const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
+  // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
+  const comparisonEffort = team.finders[0].effort;
   const comparisonDeadline = new AbortController();
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
     effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal,
@@ -1419,7 +1414,7 @@ export async function runReview(
     ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
     doubtBudget: { left: MAX_DOUBT_CHECKS },
   } : undefined;
-  if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.refuter_pair` needs the PR head checked out and repository tools on both its model and the judge\'s');
+  if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.second_refuter` needs the PR head checked out and repository tools on both its model and the judge\'s');
   const judgeInput: JudgeInput = {
     findings: findingsForJudge,
     diff: diffWithLockfiles,

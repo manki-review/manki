@@ -19,7 +19,7 @@ describe('configuration reference', () => {
       ...leafPaths(DEFAULT_CONFIG),
       ...[...MODEL_KEYS].map(k => `models.${k}`),
       ...[...REVIEW_KEYS].map(k => `review.${k}`),
-      ...[...GROUP_REVIEWER_KEYS].map(k => `review.groups.<name>.reviewers[].${k}`),
+      ...[...GROUP_REVIEWER_KEYS].map(k => `review.groups.<name>[].${k}`),
       ...[...RELATED_REPO_KEYS].map(k => `related_repos[].${k}`),
       ...ANALYZERS.map(a => `static_analysis.analyzers.${a}`),
       // Nested keys `validateConfig` checks one by one, which no exported set lists.

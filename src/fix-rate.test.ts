@@ -69,7 +69,7 @@ describe('recordFixRate', () => {
     jest.mocked(fetchRecapState).mockResolvedValue({
       priorRounds: [
         makeRoundContext(1, {
-          routing: routing('pair', 'digest-1'),
+          routing: routing('full', 'digest-1'),
           findings: {
             count: 4,
             severityCounts: {},

@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { resolveFallbackModel, resolveModel, resolvePairModel } from './config';
+import { resolveFallbackModel, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { ReviewClients, teamModels } from './review';
@@ -14,22 +14,18 @@ export function buildLLMClient(model: string, providerInputs: ProviderInputs): L
 
 /** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
 export function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
+  const finderModels = teamModels(config);
   const models: ReviewModels = {
     planner: resolveModel(config, 'planner'),
-    reviewer: resolveModel(config, 'reviewer'),
-    reviewerPair: resolvePairModel(config),
     judge: resolveModel(config, 'judge'),
-    ...(config.models?.refuter_pair && { refuterPair: config.models.refuter_pair }),
+    ...(config.models?.second_refuter && { refuterPair: config.models.second_refuter }),
     dedup: resolveModel(config, 'dedup'),
   };
-  core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, refuter pair: ${models.refuterPair ?? 'off'}, dedup: ${models.dedup}`);
+  core.info(`Models — planner: ${models.planner}, reviewers: ${finderModels.join(', ')}, judge: ${models.judge}, second refuter: ${models.refuterPair ?? 'off'}, dedup: ${models.dedup}`);
 
   const buildClient = (model: string) => buildLLMClient(model, providerInputs);
-  const reviewer = buildClient(models.reviewer);
-  const reviewerByModel = new Map<string, LLMClient>([[models.reviewer, reviewer]]);
-  for (const model of teamModels(config)) {
-    if (!reviewerByModel.has(model)) reviewerByModel.set(model, buildClient(model));
-  }
+  const reviewerByModel = new Map(finderModels.map(model => [model, buildClient(model)]));
+  const reviewer = reviewerByModel.get(finderModels[0])!;
   const judge = buildClient(models.judge);
   const refuterPair = models.refuterPair ? buildClient(models.refuterPair) : undefined;
   const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;

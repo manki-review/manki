@@ -1154,7 +1154,7 @@ export async function updateProgressComment(
     parts.push('');
 
     parts.push('**Config:**');
-    parts.push(`- Models: reviewer=${sanitizeMarkdown(metadata.config.reviewerModel)}, judge=${sanitizeMarkdown(metadata.config.judgeModel)}`);
+    parts.push(`- Models: ${metadata.config.reviewerModel ? `reviewer=${sanitizeMarkdown(metadata.config.reviewerModel)}, ` : ''}judge=${sanitizeMarkdown(metadata.config.judgeModel)}`);
     parts.push(`- Triage: ${metadata.config.triage}`);
     parts.push(`- Team: ${metadata.config.teamAgents.map(sanitizeMarkdown).join(', ')}`);
     parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${sanitizeMarkdown(String(metadata.config.memoryRepo))})` : 'disabled'}`);

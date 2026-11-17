@@ -317,7 +317,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     },
     models: {
       ...(plannerEnabled && { planner: models.planner }),
-      reviewer: models.reviewer,
+      ...(agentModels.size > 0 && { reviewer: [...agentModels.values()][0] }),
       judge: models.judge,
       ...(models.refuterPair && (result.llmCalls?.some(c => c.agent === 'refute_pair') || [...result.findings, ...allJudged].some(f => f.pairRefutation))
         && { refuterPair: models.refuterPair }),

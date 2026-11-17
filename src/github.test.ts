@@ -3330,7 +3330,7 @@ describe('buildDashboard', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 500, agentCount: 2,
       rawFindingCount: 3, keptCount: 2, droppedCount: 1,
-      routing: { class: 'security', group: 'pair' },
+      routing: { class: 'security', group: 'full' },
       agentProgress: [
         { name: 'Claude Sonnet 5.5 · high', status: 'done', findingCount: 2, durationMs: 38000 },
         { name: 'Claude Opus 5.5 · high', status: 'done', findingCount: 1, durationMs: 41000 },
@@ -3338,12 +3338,12 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain([
-      '**Review (security · pair):** 3 findings',
+      '**Review (security · full):** 3 findings',
       `${INDENT}✅ Claude Sonnet 5.5 · high: 2 findings (38s)`,
       `${INDENT}✅ Claude Opus 5.5 · high: 1 finding (41s)`,
     ].join('\n'));
     expect(md).toContain('**Judge:** 2 kept · 1 dropped');
-    expect(buildDashboard({ ...data, routing: { group: 'pair' } })).toContain('**Review (pair):** 3 findings');
+    expect(buildDashboard({ ...data, routing: { group: 'full' } })).toContain('**Review (full):** 3 findings');
     expect(buildDashboard({ ...data, phase: 'started', agentProgress: [{ name: 'Quick check · Claude Haiku 5.5', status: 'reviewing' }], routing: { class: 'docs', group: 'trivial' } }))
       .toContain(`**Review (docs · trivial):** 0/1 agents complete\n${INDENT}⏳ Quick check · Claude Haiku 5.5`);
   });
@@ -3598,14 +3598,14 @@ describe('buildDashboard', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 200, agentCount: 2,
       agentProgress: [{ name: 'Claude Sonnet 4.6 · high', status: 'reviewing' }, { name: 'Claude Opus 5.5 · xhigh', status: 'reviewing' }],
-      routing: { group: 'pair', deeperSameEffort: ['Claude Sonnet 4.6 · high'] },
+      routing: { group: 'full', deeperSameEffort: ['Claude Sonnet 4.6 · high'] },
     };
     const note = `${INDENT}_(the deeper review adds no effort for Claude Sonnet 4.6 · high: the model receives no more effort than without it)_`;
     const md = buildDashboard(data);
-    expect(md.indexOf(note)).toBeGreaterThan(md.indexOf('**Review (pair):**'));
+    expect(md.indexOf(note)).toBeGreaterThan(md.indexOf('**Review (full):**'));
     expect(md.indexOf(note)).toBeLessThan(md.indexOf('**Judge**'));
     expect(buildDashboard({ ...data, phase: 'complete' })).toContain(note);
-    expect(buildDashboard({ ...data, routing: { group: 'pair' } })).not.toContain('adds no effort');
+    expect(buildDashboard({ ...data, routing: { group: 'full' } })).not.toContain('adds no effort');
   });
 
   it('omits heuristic-fallback marker when not set', () => {

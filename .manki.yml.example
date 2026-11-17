@@ -65,29 +65,36 @@
 # it as "This PR is in a blockchain consensus library project".
 # project: "blockchain consensus library"
 
-# Per-stage model selection
+# Per-stage model selection. The finders are not here: `review.groups` below
+# says who reviews.
 # models:
 #   planner: claude-haiku-5-5      # fast pre-review planning pass
-#   reviewer: claude-sonnet-5-5    # the finder of the built-in groups, and `@reviewer` in a group of your own
-#   reviewer_pair: gpt-6.1-terra   # the second finder of the built-in `pair` group, and `@reviewer_pair` in a group of your own (default: the other Claude tier, Sonnet with Opus)
 #   judge: claude-opus-5-5         # precise, single judge
-#   refuter_pair: gpt-6.1-sol      # a second refuter on another model, beside the first on the judge's model (default: off, needs the Claude or Codex CLI)
+#   second_refuter: gpt-6.1-sol    # a second refuter on another model, beside the first on the judge's model (default: off, needs the Claude or Codex CLI)
 #   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
-#   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: reviewer, or the other Claude tier for a stage already on it)
+#   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: the first model of the `full` group other than the stage's own)
 #
-# To use OpenAI, set `openai_api_key` (or `openai_oauth_token` for Codex CLI) and override models:
+# To use OpenAI, set `openai_api_key` (or `openai_oauth_token` for Codex CLI) and override the models and the groups:
 # models:
 #   planner: gpt-6-luna
-#   reviewer: gpt-6.1-terra
 #   judge: gpt-6.1-sol
 #   dedup: gpt-6-luna
+# review:
+#   groups:
+#     trivial: [gpt-6.1-terra]
+#     solo: [gpt-6.1-terra]
+#     full: [gpt-6.1-terra, gpt-6.1-sol]
 #
-# To use Gemini, set `gemini_api_key` (or `gemini_oauth_token` for Gemini CLI) and override models:
+# To use Gemini, set `gemini_api_key` (or `gemini_oauth_token` for Gemini CLI) and override the models and the groups:
 # models:
 #   planner: gemini-3.5-flash-lite
-#   reviewer: gemini-3.8-flash
 #   judge: gemini-3.8-flash
 #   dedup: gemini-3.5-flash-lite
+# review:
+#   groups:
+#     trivial: [gemini-3.8-flash]
+#     solo: [gemini-3.8-flash]
+#     full: [gemini-3.8-flash, gemini-3-pro]
 #
 # Models are auto-detected by prefix: `claude-*` -> Anthropic, `gpt-*` / `o*` -> OpenAI, `gemini-*` -> Gemini.
 # You can also use explicit `provider/model` syntax (e.g. `anthropic/claude-haiku-5-5`).
@@ -112,45 +119,43 @@
 #   effort: auto
 #   tool_steps: 0
 
-# Who reviews what. A group lists one or more readers, each with its own model
-# (any supported provider), effort and `focus`. A class matches PRs by path or
-# by the planner's answers, and `routing` names the group for each class.
-# Without this block the built-ins below apply: a quick check, one finder or
-# two. Read from the base branch only, so a PR cannot weaken its own review.
-# Each PR falls in the highest ranked matching class:
+# Who reviews what. A group is a list of readers. A reader is a model id (any
+# supported provider), or a map with `model`, `effort` and `focus`. A class
+# matches PRs by path or by the planner's answers, and `routing` names the
+# group for each class. Without this block the built-ins below apply: a quick
+# check, one finder or two. Read from the base branch only, so a PR cannot
+# weaken its own review. Each PR falls in the highest ranked matching class:
 # security (100), supply_chain (90), data_contract (80), behavior (50, planner
 # said paired), internal (30) or docs (20, planner said trivial). The first
 # three are floors: at least two finders on two distinct models, none at `low`
-# effort, unless `allow_weaker` names the class. Built-in groups: trivial (the
-# quick check), solo (one finder) and pair (two finders). See
+# effort. Built-in groups: trivial (the quick check), solo (one finder) and
+# full (two finders). A config that sets `groups` defines all three, and may
+# add groups of its own. A class with no route goes to `full`. See
 # docs/how-reviews-work.md, "Review groups".
 #
 # Minimal: two strong readers on security and data contract PRs only.
 # review:
 #   groups:
+#     trivial: [claude-sonnet-5-5]                  # the quick check of a trivial change
+#     solo: [claude-sonnet-5-5]                     # a low-risk change, one finder
+#     full: [claude-sonnet-5-5, claude-opus-5-5]    # everything else
 #     deep:
-#       reviewers:
-#         - { model: claude-opus-5-5, effort: high }
-#         - { model: gpt-5.5, effort: high }
+#       - { model: claude-opus-5-5, effort: high }
+#       - { model: gpt-5.5, effort: high }
 #   routing:
 #     security: deep
 #     data_contract: deep
 #
 # Typical:
 # review:
-#   default_group: pair            # group for a class with no route
 #   groups:
-#     solo:
-#       reviewers: [{ model: "@reviewer", effort: auto }]
-#     pair:
-#       reviewers:
-#         - { model: "@reviewer", effort: auto }        # `@reviewer` and `@reviewer_pair` resolve through `models`
-#         - { model: "@reviewer_pair", effort: auto }   # effort: low, medium, high, xhigh, max or auto
+#     trivial: [{ model: claude-sonnet-5-5, effort: medium }]   # effort: low, medium, high, xhigh, max or auto (default)
+#     solo: [claude-sonnet-5-5]
+#     full: [claude-sonnet-5-5, gpt-6.1-terra]
 #     deep:
-#       reviewers:
-#         - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
-#         - { model: gemini-3-pro, effort: high }
-#         - { model: claude-sonnet-5-5, effort: medium, focus: "error paths and rollback" }
+#       - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
+#       - { model: gemini-3-pro, effort: high }
+#       - { model: claude-sonnet-5-5, effort: medium, focus: "error paths and rollback" }
 #   classes:
 #     security:                      # adds paths to the built-in rule, never narrows it
 #       match: { paths_any: ["src/billing/**"] }
@@ -161,7 +166,6 @@
 #     security: deep
 #     hot_path: deep
 #     internal: solo
-#   allow_weaker: []                 # floor classes allowed below the floor
 #   critical_paths: ["src/ledger/**"]   # any wrong result in these paths is severe, for the judge
 #   outside_input: "HTTP requests and webhook payloads"   # for the judge
 #   examples:                        # findings from this repo on each side of the bar, for the judge

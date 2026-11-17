@@ -45,21 +45,23 @@ Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change an
 
 See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full walkthrough.
 
-One or two finders is only the default. The `review` block in `.manki.yml` sets who reviews what. This example sends changes to security-sensitive and data contract paths to two strong readers on two providers, and keeps the defaults for everything else:
+One or two finders is only the default. The `review` block in `.manki.yml` sets who reviews what. This example sends changes to security-sensitive and data contract paths to two strong readers on two providers, and reviews everything else as the defaults do:
 
 ```yaml
 review:
   groups:
-    deep:
-      reviewers:
-        - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
-        - { model: gpt-5.5, effort: high }
+    trivial: [claude-sonnet-5-5]                  # the quick check of a trivial change
+    solo: [claude-sonnet-5-5]                     # a low-risk change, one finder
+    full: [claude-sonnet-5-5, claude-opus-5-5]    # everything else
+    deep:                                         # a group of your own
+      - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
+      - { model: gpt-5.5, effort: high }
   routing:
     security: deep
     data_contract: deep
 ```
 
-Changes to security-sensitive paths, CI or dependency files and data contracts always get at least two finders on two distinct models, unless you allow less with `allow_weaker`. See [Review groups](docs/how-reviews-work.md#review-groups) for groups, classes and routing.
+Changes to security-sensitive paths, CI or dependency files and data contracts always get at least two finders on two distinct models. See [Review groups](docs/how-reviews-work.md#review-groups) for groups, classes and routing.
 
 ## Talk to Manki
 
@@ -106,10 +108,14 @@ instructions: |
 
 models:
   planner: claude-haiku-5-5
-  reviewer: claude-sonnet-5-5
-  reviewer_pair: claude-opus-5-5   # second finder of the default pair
   judge: claude-opus-5-5
   dedup: claude-haiku-5-5
+
+review:
+  groups:                                         # who reviews
+    trivial: [claude-sonnet-5-5]
+    solo: [claude-sonnet-5-5]
+    full: [claude-sonnet-5-5, claude-opus-5-5]
 ```
 
 See [`.manki.yml.example`](.manki.yml.example) for all options, or [Configuration](docs/configuration.md) for the full guide.

@@ -41,8 +41,8 @@ config:
         rank: 85
         match: { paths_any: ["dash/src/consensus/**", "dash/src/blockdata/**", "dash/src/sml/**", "dash/src/merkle_tree/**", "hashes/**"] }
     routing:
-      wallet: pair
-      consensus: pair
+      wallet: full
+      consensus: full
     critical_paths: ["key-wallet/**", "key-wallet-manager/**", "dash/src/crypto/**", "crypto/**", "dash/src/consensus/**", "dash/src/blockdata/**", "dash/src/sml/**", "dash/src/merkle_tree/**", "hashes/**"]
     outside_input: >-
       Anything a network peer sends: P2P messages, blocks, transactions, headers,
