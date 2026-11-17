@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, pause, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 
@@ -346,6 +346,21 @@ describe('lastLine', () => {
     ['\n\n', ''],
   ])('returns the last non-empty line of %j as written', (text, line) => {
     expect(lastLine(text)).toBe(line);
+  });
+});
+
+describe('pause', () => {
+  it('waits its time, and rejects with the reason of a signal that aborts or has aborted', async () => {
+    const started = Date.now();
+    await pause(30);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+
+    const controller = new AbortController();
+    const reason = new Error('run cancelled');
+    const pending = pause(60_000, controller.signal);
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    await expect(pause(60_000, controller.signal)).rejects.toBe(reason);
   });
 });
 

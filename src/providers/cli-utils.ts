@@ -7,7 +7,7 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV } from '../utils';
-import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
+import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_DIR_FLAG, STEPS_FLAG } from '../mcp-server';
 import { trackCliProcess } from '../run-diagnostics';
 import { LISTED_FILES_TO_OPEN, STALE_TIMEOUT_MS, STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepoTools } from '../types';
@@ -15,7 +15,7 @@ import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 import { LLMResponse, RepoTools, SendMessageOptions } from './types';
 
 export { STALE_TIMEOUT_MS };
-const HARD_TIMEOUT_MS = 1_200_000;
+export const HARD_TIMEOUT_MS = 1_200_000;
 const KILL_GRACE_MS = 5000;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 const REPLY_TAIL_CHARS = 2000;
@@ -470,17 +470,19 @@ function mankiCommand(args: string[]): MankiCommand {
 /**
  * Starts the tool server for `root`. With `fileTools` the server also offers `read_file`, `grep` and `glob`, for a CLI
  * without its own. With `steps` it refuses every call after that many, for a CLI whose every tool comes from this server.
+ * With `stepsDir` it counts them in that folder, so the servers a call starts one after another share the budget.
  * With `related` a `repo` argument also reads those repos, and with `readsFile` the server keeps there how many calls
  * read each of them.
  */
 export function toolServerCommand(
   root: string,
-  { fileTools = false, steps, related, readsFile }: { fileTools?: boolean; steps?: number; related?: RelatedRepoTools; readsFile?: string } = {},
+  { fileTools = false, steps, stepsDir, related, readsFile }: { fileTools?: boolean; steps?: number; stepsDir?: string; related?: RelatedRepoTools; readsFile?: string } = {},
 ): MankiCommand {
   return mankiCommand([
     MCP_SERVER_COMMAND, root,
     ...(fileTools ? [FILE_TOOLS_FLAG] : []),
     ...(steps ? [STEPS_FLAG, String(steps)] : []),
+    ...(steps && stepsDir ? [STEPS_DIR_FLAG, stepsDir] : []),
     ...(related ? [RELATED_REPOS_FLAG, JSON.stringify(related)] : []),
     ...(related && readsFile ? [READS_FILE_FLAG, readsFile] : []),
   ]);
@@ -578,6 +580,22 @@ Cite a related repo's code as \`owner/name:path:line\`. A divergence from a refe
 ${reading}`;
 }
 
+/** Waits `ms`. Rejects with the reason of `signal` as soon as it aborts, as `runCli` does. */
+export function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export interface RunCliOptions {
   /** Provider name used in error messages, e.g. `Claude`. */
   label: string;
@@ -595,6 +613,8 @@ export interface RunCliOptions {
   staleTimeoutMs?: number;
   /** Kills the CLI after this long whatever its output. Defaults to `HARD_TIMEOUT_MS`. */
   hardTimeoutMs?: number;
+  /** How much of `hardTimeoutMs` earlier runs and pauses of the same call used. This run gets the rest. */
+  usedMs?: number;
   /** Kills the CLI once it aborts. The run then rejects with the signal's reason. */
   signal?: AbortSignal;
 }
@@ -653,7 +673,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       timedOut = true;
       clearTimeout(staleTimer);
       terminate();
-    }, hardTimeoutMs);
+    }, hardTimeoutMs - (opts.usedMs ?? 0));
     timer.unref();
 
     const handleStale = (): void => {
