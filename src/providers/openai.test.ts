@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import OpenAI from 'openai';
@@ -454,6 +454,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   afterEach(() => {
     if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = savedCodexHome;
+    rmSync('/tmp/manki-test-codex', { recursive: true, force: true });
     jest.restoreAllMocks();
   });
 
@@ -589,10 +590,13 @@ describe('sendViaCLI (Codex CLI path)', () => {
     try {
       const client = new OpenAIClient({ auth: { kind: 'endpoint', key, baseUrl: 'https://llm.example/v1' }, model: 'gpt-5.5' });
       expect(client.repoTools).toBe(true);
+      expect(existsSync('/tmp/manki-test-codex')).toBe(false);
       await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related: undefined } });
     } finally {
       process.env = savedEnv;
     }
+    // Codex exits when its home is missing, and a fresh runner has none.
+    expect(statSync('/tmp/manki-test-codex').isDirectory()).toBe(true);
 
     const [, args, { env }] = mockSpawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
     expect(args).toEqual([

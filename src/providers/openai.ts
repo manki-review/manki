@@ -411,6 +411,9 @@ export class OpenAIClient implements LLMClient {
         requiredFields: ['tokens.access_token', 'tokens.refresh_token'],
         bootstrapHint: OPENAI_OAUTH_BOOTSTRAP_HINT,
       });
+    } else {
+      // Codex exits when its home does not exist, and only the login path creates it, by writing `auth.json`.
+      mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     }
     const cliPath = await this.ensureCLI();
     const startTime = Date.now();
