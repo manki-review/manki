@@ -662,8 +662,8 @@ async function handleMergedPullRequest(): Promise<void> {
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
   const { config } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
-  if (!(config.metrics?.fix_rate ?? config.memory?.enabled)) {
-    core.info('Fix-rate metrics are off, skipping');
+  if (!config.memory?.enabled) {
+    core.info('Memory is off, so no fix rate is recorded');
     return;
   }
   // The merged base branch holds the PR's own config. `base.sha` is a commit of the base branch from before the merge.

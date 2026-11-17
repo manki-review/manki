@@ -59,18 +59,6 @@ describe('config', () => {
     });
   });
 
-  describe('metrics config', () => {
-    it('leaves metrics.fix_rate unset by default and accepts a boolean', () => {
-      expect(loadConfigFromContent('').metrics?.fix_rate).toBeUndefined();
-      expect(loadConfigFromContent('metrics:\n  fix_rate: false\n').metrics?.fix_rate).toBe(false);
-    });
-
-    it('rejects non-boolean metrics.fix_rate and non-object metrics', () => {
-      expect(() => loadConfigFromContent('metrics:\n  fix_rate: "no"\n')).toThrow(/metrics\.fix_rate/);
-      expect(() => loadConfigFromContent('metrics: "nope"\n')).toThrow(/`metrics` must be an object/);
-    });
-  });
-
   describe('static_analysis config', () => {
     const defaults = { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [], analyzers: {} };
 
@@ -367,7 +355,6 @@ planner:
 reviewers: [{ name: a, focus: b, fokus: c }]
 static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], analyzers: all, check: false }
 convergence: { max_auto_rounds: 3, max_rounds: 2 }
-metrics: { fix_rate: true, fixrate: false }
 memory: { enabled: false, repo: '', repository: x/y }
 `);
       const unknown = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).filter(m => m.startsWith('Unknown config key'));
@@ -375,7 +362,6 @@ memory: { enabled: false, repo: '', repository: x/y }
         'Unknown config key: "reviewers[0].fokus"',
         'Unknown config key: "static_analysis.check"',
         'Unknown config key: "convergence.max_rounds"',
-        'Unknown config key: "metrics.fixrate"',
         'Unknown config key: "memory.repository"',
       ]);
     });

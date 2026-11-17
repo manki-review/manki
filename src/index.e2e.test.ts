@@ -1531,7 +1531,7 @@ describe('runFullReview end to end', () => {
       ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED'])],
       ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record')],
     ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled) => {
-      mockGitHub.configs = { main: 'metrics:\n  fix_rate: true\n' };
+      mockGitHub.configs = { main: 'memory:\n  enabled: true\n' };
       mockGitHub.merged = action === 'closed';
       const failFirstRead = (times: number) => { mockGitHub.failures = [{ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 503, times }]; };
       const inputs = { event: 'pull_request', action, pr: String(PR_NUMBER), head_sha: HEAD_SHA };

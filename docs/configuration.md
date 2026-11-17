@@ -102,13 +102,6 @@ static_analysis:
 #   - { repo: dashpay/platform, kind: consumer, paths: ["packages/rs-*"] }
 #   - { repo: tokio-rs/tokio, kind: dependency, ref: tokio-1.38.0, paths: [tokio/src/] }
 
-# On merge, count per severity and reviewer how many posted findings were
-# fixed, dismissed or left untouched. Written to the job summary, and appended
-# to `metrics/fix-rate.jsonl` in the repo's memory when memory is enabled.
-# Default: on when `memory.enabled` is true, off otherwise.
-# metrics:
-#   fix_rate: true
-
 # Additional context for reviewers. Reviewers also read the root `AGENTS.md`,
 # `CLAUDE.md` and `.claude/CLAUDE.md` files, the first `CONTRIBUTING.md` found in
 # `.github/`, the root or `docs/`, the nearest `AGENTS.md` and `CLAUDE.md` above
@@ -124,6 +117,8 @@ reviewers:
 # Review memory, kept in the central memory repository for a public repo. Set
 # `repo` and the `memory_repo_token` input to use a memory repository of your
 # own instead. A private repo needs one, private and of the same owner.
+# With memory on, a merge also records how many posted findings were fixed,
+# dismissed or left untouched, in `metrics/fix-rate.jsonl` in the memory.
 memory:
   enabled: true
 ```
@@ -195,8 +190,6 @@ memory:
 | `convergence` | map | see below | How rounds end. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `convergence.max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, with `/manki review` or a settings box, and the notice asks the author to reconsider the approach. Such a review also turns automatic review back on for 3 rounds, or for the rounds the cap still allows if that is more. `0` turns the cap off. |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |
-| `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo's memory lives in the central memory repository, which holds only public repos' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. |
+| `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo's memory lives in the central memory repository, which holds only public repos' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. With memory on, a merge also counts per severity and finder how many posted findings were fixed, dismissed or left untouched, in the job summary and in the memory. |
 | `memory.repo` | `owner/name` | none | Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning. For a private repo, it must be private and have the same owner. |
-| `metrics` | map | none | Metrics Manki records. |
-| `metrics.fix_rate` | boolean | the value of `memory.enabled` | On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the repo's memory when memory is on. |
 <!-- config-reference:end -->

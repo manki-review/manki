@@ -23,7 +23,7 @@ describe('configuration reference', () => {
       ...[...RELATED_REPO_KEYS].map(k => `related_repos[].${k}`),
       ...ANALYZERS.map(a => `static_analysis.analyzers.${a}`),
       // Nested keys `validateConfig` checks one by one, which no exported set lists.
-      'metrics.fix_rate', 'reviewers[].name', 'reviewers[].focus',
+      'reviewers[].name', 'reviewers[].focus',
     ]);
     expect([...accepted].filter(key => !documented.includes(key))).toEqual([]);
     expect(documented.filter(key => !accepted.has(key))).toEqual([]);

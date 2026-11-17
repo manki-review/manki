@@ -86,7 +86,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'related_repos',
   'drafts',
   'convergence',
-  'metrics',
 ]);
 
 const MAX_JUDGE_TOOL_STEPS = 100;
@@ -105,7 +104,6 @@ const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds']);
-const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
 const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
@@ -295,16 +293,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       if ('max_auto_rounds' in convergence && (typeof maxAutoRounds !== 'number' || !Number.isInteger(maxAutoRounds) || maxAutoRounds < 0)) {
         errors.push('`convergence.max_auto_rounds` must be a non-negative integer');
       }
-    }
-  }
-
-  if ('metrics' in config) {
-    const metrics = config.metrics as Record<string, unknown>;
-    if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics)) {
-      errors.push('`metrics` must be an object');
-    } else {
-      warnUnknownKeys(metrics, METRICS_KEYS, 'metrics', warnings);
-      if ('fix_rate' in metrics && typeof metrics.fix_rate !== 'boolean') errors.push('`metrics.fix_rate` must be a boolean');
     }
   }
 

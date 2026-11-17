@@ -1392,13 +1392,6 @@ export interface ReviewConfig {
      */
     max_auto_rounds?: number;
   };
-  metrics?: {
-    /**
-     * Records at merge how many posted findings were fixed, dismissed or left untouched.
-     * Defaults to on when `memory.enabled` is true.
-     */
-    fix_rate?: boolean;
-  };
 }
 
 export interface DiffFile {

@@ -85,10 +85,8 @@ export const SETTINGS: Setting[] = [
   { key: 'convergence', type: 'map', description: 'How rounds end. See [Severity tiers](' + REVIEWS + '#severity-tiers).' },
   { key: 'convergence.max_auto_rounds', type: 'non-negative integer', description: 'Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, with `/manki review` or a settings box, and the notice asks the author to reconsider the approach. Such a review also turns automatic review back on for 3 rounds, or for the rounds the cap still allows if that is more. `0` turns the cap off.' },
   { key: 'memory', type: 'map', description: 'Review memory. See [Review memory](memory.md).' },
-  { key: 'memory.enabled', type: 'boolean', description: 'Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo\'s memory lives in the central memory repository, which holds only public repos\' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`.' },
+  { key: 'memory.enabled', type: 'boolean', description: 'Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo\'s memory lives in the central memory repository, which holds only public repos\' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. With memory on, a merge also counts per severity and finder how many posted findings were fixed, dismissed or left untouched, in the job summary and in the memory.' },
   { key: 'memory.repo', type: '`owner/name`', default: 'none', description: 'Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning. For a private repo, it must be private and have the same owner.' },
-  { key: 'metrics', type: 'map', default: 'none', description: 'Metrics Manki records.' },
-  { key: 'metrics.fix_rate', type: 'boolean', default: 'the value of `memory.enabled`', description: 'On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the repo\'s memory when memory is on.' },
 ];
 
 /** Returns the value at `key` in `DEFAULT_CONFIG`, or `undefined` when it has none there. */
