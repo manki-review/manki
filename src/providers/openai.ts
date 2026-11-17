@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, lastLine, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, lastLine, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -198,12 +198,18 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
 // The line Codex ends its stderr with when the provider reports an overload.
 const CAPACITY_ERROR = 'ERROR: Selected model is at capacity. Please try a different model.';
 
+// Once a request of the run has used tokens, Codex prints their count below its error, which it prints twice.
+const ERROR_ABOVE_TOKENS = /\n(ERROR:[^\n]*)\r?\n\1\r?\ntokens used\r?\n\d[\d,]*\s*$/;
+
 /**
- * Returns the `ERROR:` line that ends Codex's stderr, or `undefined` when stderr ends on any other line. Codex prints
- * its own error last. It also writes the prompt and the model's text to stderr, so no earlier line counts as its error.
+ * Returns the `ERROR:` line Codex ended the run on, or `undefined` when the run did not end on an error of Codex's own.
+ * Codex prints its own error last on stderr, above the token count when it prints one, then exits with a code and no
+ * answer on stdout. It also writes the prompt and the model's text to stderr, so no earlier line counts. A run that a
+ * signal ended, or that printed an answer, can end stderr on the model's text, so none of its lines counts.
  */
-function codexFinalError(stderr: string): string | undefined {
-  const line = lastLine(stderr);
+function codexFinalError({ signal, stderr }: Pick<CliExit, 'signal' | 'stderr'>, stdout: string): string | undefined {
+  if (signal || stdout) return undefined;
+  const line = ERROR_ABOVE_TOKENS.exec(stderr)?.[1] ?? lastLine(stderr);
   return /^ERROR:\s/.test(line) ? extractCliErrorSnippet(line) : undefined;
 }
 
@@ -413,7 +419,7 @@ export class OpenAIClient implements LLMClient {
 
     const limits = limitReadings();
     if (code !== 0) {
-      const finalError = codexFinalError(stderr);
+      const finalError = codexFinalError({ signal, stderr }, output);
       const atCapacity = finalError === CAPACITY_ERROR;
       const quota = finalError ? matchQuotaText(finalError) : undefined;
       if (atCapacity || (quota && !quota.overloaded)) {

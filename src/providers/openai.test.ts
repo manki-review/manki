@@ -451,7 +451,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   const instructionsPath = (args: string[]): string => JSON.parse(args.at(-2)!.replace(/^model_instructions_file=/, ''));
 
   /** Mocks the CLI and returns its stdin and the instructions file of each call, which is gone once the call returns. */
-  function setupSpawnMock(stdout: string, opts: { exitCode?: number; stderr?: string } = {}): { stdin: jest.Mock; instructions: string[] } {
+  function setupSpawnMock(stdout: string, opts: { exitCode?: number; signal?: NodeJS.Signals; stderr?: string } = {}): { stdin: jest.Mock; instructions: string[] } {
     const proc = {
       stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
       stdout: { on: jest.fn() },
@@ -472,7 +472,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     });
     proc.on.mockImplementation((event: string, cb: (code: number | null, signal: string | null) => void) => {
       if (event === 'close') {
-        setTimeout(() => cb(opts.exitCode ?? 0, null), 5);
+        setTimeout(() => cb(opts.signal ? null : opts.exitCode ?? 0, opts.signal ?? null), 5);
       }
     });
 
@@ -924,10 +924,29 @@ describe('sendViaCLI (Codex CLI path)', () => {
       expect(full).toMatchObject({ message: `OpenAI model at capacity: ${capacity}`, limit: 'OpenAI model at capacity', resetsAt: undefined, credential: undefined });
     }
 
-    // Only that exact line at the end of stderr counts. The same words in the prompt, in the model's text or inside another error stay a plain error.
+    // Once a request of the run has used tokens, Codex 0.166.0 ends stderr with its error twice, then `tokens used` and the count.
+    const rateLimit = 'ERROR: rate limit exceeded: Rate limit reached for gpt-5.5 in organization org-test on tokens per min (TPM): Limit 30000, Used 29500, Requested 2000. Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.';
+    for (const [busy, line, typed] of [
+      [client, capacity, { limit: 'OpenAI model at capacity', credential: undefined }],
+      [endpoint, capacity, { limit: 'OpenAI model at capacity', credential: undefined }],
+      [endpoint, rateLimit, { limit: 'OpenAI endpoint limit reached', resetsAt: 'in 3s', credential: 'key' }],
+      [client, usageLimit, { limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' }],
+    ] as const) {
+      setupSpawnMock('', { exitCode: 1, stderr: codexStderr('review this', '', line, line, 'tokens used', '1,011') });
+      const afterTokens = await busy.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(afterTokens).toBeInstanceOf(QuotaError);
+      expect(afterTokens).toMatchObject({ message: `${typed.limit}: ${line}`, ...typed });
+    }
+
+    // Only that exact line at the end of stderr counts, or twice above the token count. The same words in the prompt,
+    // in the model's text, inside another error or above anything else stay a plain error.
     for (const [elsewhere, shown] of [
       [codexStderr(capacity, 'ERROR: stream disconnected before completion: stream closed before response.completed'), 'ERROR: stream disconnected before completion: stream closed before response.completed'],
       [codexStderr('review this', 'codex', capacity, 'tokens used', '2'), capacity],
+      [codexStderr('review this', capacity, `${capacity} Or wait.`, 'tokens used', '2'), `${capacity} Or wait.`],
+      [codexStderr('review this', capacity, capacity, 'tokens used', 'many'), capacity],
+      [codexStderr('review this', capacity, capacity, 'tokens used', '2', 'codex'), capacity],
+      [codexStderr('review this', capacity, capacity, 'tokens spent', '2'), capacity],
       [codexStderr('review this', ` ${capacity}`), capacity],
       [codexStderr('review this', `${capacity} Or wait.`), `${capacity} Or wait.`],
       [codexStderr('review this', 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'), 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'],
@@ -937,6 +956,31 @@ describe('sendViaCLI (Codex CLI path)', () => {
       expect(plain).not.toBeInstanceOf(QuotaError);
       expect(plain?.message).toContain(`Codex CLI invocation failed (exit 1: ${shown} [`);
     }
+
+    // The model's text, which Codex 0.166.0 prints below a `codex` line, can end in those lines too. An interrupted
+    // run prints `turn interrupted` below it.
+    const reply = ['codex', 'I looked at the diff.', capacity, capacity];
+    const counted = [...reply, 'tokens used', '1,011'];
+    for (const [stdout, run, exit] of [
+      // A signal ended the run, so stderr stops on the model's text.
+      ['', { signal: 'SIGTERM', stderr: codexStderr('review this', ...reply) }, 'exit null, signal SIGTERM'],
+      ['', { signal: 'SIGKILL', stderr: codexStderr('review this', ...reply) }, 'exit null, signal SIGKILL'],
+      ['', { signal: 'SIGHUP', stderr: codexStderr('review this', ...counted) }, 'exit null, signal SIGHUP'],
+      ['', { exitCode: 1, stderr: codexStderr('review this', ...reply, 'turn interrupted') }, 'exit 1'],
+      ['', { exitCode: 1, stderr: codexStderr('review this', ...reply, 'turn interrupted', 'tokens used', '1,011') }, 'exit 1'],
+      // Codex prints the answer on stdout once the turn completed, so its own error did not end this run.
+      [`${reply.slice(1).join('\n')}\n`, { exitCode: 1, stderr: codexStderr('review this', ...counted) }, 'exit 1'],
+      [`${reply.slice(1).join('\n')}\n`, { exitCode: 1, stderr: codexStderr('review this', ...reply) }, 'exit 1'],
+    ] as const) {
+      setupSpawnMock(stdout, run);
+      const plain = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(plain).not.toBeInstanceOf(QuotaError);
+      expect(plain?.message).toContain(`Codex CLI invocation failed (${exit}: ${capacity} [`);
+    }
+
+    // A completed turn ends stderr the same way, and its stdout is the answer.
+    setupSpawnMock(`${reply.slice(1).join('\n')}\n`, { stderr: codexStderr('review this', ...counted) });
+    expect((await endpoint.sendMessage('sys', 'user')).content).toBe(reply.slice(1).join('\n'));
   });
 
   it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {
@@ -1202,6 +1246,39 @@ describe('sendViaCLI — extended coverage', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('fails a call Manki ended itself on the time limit or the abort reason, whatever stderr ends on', async () => {
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const capacity = 'ERROR: Selected model is at capacity. Please try a different model.';
+    const stderr = Buffer.from(`user\nthe prompt\ncodex\nI looked at the diff.\n${capacity}\n${capacity}\n`);
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
+    try {
+      const late = makeProc();
+      const latePromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      await waitForListeners(late);
+      late.stderrHandlers['data']?.(stderr);
+      jest.advanceTimersByTime(900_000 + 100);
+      expect(late.proc.kill).toHaveBeenCalledWith('SIGTERM');
+      late.procHandlers['close']?.(null, 'SIGTERM');
+      const timedOut = await latePromise;
+      expect(timedOut).not.toBeInstanceOf(QuotaError);
+      expect(timedOut?.message).toBe(`Codex CLI timed out after 900s. stderr: ${capacity}`);
+    } finally {
+      jest.useRealTimers();
+    }
+
+    const cancelled = makeProc();
+    const controller = new AbortController();
+    const reason = new Error('run cancelled');
+    const cancelledPromise = client.sendMessage('sys', 'user', { signal: controller.signal }).then(() => null, (e: Error) => e);
+    await waitForListeners(cancelled);
+    cancelled.stderrHandlers['data']?.(stderr);
+    controller.abort(reason);
+    expect(cancelled.proc.kill).toHaveBeenCalledWith('SIGTERM');
+    cancelled.procHandlers['close']?.(null, 'SIGTERM');
+    expect(await cancelledPromise).toBe(reason);
   });
 });
 
