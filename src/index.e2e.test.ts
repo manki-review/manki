@@ -736,7 +736,7 @@ describe('runFullReview end to end', () => {
     try {
       mockLLM.repoTools = true;
       jest.mocked(fetchWorkspace).mockResolvedValue(workspace);
-      mockGitHub.configs = { main: 'models:\n  judge: claude-opus-5-5\n  refuter_pair: claude-sonnet-5-5\n' };
+      mockGitHub.configs = { main: 'models:\n  judge: claude-opus-5-5\n  second_refuter: claude-sonnet-5-5\n' };
       Object.assign(mockLLM.replies, BLOCKER_REPLIES, {
         reviewer: JSON.stringify([{ ...BLOCKER, severity: 'warning' }]),
         refute: JSON.stringify({ outcome: 'disproved', reason: 'Both inputs are bounded at src/api.ts:3.', proof: ['src/math.ts:1', 'src/api.ts:3'] }),

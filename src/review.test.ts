@@ -30,14 +30,14 @@ import {
   PlannerOutcomeSink,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { DEFAULT_CONFIG } from './config';
+import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
 import { filterRawDiff, MAX_SLICE_CHARS, parsePRDiff, rebuildRawDiff } from './diff';
 import * as relatedRepos from './related-repos';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -1270,6 +1270,9 @@ describe('selectTeam', () => {
   const authDiff = makeDiff({ files: [{ path: 'src/auth/session.ts', changeType: 'modified', hunks: [] }] });
   const plainDiff = makeDiff({ files: [{ path: 'src/format.ts', changeType: 'modified', hunks: [] }] });
   const names = (team: ReturnType<typeof selectTeam>) => team.finders.map(f => f.name);
+  type Groups = NonNullable<ReviewRoutingConfig['groups']>;
+  /** The three groups a `review.groups` must define, on the built-in models, with `own` over them. */
+  const groups = (own: Groups): Groups => ({ trivial: ['claude-sonnet-5-5'], solo: ['claude-sonnet-5-5'], full: ['claude-sonnet-5-5', 'claude-opus-5-5'], ...own });
 
   it('runs the trivial verifier alone at medium effort on a change whose files could be trivial', () => {
     const trivial = { trivial: true, subtle: true, paired: true };
@@ -1346,29 +1349,29 @@ describe('selectTeam', () => {
 
       const solo = deeper(code, t(false, false, false));
       expect(readers(solo)).toEqual([`${S} · xhigh`, `${O} · xhigh`]);
-      expect(solo.routing).toMatchObject({ class: 'internal', group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo', deeper: true });
+      expect(solo.routing).toMatchObject({ class: 'internal', group: 'full', groupSource: 'deeper_review', escalatedFrom: 'solo', deeper: true });
       expect(solo.finders.map(f => f.steps)).toEqual([40, 40]);
 
       expect(readers(deeper(docs, t(true, false, true)))).toEqual([`${S} · xhigh`, `${O} · xhigh`]);
 
-      const pair = deeper(code, t(false, true, true));
-      expect(readers(pair)).toEqual([`${S} · xhigh`, `${O} · xhigh`]);
-      expect(pair.routing).toMatchObject({ group: 'pair', groupSource: 'routing', deeper: true });
-      expect(pair.routing.escalatedFrom).toBeUndefined();
-      const high = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'high' }, { model: '@reviewer_pair', effort: 'high' }] } } } });
+      const full = deeper(code, t(false, true, true));
+      expect(readers(full)).toEqual([`${S} · xhigh`, `${O} · xhigh`]);
+      expect(full.routing).toMatchObject({ group: 'full', groupSource: 'routing', deeper: true });
+      expect(full.routing.escalatedFrom).toBeUndefined();
+      const high = makeConfig({ review: { groups: groups({ full: [{ model: 'claude-sonnet-5-5', effort: 'high' }, { model: 'claude-opus-5-5', effort: 'high' }] }) } });
       expect(readers(selectTeam(makeDiff({ files: code }), high, t(false, true, true), true))).toEqual([`${S} · xhigh`, `${O} · xhigh`]);
-      const xhigh = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'xhigh' }, { model: '@reviewer_pair', effort: 'xhigh' }] } } } });
+      const xhigh = makeConfig({ review: { groups: groups({ full: [{ model: 'claude-sonnet-5-5', effort: 'xhigh' }, { model: 'claude-opus-5-5', effort: 'xhigh' }] }) } });
       expect(readers(selectTeam(makeDiff({ files: code }), xhigh, t(false, true, true), true))).toEqual([`${S} · max`, `${O} · max`]);
-      expect(pair.routing.deeperSameEffort).toBeUndefined();
+      expect(full.routing.deeperSameEffort).toBeUndefined();
 
       expect(run(['', code, t(false, false, false), '', []]).routing.deeper).toBeUndefined();
     });
 
     it('names and records a finder by the effort its client sends, and lists the finders a deeper review gives no more effort', () => {
-      // The reviewer's model has no `xhigh`, as Claude Sonnet 4.6 does not. The pair's model takes every tier.
+      // The first finder's model has no `xhigh`, as Claude Sonnet 4.6 does not. The second finder's model takes every tier.
       const noXhigh: LLMClient = { sendMessage: jest.fn(), sentEffort: effort => (effort === 'xhigh' ? 'high' : effort) };
       const everyTier: LLMClient = { sendMessage: jest.fn() };
-      const clients: ReviewClients = { reviewer: noXhigh, reviewerByModel: new Map([['claude-sonnet-5-5', noXhigh], ['claude-opus-5-5', everyTier]]), judge: everyTier };
+      const clients: ReviewClients = { reviewer: noXhigh, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noXhigh], ['anthropic/claude-opus-5-5', everyTier]]), judge: everyTier };
       const team = (triage: ReturnType<typeof t>, deeper: boolean, config = makeConfig()) => selectTeam(makeDiff({ files: code }), config, triage, deeper, clients);
 
       // A subtle change already runs at high, so the step to xhigh sends the first model the same effort.
@@ -1383,36 +1386,30 @@ describe('selectTeam', () => {
       expect(plain.routing.deeperSameEffort).toBeUndefined();
 
       // A set `max` has no tier above it.
-      const max = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'max' }, { model: '@reviewer_pair', effort: 'high' }] } } } });
+      const max = makeConfig({ review: { groups: groups({ full: [{ model: 'claude-sonnet-5-5', effort: 'max' }, { model: 'claude-opus-5-5', effort: 'high' }] }) } });
       expect(team(t(false, true, true), true, max).routing.deeperSameEffort).toEqual([`${S} · max`]);
 
-      // A deeper review that moves a one-finder group up to the pair adds the second finder, so only the finder the
+      // A deeper review that moves a one-finder group up to the `full` group adds the second finder, so only the finder the
       // group already had is compared, though neither model takes `xhigh`.
-      const bothCapped: ReviewClients = { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noXhigh], ['claude-opus-5-5', noXhigh]]) };
+      const bothCapped: ReviewClients = { ...clients, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noXhigh], ['anthropic/claude-opus-5-5', noXhigh]]) };
       const escalated = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, false), true, bothCapped);
-      expect(escalated.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo' });
+      expect(escalated.routing).toMatchObject({ group: 'full', groupSource: 'deeper_review', escalatedFrom: 'solo' });
       expect(readers(escalated)).toEqual([`${S} · high`, `${O} · high`]);
       expect(escalated.routing.deeperSameEffort).toEqual([`${S} · high`]);
-      // The built-in pair asks for less than a `max` the earlier group set. The kept finder stays at `max`, which is no
+      // The `full` group asks for less than a `max` the earlier group set. The kept finder stays at `max`, which is no
       // more effort for it, and the added finder runs at the deeper effort.
-      const max1 = (model?: string) => makeConfig({ review: { groups: { deep: { reviewers: [{ ...(model && { model }), effort: 'max' }] } }, routing: { internal: 'deep' } } });
+      const max1 = (model = 'claude-sonnet-5-5') => makeConfig({ review: { groups: groups({ deep: [{ model, effort: 'max' }] }), routing: { internal: 'deep' } } });
       const kept = selectTeam(makeDiff({ files: code }), max1(), t(false, true, false), true, clients);
-      expect(kept.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'deep' });
+      expect(kept.routing).toMatchObject({ group: 'full', groupSource: 'deeper_review', escalatedFrom: 'deep' });
       expect(kept.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · max`, 'max'], [`${O} · xhigh`, 'xhigh']]);
       expect(kept.routing.deeperSameEffort).toEqual([`${S} · max`]);
       // The kept finder is the one on the earlier finder's model, however the group names that model.
-      for (const model of ['@reviewer_pair', 'claude-opus-5-5', 'anthropic/claude-opus-5-5']) {
+      for (const model of ['claude-opus-5-5', 'anthropic/claude-opus-5-5']) {
         const keptPair = selectTeam(makeDiff({ files: code }), max1(model), t(false, true, false), true, clients);
         expect(keptPair.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · high`, 'xhigh'], [`${O} · max`, 'max']]);
         expect(keptPair.routing.deeperSameEffort).toEqual([`${O} · max`]);
       }
-      // When both pair finders run on that model, only the first is the kept one. The other is added and runs at the deeper effort.
-      for (const model of [undefined, '@reviewer_pair']) {
-        const oneModel = selectTeam(makeDiff({ files: code }), { ...max1(model), models: { reviewer_pair: 'claude-sonnet-5-5' } }, t(false, true, false), true, clients);
-        expect(oneModel.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · max`, 'max'], [`${S} · high`, 'xhigh']]);
-        expect(oneModel.routing.deeperSameEffort).toEqual([`${S} · max`]);
-      }
-      // A finder on a model the pair does not run is replaced, so no finder is kept.
+      // A finder on a model `full` does not run is replaced, so no finder is kept.
       const replaced = selectTeam(makeDiff({ files: code }), max1('gpt-5.5'), t(false, true, false), true, clients);
       expect(replaced.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · high`, 'xhigh'], [`${O} · xhigh`, 'xhigh']]);
       expect(replaced.routing.deeperSameEffort).toBeUndefined();
@@ -1421,15 +1418,38 @@ describe('selectTeam', () => {
 
       // A model that takes no effort receives none either way. Its name and record keep the asked tier.
       const noEffort: LLMClient = { sendMessage: jest.fn(), sentEffort: () => undefined };
-      const none = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, true), true, { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noEffort], ['claude-opus-5-5', everyTier]]) });
+      const none = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, true), true, { ...clients, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noEffort], ['anthropic/claude-opus-5-5', everyTier]]) });
       expect(none.finders.map(f => [f.name, f.sentEffort])).toEqual([[`${S} · xhigh`, 'xhigh'], [`${O} · xhigh`, 'xhigh']]);
       expect(none.routing.deeperSameEffort).toEqual([`${S} · xhigh`]);
 
       // Outside a deeper review the name shows the sent effort and nothing is listed.
-      const xhigh = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'xhigh' }, { model: '@reviewer_pair', effort: 'xhigh' }] } } } });
+      const xhigh = makeConfig({ review: { groups: groups({ full: [{ model: 'claude-sonnet-5-5', effort: 'xhigh' }, { model: 'claude-opus-5-5', effort: 'xhigh' }] }) } });
       const usual = team(t(false, true, true), false, xhigh);
       expect(readers(usual)).toEqual([`${S} · high`, `${O} · xhigh`]);
       expect(usual.routing.deeperSameEffort).toBeUndefined();
+    });
+
+    it('pins the review of a repository with no config: the team of each class and the fallback of each stage', () => {
+      const team = (path: string, triage: ReturnType<typeof t>) => {
+        const { routing, finders } = selectTeam(makeDiff({ files: [file(path)] }), DEFAULT_CONFIG, triage);
+        return [routing.class, routing.group, ...finders.map(f => [f.name, f.model, f.effort, f.steps])];
+      };
+      const both = (effort: string) => [[`${S} · ${effort}`, 'claude-sonnet-5-5', effort, 40], [`${O} · ${effort}`, 'claude-opus-5-5', effort, 40]];
+      for (const [path, floor] of [['src/auth/session.ts', 'security'], ['package.json', 'supply_chain'], ['db/schema.sql', 'data_contract']]) {
+        expect(team(path, t(true, false, false))).toEqual([floor, 'full', ...both('medium')]);
+        expect(team(path, t(false, true, false))).toEqual([floor, 'full', ...both('high')]);
+      }
+      expect(team('src/format.ts', t(false, false, true))).toEqual(['behavior', 'full', ...both('medium')]);
+      expect(team('src/format.ts', t(false, true, true))).toEqual(['behavior', 'full', ...both('high')]);
+      expect(team('src/format.ts', t(false, false, false))).toEqual(['internal', 'solo', [`${S} · medium`, 'claude-sonnet-5-5', 'medium', 30]]);
+      expect(team('src/format.ts', t(false, true, false))).toEqual(['internal', 'solo', [`${S} · high`, 'claude-sonnet-5-5', 'high', 30]]);
+      expect(team('README.md', t(true, true, false))).toEqual(['docs', 'trivial', [verifier, 'claude-sonnet-5-5', 'medium', 8]]);
+      expect(teamModels(DEFAULT_CONFIG)).toEqual(['claude-sonnet-5-5', 'claude-opus-5-5']);
+
+      const stages = { planner: resolveModel(DEFAULT_CONFIG, 'planner'), finder: 'claude-sonnet-5-5', secondFinder: 'claude-opus-5-5', judge: resolveModel(DEFAULT_CONFIG, 'judge'), dedup: resolveModel(DEFAULT_CONFIG, 'dedup') };
+      expect(stages).toEqual({ planner: 'claude-haiku-5-5', finder: 'claude-sonnet-5-5', secondFinder: 'claude-opus-5-5', judge: 'claude-opus-5-5', dedup: 'claude-haiku-5-5' });
+      expect(Object.fromEntries(Object.entries(stages).map(([stage, model]) => [stage, resolveFallbackModel(DEFAULT_CONFIG, model)])))
+        .toEqual({ planner: 'claude-sonnet-5-5', finder: 'claude-opus-5-5', secondFinder: 'claude-sonnet-5-5', judge: 'claude-sonnet-5-5', dedup: 'claude-sonnet-5-5' });
     });
 
     it('gives a tests-only change one full finder, where the trivial verifier read it before', () => {
@@ -1444,7 +1464,7 @@ describe('selectTeam', () => {
     it('gives a data contract change two finders as a floor class, where the triage decided before', () => {
       for (const path of ['db/migrations/0001_init.ts', 'schema/users.sql', 'proto/api.proto', 'src/schema.graphql', 'openapi.yaml']) {
         const team = run(['', [file(path)], t(true, false, false), '', []]);
-        expect([path, team.routing.class, team.routing.group, readers(team)]).toEqual([path, 'data_contract', 'pair', [`${S} · medium`, `${O} · medium`]]);
+        expect([path, team.routing.class, team.routing.group, readers(team)]).toEqual([path, 'data_contract', 'full', [`${S} · medium`, `${O} · medium`]]);
         expect(team.trivialOverridden).toBe(true);
       }
     });
@@ -1489,8 +1509,8 @@ describe('selectTeam', () => {
     expect(team.finders[1]).toEqual(expect.objectContaining({ model: 'claude-opus-5-5', effort: 'medium' }));
     expect(team.finders.map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([])]);
 
-    const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(configured)).toEqual(['Claude Opus 5.5 · high', 'GPT 5.5 · high']);
+    const configured = selectTeam(plainDiff, makeConfig({ review: { groups: groups({ full: ['claude-opus-5-5', 'gpt-5.5', 'gemini-3-pro'] }) } }), { trivial: false, subtle: true, paired: true });
+    expect(names(configured)).toEqual(['Claude Opus 5.5 · high', 'GPT 5.5 · high', 'Gemini 3 Pro · high']);
   });
 
   it('defaults to two finders at high effort without a triage', () => {
@@ -1571,7 +1591,7 @@ describe('selectTeam', () => {
     expect(focusesWith(['reference', 'consumer'], toolClients)).toEqual([focus, focus]);
     expect(focusesWith(['reference', 'consumer'], { reviewer: noTools, judge: withTools }, '/work/pr-head')).toEqual([focus, focus]);
     // In a pair, only the finder whose client has the tools gets the checks.
-    const mixed = focusesWith(['consumer'], { reviewer: noTools, reviewerByModel: new Map([['claude-opus-5-5', withTools]]), judge: withTools }, '/work/pr-head');
+    const mixed = focusesWith(['consumer'], { reviewer: noTools, reviewerByModel: new Map([['anthropic/claude-opus-5-5', withTools]]), judge: withTools }, '/work/pr-head');
     expect(mixed.filter(f => f === focus)).toHaveLength(1);
     expect(mixed.filter(f => f.includes('Consumers:'))).toHaveLength(1);
     const withReference = focusWith('reference');
@@ -1594,17 +1614,17 @@ describe('selectTeam', () => {
   describe('configured routing', () => {
     const file = (path: string): DiffFile => ({ path, changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+change' }] });
     const diffOf = (...paths: string[]) => makeDiff({ files: paths.map(file) });
-    const deep: ReviewGroup = { reviewers: [
+    const deep: Groups[string] = [
       { model: 'claude-opus-5-5', effort: 'high', focus: 'authz, injection, secret handling' },
       { model: 'gemini-3-pro', effort: 'high' },
       { model: 'claude-sonnet-5-5', effort: 'medium' },
-    ] };
+    ];
     const readers = names;
     const quiet = { trivial: false, subtle: false, paired: false };
 
     it('runs a reader per entry of the routed group and adds its focus to that reader alone', () => {
       const config = makeConfig({ review: {
-        groups: { deep },
+        groups: groups({ deep }),
         classes: { hot_path: { rank: 85, match: { paths_any: ['src/net/**'] } } },
         routing: { hot_path: 'deep', internal: 'solo' },
       } });
@@ -1619,13 +1639,13 @@ describe('selectTeam', () => {
 
     it('names each reader by model, effort and a shortened focus, and numbers a repeated name', () => {
       const focus = 'consensus rules, quorum signing and the validator set rotation';
-      const twins: ReviewGroup = { reviewers: [
+      const twins: Groups[string] = [
         { model: 'claude-opus-5-5', effort: 'high', focus },
         { model: 'claude-opus-5-5', effort: 'high', focus },
         { model: 'gpt-5.5', effort: 'auto' },
-        { model: 'gpt-5.5' },
-      ] };
-      const team = selectTeam(plainDiff, makeConfig({ review: { groups: { twins }, default_group: 'twins' } }), quiet);
+        'gpt-5.5',
+      ];
+      const team = selectTeam(plainDiff, makeConfig({ review: { groups: groups({ twins }), routing: { internal: 'twins' } } }), quiet);
       const label = 'Claude Opus 5.5 · high · consensus rules, quorum signing and the…';
       expect(readers(team)).toEqual([label, `${label} #2`, 'GPT 5.5 · medium', 'GPT 5.5 · medium #2']);
       // Every finder runs the same checklist wherever it stands. A focus only adds its own line.
@@ -1633,26 +1653,36 @@ describe('selectTeam', () => {
       expect(team.finders.map(f => f.prompt)).toEqual([withFocus, withFocus, buildFinderAgent([]), buildFinderAgent([])]);
     });
 
-    it('sends every class to the default group when groups are set without routing', () => {
-      const config = makeConfig({ review: { default_group: 'deep', groups: { deep } } });
-      for (const team of [selectTeam(diffOf('README.md'), config, { trivial: true, subtle: false, paired: false }), selectTeam(authDiff, config, quiet)]) {
-        expect([team.routing.group, team.routing.groupSource, team.finders]).toEqual(['deep', 'default_group', expect.any(Array)]);
-        expect(team.finders).toHaveLength(3);
-      }
+    it('keeps the built-in routes when groups are set without routing, and sends a class with no route to `full`', () => {
+      const own = groups({ trivial: ['gpt-5.5'], solo: ['gpt-5.5'], full: ['gpt-5.5', 'claude-opus-5-5'], deep });
+      const config = makeConfig({ review: { groups: own, classes: { hot_path: { rank: 85, match: { paths_any: ['src/net/**'] } } } } });
+      const route = (team: ReturnType<typeof selectTeam>) => [team.routing.class, team.routing.group, team.routing.groupSource, readers(team)];
+      expect(route(selectTeam(diffOf('README.md'), config, { trivial: true, subtle: false, paired: false }))).toEqual(['docs', 'trivial', 'routing', ['Quick check · GPT 5.5']]);
+      expect(route(selectTeam(plainDiff, config, quiet))).toEqual(['internal', 'solo', 'routing', ['GPT 5.5 · medium']]);
+      expect(route(selectTeam(authDiff, config, quiet))).toEqual(['security', 'full', 'routing', ['GPT 5.5 · medium', 'Claude Opus 5.5 · medium']]);
+      expect(route(selectTeam(diffOf('src/net/peer.ts'), config, quiet))).toEqual(['hot_path', 'full', 'no_route', ['GPT 5.5 · medium', 'Claude Opus 5.5 · medium']]);
+      expect(teamModels(config)).toEqual(['gpt-5.5', 'claude-opus-5-5']);
+      // A model written with and without its provider gets one client.
+      expect(teamModels(makeConfig({ review: { groups: { ...own, solo: ['openai/gpt-5.5'] } } }))).toEqual(['gpt-5.5', 'claude-opus-5-5']);
+      // A quick check without an effort runs at medium, whatever the planner says about the change. Its entry may set another.
+      const subtle = { trivial: true, subtle: true, paired: false };
+      expect(selectTeam(diffOf('README.md'), config, subtle).finders.map(f => f.effort)).toEqual(['medium']);
+      const auto = makeConfig({ review: { groups: { ...own, trivial: [{ model: 'gpt-5.5', effort: 'auto' }] } } });
+      expect(selectTeam(diffOf('README.md'), auto, subtle).finders.map(f => f.effort)).toEqual(['high']);
     });
 
     it('moves a security, supply chain or data contract PR routed lower up to a group of two models', () => {
       const config = makeConfig({ review: { routing: { security: 'solo', supply_chain: 'solo', data_contract: 'trivial' } } });
       for (const [path, floor, from] of [['src/auth/login.ts', 'security', 'solo'], ['package.json', 'supply_chain', 'solo'], ['db/migrations/0002.sql', 'data_contract', 'trivial']]) {
         const team = selectTeam(diffOf(path), config, { trivial: true, subtle: false, paired: false });
-        expect([path, team.routing.class, team.routing.floor, team.routing.group, team.routing.groupSource, team.routing.escalatedFrom]).toEqual([path, floor, floor, 'pair', 'floor_escalation', from]);
+        expect([path, team.routing.class, team.routing.floor, team.routing.group, team.routing.groupSource, team.routing.escalatedFrom]).toEqual([path, floor, floor, 'full', 'floor_escalation', from]);
         expect(readers(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
       }
     });
 
     it('checks the floor after routing, so a higher ranked class cannot pull a floor PR into a weak group', () => {
       const config = makeConfig({ review: {
-        groups: { deep },
+        groups: groups({ deep }),
         classes: { prose: { rank: 200, match: { paths_any: ['docs/**'] } } },
         routing: { prose: 'trivial', security: 'deep' },
       } });
@@ -1660,22 +1690,6 @@ describe('selectTeam', () => {
       expect([team.routing.class, team.routing.floor, team.routing.group, team.routing.escalatedFrom]).toEqual(['prose', 'security', 'deep', 'trivial']);
       expect(team.routing).toEqual(expect.objectContaining({ rank: 200, matched: ['prose', 'security', 'behavior'], classSource: 'paths', groupSource: 'floor_escalation' }));
       expect(selectTeam(diffOf('docs/guide.md'), config, quiet).routing.group).toBe('trivial');
-    });
-
-    it('keeps a floor PR below the floor only where `allow_weaker` names each floor class it matched', () => {
-      const config = makeConfig({ review: { routing: { security: 'solo' }, allow_weaker: ['security'] } });
-      const weak = selectTeam(authDiff, config, quiet);
-      expect([weak.routing.group, weak.routing.groupSource, weak.routing.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Claude Sonnet 5.5 · medium']]);
-      // The one finder still gets the tool steps of a floor class.
-      expect(weak.finders[0].steps).toBe(40);
-      const withCi = selectTeam(diffOf('src/auth/login.ts', '.github/workflows/ci.yml'), config, quiet);
-      expect([withCi.routing.group, withCi.routing.groupSource, withCi.routing.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
-    });
-
-    it('falls back to the built-in pair group when the floor class routes to a redefined group below the floor', () => {
-      const config = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer' }] } } , routing: { security: 'pair' } } });
-      const team = selectTeam(authDiff, config, quiet);
-      expect([team.routing.group, team.routing.groupSource, team.routing.escalatedFrom, readers(team)]).toEqual(['pair', 'floor_escalation', 'pair', ['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']]);
     });
 
     it('widens a built-in floor class with extra paths, never narrowing its built-in rule', () => {
@@ -2351,7 +2365,7 @@ describe('runReview', () => {
       const mixed = makeClients();
       Object.assign(mixed.reviewer, { repoTools: true });
       const withoutTools = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
-      mixed.reviewerByModel = new Map([['claude-opus-5-5', withoutTools]]);
+      mixed.reviewerByModel = new Map([['anthropic/claude-opus-5-5', withoutTools]]);
       await runReview(mixed, { config: makeConfig(), diff: generated.diff, rawDiff: 'raw diff', repoContext: '', workspace: generated.root });
       const [[, withTools, toolsSent]] = jest.mocked(mixed.reviewer.sendMessage).mock.calls;
       expect(withTools).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files');
@@ -2596,7 +2610,7 @@ describe('runReview', () => {
       expect(quick.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
       expect(reviewerCalls(trivial).filter(([system]) => isCheck(system))).toEqual([]);
       expect(quick.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'skipped' }] });
-      expect(deeper.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'trivial' });
+      expect(deeper.routing).toMatchObject({ group: 'full', groupSource: 'deeper_review', escalatedFrom: 'trivial' });
       expect(reviewerCalls(moved).filter(([system]) => isCheck(system))).toHaveLength(1);
       expect(deeper.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'proven', reason: 'The lines decide it.', proof: ['README.md:1'] }] });
     });
@@ -4805,9 +4819,9 @@ describe('runReview', () => {
     jest.mocked(clients.judge.sendMessage).mockRejectedValue(refusal);
     const reviewerFallback = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as LLMClient;
     const judgeFallback = { sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }) } as unknown as LLMClient;
-    clients.reviewerByModel = new Map([['claude-sonnet-5-5', clients.reviewer]]);
+    clients.reviewerByModel = new Map([['anthropic/claude-sonnet-5-5', clients.reviewer]]);
     clients.fallbacks = {
-      reviewerByModel: new Map([['claude-sonnet-5-5', { model: 'claude-opus-5-5', client: reviewerFallback }]]),
+      reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', { model: 'claude-opus-5-5', client: reviewerFallback }]]),
       judge: { model: 'claude-sonnet-5-5', client: judgeFallback },
     };
 
@@ -5138,7 +5152,7 @@ describe('runReview', () => {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: findingJson }),
       } as unknown as import('./providers').LLMClient,
-      reviewerByModel: new Map([['claude-opus-5-5', {
+      reviewerByModel: new Map([['anthropic/claude-opus-5-5', {
         sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
       } as unknown as import('./providers').LLMClient]]),
       judge: {
@@ -6310,7 +6324,7 @@ describe('runReview', () => {
   function pairedClients(primary: jest.Mock, pair: jest.Mock): ReviewClients {
     return {
       reviewer: { sendMessage: primary } as unknown as import('./providers').LLMClient,
-      reviewerByModel: new Map([['claude-opus-5-5', { sendMessage: pair } as unknown as import('./providers').LLMClient]]),
+      reviewerByModel: new Map([['anthropic/claude-opus-5-5', { sendMessage: pair } as unknown as import('./providers').LLMClient]]),
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
       } as unknown as import('./providers').LLMClient,
@@ -7743,7 +7757,7 @@ describe('runReview triage', () => {
   it('sends the pair finder the same prompt on the pair client', async () => {
     const clients = makeClients();
     const pair = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
-    clients.reviewerByModel = new Map([['claude-opus-5-5', pair]]);
+    clients.reviewerByModel = new Map([['anthropic/claude-opus-5-5', pair]]);
     await runReview(clients, { config: makeConfig({ reviewers: [{ name: 'Protocol', focus: 'wire format' }] }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     const primaryCall = jest.mocked(clients.reviewer.sendMessage).mock.calls;
     const pairCall = jest.mocked(pair.sendMessage).mock.calls;
@@ -7755,7 +7769,7 @@ describe('runReview triage', () => {
 
   it('ends INCOMPLETE when the pair finder fails, even though the primary finder succeeded', async () => {
     const clients = makeClients();
-    clients.reviewerByModel = new Map([['claude-opus-5-5', { sendMessage: jest.fn().mockRejectedValue(new Error('Codex token expired')) } as unknown as import('./providers').LLMClient]]);
+    clients.reviewerByModel = new Map([['anthropic/claude-opus-5-5', { sendMessage: jest.fn().mockRejectedValue(new Error('Codex token expired')) } as unknown as import('./providers').LLMClient]]);
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');

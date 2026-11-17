@@ -1,9 +1,10 @@
 import * as core from '@actions/core';
 
-import { resolveFallbackModel, resolveModel, resolvePairModel } from './config';
+import { resolveFallbackModel, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { ReviewClients, teamModels } from './review';
+import { modelIdentity } from './routing';
 import type { ReviewConfig, ReviewModels } from './types';
 
 /** Builds the client for `model` with the credentials its provider takes. Throws when they are missing. */
@@ -14,38 +15,35 @@ export function buildLLMClient(model: string, providerInputs: ProviderInputs): L
 
 /** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
 export function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
+  const finderModels = teamModels(config);
   const models: ReviewModels = {
     planner: resolveModel(config, 'planner'),
-    reviewer: resolveModel(config, 'reviewer'),
-    reviewerPair: resolvePairModel(config),
     judge: resolveModel(config, 'judge'),
-    ...(config.models?.refuter_pair && { refuterPair: config.models.refuter_pair }),
+    ...(config.models?.second_refuter && { refuterPair: config.models.second_refuter }),
     dedup: resolveModel(config, 'dedup'),
   };
-  core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, refuter pair: ${models.refuterPair ?? 'off'}, dedup: ${models.dedup}`);
+  core.info(`Models — planner: ${models.planner}, reviewers: ${finderModels.join(', ')}, judge: ${models.judge}, second refuter: ${models.refuterPair ?? 'off'}, dedup: ${models.dedup}`);
 
   const buildClient = (model: string) => buildLLMClient(model, providerInputs);
-  const reviewer = buildClient(models.reviewer);
-  const reviewerByModel = new Map<string, LLMClient>([[models.reviewer, reviewer]]);
-  for (const model of teamModels(config)) {
-    if (!reviewerByModel.has(model)) reviewerByModel.set(model, buildClient(model));
-  }
+  const reviewerByModel = new Map(finderModels.map(model => [modelIdentity(model), buildClient(model)]));
+  const reviewer = reviewerByModel.get(modelIdentity(finderModels[0]))!;
   const judge = buildClient(models.judge);
   const refuterPair = models.refuterPair ? buildClient(models.refuterPair) : undefined;
   const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
   const dedup = buildClient(models.dedup);
-  const fallbackClients = new Map<string, LLMClient>([...reviewerByModel, [models.judge, judge]]);
+  const fallbackClients = new Map<string, LLMClient>([...reviewerByModel, [modelIdentity(models.judge), judge]]);
   const fallbackFor = (stageModel: string) => {
     const model = resolveFallbackModel(config, stageModel);
     if (!model) return undefined;
-    if (!fallbackClients.has(model)) fallbackClients.set(model, buildClient(model));
-    return { model, client: fallbackClients.get(model)! };
+    const key = modelIdentity(model);
+    if (!fallbackClients.has(key)) fallbackClients.set(key, buildClient(model));
+    return { model, client: fallbackClients.get(key)! };
   };
   const fallbacks: NonNullable<ReviewClients['fallbacks']> = {
     ...(planner && { planner: fallbackFor(models.planner) }),
-    reviewerByModel: new Map([...reviewerByModel.keys()].flatMap((model) => {
+    reviewerByModel: new Map(finderModels.flatMap((model) => {
       const fallback = fallbackFor(model);
-      return fallback ? [[model, fallback] as const] : [];
+      return fallback ? [[modelIdentity(model), fallback] as const] : [];
     })),
     judge: fallbackFor(models.judge),
     dedup: fallbackFor(models.dedup),

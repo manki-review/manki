@@ -100,7 +100,7 @@ Only complete runs are scored again. A case stays as scored, and is listed with 
 `--variant <name>=<file>` scores one setup: the YAML file holds config set on top of each case's config, where mappings merge key by key and any other value replaces. A case's config is its own `config:` block, or else its base `.manki.yml`. `--variant <name>` without a file runs that config as it is. Repeat it to score several setups on the same cases in one run. `--set <key.path>=<value>` sets one value, read as YAML, on top of every variant. Paths are relative to this checkout, since `npm run` starts there.
 
 ```sh
-npm run bench -- $CHECKOUTS --variant base --variant opus-pair=bench/variants/opus-pair.yml
+npm run bench -- $CHECKOUTS --variant base --variant judge-xhigh=bench/variants/judge-xhigh.yml
 npm run bench -- $CHECKOUTS --set models.judge=claude-sonnet-5-5
 ```
 

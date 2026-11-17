@@ -417,11 +417,11 @@ describe('reviewLocal', () => {
   it('sets config overrides on top of the base config, and refuses overrides that make it invalid or name an unknown key before any model call', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
 
-    await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { models: { reviewer: 'claude-opus-5-5' } }, providerInputs: inputs });
+    await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { models: { judge: 'claude-sonnet-5-5' } }, providerInputs: inputs });
     await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { exclude_paths: ['vendor/**'] }, providerInputs: inputs });
 
     const [kept, replaced] = jest.mocked(runReview).mock.calls.map(call => call[1]);
-    expect(kept.config.models?.reviewer).toBe('claude-opus-5-5');
+    expect(kept.config.models?.judge).toBe('claude-sonnet-5-5');
     expect(kept.config.exclude_paths).toContain('docs/**');
     expect(replaced.config.exclude_paths).toContain('vendor/**');
     expect(replaced.config.exclude_paths).not.toContain('docs/**');
@@ -447,8 +447,8 @@ describe('reviewLocal', () => {
 describe('overlayConfig', () => {
   it('merges mappings key by key and replaces every other value', () => {
     expect(overlayConfig(
-      { models: { reviewer: 'a', judge: 'b' }, exclude_paths: ['x'], review: { routing: { wallet: 'pair' } } },
-      { models: { reviewer: 'c' }, exclude_paths: ['y'], review: { routing: { consensus: 'pair' } }, auto_review: false },
-    )).toEqual({ models: { reviewer: 'c', judge: 'b' }, exclude_paths: ['y'], review: { routing: { wallet: 'pair', consensus: 'pair' } }, auto_review: false });
+      { models: { planner: 'a', judge: 'b' }, exclude_paths: ['x'], review: { routing: { wallet: 'full' } } },
+      { models: { planner: 'c' }, exclude_paths: ['y'], review: { routing: { consensus: 'full' } }, auto_review: false },
+    )).toEqual({ models: { planner: 'c', judge: 'b' }, exclude_paths: ['y'], review: { routing: { wallet: 'full', consensus: 'full' } }, auto_review: false });
   });
 });

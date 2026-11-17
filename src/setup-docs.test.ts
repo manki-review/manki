@@ -115,7 +115,7 @@ describe('documented `review` examples', () => {
     const setupBlocks = markdownYamlBlocks(readRepoFile('docs/how-reviews-work.md')).filter(block => /^review:/m.test(block));
     const example = readRepoFile('.manki.yml.example');
     const exampleBlocks = [...example.matchAll(/^# review:\n(?:#[ ]{2,}.*\n)+/gm)].map(m => m[0].replace(/^# ?/gm, ''));
-    expect([setupBlocks.length, exampleBlocks.length]).toEqual([3, 2]);
+    expect([setupBlocks.length, exampleBlocks.length]).toEqual([3, 4]);
     const reviews = [...setupBlocks, ...exampleBlocks].map(block => loadConfigFromContent(block).review);
     expect(reviews.filter(review => review?.groups?.deep)).toHaveLength(4);
     expect(reviews.filter(review => review?.outside_input && review.examples && review.critical_paths)).toHaveLength(2);

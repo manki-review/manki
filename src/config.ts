@@ -3,14 +3,12 @@ import { parse as parseYaml } from 'yaml';
 
 import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
-import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
+import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, FULL_GROUP, OPUS_MODEL, PATH_ALIASES, TRIVIAL_GROUP, canonicalJson, finderShortfall, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
 import { ANALYZERS, AUTHOR_CLEAR_ROLES, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig, RULES_MODES, SWEEP_MODES } from './types';
 
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
 const HAIKU_MODEL = 'claude-haiku-5-5';
-const SONNET_MODEL = 'claude-sonnet-5-5';
-const OPUS_MODEL = 'claude-opus-5-5';
 
 /** The config file Manki reads, at the root of the base branch. */
 export const CONFIG_PATH = '.manki.yml';
@@ -41,7 +39,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   project: '',
   models: {
     planner: HAIKU_MODEL,
-    reviewer: SONNET_MODEL,
     judge: OPUS_MODEL,
     dedup: HAIKU_MODEL,
   },
@@ -110,12 +107,14 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
 
 const MAX_JUDGE_TOOL_STEPS = 100;
 
-export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
+export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'judge', 'second_refuter', 'dedup', 'fallback']);
 /** How many notes a review lists when `review.notes` is not set. */
 export const DEFAULT_NOTES = 3;
 
-export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules']);
-export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['groups', 'classes', 'routing', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules']);
+export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus']);
+/** The keys of a reader of the `trivial` group. The quick check has one fixed prompt, so it takes no `focus`. */
+const QUICK_CHECK_KEYS: ReadonlySet<string> = new Set(['model', 'effort']);
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
@@ -222,17 +221,11 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       if ('planner' in models && typeof models.planner !== 'string') {
         errors.push('`models.planner` must be a string');
       }
-      if ('reviewer' in models && typeof models.reviewer !== 'string') {
-        errors.push('`models.reviewer` must be a string');
-      }
-      if ('reviewer_pair' in models && (typeof models.reviewer_pair !== 'string' || models.reviewer_pair === '')) {
-        errors.push('`models.reviewer_pair` must be a non-empty string');
-      }
       if ('judge' in models && typeof models.judge !== 'string') {
         errors.push('`models.judge` must be a string');
       }
-      if ('refuter_pair' in models && (typeof models.refuter_pair !== 'string' || models.refuter_pair === '')) {
-        errors.push('`models.refuter_pair` must be a non-empty string');
+      if ('second_refuter' in models && (typeof models.second_refuter !== 'string' || models.second_refuter === '')) {
+        errors.push('`models.second_refuter` must be a non-empty string');
       }
       if ('dedup' in models && typeof models.dedup !== 'string') {
         errors.push('`models.dedup` must be a string');
@@ -393,8 +386,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
   return { valid: errors.length === 0, errors, warnings };
 }
 
-const MODEL_REFS: ReadonlySet<string> = new Set(['@reviewer', '@reviewer_pair']);
-
 /** Warns about each key of `block` that is not in `known`, named by its path under `prefix`. */
 function warnUnknownKeys(block: Record<string, unknown>, known: ReadonlySet<string>, prefix: string, warnings: string[]): void {
   for (const key of Object.keys(block)) {
@@ -485,29 +476,33 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   const groups = new Set(Object.keys(BUILT_IN_GROUPS));
   if ('groups' in review) {
     if (!isObject(review.groups)) {
-      errors.push('`review.groups` must be an object mapping group names to groups');
+      errors.push('`review.groups` must be an object mapping group names to lists of reviewers');
     } else {
-      for (const [name, group] of Object.entries(review.groups)) {
+      for (const name of Object.keys(BUILT_IN_GROUPS).filter(builtIn => !Object.hasOwn(review.groups as object, builtIn))) {
+        errors.push(`\`review.groups\` must define the \`trivial\`, \`solo\` and \`full\` groups, and has no \`${name}\``);
+      }
+      for (const [name, reviewers] of Object.entries(review.groups)) {
         groups.add(name);
-        const reviewers = isObject(group) ? group.reviewers : undefined;
         if (!Array.isArray(reviewers) || reviewers.length === 0) {
-          errors.push(`\`review.groups.${name}.reviewers\` must be a non-empty array`);
+          errors.push(`\`review.groups.${name}\` must be a non-empty array of reviewers`);
           continue;
         }
+        const known = name === TRIVIAL_GROUP ? QUICK_CHECK_KEYS : GROUP_REVIEWER_KEYS;
         reviewers.forEach((reviewer: unknown, i) => {
-          const at = `\`review.groups.${name}.reviewers[${i}]`;
-          if (!isObject(reviewer)) {
-            errors.push(`${at}\` must be an object`);
+          const at = `\`review.groups.${name}[${i}]`;
+          if (typeof reviewer === 'string' && reviewer !== '') {
+            pushModelError(errors, `review.groups.${name}[${i}]`, reviewer);
             return;
           }
-          for (const key of Object.keys(reviewer)) {
-            if (!GROUP_REVIEWER_KEYS.has(key)) warnings.push(`Unknown config key: "review.groups.${name}.reviewers[${i}].${key}"`);
+          if (!isObject(reviewer)) {
+            errors.push(`${at}\` must be a model id or an object with a \`model\``);
+            return;
           }
-          if ('model' in reviewer && (typeof reviewer.model !== 'string' || reviewer.model === '')) errors.push(`${at}.model\` must be a non-empty string`);
-          else if (typeof reviewer.model === 'string' && !MODEL_REFS.has(reviewer.model)) pushModelError(errors, `review.groups.${name}.reviewers[${i}].model`, reviewer.model);
+          warnUnknownKeys(reviewer, known, `review.groups.${name}[${i}]`, warnings);
+          if (typeof reviewer.model !== 'string' || reviewer.model === '') errors.push(`${at}.model\` must be a non-empty string`);
+          else pushModelError(errors, `review.groups.${name}[${i}].model`, reviewer.model);
           if ('effort' in reviewer && !EFFORT_CHOICES.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, xhigh, max, auto`);
-          if ('focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
-          if ('role' in reviewer && reviewer.role !== 'finder' && reviewer.role !== 'verifier') errors.push(`${at}.role\` must be one of: finder, verifier`);
+          if (known.has('focus') && 'focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
         });
       }
     }
@@ -592,36 +587,24 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
       }
     }
   }
-
-  if ('default_group' in review && (typeof review.default_group !== 'string' || !groups.has(review.default_group))) {
-    errors.push(`\`review.default_group\` names unknown group \`${String(review.default_group)}\``);
-  }
-
-  if ('allow_weaker' in review) {
-    const floors = Object.keys(BUILT_IN_CLASSES).filter(name => BUILT_IN_CLASSES[name].floor);
-    if (!isStringArray(review.allow_weaker) || review.allow_weaker.some(name => !floors.includes(name))) {
-      errors.push(`\`review.allow_weaker\` must be an array of floor classes: ${floors.join(', ')}`);
-    }
-  }
 }
 
 /**
- * Returns an error for each floor class the `review` block routes to a group below the floor,
- * unless `allow_weaker` names the class. The built-in `pair` group is accepted even when both
- * of its finders resolve to one model, as they do on a non-Claude reviewer with no pair model.
+ * Returns an error when the `full` group has no two finders on two distinct models, and one for each floor class
+ * the `review` block routes to another group below the floor.
  */
 export function reviewFloorErrors(config: ReviewConfig): string[] {
   if (!config.review) return [];
   const routing = resolveRouting(config.review);
-  const errors: string[] = [];
+  const full = finderShortfall(routing.groups[FULL_GROUP]);
+  const errors = full ? [`\`review.groups.${FULL_GROUP}\` must hold at least two finders on two distinct models, but ${full}`] : [];
   for (const [name, c] of Object.entries(routing.classes)) {
-    if (!c.floor || routing.allowWeaker.includes(name)) continue;
+    if (!c.floor) continue;
     const groupName = routeClass(routing, name);
-    const group = routing.groups[groupName];
-    if (group === BUILT_IN_GROUPS.pair) continue;
-    const shortfall = floorShortfall(group, ref => resolveReviewerModel(config, ref));
+    if (full && groupName === FULL_GROUP) continue;
+    const shortfall = floorShortfall(routing.groups[groupName]);
     if (shortfall) {
-      errors.push(`\`review\` routes the \`${name}\` floor class to the \`${groupName}\` group, but ${shortfall}. A floor class needs two finders on two distinct models, none at \`low\` effort. Route it to a stronger group, or list it in \`review.allow_weaker\` to accept the weaker review`);
+      errors.push(`\`review\` routes the \`${name}\` floor class to the \`${groupName}\` group, but ${shortfall}. A floor class needs two finders on two distinct models, none at \`low\` effort. Route it to a stronger group`);
     }
   }
   return errors;
@@ -743,47 +726,20 @@ export function changedKeys(head: ReviewConfig, base: ReviewConfig): string[] {
   return [...KNOWN_KEYS].filter(key => canonicalJson(values(head)[key]) !== canonicalJson(values(base)[key]));
 }
 
-export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
+export function resolveModel(config: ReviewConfig, stage: 'planner' | 'judge' | 'dedup'): string {
   return config.models?.[stage] || DEFAULT_CONFIG.models![stage]!;
 }
 
 /**
- * Returns the model for the second finder: `models.reviewer_pair`, else the other Claude tier of the
- * reviewer model, else the reviewer model itself. The tier swap needs no credential beyond the reviewer's.
- */
-export function resolvePairModel(config: ReviewConfig): string {
-  return config.models?.reviewer_pair || otherClaudeTier(resolveModel(config, 'reviewer'));
-}
-
-/**
- * Returns the model a stage on `stageModel` moves to when a safety filter refuses it: `models.fallback`,
- * else `models.reviewer`. A stage already on that model moves to its other Claude tier instead.
+ * Returns the model a stage on `stageModel` moves to when a safety filter refuses it: `models.fallback`. Without it,
+ * or for a stage already on it, the first model of the `full` group other than the stage's own.
  * Returns undefined when no other model is left.
  */
 export function resolveFallbackModel(config: ReviewConfig, stageModel: string): string | undefined {
-  const fallback = config.models?.fallback || resolveModel(config, 'reviewer');
-  const model = sameModel(fallback, stageModel) ? otherClaudeTier(stageModel) : fallback;
-  return sameModel(model, stageModel) ? undefined : model;
-}
-
-function sameModel(a: string, b: string): boolean {
-  return a.replace(/^anthropic\//, '') === b.replace(/^anthropic\//, '');
-}
-
-/** Returns the other Claude tier of `model` (Sonnet for Opus and Haiku, Opus for Sonnet and Fable), or `model` itself for other providers. */
-function otherClaudeTier(model: string): string {
-  const id = model.replace(/^anthropic\//, '');
-  if (id.startsWith('claude-opus-')) return SONNET_MODEL;
-  if (id.startsWith('claude-sonnet-') || id.startsWith('claude-fable-')) return OPUS_MODEL;
-  if (id.startsWith('claude-haiku-')) return SONNET_MODEL;
-  return model;
-}
-
-/** Returns the model a group reviewer runs on. `@reviewer` and `@reviewer_pair` resolve through `models`, and unset means `@reviewer`. */
-export function resolveReviewerModel(config: ReviewConfig, ref: string | undefined): string {
-  if (ref === undefined || ref === '@reviewer') return resolveModel(config, 'reviewer');
-  if (ref === '@reviewer_pair') return resolvePairModel(config);
-  return ref;
+  const other = (model: string): boolean => modelIdentity(model) !== modelIdentity(stageModel);
+  const fallback = config.models?.fallback;
+  if (fallback && other(fallback)) return fallback;
+  return resolveRouting(config.review).groups[FULL_GROUP].reviewers.map(r => r.model).find(other);
 }
 
 /**

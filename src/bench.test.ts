@@ -216,7 +216,7 @@ describe('parseCase', () => {
   it('reads a clean case without key items, and a case with its own config', () => {
     const clean = parseCase(CASE_YAML.slice(0, CASE_YAML.indexOf('must_catch:')), 'clean.yml');
     expect([clean.mustCatch, clean.niceToHave]).toEqual([[], []]);
-    expect(parseCase(`${CASE_YAML}config:\n  review_passes: 2\n  models: { reviewer: claude-opus-5-5 }\n`, 'own.yml').config).toEqual({ review_passes: 2, models: { reviewer: 'claude-opus-5-5' } });
+    expect(parseCase(`${CASE_YAML}config:\n  review_passes: 2\n  models: { judge: claude-sonnet-5-5 }\n`, 'own.yml').config).toEqual({ review_passes: 2, models: { judge: 'claude-sonnet-5-5' } });
     expect(parseCase(`${CASE_YAML}config: {}\n`, 'own.yml').config).toEqual({});
   });
 
@@ -658,7 +658,7 @@ describe('runBench and buildReport', () => {
     const matcher: Matcher = async item => (item.id === 'K1' ? verdicts[k1++] : { verdict: 'NONE', findings: [], reason: 'none' });
     const onCase = jest.fn();
 
-    const overrides = { models: { reviewer: 'claude-opus-5-5' } };
+    const overrides = { models: { judge: 'claude-sonnet-5-5' } };
     const baseReview = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
     await runBench([benchCase], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
     expect(baseReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
@@ -717,7 +717,7 @@ describe('runBench and buildReport', () => {
     expect(variant).toEqual({ name: 'opus', overrides });
     const ownReview = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
     await runBench([{ ...benchCase, config: { review_passes: 2 } }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: ownReview, variants: [{ name: 'opus', overrides }] });
-    expect(ownReview.mock.calls[0][0].config).toMatchObject({ review_passes: 2, models: { reviewer: 'claude-opus-5-5' } });
+    expect(ownReview.mock.calls[0][0].config).toMatchObject({ review_passes: 2, models: { judge: 'claude-sonnet-5-5' } });
     expect(ownReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
     expect(onCase).toHaveBeenCalledWith([{ variant, results }]);
     expect(results[0].runs[1]).toMatchObject({ outcome: 'FAILED', complete: false, error: 'provider down', mustCatchRecall: null, verdictCorrect: null });
@@ -1280,12 +1280,12 @@ describe('parseBenchArgs', () => {
     expect(parseBenchArgs([])).toMatchObject({ cases: 'bench/cases', holdout: false, only: [], runs: 3, matcherModel: 'claude-sonnet-5-5', cache: 'bench/.matcher-cache.json', help: false });
     const args = parseBenchArgs([
       '--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--matcher-model', 'm', '--cache', 'c.json',
-      '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.reviewer=claude-opus-5-5', '--set', 'review_passes=2', '--set', 'exclude_paths=[a, b]',
+      '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.judge=claude-sonnet-5-5', '--set', 'review_passes=2', '--set', 'exclude_paths=[a, b]',
     ]);
     expect(args).toMatchObject({
       holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json',
       variants: [{ name: 'base' }, { name: 'opus', file: 'bench/opus.yml' }],
-      sets: [{ models: { reviewer: 'claude-opus-5-5' } }, { review_passes: 2 }, { exclude_paths: ['a', 'b'] }],
+      sets: [{ models: { judge: 'claude-sonnet-5-5' } }, { review_passes: 2 }, { exclude_paths: ['a', 'b'] }],
     });
     expect([...args.checkouts]).toEqual([['owner/demo', '/src/a=b']]);
   });
@@ -1310,7 +1310,7 @@ describe('resolveVariants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-variants-'));
     try {
       const opus = join(dir, 'opus.yml');
-      writeFileSync(opus, 'models:\n  reviewer: claude-opus-5-5\n  reviewer_pair: claude-opus-5-5\n');
+      writeFileSync(opus, 'models:\n  planner: claude-opus-5-5\n  dedup: claude-opus-5-5\n');
       writeFileSync(join(dir, 'empty.yml'), '');
       writeFileSync(join(dir, 'list.yml'), '- a\n');
       const sets = [{ models: { judge: 'claude-sonnet-5-5' } }];
@@ -1318,7 +1318,7 @@ describe('resolveVariants', () => {
       expect(resolveVariants({ variants: [], sets: [] })).toEqual([{ name: 'base', overrides: {} }]);
       expect(resolveVariants({ variants: [{ name: 'base' }, { name: 'opus', file: opus }, { name: 'empty', file: join(dir, 'empty.yml') }], sets })).toEqual([
         { name: 'base', overrides: { models: { judge: 'claude-sonnet-5-5' } } },
-        { name: 'opus', overrides: { models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'claude-opus-5-5', judge: 'claude-sonnet-5-5' } } },
+        { name: 'opus', overrides: { models: { planner: 'claude-opus-5-5', dedup: 'claude-opus-5-5', judge: 'claude-sonnet-5-5' } } },
         { name: 'empty', overrides: { models: { judge: 'claude-sonnet-5-5' } } },
       ]);
       expect(() => resolveVariants({ variants: [{ name: 'list', file: join(dir, 'list.yml') }], sets: [] })).toThrow('The overrides of variant list');

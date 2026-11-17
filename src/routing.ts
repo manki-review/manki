@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { countChangedLines } from './diff';
 import { parseModelSpec } from './providers';
-import { DiffFile, ParsedDiff, ReviewClass, ReviewClassMatch, ReviewGroup, ReviewRoutingConfig, TeamRouting, Triage } from './types';
+import { DiffFile, GroupReviewer, ParsedDiff, ReviewClass, ReviewClassMatch, ReviewGroup, ReviewRoutingConfig, TeamRouting, Triage } from './types';
 
 // Path segment prefixes that indicate security-sensitive files. The rule is path-based, not
 // prompt-based, so prompt injection in the PR content cannot switch it off.
@@ -65,25 +65,29 @@ export const BUILT_IN_CLASSES: Readonly<Record<string, ReviewClass>> = Object.fr
   docs: { rank: 20, match: { triage: { trivial: true } } },
 });
 
-export const BUILT_IN_GROUPS: Readonly<Record<string, ReviewGroup>> = Object.freeze({
-  trivial: { reviewers: [{ model: '@reviewer', effort: 'medium', role: 'verifier' }] },
-  solo: { reviewers: [{ model: '@reviewer', effort: 'auto' }] },
-  pair: { reviewers: [{ model: '@reviewer', effort: 'auto' }, { model: '@reviewer_pair', effort: 'auto' }] },
+const SONNET_MODEL = 'claude-sonnet-5-5';
+export const OPUS_MODEL = 'claude-opus-5-5';
+
+/** The group whose readers run the quick check. */
+export const TRIVIAL_GROUP = 'trivial';
+/** The group of a class with no route, and the one a floor or a deeper review moves a PR up to. It always holds two finders on two distinct models. */
+export const FULL_GROUP = 'full';
+
+/** The groups of a config without `review.groups`. */
+export const BUILT_IN_GROUPS: Readonly<Record<string, ReadonlyArray<string | GroupReviewer>>> = Object.freeze({
+  [TRIVIAL_GROUP]: [SONNET_MODEL],
+  solo: [SONNET_MODEL],
+  [FULL_GROUP]: [SONNET_MODEL, OPUS_MODEL],
 });
 
 export const BUILT_IN_ROUTING: Readonly<Record<string, string>> = Object.freeze({
-  security: 'pair',
-  supply_chain: 'pair',
-  data_contract: 'pair',
-  behavior: 'pair',
+  security: FULL_GROUP,
+  supply_chain: FULL_GROUP,
+  data_contract: FULL_GROUP,
+  behavior: FULL_GROUP,
   internal: 'solo',
   docs: 'trivial',
 });
-
-export const BUILT_IN_DEFAULT_GROUP = 'pair';
-
-/** Built-in group a PR moves up to when no routed group meets its floor. */
-export const FLOOR_FALLBACK_GROUP = 'pair';
 
 export interface PrClassification {
   /** Highest ranked matching class, unset when none matched. */
@@ -152,8 +156,6 @@ export interface ResolvedRouting {
   classes: Record<string, ReviewClass>;
   groups: Record<string, ReviewGroup>;
   routing: Record<string, string>;
-  defaultGroup: string;
-  allowWeaker: string[];
 }
 
 export function resolveRouting(review: ReviewRoutingConfig | undefined): ResolvedRouting {
@@ -164,15 +166,15 @@ export function resolveRouting(review: ReviewRoutingConfig | undefined): Resolve
       ? { ...builtIn, match: { ...builtIn.match, paths_any: [...(builtIn.match.paths_any ?? []), ...(def.match?.paths_any ?? [])] } }
       : { rank: def.rank ?? 0, match: def.match ?? {} };
   }
-  // Groups without routing send every class to the default group.
-  const routing = review?.groups && !review.routing ? {} : { ...BUILT_IN_ROUTING, ...review?.routing };
-  return {
-    classes,
-    groups: { ...BUILT_IN_GROUPS, ...review?.groups },
-    routing,
-    defaultGroup: review?.default_group ?? BUILT_IN_DEFAULT_GROUP,
-    allowWeaker: review?.allow_weaker ?? [],
-  };
+  const groups = Object.entries({ ...BUILT_IN_GROUPS, ...review?.groups }).map(([name, entries]): [string, ReviewGroup] => {
+    // The quick check runs at medium effort unless its entry sets one.
+    const quickCheck = name === TRIVIAL_GROUP && { effort: 'medium' as const };
+    return [name, {
+      reviewers: entries.map(entry => ({ ...quickCheck, ...(typeof entry === 'string' ? { model: entry } : entry) })),
+      ...(quickCheck && { quickCheck: true as const }),
+    }];
+  });
+  return { classes, groups: Object.fromEntries(groups), routing: { ...BUILT_IN_ROUTING, ...review?.routing } };
 }
 
 /** Returns the first of `criticalPaths` that matches `path`, or undefined when none does. */
@@ -182,7 +184,7 @@ export function criticalAreaOf(criticalPaths: readonly string[], path: string): 
 
 /** Returns the group a class routes to. */
 export function routeClass(routing: ResolvedRouting, reviewClass: string | undefined): string {
-  return (reviewClass && routing.routing[reviewClass]) || routing.defaultGroup;
+  return (reviewClass && routing.routing[reviewClass]) || FULL_GROUP;
 }
 
 /** Returns one identity per model however it is written, so `claude-x` and `anthropic/claude-x` match. An unknown spec stays as written. */
@@ -195,16 +197,30 @@ export function modelIdentity(model: string): string {
   }
 }
 
+/** Returns `models` with each model once however it is written, in its first spelling. */
+export function distinctModels(models: string[]): string[] {
+  return models.filter((model, i) => models.findIndex(m => modelIdentity(m) === modelIdentity(model)) === i);
+}
+
+/** Returns the finders of a group. The readers of the quick check group are none. */
+export function findersOf(group: ReviewGroup): GroupReviewer[] {
+  return group.quickCheck ? [] : group.reviewers;
+}
+
+/** Returns why a group has no two finders on two distinct models, or undefined when it has them. */
+export function finderShortfall(group: ReviewGroup): string | undefined {
+  const finders = findersOf(group);
+  if (finders.length < 2) return 'it has fewer than two finders';
+  if (distinctModels(finders.map(r => r.model)).length < 2) return 'its finders run on fewer than two distinct models';
+  return undefined;
+}
+
 /**
  * Returns why a group misses the floor a floor class needs, or undefined when it meets it.
  * The floor is two finders on two distinct models, and no reader at `low` effort.
  */
-export function floorShortfall(group: ReviewGroup, resolveModel: (ref: string | undefined) => string): string | undefined {
-  const finders = group.reviewers.filter(r => r.role !== 'verifier');
-  if (finders.length < 2) return 'it has fewer than two finders';
-  if (new Set(finders.map(r => modelIdentity(resolveModel(r.model)))).size < 2) return 'its finders run on fewer than two distinct models';
-  if (group.reviewers.some(r => r.effort === 'low')) return 'a reader runs at `low` effort';
-  return undefined;
+export function floorShortfall(group: ReviewGroup): string | undefined {
+  return finderShortfall(group) ?? (group.reviewers.some(r => r.effort === 'low') ? 'a reader runs at `low` effort' : undefined);
 }
 
 export interface GroupChoice {
@@ -213,34 +229,21 @@ export interface GroupChoice {
   source: TeamRouting['groupSource'];
   /** The routed group the floor, or a deeper review, moved the PR up from. */
   escalatedFrom?: string;
-  /** Floor classes whose `allow_weaker` let the PR stay in a group below the floor. */
-  weakerAllowed?: string[];
 }
 
 /**
  * Picks the group for a classified PR, then checks the floor of every floor class it matched.
- * A group below a floor moves up to that floor class's group, then to the built-in `pair` group.
- * It stays only when each floor it misses is in `allow_weaker` and routes to this group.
+ * A group below a floor moves up to that floor class's group, then to the `full` group.
  */
-export function chooseGroup(routing: ResolvedRouting, classification: PrClassification, resolveModel: (ref: string | undefined) => string): GroupChoice {
+export function chooseGroup(routing: ResolvedRouting, classification: PrClassification): GroupChoice {
   const routed = classification.name ? routing.routing[classification.name] : undefined;
-  const name = routed ?? routing.defaultGroup;
-  const source = routed ? 'routing' : 'default_group';
+  const name = routed ?? FULL_GROUP;
+  const source = routed ? 'routing' : 'no_route';
   const floors = classification.matched.filter(c => routing.classes[c].floor);
-  const missed = (groupName: string) => floors.filter(f => floorShortfall(routing.groups[groupName], resolveModel)
-    && !(routing.allowWeaker.includes(f) && routeClass(routing, f) === groupName));
-  const accepted = (groupName: string) => missed(groupName).length === 0;
-  const weaker = (groupName: string) => floorShortfall(routing.groups[groupName], resolveModel) ? floors : [];
-  if (accepted(name)) {
-    const weakerAllowed = weaker(name);
-    return { name, group: routing.groups[name], source, ...(weakerAllowed.length > 0 && { weakerAllowed }) };
-  }
-  const target = floors.map(f => routeClass(routing, f)).find(accepted);
-  if (target) {
-    const weakerAllowed = weaker(target);
-    return { name: target, group: routing.groups[target], source: 'floor_escalation', escalatedFrom: name, ...(weakerAllowed.length > 0 && { weakerAllowed }) };
-  }
-  return { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'floor_escalation', escalatedFrom: name };
+  const accepted = (groupName: string) => floors.length === 0 || !floorShortfall(routing.groups[groupName]);
+  if (accepted(name)) return { name, group: routing.groups[name], source };
+  const target = floors.map(f => routeClass(routing, f)).find(accepted) ?? FULL_GROUP;
+  return { name: target, group: routing.groups[target], source: 'floor_escalation', escalatedFrom: name };
 }
 
 /** Returns the SHA-256 of the classes, groups and routes a round chooses from. Key order in the config does not change it. */

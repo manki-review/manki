@@ -1,5 +1,5 @@
-import { changedKeys, DEFAULT_CONFIG, fallbackConfig, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel, resolvePairModel, reviewFloorErrors } from './config';
-import { ReviewConfig } from './types';
+import { changedKeys, DEFAULT_CONFIG, fallbackConfig, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel } from './config';
+import { GroupReviewer, ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
 jest.mock('@actions/core', () => ({
@@ -9,6 +9,9 @@ jest.mock('@actions/core', () => ({
 }));
 
 import * as core from '@actions/core';
+
+/** A `review` block that sets the three groups every `review.groups` must define, to the built-in models. */
+const GROUPS = 'review:\n  groups:\n    trivial: [claude-sonnet-5-5]\n    solo: [claude-sonnet-5-5]\n    full: [claude-sonnet-5-5, claude-opus-5-5]\n';
 
 describe('config', () => {
   beforeEach(() => {
@@ -32,11 +35,8 @@ describe('config', () => {
       expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
-    it('defaults models.reviewer to Sonnet and models.judge to Opus', () => {
-      expect(DEFAULT_CONFIG.models?.reviewer).toBe('claude-sonnet-5-5');
-      expect(DEFAULT_CONFIG.models?.judge).toBe('claude-opus-5-5');
-      expect(DEFAULT_CONFIG.models?.planner).toBe('claude-haiku-5-5');
-      expect(DEFAULT_CONFIG.models?.dedup).toBe('claude-haiku-5-5');
+    it('defaults models.judge to Opus and the planner and dedup to Haiku, and names no finder', () => {
+      expect(DEFAULT_CONFIG.models).toEqual({ planner: 'claude-haiku-5-5', judge: 'claude-opus-5-5', dedup: 'claude-haiku-5-5' });
     });
 
     it('has no default custom reviewers', () => {
@@ -178,19 +178,18 @@ describe('config', () => {
   });
 
   describe('review config', () => {
-    const deep = 'review:\n  groups:\n    deep:\n      reviewers:\n        - { model: claude-opus-5-5, effort: high }\n        - { model: gpt-5.5, effort: xhigh }\n';
+    const deep = `${GROUPS}    deep:\n      - { model: claude-opus-5-5, effort: high }\n      - gpt-5.5\n`;
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
-      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n  sweep: notes\n  notes: 0\n  rules: block\n`);
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n  sweep: notes\n  notes: 0\n  rules: block\n`);
       expect(config.review).toEqual({
-        groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'xhigh' }] } },
+        groups: { trivial: ['claude-sonnet-5-5'], solo: ['claude-sonnet-5-5'], full: ['claude-sonnet-5-5', 'claude-opus-5-5'], deep: [{ model: 'claude-opus-5-5', effort: 'high' }, 'gpt-5.5'] },
         classes: {
           security: { match: { paths_any: ['src/billing/**'] } },
           hot_path: { rank: 85, match: { paths_any: ['src/net/**'], triage: { subtle: true } } },
         },
         routing: { security: 'deep', hot_path: 'deep', internal: 'solo' },
-        default_group: 'pair',
         critical_paths: ['src/consensus/**', '@security_paths'],
         outside_input: 'Messages from network peers.',
         examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call.'] },
@@ -205,12 +204,17 @@ describe('config', () => {
 
     it.each([
       ['a non-object block', 'review: true\n', '`review` must be an object'],
-      ['an empty group', 'review:\n  groups:\n    empty: { reviewers: [] }\n', '`review.groups.empty.reviewers` must be a non-empty array'],
-      ['an unknown effort', 'review:\n  groups:\n    g: { reviewers: [{ effort: extreme }] }\n', '`review.groups.g.reviewers[0].effort` must be one of: low, medium, high, xhigh, max, auto'],
-      ['an unknown role', 'review:\n  groups:\n    g: { reviewers: [{ role: judge }] }\n', '`review.groups.g.reviewers[0].role` must be one of'],
+      ['groups that are a list', 'review:\n  groups: [claude-sonnet-5-5]\n', '`review.groups` must be an object mapping group names to lists of reviewers'],
+      ['groups that leave out a built-in name', 'review:\n  groups:\n    trivial: [claude-sonnet-5-5]\n    full: [claude-sonnet-5-5, claude-opus-5-5]\n', '`review.groups` must define the `trivial`, `solo` and `full` groups, and has no `solo`'],
+      ['groups that only add one', 'review:\n  groups:\n    deep: [claude-opus-5-5, gpt-5.5]\n', '`review.groups` must define the `trivial`, `solo` and `full` groups, and has no `trivial`'],
+      ['an empty group', `${GROUPS}    empty: []\n`, '`review.groups.empty` must be a non-empty array of reviewers'],
+      ['a group with the removed `reviewers` level', `${GROUPS}    g: { reviewers: [{ model: gpt-5.5 }] }\n`, '`review.groups.g` must be a non-empty array of reviewers'],
+      ['a reviewer that is no model id or object', `${GROUPS}    g: [5]\n`, '`review.groups.g[0]` must be a model id or an object with a `model`'],
+      ['a reviewer without a model', `${GROUPS}    g: [{ effort: high }]\n`, '`review.groups.g[0].model` must be a non-empty string'],
+      ['an unknown effort', `${GROUPS}    g: [{ model: gpt-5.5, effort: extreme }]\n`, '`review.groups.g[0].effort` must be one of: low, medium, high, xhigh, max, auto'],
+      ['an empty focus', `${GROUPS}    g: [{ model: gpt-5.5, focus: "" }]\n`, '`review.groups.g[0].focus` must be a non-empty string'],
       ['a route to an unknown group', 'review:\n  routing:\n    security: deep\n', '`review.routing.security` names unknown group `deep`'],
-      ['a route for an unknown class', 'review:\n  routing:\n    hot_path: pair\n', '`review.routing.hot_path` routes an unknown class'],
-      ['an unknown default group', 'review:\n  default_group: deep\n', '`review.default_group` names unknown group `deep`'],
+      ['a route for an unknown class', 'review:\n  routing:\n    hot_path: full\n', '`review.routing.hot_path` routes an unknown class'],
       ['a rank another class has', 'review:\n  classes:\n    hot: { rank: 50, match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.rank` 50 is already the rank of `behavior`'],
       ['a class without a rank', 'review:\n  classes:\n    hot: { match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.rank` must be an integer'],
       ['a class without conditions', 'review:\n  classes:\n    hot: { rank: 60 }\n', '`review.classes.hot.match` must set'],
@@ -219,7 +223,6 @@ describe('config', () => {
       ['an unknown path alias', 'review:\n  classes:\n    hot: { rank: 60, match: { paths_any: ["@hot_paths"] } }\n', 'unknown path alias `@hot_paths`'],
       ['a new rank on a built-in class', 'review:\n  classes:\n    security: { rank: 10, match: { paths_any: ["src/**"] } }\n', '`review.classes.security` is built in: it takes only `match.paths_any`'],
       ['a change to a triage class', 'review:\n  classes:\n    docs: { match: { paths_any: ["docs/**"] } }\n', '`review.classes.docs` is built in and cannot be changed'],
-      ['allow_weaker on a class that is no floor', 'review:\n  allow_weaker: [behavior]\n', '`review.allow_weaker` must be an array of floor classes'],
       ['a critical class', 'review:\n  classes:\n    hot: { rank: 60, critical: true, match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.critical` is not a class setting. List the critical paths in `review.critical_paths`'],
       ['a critical built-in class', 'review:\n  classes:\n    security: { critical: true, match: { paths_any: ["src/**"] } }\n', '`review.classes.security.critical` is not a class setting. List the critical paths in `review.critical_paths`'],
       ['empty critical paths', 'review:\n  critical_paths: []\n', '`review.critical_paths` must be a non-empty array of strings'],
@@ -241,30 +244,43 @@ describe('config', () => {
       expect(() => loadConfigFromContent(yaml)).toThrow(message);
     });
 
-    it('fails a floor class routed to a group below the floor unless `allow_weaker` names it', () => {
+    it('fails a floor class routed to a group below the floor', () => {
       const solo = 'review:\n  routing:\n    security: solo\n';
-      expect(() => loadConfigFromContent(solo)).toThrow('routes the `security` floor class to the `solo` group, but it has fewer than two finders');
-      expect(loadConfigFromContent(`${solo}  allow_weaker: [security]\n`).review?.allow_weaker).toEqual(['security']);
+      expect(() => loadConfigFromContent(solo)).toThrow('routes the `security` floor class to the `solo` group, but it has fewer than two finders. A floor class needs two finders on two distinct models, none at `low` effort. Route it to a stronger group');
 
       for (const floor of ['supply_chain', 'data_contract']) {
         expect(() => loadConfigFromContent(`review:\n  routing:\n    ${floor}: trivial\n`)).toThrow(`the \`${floor}\` floor class`);
       }
-      for (const twin of ['[{ model: gpt-5.5 }, { model: gpt-5.5 }]', '[{ model: claude-sonnet-5-5 }, { model: anthropic/claude-sonnet-5-5 }]']) {
-        const sameModel = `review:\n  groups:\n    twin:\n      reviewers: ${twin}\n  routing:\n    security: twin\n`;
+      for (const twin of ['[gpt-5.5, { model: gpt-5.5 }]', '[claude-sonnet-5-5, anthropic/claude-sonnet-5-5]']) {
+        const sameModel = `${GROUPS}    twin: ${twin}\n  routing:\n    security: twin\n`;
         expect(() => loadConfigFromContent(sameModel)).toThrow('its finders run on fewer than two distinct models');
       }
-      const low = 'review:\n  groups:\n    cheap:\n      reviewers: [{ model: gpt-5.5, effort: low }, { model: claude-opus-5-5 }]\n  routing:\n    data_contract: cheap\n';
+      const low = `${GROUPS}    cheap: [{ model: gpt-5.5, effort: low }, claude-opus-5-5]\n  routing:\n    data_contract: cheap\n`;
       expect(() => loadConfigFromContent(low)).toThrow('a reader runs at `low` effort');
-      // Groups without routing send every class, floors included, to the default group.
-      expect(() => loadConfigFromContent(`${deep}  default_group: solo\n`)).toThrow('the `security` floor class to the `solo` group');
-      expect(loadConfigFromContent(`${deep}  default_group: deep\n`).review?.default_group).toBe('deep');
     });
 
-    it('accepts the built-in `pair` group for a floor even when both finders resolve to one model', () => {
-      const config = loadConfigFromContent('models:\n  reviewer: gpt-5.5\nreview:\n  routing:\n    internal: pair\n');
-      expect(resolvePairModel(config)).toBe('gpt-5.5');
-      expect(reviewFloorErrors(config)).toEqual([]);
-      expect(reviewFloorErrors({ ...config, review: { groups: { pair: { reviewers: [{ model: 'gpt-5.5' }, { model: '@reviewer_pair' }] } } } })).toHaveLength(3);
+    it('needs two finders on two distinct models in the `full` group, whatever routes to it', () => {
+      const own = (full: string) => `review:\n  groups:\n    trivial: [gpt-5.5]\n    solo: [gpt-5.5]\n    full: ${full}\n`;
+      expect(loadConfigFromContent(own('[gpt-5.5, gemini-3-pro]')).review?.groups?.full).toEqual(['gpt-5.5', 'gemini-3-pro']);
+      const elsewhere = '    deep: [gpt-5.5, gemini-3-pro]\n  routing: { security: deep, supply_chain: deep, data_contract: deep }\n';
+      const shortfalls = [
+        ['[gpt-5.5]', 'it has fewer than two finders'],
+        ['[gpt-5.5, gpt-5.5]', 'its finders run on fewer than two distinct models'],
+        ['[openai/gpt-5.5, gpt-5.5]', 'its finders run on fewer than two distinct models'],
+      ];
+      for (const [full, shortfall] of shortfalls) {
+        // The error is given once, with or without a floor class routed to `full`.
+        for (const rest of ['', elsewhere]) {
+          expect(() => loadConfigFromContent(own(full) + rest)).toThrow(new Error(`Invalid config in .manki.yml: \`review.groups.full\` must hold at least two finders on two distinct models, but ${shortfall}`));
+        }
+      }
+      // A `low` reader in `full` counts only for a floor class routed to it.
+      const low = own('[{ model: gpt-5.5, effort: low }, gemini-3-pro]');
+      expect(() => loadConfigFromContent(low)).toThrow('routes the `security` floor class to the `full` group, but a reader runs at `low` effort');
+      expect(loadConfigFromContent(low + elsewhere).review?.routing).toEqual({ security: 'deep', supply_chain: 'deep', data_contract: 'deep' });
+      // The quick check is no finder, however many readers the `trivial` group lists.
+      expect(() => loadConfigFromContent('review:\n  groups:\n    trivial: [gpt-5.5, gemini-3-pro]\n    solo: [gpt-5.5]\n    full: [gpt-5.5, gemini-3-pro]\n  routing:\n    security: trivial\n'))
+        .toThrow('routes the `security` floor class to the `trivial` group, but it has fewer than two finders');
     });
 
     it('fails the PR that adds a floor class routed below the floor in its own config file', () => {
@@ -494,21 +510,21 @@ unknown_thing: true
     it('accepts valid models object', () => {
       const yaml = `
 models:
-  reviewer: claude-sonnet-4-6
+  planner: claude-sonnet-4-6
   judge: claude-opus-4-6
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
+      expect(config.models?.planner).toBe('claude-sonnet-4-6');
       expect(config.models?.judge).toBe('claude-opus-4-6');
     });
 
     it('accepts partial models object and merges with defaults', () => {
       const yaml = `
 models:
-  reviewer: claude-sonnet-4-6
+  planner: claude-sonnet-4-6
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
+      expect(config.models?.planner).toBe('claude-sonnet-4-6');
       expect(config.models?.judge).toBe('claude-opus-5-5');
     });
 
@@ -517,17 +533,8 @@ models:
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
     });
 
-    it('throws on invalid models.reviewer type', () => {
-      const yaml = `
-models:
-  reviewer: 123
-`;
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-      expect(core.error).toHaveBeenCalledWith('`models.reviewer` must be a string');
-    });
-
-    it.each(['reviewer_pair', 'refuter_pair', 'fallback'])('accepts `models.%s` and rejects a non-string or empty one', (key) => {
-      expect(loadConfigFromContent(`models:\n  ${key}: gpt-5.5\n`).models?.[key as 'reviewer_pair' | 'refuter_pair' | 'fallback']).toBe('gpt-5.5');
+    it.each(['second_refuter', 'fallback'])('accepts `models.%s` and rejects a non-string or empty one', (key) => {
+      expect(loadConfigFromContent(`models:\n  ${key}: gpt-5.5\n`).models?.[key as 'second_refuter' | 'fallback']).toBe('gpt-5.5');
       for (const value of ['123', '""']) {
         expect(() => loadConfigFromContent(`models:\n  ${key}: ${value}\n`)).toThrow('Invalid config');
         expect(core.error).toHaveBeenCalledWith(`\`models.${key}\` must be a non-empty string`);
@@ -536,12 +543,13 @@ models:
     });
 
     it.each([
-      ['models:\n  reviewer: gemini/--yolo\n', '`models.reviewer`: Invalid model id "--yolo" in "gemini/--yolo"'],
       ['models:\n  judge: claude/-x\n', '`models.judge`: Invalid model id "-x" in "claude/-x"'],
       ['models:\n  planner: claude-haiku 5\n', '`models.planner`: Invalid model id "claude-haiku 5"'],
       ['models:\n  fallback: -x\n', '`models.fallback`: Invalid model id "-x"'],
       ['models:\n  dedup: mistral-large\n', '`models.dedup`: Unknown model "mistral-large"'],
-      ['review:\n  groups:\n    g: { reviewers: [{ model: "openai/--sandbox" }, { model: "@reviewer_pair" }] }\n', '`review.groups.g.reviewers[0].model`: Invalid model id "--sandbox"'],
+      [`${GROUPS}    g: [claude-opus-5-5, gemini/--yolo]\n`, '`review.groups.g[1]`: Invalid model id "--yolo" in "gemini/--yolo"'],
+      [`${GROUPS}    g: [{ model: "openai/--sandbox" }]\n`, '`review.groups.g[0].model`: Invalid model id "--sandbox"'],
+      [`${GROUPS}    g: ["@reviewer"]\n`, '`review.groups.g[0]`: Invalid model id "@reviewer"'],
     ])('rejects a model id a CLI could read as an option: %s', (yaml, message) => {
       expect(() => loadConfigFromContent(yaml)).toThrow(message);
     });
@@ -594,10 +602,10 @@ models:
     it('deep-merges models object with defaults', () => {
       const yaml = `
 models:
-  reviewer: claude-haiku-4-5
+  dedup: claude-haiku-4-5
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.models?.reviewer).toBe('claude-haiku-4-5');
+      expect(config.models?.dedup).toBe('claude-haiku-4-5');
       expect(config.models?.judge).toBe('claude-opus-5-5');
     });
 
@@ -636,7 +644,6 @@ models:
     };
 
     it('returns default stage-specific models from defaults', () => {
-      expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-5-5');
       expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-5-5');
       expect(resolveModel(baseConfig, 'dedup')).toBe('claude-haiku-5-5');
       expect(resolveModel(baseConfig, 'planner')).toBe('claude-haiku-5-5');
@@ -645,16 +652,14 @@ models:
     it('returns overridden stage-specific model', () => {
       const config: ReviewConfig = {
         ...baseConfig,
-        models: { reviewer: 'claude-haiku-4-5', judge: 'claude-sonnet-4-6', dedup: 'claude-sonnet-4-6' },
+        models: { judge: 'claude-sonnet-4-6', dedup: 'claude-sonnet-4-6' },
       };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-haiku-4-5');
       expect(resolveModel(config, 'judge')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'dedup')).toBe('claude-sonnet-4-6');
     });
 
     it('falls back to default models when models is undefined', () => {
       const config: ReviewConfig = { ...baseConfig, models: undefined };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-5-5');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-5-5');
       expect(resolveModel(config, 'dedup')).toBe('claude-haiku-5-5');
     });
@@ -662,15 +667,14 @@ models:
     it('falls back to default model when stage key is missing', () => {
       const config: ReviewConfig = {
         ...baseConfig,
-        models: { reviewer: 'claude-sonnet-4-6' },
+        models: { dedup: 'claude-sonnet-4-6' },
       };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(config, 'dedup')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-5-5');
     });
 
     it('falls back to default models when models is empty object', () => {
       const config: ReviewConfig = { ...baseConfig, models: {} };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-5-5');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-5-5');
       expect(resolveModel(config, 'dedup')).toBe('claude-haiku-5-5');
       expect(resolveModel(config, 'planner')).toBe('claude-haiku-5-5');
@@ -685,51 +689,51 @@ models:
     });
   });
 
-  describe('resolvePairModel', () => {
-    const withModels = (models: ReviewConfig['models']): ReviewConfig => ({ ...DEFAULT_CONFIG, models });
-
-    it('pairs the reviewer with the other Claude tier when `reviewer_pair` is unset', () => {
-      expect(resolvePairModel(DEFAULT_CONFIG)).toBe('claude-opus-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-sonnet-5-5' }))).toBe('claude-opus-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-opus-5-5' }))).toBe('claude-sonnet-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-haiku-5-5' }))).toBe('claude-sonnet-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-sonnet-4-6' }))).toBe('claude-opus-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-opus-4-7' }))).toBe('claude-sonnet-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'anthropic/claude-opus-4-6' }))).toBe('claude-sonnet-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-haiku-4-5-20251001' }))).toBe('claude-sonnet-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-fable-5-1' }))).toBe('claude-opus-5-5');
-      expect(resolvePairModel(withModels({ reviewer: 'anthropic/claude-fable-5' }))).toBe('claude-opus-5-5');
-    });
-
-    it('keeps the reviewer model for other providers and honours `reviewer_pair`', () => {
-      expect(resolvePairModel(withModels({ reviewer: 'gpt-5.5' }))).toBe('gpt-5.5');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-sonnet-4-6', reviewer_pair: 'gemini-3-pro' }))).toBe('gemini-3-pro');
-    });
-  });
-
   describe('resolveFallbackModel', () => {
     const withModels = (models: ReviewConfig['models']): ReviewConfig => ({ ...DEFAULT_CONFIG, models });
+    const withFull = (full: Array<string | GroupReviewer>, models?: ReviewConfig['models']): ReviewConfig => ({ ...withModels(models), review: { groups: { trivial: [full[0]], solo: [full[0]], full } } });
 
-    it('falls back to the reviewer model, or the other Claude tier for a stage already on it', () => {
+    it('falls back to the first model of the `full` group other than the stage\'s own', () => {
+      // Without a config: every stage but Sonnet's moves to Sonnet, and a finder on Sonnet to Opus.
       expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-opus-5-5')).toBe('claude-sonnet-5-5');
       expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-haiku-5-5')).toBe('claude-sonnet-5-5');
       expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-sonnet-5-5')).toBe('claude-opus-5-5');
       expect(resolveFallbackModel(DEFAULT_CONFIG, 'anthropic/claude-sonnet-5-5')).toBe('claude-opus-5-5');
-      expect(resolveFallbackModel(withModels({ reviewer: 'claude-fable-5-1' }), 'claude-fable-5-1')).toBe('claude-opus-5-5');
+      expect(resolveFallbackModel(DEFAULT_CONFIG, 'gpt-5.5')).toBe('claude-sonnet-5-5');
+      const mixed = withFull(['gpt-5.5', { model: 'claude-opus-5-5', effort: 'high' }, 'gemini-3-pro']);
+      expect(['gpt-5.5', 'claude-opus-5-5', 'gemini-3-pro', 'claude-haiku-5-5'].map(stage => resolveFallbackModel(mixed, stage))).toEqual(['claude-opus-5-5', 'gpt-5.5', 'gpt-5.5', 'gpt-5.5']);
     });
 
     it('honours `models.fallback` and returns undefined when no other model is left', () => {
       expect(resolveFallbackModel(withModels({ fallback: 'gpt-5.5' }), 'claude-opus-5-5')).toBe('gpt-5.5');
       expect(resolveFallbackModel(withModels({ fallback: 'claude-opus-5-5' }), 'claude-opus-5-5')).toBe('claude-sonnet-5-5');
-      expect(resolveFallbackModel(withModels({ reviewer: 'gpt-5.5' }), 'gpt-5.5')).toBeUndefined();
+      expect(resolveFallbackModel(withFull(['gpt-5.5', 'gemini-3-pro'], { fallback: 'gpt-5.5' }), 'gpt-5.5')).toBe('gemini-3-pro');
+      expect(resolveFallbackModel(withFull(['gpt-5.5', 'gpt-5.5']), 'gpt-5.5')).toBeUndefined();
+      expect(resolveFallbackModel(withFull(['gpt-5.5'], { fallback: 'gpt-5.5' }), 'gpt-5.5')).toBeUndefined();
+      // One model written with and without its provider is the stage's own model.
+      expect(resolveFallbackModel(withFull(['openai/gpt-5.5', 'gpt-5.5']), 'gpt-5.5')).toBeUndefined();
+      expect(resolveFallbackModel(withFull(['openai/gpt-5.5', 'gemini-3-pro'], { fallback: 'gpt-5.5' }), 'openai/gpt-5.5')).toBe('gemini-3-pro');
+      expect(resolveFallbackModel(withModels({ fallback: 'openai/gpt-5.5' }), 'gpt-5.5')).toBe('claude-sonnet-5-5');
     });
   });
 
   describe('unknown `models` keys', () => {
     it('warns about a key such as the removed `models.agents` and ignores it', () => {
-      const config = loadConfigFromContent('models:\n  reviewer: gpt-5.5\n  agents:\n    "Security & Safety": claude-opus-5-5\n');
-      expect(config.models).toEqual({ ...DEFAULT_CONFIG.models, reviewer: 'gpt-5.5' });
+      const config = loadConfigFromContent('models:\n  judge: gpt-5.5\n  agents:\n    "Security & Safety": claude-opus-5-5\n');
+      expect(config.models).toEqual({ ...DEFAULT_CONFIG.models, judge: 'gpt-5.5' });
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "models.agents"');
+    });
+
+    it('warns about the removed finder, refuter and group keys and reviews with the defaults', () => {
+      const removed = 'models:\n  reviewer: gpt-5.5\n  reviewer_pair: gpt-5.5\n  refuter_pair: gpt-5.5\nreview:\n  default_group: solo\n  allow_weaker: [security]\n'
+        + '  groups:\n    trivial: [{ model: gpt-5.5, role: verifier, focus: "" }]\n    solo: [gpt-5.5]\n    full: [gpt-5.5, claude-opus-5-5]\n';
+      const config = loadConfigFromContent(removed);
+      expect(config.models).toEqual(DEFAULT_CONFIG.models);
+      expect(jest.mocked(core.warning).mock.calls.map(call => call[0])).toEqual(
+        // The quick check takes `model` and `effort` only, so `focus` is unknown in `trivial`.
+        ['models.reviewer', 'models.reviewer_pair', 'models.refuter_pair', 'review.default_group', 'review.allow_weaker', 'review.groups.trivial[0].role', 'review.groups.trivial[0].focus']
+          .map(key => `Unknown config key: "${key}"`),
+      );
     });
   });
 
@@ -782,8 +786,8 @@ models:
 
   describe('changedKeys', () => {
     it('names the keys whose values differ, whatever their order in the file', () => {
-      const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  reviewer_pair: gpt-5.5\nreview_passes: 2\n');
-      expect(changedKeys(loadConfigFromContent('models:\n  reviewer_pair: gpt-5.5\n  judge: claude-opus-5-5\nreview_passes: 2\n'), base)).toEqual([]);
+      const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  second_refuter: gpt-5.5\nreview_passes: 2\n');
+      expect(changedKeys(loadConfigFromContent('models:\n  second_refuter: gpt-5.5\n  judge: claude-opus-5-5\nreview_passes: 2\n'), base)).toEqual([]);
       const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nreview_passes: 2\nplanner:\n  enabled: false\n');
       expect(changedKeys(head, base)).toEqual(['exclude_paths', 'models', 'planner']);
     });

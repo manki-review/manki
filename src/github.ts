@@ -19,6 +19,7 @@ import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtml
 import { extractApprovalRecords, formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
 import { RELATED_REPO_HOST } from './related-repos';
+import { distinctModels } from './routing';
 import { latestLimits } from './providers/instrumentation';
 import type { LimitUsage } from './providers/types';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
@@ -1154,7 +1155,7 @@ export async function updateProgressComment(
     parts.push('');
 
     parts.push('**Config:**');
-    parts.push(`- Models: reviewer=${sanitizeMarkdown(metadata.config.reviewerModel)}, judge=${sanitizeMarkdown(metadata.config.judgeModel)}`);
+    parts.push(`- Models: ${metadata.config.reviewerModel ? `reviewer=${sanitizeMarkdown(metadata.config.reviewerModel)}, ` : ''}judge=${sanitizeMarkdown(metadata.config.judgeModel)}`);
     parts.push(`- Triage: ${metadata.config.triage}`);
     parts.push(`- Team: ${metadata.config.teamAgents.map(sanitizeMarkdown).join(', ')}`);
     parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${sanitizeMarkdown(String(metadata.config.memoryRepo))})` : 'disabled'}`);
@@ -2281,7 +2282,7 @@ function buildReviewedCommitFooter(owner: string, repo: string, commitSha: strin
   const commit = `[\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha})`;
   // The routed group says which models read the PR. Without it, the configured reviewer model did.
   const routed = context?.routing?.reviewers.map(r => r.model);
-  const finders = [...new Set(routed?.length ? routed : [context?.models.reviewer].filter((m): m is string => !!m))].map(m => inlineCode(m));
+  const finders = distinctModels(routed?.length ? routed : [context?.models.reviewer].filter((m): m is string => !!m)).map(m => inlineCode(m));
   const usage = context && formatRoundUsage(context.usage);
   const lines = [
     `- Reviewed ${commit}${context ? `, round ${context.meta.round}` : ''}`,
