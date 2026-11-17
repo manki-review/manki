@@ -450,6 +450,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(result.notStarted && result.notStarted.length > 0 && { notStarted: result.notStarted }),
     ...(input.instructions && { instructions: { files: input.instructions.files.map(f => f.path), ...(input.instructions.cut && { cut: input.instructions.cut }) } }),
     ...(result.relatedRepos && { relatedRepos: result.relatedRepos.map(r => withReads(r, llmCalls)) }),
+    ...(result.dependencySources && { dependencySources: result.dependencySources.map(d => ({ ...d, ...readsOf(d.package, llmCalls) })) }),
     ...(result.usesOutsideDiff && { usesOutsideDiff: result.usesOutsideDiff }),
     ...(result.units && { units: result.units }),
     ...(result.relatedWork && {

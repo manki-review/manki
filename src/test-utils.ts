@@ -1,7 +1,11 @@
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { createServer } from 'http';
+import { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
+import { gzipSync } from 'zlib';
 
 import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
 
@@ -376,3 +380,73 @@ export const TEST_LINKS: CodeLinks = {
   files: new Map([['src/main.ts', numberedLines(60)], ['src/util.ts', numberedLines(30)]]),
   related: new Map(),
 };
+
+/** One entry of a test tar archive: a file by default, or a folder (`5`), hard link (`1`), symlink (`2`) or pax header (`x`). */
+export interface TarEntry {
+  name: string;
+  data?: string | Buffer;
+  type?: '0' | '1' | '2' | '5' | 'x';
+  linkname?: string;
+}
+
+/** Builds a gzipped ustar archive of `entries`, as a package registry serves one. */
+export function tarGz(entries: TarEntry[]): Buffer {
+  const blocks: Buffer[] = [];
+  for (const { name, data = '', type = '0', linkname = '' } of entries) {
+    const body = Buffer.from(data);
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100);
+    header.write('0000644\0', 100);
+    header.write('0000000\0', 108);
+    header.write('0000000\0', 116);
+    header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124);
+    header.write('00000000000\0', 136);
+    header.write(type, 156);
+    header.write(linkname, 157, 100);
+    header.write('ustar\0', 257);
+    header.write('00', 263);
+    header.fill(0x20, 148, 156);
+    const sum = header.reduce((total, byte) => total + byte, 0);
+    header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
+
+/** The hex SHA-256 of `data`, the checksum `Cargo.lock` and the crates.io index state. */
+export function sha256Hex(data: Buffer): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/** The SHA-512 of `data` in Subresource Integrity form, the checksum npm states. */
+export function sha512Integrity(data: Buffer): string {
+  return `sha512-${createHash('sha512').update(data).digest('base64')}`;
+}
+
+/** A package registry on the loopback interface that serves fixed answers, so no test reaches the network. */
+export interface FakeRegistry {
+  origin: string;
+  /** The paths asked for, in order. */
+  requests: string[];
+  close(): Promise<void>;
+}
+
+/** Starts a `FakeRegistry` that answers each path of `routes` with its body, a redirect, or 404 for any other path. */
+export async function fakeRegistry(routes: Record<string, Buffer | string | { redirect: string }>): Promise<FakeRegistry> {
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    const path = decodeURIComponent(request.url ?? '');
+    requests.push(path);
+    const answer = routes[path];
+    if (answer === undefined) {
+      response.writeHead(404).end();
+    } else if (typeof answer === 'object' && !Buffer.isBuffer(answer)) {
+      response.writeHead(302, { location: answer.redirect }).end();
+    } else {
+      response.writeHead(200).end(answer);
+    }
+  });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const { port } = server.address() as AddressInfo;
+  return { origin: `http://127.0.0.1:${port}`, requests, close: () => new Promise(done => server.close(() => done())) };
+}

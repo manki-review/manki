@@ -10,7 +10,7 @@ import { extractJSON } from './json';
 import { readBaseText, readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, LLMResponse, NotStartedError } from './providers';
-import { fetchedRelatedRepos, repoTools } from './related-repos';
+import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
@@ -133,7 +133,7 @@ function existingLocations(workspace: string, proof: readonly string[]): string[
  */
 function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] {
   if (!related || !Array.isArray(proof)) return [];
-  const names = related.repos.map(r => r.repo);
+  const names = relatedNames(related);
   const checkouts = fetchedRelatedRepos(related.stateDir);
   const cited = proof.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, names) ?? [] : [])).slice(0, MAX_RELATED_PROOF);
   const shown = cited.flatMap(({ repo, path, start, end }) => {
@@ -152,7 +152,7 @@ function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] 
  * line of the PR as well.
  */
 function citedLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { own: string[]; relatedProof: string[] } {
-  const names = related?.repos.map(r => r.repo) ?? [];
+  const names = related ? relatedNames(related) : [];
   const own = Array.isArray(proof) ? proof.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, names)) : proof;
   return { own: parseProof(own, workspace), relatedProof: relatedLocations(proof, related) };
 }

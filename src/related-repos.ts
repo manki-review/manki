@@ -52,13 +52,17 @@ export function relatedReposCacheDir(): string {
 }
 
 /**
- * Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined`
- * without repos. A `dependency` repo without a `ref` gets the commit the lockfiles of the checkout at `workspace` lock.
+ * Returns what one round or one reply offers its tools of `repos`, and of the PR's `dependencies` when set, with a state
+ * directory of its own, or `undefined` when it offers neither. A `dependency` repo without a `ref` gets the commit the
+ * lockfiles of the checkout at `workspace` lock.
  */
-export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspace: string, asOf?: string): Promise<RelatedRepoTools | undefined> {
-  if (!repos?.length) return undefined;
-  const locked = await lockedRelatedRepos(repos, workspace);
-  return { repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }), ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }) };
+export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspace: string, asOf?: string, dependencies = false): Promise<RelatedRepoTools | undefined> {
+  if (!repos?.length && !dependencies) return undefined;
+  const locked = await lockedRelatedRepos(repos ?? [], workspace);
+  return {
+    repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }),
+    ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }), ...(dependencies && { dependencies: true as const }),
+  };
 }
 
 const MAX_LOCKFILES = 50;
@@ -133,6 +137,21 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
 /** Returns what `related` offers a model, without the directories of the run, so the same offer in two runs compares equal. */
 export function offeredRepos(related: RelatedRepoTools | undefined): Pick<RelatedRepoTools, 'repos' | 'guides' | 'asOf'> | null {
   return related ? { repos: related.repos, guides: related.guides, asOf: related.asOf } : null;
+}
+
+/** Returns `related` without its dependencies, for a stage that reads only the related repos, or `undefined` when it has no repo. */
+export function withoutDependencies(related: RelatedRepoTools | undefined): RelatedRepoTools | undefined {
+  if (!related?.repos.length) return undefined;
+  const { dependencies: _, ...repos } = related;
+  return repos;
+}
+
+/**
+ * Returns the names a check may cite lines of: each configured related repo, and each repo or package a tool server
+ * of the round fetched. A package is named as `<registry>/<name>@<version>`.
+ */
+export function relatedNames(related: RelatedRepoTools): string[] {
+  return [...new Set([...related.repos.map(r => r.repo), ...fetchedRelatedRepos(related.stateDir).keys()])];
 }
 
 /**
@@ -298,7 +317,7 @@ export function relatedRepoGuides(checkouts: RelatedCheckout[]): Record<string, 
   return guides.length > 0 ? Object.fromEntries(guides) : undefined;
 }
 
-/** Returns the checkout directory of each related repo a tool server of the round in `stateDir` fetched, by `owner/name`. */
+/** Returns the checkout directory of each related repo or package a tool server of the round in `stateDir` fetched, by its name. */
 export function fetchedRelatedRepos(stateDir: string): Map<string, string> {
   const done = readdirSync(stateDir).filter(f => f.endsWith('.done'));
   return new Map(done.map(f => [decodeURIComponent(f.slice(0, -'.done'.length)), readFileSync(join(stateDir, f), 'utf-8')]));

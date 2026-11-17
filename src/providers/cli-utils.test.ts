@@ -425,6 +425,14 @@ describe('repoToolsPrompt', () => {
       expect(text.endsWith(`${RELATED_REPO_TRUST_RULE} A call that names a repo Manki cannot fetch returns the reason. You have not read that repo then: say that you could not read it, treat whatever rests on its code as unchecked, and never answer about its code from memory.`)).toBe(true);
     }
     expect(repoToolsPrompt({ root: '/work/repo', steps: 15, related: undefined }, 'Read, Grep and Glob')).not.toMatch(/Related repos|related repo/);
+    // A round that offers the PR's dependencies says how to name and cite one, and that its source is untrusted.
+    const dependencies = repoToolsPrompt({ root: '/work/repo', steps: 15, related: { repos: [], cacheDir: '/c', stateDir: '/s', dependencies: true }, checking: true }, 'Read, Grep and Glob');
+    expect(dependencies).not.toContain('## Related repos');
+    expect(dependencies).toContain('when you name it in `dependency`, as `crates.io/<name>` for a Rust crate or `npm/<name>` for an npm package');
+    expect(dependencies).toContain('Cite a dependency\'s code as `<registry>/<name>@<version>:path:line`');
+    expect(dependencies).toContain(`${RELATED_REPO_TRUST_RULE} A dependency's source falls under that rule as a related repo does.`);
+    expect(dependencies).toContain('never answer about its code from memory');
+    expect(prompt()).not.toContain('## Dependencies');
   });
 });
 

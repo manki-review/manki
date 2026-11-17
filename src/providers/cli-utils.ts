@@ -7,6 +7,7 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { cutLegacyCommands, isSecretName, registerSecret, safeJsonParse, sanitizeLogOutput, sanitizeTokens, SYSTEM_ENV } from '../utils';
+import { MAX_PACKAGES_PER_ROUND } from '../dependency-sources';
 import { CLOSED_FILE_FLAG, FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, readClosedCalls, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_DIR_FLAG, STEPS_FLAG } from '../mcp-server';
 import { trackCliProcess } from '../run-diagnostics';
 import { makeScratchDir } from '../tool-install';
@@ -702,7 +703,24 @@ export function repoToolsPrompt({ root, steps, related, checking, listed }: Repo
 
 The PR's head commit is checked out at \`${root}\`. ${fileTools} read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable. \`repo_info\` tells whether a GitHub repository, named as \`owner/name\`, exists and is public, archived or a fork, and names its default branch, so ask it instead of guessing when a finding depends on that.
 
-${task} Check each claim you make against the code. You have ${steps} tool steps, and each tool call takes one. When ${WRAP_UP_STEPS} are left, a note from Manki comes with a tool result and asks you to wrap up. Once they are used up, Manki refuses every further call, so give your final answer then. Your last message must be the JSON your instructions ask for, with nothing after it.${related ? `\n\n${relatedReposPrompt(related, !!checking, !!listed)}` : ''}`;
+${task} Check each claim you make against the code. You have ${steps} tool steps, and each tool call takes one. When ${WRAP_UP_STEPS} are left, a note from Manki comes with a tool result and asks you to wrap up. Once they are used up, Manki refuses every further call, so give your final answer then. Your last message must be the JSON your instructions ask for, with nothing after it.${related?.repos.length ? `\n\n${relatedReposPrompt(related, !!checking, !!listed)}` : ''}${related?.dependencies ? `\n\n${dependenciesPrompt(!!checking)}` : ''}`;
+}
+
+/**
+ * Tells the model how to read the published source of one of the PR's dependencies, and when. A `checking` call reads
+ * one only for what its check rests on.
+ */
+function dependenciesPrompt(checking: boolean): string {
+  const when = checking
+    ? 'Name one only when what you check rests on what that dependency does, such as whether a function of it fails, validates its input or keeps an order. Read that code before you answer.'
+    : 'Name one only when the changed code calls a dependency or relies on what it does, and a finding would rest on that: open the code the change calls and check that what the change assumes about it holds there.';
+  return `## Dependencies
+
+\`read_file\`, \`grep\`, \`glob\` and \`ast_grep\` read the published source of one of the PR's dependencies instead when you name it in \`dependency\`, as \`crates.io/<name>\` for a Rust crate or \`npm/<name>\` for an npm package. Manki reads the version the PR's lockfile locks, or without a lockfile the highest published version that the manifest's requirement allows. Each result starts with a note that names the version and where it comes from. A package that the PR's manifests and lockfiles do not name is refused. When the PR uses several versions of one, the call fails and lists them, so name the one you need, such as \`crates.io/syn@2.0.87\`. A round fetches at most ${MAX_PACKAGES_PER_ROUND} packages, and the first read of one takes a while. ${when} Which features of a dependency a build turns on is not in its source, so a statement that rests on that stays unchecked.
+
+Cite a dependency's code as \`<registry>/<name>@<version>:path:line\`, as the note spells it, also where your answer lists the lines that decide it.
+
+${RELATED_REPO_TRUST_RULE} A dependency's source falls under that rule as a related repo does. A call that names a package Manki cannot fetch returns the reason. You have not read that package then: say that you could not read it, treat whatever rests on its code as unchecked, and never answer about its code from memory.`;
 }
 
 /**

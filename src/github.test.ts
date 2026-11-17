@@ -439,6 +439,14 @@ describe('formatFindingComment', () => {
     // A fetched repo with no commit recorded shows the location alone.
     const noCommit = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched' }]) };
     expect(formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2', ...hidden]), noCommit)).toContain('**Checked in the code**\nIn a related repository: `acme/reports:src/import.ts:2`\n\n**Double-checked**');
+    // A line of a dependency the round read shows as its location, with the package and version, on a line of its own.
+    const packages = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched', commit }], [
+      { package: 'crates.io/time@0.3.47', registry: 'crates.io', name: 'time', version: '0.3.47', source: 'lockfile', file: 'Cargo.lock', status: 'fetched' },
+      { package: 'npm/left-pad@1.3.0', registry: 'npm', name: 'left-pad', version: '1.3.0', source: 'lockfile', file: 'package-lock.json', status: 'mismatch' },
+    ]) };
+    expect(formatFindingComment(confirmedBy(['crates.io/time@0.3.47:src/date.rs:120', 'acme/reports:src/import.ts:2', 'npm/left-pad@1.3.0:index.js:1']), packages)).toContain(
+      `**Checked in the code**\nIn a related repository: ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}\n\nIn a dependency's published source: \`crates.io/time@0.3.47:src/date.rs:120\`\n\n**Double-checked**`,
+    );
     // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo. A location of that
     // form never links to that file of the PR or shows its text: as a check it is plain text, and as related proof it links to the related repo.
     const prFile = 'acme/reports:src/import.ts';

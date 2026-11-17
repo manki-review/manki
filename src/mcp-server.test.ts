@@ -11,8 +11,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createMcpServer, McpServerOptions, readClosedCalls, runMcpServer } from './mcp-server';
+import { cratesIo } from './registries/crates';
 import * as relatedRepos from './related-repos';
-import { git } from './test-utils';
+import { fakeRegistry, git, sha256Hex, tarGz } from './test-utils';
 import { RelatedRepoTools } from './types';
 import { BASE_READS_FILE, BASE_REF, fetchWorkspace } from './workspace';
 
@@ -482,5 +483,35 @@ describe('Manki tool server', () => {
     expect(await call(withRelated, 'read_file', { repo: 'o/r', path: 'lib.rs', ref: 'base' }))
       .toEqual({ text: '`ref` reads only the PR\'s own repository, so leave out `repo` to read the base.', isError: true });
     await withRelated.close();
+  });
+
+  it('reads a dependency named by `dependency` at the version the PR locks, and no package the PR does not use', async () => {
+    const depRepo = join(base, 'dep-repo');
+    mkdirSync(depRepo);
+    const archive = tarGz([{ name: 'demo-1.0.0/src/lib.rs', data: 'pub fn parse() -> u8 {\n    panic!("out of range")\n}\n' }]);
+    writeFileSync(join(depRepo, 'Cargo.lock'), `[[package]]\nname = "demo"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${sha256Hex(archive)}"\n`);
+    const registry = await fakeRegistry({ '/crates/demo/demo-1.0.0.crate': archive });
+    const stateDir = join(base, 'dep-state');
+    mkdirSync(stateDir);
+    const related: RelatedRepoTools = { repos: [], cacheDir: join(base, 'dep-cache'), stateDir, dependencies: true };
+    const readsFile = join(base, 'dep-reads.json');
+    const claude = await connect(depRepo, { related, readsFile, dependencyOptions: { registries: [cratesIo({ index: registry.origin, download: registry.origin })] } });
+    try {
+      // A client with file tools of its own gets these for dependencies, and names one in each call.
+      const { tools } = await claude.listTools();
+      expect(tools.find(t => t.name === 'read_file')!.inputSchema.required).toEqual(['path']);
+      const note = 'Manki read `crates.io/demo@1.0.0`, the version `Cargo.lock` locks. Cite its lines as `crates.io/demo@1.0.0:path:line`.';
+      expect(await call(claude, 'read_file', { dependency: 'crates.io/demo', path: 'src/lib.rs', offset: 2, limit: 1 }))
+        .toEqual({ text: expect.stringMatching(new RegExp(`^${note.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n\n2\t    panic!`)), isError: false });
+      expect((await call(claude, 'grep', { dependency: 'crates.io/demo@1.0.0', text: 'panic' })).text).toBe(`${note}\n\nsrc/lib.rs:2:     panic!("out of range")`);
+      expect(await call(claude, 'read_file', { dependency: 'crates.io/other', path: 'x' })).toEqual({ text: expect.stringContaining('is not a dependency'), isError: true });
+      expect(await call(claude, 'read_file', { dependency: 'crates.io/demo', path: join(depRepo, 'Cargo.lock') })).toEqual({ text: expect.stringContaining('is outside the repository'), isError: true });
+      // Each call that read the package counts under its name and version, a refused path too.
+      expect(JSON.parse(readFileSync(readsFile, 'utf8'))).toEqual({ 'crates.io/demo@1.0.0': 3 });
+      expect(registry.requests).toEqual(['/crates/demo/demo-1.0.0.crate']);
+    } finally {
+      await claude.close();
+      await registry.close();
+    }
   });
 });

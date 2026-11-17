@@ -58,6 +58,7 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 - `src/pr-claims.ts`: the claims of the PR text (`extractPrClaims`) and the check of each one (`runClaimChecks`), on the loop of checks with repository tools (`checkEach`).
 - `src/fixes.ts`: the fixes of the diff (`listFixes`) and the root cause check of each one (`runFixChecks`).
 - `src/scope.ts`: the scope reader (`runScopeReader`), the code checks of its answer and the warnings `review.scope_blocks` posts (`scopeWarnings`).
+- `src/dependency-sources.ts`: reading a dependency's published source at the version the PR uses (`dependencyLoader`), with one module per registry in `src/registries/` and safe unpacking in `src/archive.ts`.
 - `src/sweep.ts`: with `review.sweep`, one search of the diff per kept finding the setting names (`startsSweep`) for other instances of its defect class (`runSweeps`).
 - `src/recap.ts`: prior-round state from review threads, and dedup (static and LLM) against earlier findings.
 - `src/github.ts`: GitHub API helpers (diffs, progress comments, posting reviews).
