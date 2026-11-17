@@ -41,7 +41,6 @@ const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_approve: true,
   exclude_paths: [],
   max_diff_lines: 50000,
-  reviewers: [],
   instructions: '',
   memory: { enabled: false, repo: '' },
   ...overrides,

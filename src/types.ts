@@ -1214,7 +1214,7 @@ export interface GroupReviewer {
   model: string;
   /** Unset means `auto`, and `medium` in the `trivial` group. */
   effort?: EffortLevel | 'auto';
-  /** One more line for this finder to check, added to its prompt like a `reviewers` entry. */
+  /** One more line for this finder to check, added to its prompt. */
   focus?: string;
 }
 
@@ -1354,7 +1354,6 @@ export interface ReviewConfig {
   max_diff_lines: number;
   /** Reviewable lines above which a PR gets no automatic review, only a forced one. */
   auto_review_max_lines?: number;
-  reviewers: ReviewerAgent[];
   instructions: string;
   /** A short phrase naming what the project is, such as `blockchain consensus library`. */
   project?: string;

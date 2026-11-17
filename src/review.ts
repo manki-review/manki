@@ -340,9 +340,8 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     // A model that takes no effort keeps the asked tier in its name and record.
     const sentEffort = sent(effort) ?? effort;
     const verifier = !!group.quickCheck;
-    const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
     // A finder reads a related repo only through repository tools on the checked-out PR head.
-    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom, workspace && client?.repoTools ? config.related_repos : []);
+    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(reviewer.focus, workspace && client?.repoTools ? config.related_repos : []);
     const label = verifier ? `Quick check · ${modelDisplayName(model)}`
       : [modelDisplayName(model), sentEffort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
     let name = label;

@@ -64,7 +64,6 @@ const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_approve: true,
   exclude_paths: [],
   max_diff_lines: 50000,
-  reviewers: [],
   instructions: '',
   memory: { enabled: false, repo: '' },
   convergence: {
@@ -961,7 +960,7 @@ describe('buildReviewerSystemPrompt', () => {
   });
 
   it('asks every finder for a full search in every round, with brevity only for notes', () => {
-    const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), makeConfig(), undefined, true);
+    const prompt = buildReviewerSystemPrompt(buildFinderAgent(), makeConfig(), undefined, true);
     expect(prompt).toContain('These rules hold in every round. A later round searches the whole PR as fully as the first one.');
     expect(prompt).toContain('Report every blocker, every warning and every security issue you find in this pass, not only the strongest.');
     expect(prompt).toContain('Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome');
@@ -1505,7 +1504,7 @@ describe('selectTeam', () => {
     const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: false, paired: true });
     expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
     expect(team.finders[1]).toEqual(expect.objectContaining({ model: 'claude-opus-5-5', effort: 'medium' }));
-    expect(team.finders.map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([])]);
+    expect(team.finders.map(f => f.prompt)).toEqual([buildFinderAgent(), buildFinderAgent()]);
 
     const configured = selectTeam(plainDiff, makeConfig({ review: { groups: groups({ full: ['claude-opus-5-5', 'gpt-5.5', 'gemini-3-pro'] }) } }), { trivial: false, subtle: true, paired: true });
     expect(names(configured)).toEqual(['Claude Opus 5.5 · high', 'GPT 5.5 · high', 'Gemini 3 Pro · high']);
@@ -1524,17 +1523,14 @@ describe('selectTeam', () => {
     expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
   });
 
-  it('folds custom reviewers into the one checklist every finder runs', () => {
-    const reviewers: ReviewerAgent[] = [{ name: 'API Compatibility', focus: 'public API changes keep old clients working' }];
-    const config = makeConfig({ reviewers });
-    const team = selectTeam(plainDiff, config, { trivial: false, subtle: true, paired: true });
+  it('gives every finder the one checklist', () => {
+    const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: true, paired: true });
     expect(team.finders).toHaveLength(2);
     const [focus, second] = team.finders.map(f => f.prompt.focus);
     expect(second).toBe(focus);
     expect(focus).toMatch(/^defects in the change\. Check, in this order:\n1\. Correctness/);
-    const solo = selectTeam(plainDiff, makeConfig({ reviewers }), { trivial: false, subtle: true, paired: false });
+    const solo = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: true, paired: false });
     expect(solo.finders.map(f => f.prompt.focus)).toEqual([focus]);
-    expect(focus).toContain('This repository also asks you to check:\n- API Compatibility: public API changes keep old clients working');
     for (const check of [
       'resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised.',
       'For a library, outside input is anything a caller of its public API can pass, readers and byte streams included.',
@@ -1580,7 +1576,7 @@ describe('selectTeam', () => {
     const noTools: LLMClient = { sendMessage: jest.fn() };
     const focusesWith = (related: RelatedRepoKind[], clients?: ReviewClients, workspace?: string) => {
       const related_repos = related.map(kind => ({ repo: `acme/${kind}`, kind }));
-      return selectTeam(plainDiff, makeConfig({ reviewers, related_repos }), { trivial: false, subtle: true, paired: true }, false, clients, workspace).finders.map(f => f.prompt.focus);
+      return selectTeam(plainDiff, makeConfig({ related_repos }), { trivial: false, subtle: true, paired: true }, false, clients, workspace).finders.map(f => f.prompt.focus);
     };
     const toolClients: ReviewClients = { reviewer: withTools, judge: withTools, planner: withTools };
     const focusWith = (...related: RelatedRepoKind[]) => focusesWith(related, toolClients, '/work/pr-head')[0];
@@ -1630,7 +1626,7 @@ describe('selectTeam', () => {
       expect([team.routing.class, team.routing.group, team.routing.groupSource]).toEqual(['hot_path', 'deep', 'routing']);
       expect(readers(team)).toEqual(['Claude Opus 5.5 · high · authz, injection, secret handling', 'Gemini 3 Pro · high', 'Claude Sonnet 5.5 · medium']);
       expect(team.finders[0].prompt.focus).toContain('- This review group: authz, injection, secret handling');
-      expect(team.finders.slice(1).map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([])]);
+      expect(team.finders.slice(1).map(f => f.prompt)).toEqual([buildFinderAgent(), buildFinderAgent()]);
       expect(readers(selectTeam(plainDiff, config, quiet))).toEqual(['Claude Sonnet 5.5 · medium']);
       expect(teamModels(config)).toEqual(expect.arrayContaining(['claude-sonnet-5-5', 'claude-opus-5-5', 'gemini-3-pro']));
     });
@@ -1647,8 +1643,9 @@ describe('selectTeam', () => {
       const label = 'Claude Opus 5.5 · high · consensus rules, quorum signing and the…';
       expect(readers(team)).toEqual([label, `${label} #2`, 'GPT 5.5 · medium', 'GPT 5.5 · medium #2']);
       // Every finder runs the same checklist wherever it stands. A focus only adds its own line.
-      const withFocus = buildFinderAgent([{ name: 'This review group', focus }]);
-      expect(team.finders.map(f => f.prompt)).toEqual([withFocus, withFocus, buildFinderAgent([]), buildFinderAgent([])]);
+      const withFocus = buildFinderAgent(focus);
+      expect(withFocus.focus).toBe(`${buildFinderAgent().focus}\n\nThis repository also asks you to check:\n- This review group: ${focus}`);
+      expect(team.finders.map(f => f.prompt)).toEqual([withFocus, withFocus, buildFinderAgent(), buildFinderAgent()]);
     });
 
     it('keeps the built-in routes when groups are set without routing, and sends a class with no route to `full`', () => {
@@ -4756,7 +4753,7 @@ describe('runReview', () => {
 
     await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
 
-    const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), config);
+    const prompt = buildReviewerSystemPrompt(buildFinderAgent(), config);
     expect(jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[0])).toEqual([prompt, prompt]);
   });
 
@@ -7448,13 +7445,12 @@ describe('runReview triage', () => {
     const clients = makeClients();
     const pair = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
     clients.reviewerByModel = new Map([['anthropic/claude-opus-5-5', pair]]);
-    await runReview(clients, { config: makeConfig({ reviewers: [{ name: 'Protocol', focus: 'wire format' }] }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
+    await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     const primaryCall = jest.mocked(clients.reviewer.sendMessage).mock.calls;
     const pairCall = jest.mocked(pair.sendMessage).mock.calls;
     expect(primaryCall).toHaveLength(1);
     expect(pairCall).toHaveLength(1);
     expect(pairCall[0]).toEqual(primaryCall[0]);
-    expect(pairCall[0][0]).toContain('- Protocol: wire format');
   });
 
   it('ends INCOMPLETE when the pair finder fails, even though the primary finder succeeded', async () => {

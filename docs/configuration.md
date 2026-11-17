@@ -105,14 +105,11 @@ static_analysis:
 # Additional context for reviewers. Reviewers also read the root `AGENTS.md`,
 # `CLAUDE.md` and `.claude/CLAUDE.md` files, the first `CONTRIBUTING.md` found in
 # `.github/`, the root or `docs/`, the nearest `AGENTS.md` and `CLAUDE.md` above
-# each changed file, and the `.md` files these link to.
+# each changed file, and the `.md` files these link to. Name here what the
+# finders should also check for.
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
-
-# Extra checks, added as focus lines to the finder prompt
-reviewers:
-  - name: "Protocol Compliance"
-    focus: "DIP compliance, consensus rules"
+  Check DIP compliance and consensus rules.
 
 # Review memory, kept in the central memory repository for a public repo. Set
 # `repo` and the `memory_repo_token` input to use a memory repository of your
@@ -184,9 +181,6 @@ memory:
 | `related_repos[].paths` | list of up to 20 paths or globs | the whole repository | The only paths fetched, along with a root `AGENTS.md` and `CLAUDE.md`. |
 | `instructions` | string | none | Extra context for the finders. They also read the root `AGENTS.md`, `CLAUDE.md` and `.claude/CLAUDE.md`, the first `CONTRIBUTING.md` found in `.github/`, the root or `docs/`, the nearest `AGENTS.md` and `CLAUDE.md` above each changed file, and the `.md` files these link to. |
 | `project` | string | none | A short phrase naming what the project is, such as `blockchain consensus library`. The finders read it as "This PR is in a blockchain consensus library project". Without it they go by the repository description and the `AGENTS.md` and `CLAUDE.md` files. |
-| `reviewers` | list | none | Extra checks, each added as a focus line to the finder prompt. |
-| `reviewers[].name` | string | required | The check's name. |
-| `reviewers[].focus` | string | required | What the finders check for. |
 | `convergence` | map | see below | How rounds end. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `convergence.max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, with `/manki review` or a settings box, and the notice asks the author to reconsider the approach. Such a review also turns automatic review back on for 3 rounds, or for the rounds the cap still allows if that is more. `0` turns the cap off. |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |

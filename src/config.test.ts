@@ -25,8 +25,6 @@ describe('config', () => {
       expect(Array.isArray(DEFAULT_CONFIG.exclude_paths)).toBe(true);
       expect(typeof DEFAULT_CONFIG.max_diff_lines).toBe('number');
       expect(DEFAULT_CONFIG.max_diff_lines).toBeGreaterThan(0);
-      expect(Array.isArray(DEFAULT_CONFIG.reviewers)).toBe(true);
-      expect(DEFAULT_CONFIG.reviewers.length).toBe(0);
       expect(typeof DEFAULT_CONFIG.instructions).toBe('string');
       expect(typeof DEFAULT_CONFIG.memory).toBe('object');
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
@@ -35,10 +33,6 @@ describe('config', () => {
 
     it('defaults models.judge to Opus and the planner and dedup to Haiku, and names no finder', () => {
       expect(DEFAULT_CONFIG.models).toEqual({ planner: 'claude-haiku-5-5', judge: 'claude-opus-5-5', dedup: 'claude-haiku-5-5' });
-    });
-
-    it('has no default custom reviewers', () => {
-      expect(DEFAULT_CONFIG.reviewers).toEqual([]);
     });
 
     it('exposes default convergence settings', () => {
@@ -291,7 +285,6 @@ max_diff_lines: 5000
       expect(config.max_diff_lines).toBe(5000);
       // Other fields remain default
       expect(config.auto_review).toBe(DEFAULT_CONFIG.auto_review);
-      expect(config.reviewers).toEqual(DEFAULT_CONFIG.reviewers);
       expect(config.exclude_paths).toEqual(DEFAULT_CONFIG.exclude_paths);
     });
 
@@ -300,18 +293,6 @@ max_diff_lines: 5000
       expect(loadConfigFromContent('project: blockchain consensus library\n').project).toBe('blockchain consensus library');
       expect(() => loadConfigFromContent('project: [a, b]\n')).toThrow(/`project` must be a string/);
       expect(() => loadConfigFromContent('instructions: 5\n')).toThrow(/`instructions` must be a string/);
-    });
-
-    it('replaces reviewers array entirely', () => {
-      const yaml = `
-reviewers:
-  - name: "Custom Reviewer"
-    focus: "custom focus area"
-`;
-      const config = loadConfigFromContent(yaml);
-      expect(config.reviewers).toHaveLength(1);
-      expect(config.reviewers[0].name).toBe('Custom Reviewer');
-      expect(config.reviewers[0].focus).toBe('custom focus area');
     });
 
     it('replaces the default exclude_paths with the repository\'s list, so an empty list excludes nothing', () => {
@@ -352,14 +333,12 @@ planner:
 
     it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
       loadConfigFromContent(`
-reviewers: [{ name: a, focus: b, fokus: c }]
 static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], analyzers: all, check: false }
 convergence: { max_auto_rounds: 3, max_rounds: 2 }
 memory: { enabled: false, repo: '', repository: x/y }
 `);
       const unknown = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).filter(m => m.startsWith('Unknown config key'));
       expect(unknown).toEqual([
-        'Unknown config key: "reviewers[0].fokus"',
         'Unknown config key: "static_analysis.check"',
         'Unknown config key: "convergence.max_rounds"',
         'Unknown config key: "memory.repository"',
@@ -386,27 +365,6 @@ memory: { enabled: false, repo: '', repository: x/y }
 
     it('throws on invalid auto_review type', () => {
       const yaml = 'auto_review: "yes"';
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws on invalid reviewers structure', () => {
-      const yaml = 'reviewers: "not an array"';
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws on reviewer missing name', () => {
-      const yaml = `
-reviewers:
-  - focus: "some focus"
-`;
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws on reviewer missing focus', () => {
-      const yaml = `
-reviewers:
-  - name: "Some Name"
-`;
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
     });
 

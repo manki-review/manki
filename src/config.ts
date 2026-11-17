@@ -31,7 +31,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   skip_branches: [],
   max_diff_lines: 15000,
   auto_review_max_lines: 8000,
-  reviewers: [],
   instructions: '',
   project: '',
   models: {
@@ -75,7 +74,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'skip_branches',
   'max_diff_lines',
   'auto_review_max_lines',
-  'reviewers',
   'instructions',
   'project',
   'memory',
@@ -100,7 +98,6 @@ export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effor
 const QUICK_CHECK_KEYS: ReadonlySet<string> = new Set(['model', 'effort']);
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
-const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds']);
@@ -165,27 +162,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       for (let i = 0; i < config.exclude_paths.length; i++) {
         if (typeof config.exclude_paths[i] !== 'string') {
           errors.push(`\`exclude_paths[${i}]\` must be a string, got ${typeof config.exclude_paths[i]}`);
-        }
-      }
-    }
-  }
-
-  if ('reviewers' in config) {
-    if (!Array.isArray(config.reviewers)) {
-      errors.push('`reviewers` must be an array');
-    } else {
-      for (let i = 0; i < config.reviewers.length; i++) {
-        const reviewer = config.reviewers[i] as Record<string, unknown>;
-        if (!reviewer || typeof reviewer !== 'object') {
-          errors.push(`\`reviewers[${i}]\` must be an object`);
-        } else {
-          warnUnknownKeys(reviewer, REVIEWER_AGENT_KEYS, `reviewers[${i}]`, warnings);
-          if (typeof reviewer.name !== 'string' || !reviewer.name) {
-            errors.push(`\`reviewers[${i}].name\` must be a non-empty string`);
-          }
-          if (typeof reviewer.focus !== 'string' || !reviewer.focus) {
-            errors.push(`\`reviewers[${i}].focus\` must be a non-empty string`);
-          }
         }
       }
     }
@@ -574,7 +550,7 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
 export function loadConfigFromContent(content: string, source = CONFIG_PATH): ReviewConfig {
   if (!content.trim()) {
     core.info('Empty config, using defaults');
-    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
+    return { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory } };
   }
 
   let parsed: unknown;
@@ -587,7 +563,7 @@ export function loadConfigFromContent(content: string, source = CONFIG_PATH): Re
 
   if (parsed === null || parsed === undefined) {
     core.info('Config has no settings, using defaults');
-    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
+    return { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory } };
   }
 
   if (typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -681,7 +657,7 @@ export function fallbackConfig(): ReviewConfig {
 export function loadConfig(yamlContent: string | undefined, source?: string): ReviewConfig {
   if (!yamlContent) {
     core.info('No config content provided, using defaults');
-    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
+    return { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory } };
   }
 
   return loadConfigFromContent(yamlContent, source);

@@ -49,14 +49,8 @@
 # auto_review_max_lines: 8000
 # max_diff_lines: 15000
 
-# Extra checks for the finders. Each entry becomes one more line in the
-# finder prompt, after correctness, security, error paths, tests that cannot
-# fail and contract breaks. Both finders get the same prompt.
-# reviewers:
-#   - name: "Protocol Compliance"
-#     focus: "DIP compliance, consensus rules, protocol-specific invariants"
-
-# Additional instructions injected into all reviewer prompts
+# Additional instructions injected into all reviewer prompts. Name here what
+# the finders should also check for, such as protocol rules.
 # instructions: |
 #   This is a Rust project. Focus on ownership and error handling.
 
