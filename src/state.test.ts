@@ -729,11 +729,13 @@ describe('checkAndAutoApprove', () => {
     const held = (entries: FindingFingerprintEntry[]) => roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: entries.length, severityCounts: {}, entries } }));
     const NO_WARNING_THREAD = 'Manki\'s review of `bead000` lists 1 warning with no thread, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
     const WARNING_THREAD = '1 warning thread holds the approval:\n- Lock is never released\n\nApproval follows once each one is fixed, tracked with `Create an issue for this`, or resolved by someone with the `maintain` role or a higher one. A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.';
+    /** The body of a review whose round approved and held its approval for a person, with `hold` in its record. */
+    const heldForPerson = (hold: 'unread' | 'config') => `${roundBody({ ...roundThatPosted(HEAD, []), approval: { held: hold } })}\n\n<!-- manki-held-for-person -->`;
     const HELD_FOR_PERSON = 'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.';
     const DRAFT = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
     const GONE_WARNING = 'The record of Manki\'s review of `bead000` names a thread that does not exist for 1 warning, so resolving threads cannot lift its hold on the approval:\n- Retry never stops (`src/lock.ts`)';
 
-    it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
+    it.each<[string, string, ReturnType<typeof thread>[], true | string, 'warnings'?]>([
       ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
       ['a new blocker on a changed line, its thread open', blocked([blocker({ posted: 'thread' })]), [thread('t1', 'blocker')], 'Not all blocking findings resolved'],
       ['a new blocker on a changed line, its thread resolved beside an open suggestion thread on that line', blocked([blocker({ posted: 'thread' })]), [thread('t0', 'note'), fixed()], true],
@@ -766,16 +768,18 @@ describe('checkAndAutoApprove', () => {
       ['a record of another commit', roundBody(blockingRound(testSha('07e'))), [fixed()], UNREAD],
       ['the record of an incomplete round', roundBody({ ...blockingRound(HEAD), meta: { ...blockingRound(HEAD).meta, incomplete: true } }), [fixed()], UNREAD],
       ['a round that approved, its thread reopened and resolved again', roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } })), [fixed()], true],
-      ['a round held for a warning with no thread, listed in its body', held([warning('body')]), [fixed()], NO_WARNING_THREAD],
+      ['a round held for a warning with no thread, listed in its body', held([warning('body')]), [fixed()], NO_WARNING_THREAD, 'warnings'],
+      // The same warning on a round that requested changes names no hold, since only a round that approved is held.
       ['a round whose blocker thread is resolved, with a warning GitHub refused as a thread', blocked([blocker({ posted: 'thread' }), warning('body')]), [fixed()], NO_WARNING_THREAD],
       ['a round held for a warning thread, resolved', held([warning('thread')]), [fixed('t1', 'warning', { title: 'Retry never stops' })], true],
-      ['a round held for a warning whose thread is not there, was refused or was deleted by hand', held([warning('thread')]), [fixed('t1', 'blocker')], GONE_WARNING],
-      ['a round held for a warning left to an open thread that is gone', held([{ ...warning('earlier_thread', ['follow-up'], true), threadId: 'gone' }]), [], GONE_WARNING],
+      ['a round held for a warning whose thread is not there, was refused or was deleted by hand', held([warning('thread')]), [fixed('t1', 'blocker')], GONE_WARNING, 'warnings'],
+      ['a round held for a warning left to an open thread that is gone', held([{ ...warning('earlier_thread', ['follow-up'], true), threadId: 'gone' }]), [], GONE_WARNING, 'warnings'],
       ['a round held for a warning left to an open thread, resolved', held([{ ...warning('earlier_thread', ['follow-up'], true), threadId: 't1' }]), [fixed('t1', 'warning')], true],
       ['a round with a pre-existing warning listed in its body', held([warning('body', ['follow-up', 'pre-existing'], false)]), [fixed()], true],
       ['a round with a warning listed in its body that its record does not mark as holding, as before 7.5', held([warning('body', ['follow-up'], false)]), [fixed()], true],
       ['a round with a warning left to its answered thread', held([warning('earlier_thread')]), [fixed()], true],
-    ])('%s', async (_label, body, threads, outcome) => {
+    // A rest parameter, since jest takes a named one the row lacks for its `done` callback.
+    ])('%s', async (_label, body, threads, outcome, ...[hold]) => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       jest.spyOn(core, 'warning').mockImplementation(() => {});
       const createReviewMock = jest.fn().mockResolvedValue({});
@@ -793,6 +797,8 @@ describe('checkAndAutoApprove', () => {
       // The event path says why in the log and posts nothing on the PR.
       expect(createCommentMock).not.toHaveBeenCalled();
       if (result.approved || outcome === true) return;
+      // A hold is named only where the record proves that an approval is held: a blocker, or a record that cannot be read, names none.
+      expect(result.held).toBe(hold);
       expect(infoSpy.mock.calls.map(([line]) => line).join('\n')).toContain(outcome);
       // The `check` command gets the threads that block, or why resolving threads cannot lift the block.
       const reply = await result.why();
@@ -973,7 +979,7 @@ describe('checkAndAutoApprove', () => {
       expect(createReviewMock).toHaveBeenCalledTimes(1);
     });
 
-    it.each<[string, Parameters<typeof makeMockOctokit>[0], string | { approved: true; standing: true }, { auto_approve: boolean }?, ('draft' | 'warnings' | 'conflict')?]>([
+    it.each<[string, Parameters<typeof makeMockOctokit>[0], string | { approved: true; standing: true }, { auto_approve: boolean }?, ('draft' | 'warnings' | 'conflict' | 'unread' | 'config')?]>([
       ['a draft', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.', undefined, 'draft'],
       ['a draft with `auto_approve` off, where marking it ready approves nothing', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.', { auto_approve: false }, 'draft'],
       // The title comes from the model, so its links must not reach the comment.
@@ -1003,8 +1009,14 @@ describe('checkAndAutoApprove', () => {
         `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}`],
       ['an open warning thread beside an approval that stands', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
         '1 warning thread holds the approval:\n- Lock is never released\n\nApproval follows once each one is fixed, tracked with `Create an issue for this`, or resolved by someone with the `maintain` role or a higher one. A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.', undefined, 'warnings'],
-      ['a review that holds its approval for a person', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
+      // Without the hold in its record, a review held for a person names none.
+      ['a review that holds its approval for a person, with a record that does not say why', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
         'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.'],
+      ['a review that holds its approval for files no model read', { existingReviews: [{ id: 7, body: heldForPerson('unread'), state: 'COMMENTED', commit_id: HEAD, user }] }, HELD_FOR_PERSON, undefined, 'unread'],
+      ['a review that holds its approval for a config that did not load', { existingReviews: [{ id: 7, body: heldForPerson('config'), state: 'COMMENTED', commit_id: HEAD, user }] }, HELD_FOR_PERSON, undefined, 'config'],
+      // A review held for a person that requested changes is no held approval, also once its blocker thread is resolved.
+      ['a review that requested changes and waits for a person, its blocker thread resolved',
+        { threads: [fixed()], existingReviews: [{ id: 7, body: `${blocked([blocker({ posted: 'thread' })])}\n\n<!-- manki-held-for-person -->`, state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] }, HELD_FOR_PERSON],
       ['a conflict with the base', { mergeable: false }, '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.', undefined, 'conflict'],
       // Every reason that holds is named at once, blocking threads first, then warning threads, then the other holds.
       ['an open warning thread beside a review that holds its approval for a person', {

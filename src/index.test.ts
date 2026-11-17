@@ -1549,7 +1549,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     });
 
-    const declines = (held?: 'warnings' | 'draft' | 'conflict') => jest.mocked(stateModule.approveOrSayWhy).mockResolvedValue({ approved: false, why: async () => '', ...(held && { held }) });
+    const declines = (held?: 'warnings' | 'draft' | 'conflict' | 'unread' | 'config') => jest.mocked(stateModule.approveOrSayWhy).mockResolvedValue({ approved: false, why: async () => '', ...(held && { held }) });
     /** The approval check completes the waiting check itself, as it does when it approves or posts the notice of a hold. */
     const reportsItself = (result: Awaited<ReturnType<typeof stateModule.approveOrSayWhy>>, report: Parameters<typeof reportCheck>[4]) =>
       jest.mocked(stateModule.approveOrSayWhy).mockImplementation(async octokit => {
@@ -1571,6 +1571,8 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       ['a warning thread still holds it', 'Bot already reviewed commit', () => { autoApprove(); declines('warnings'); }, 1, [['neutral', heldTitle, 'This commit already has a review.']]],
       ['a warning thread still holds it, on a review command', 'a review command', () => { autoApprove(); declines('warnings'); }, 1, [['neutral', heldTitle, 'This commit already has a review.']]],
       ['a warning thread still holds it, on a run queued behind the review', 'a run queued behind the review', () => { autoApprove(); declines('warnings'); }, 1, [['neutral', heldTitle, 'This commit already has a review.']]],
+      ['files no model read still hold it', 'Bot already reviewed commit', () => { autoApprove(); declines('unread'); }, 1, [['neutral', 'Approval held: some changed files were not read', 'This commit already has a review.']]],
+      ['a config that did not load still holds it', 'Bot already reviewed commit', () => { autoApprove(); declines('config'); }, 1, [['neutral', 'Approval held: a config file did not load', 'This commit already has a review.']]],
       ['a draft still holds it', 'Bot already reviewed commit', () => { autoApprove(); declines('draft'); }, 1, [['neutral', 'Approval held: the PR is a draft', 'This commit already has a review.']]],
       ['a conflict still holds it and its notice is posted already', 'Bot already reviewed commit', () => { autoApprove(); declines('conflict'); }, 1, [['neutral', conflictReport.title, 'This commit already has a review.']]],
       // The approval check reports what it posts, so the run reports nothing more.
@@ -1605,6 +1607,9 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     it.each([
       ['is of a request for changes that GitHub refused, with a warning thread open', recorded({ verdict: 'REQUEST_CHANGES' }), 'warnings'],
       ['is of a request for changes that GitHub refused, on a draft', recorded({ verdict: 'REQUEST_CHANGES' }), 'draft'],
+      ['is of a request for changes that GitHub refused, on a review that waits for a person', `${recorded({ verdict: 'REQUEST_CHANGES' })}\n\n<!-- manki-held-for-person -->`, 'unread'],
+      ['is of a request for changes that GitHub refused, with a warning that has no thread',
+        recorded({ verdict: 'REQUEST_CHANGES', findings: { count: 1, severityCounts: {}, entries: [{ ...makeFindingFingerprintEntry({ title: 'Retry never stops', posted: 'body' }), holds: true }] } }), 'warnings'],
       ['cannot be parsed', '<!-- manki -->\n<!-- manki-context: {"meta": -->', 'warnings'],
       ['is missing', '<!-- manki -->\nNothing blocks this change.', 'warnings'],
       ['is of another commit', recorded({ verdict: 'APPROVE', approval: { held: 'warnings' } }, 'def4567890123'), 'warnings'],
