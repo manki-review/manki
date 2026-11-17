@@ -154,7 +154,19 @@ The endpoint has to speak the OpenAI Responses API (`POST <base URL>/responses`)
 
 The effort tiers follow the model's name as described above, so a model that is not named like an OpenAI reasoning model gets no effort tier, and the Codex CLI applies its own default. When the endpoint answers with a rate limit or a used-up quota, the review ends incomplete with "OpenAI endpoint limit reached".
 
-When the endpoint reports the model at capacity and the Codex CLI gives up, the stage fails with "OpenAI model at capacity". A finder, the judge or the verdict reader that fails this way ends the review incomplete, and `@manki review` starts it again later. While the endpoint asks the Codex CLI to wait, the CLI waits, which can run a call into its time limit. The timeout message then says that the CLI was waiting on the provider. All of this holds for a ChatGPT login too.
+When an answer from the endpoint fails part way, Manki continues the same Codex session, so nothing the reviewer already read is lost. The Codex CLI retries no failed answer itself on this path, because it would sit out any wait the endpoint names, however long. Manki pauses and resumes the session instead:
+
+| What the Codex CLI reports | Pause before the resume |
+|---|---|
+| The connection closed, broke or went silent before the answer ended | None |
+| The model is at capacity | 15 seconds before the call's first resume, 30 before its second, 60 before each later one |
+| A rate limit that names a wait, such as "try again in 3s" | The wait it names |
+
+A call resumes its session at most 8 times, and all of its runs and pauses stay inside the call's time limit. A resume is started only when the pause before it leaves the resumed run at least 30 seconds of that limit. Otherwise the call fails with the last error, as it does when the eighth resume fails. A resumed run that uses up the call's time after a model at capacity or a rate limit fails with that limit, not with a timeout. For a model at capacity the stage fails with "OpenAI model at capacity". A finder, the judge or the verdict reader that fails this way ends the review incomplete, and `@manki review` starts it again later. Every other failure ends the call at once: a wrong key, an unknown model, a refusal, a used-up quota, a rate limit that names no wait, and any other error the endpoint words itself. An HTTP 503 before the answer starts is still retried by the Codex CLI.
+
+A resumed run has the same sandbox, model, effort and tools as the first one, and the reviewer's budget of tool calls counts across the runs. Each resume is one line in the log, such as `Codex stream failed (model at capacity). Resuming the session in 15s, resume 1 of 8.`
+
+With a ChatGPT login the Codex CLI keeps its own retries, and Manki resumes nothing. While the provider asks the CLI to wait, the CLI waits, which can run a call into its time limit. The timeout message then says that the CLI was waiting on the provider. When the CLI gives up on a model at capacity, the stage fails with "OpenAI model at capacity" there too.
 
 ### Gemini
 

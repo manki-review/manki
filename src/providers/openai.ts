@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 
@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, lastLine, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, CliTimeoutError, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -213,6 +213,18 @@ function codexFinalError({ signal, stderr }: Pick<CliExit, 'signal' | 'stderr'>,
   return /^ERROR:\s/.test(line) ? extractCliErrorSnippet(line) : undefined;
 }
 
+/** Returns the limit that `finalError`, Codex's final error, reports as a `QuotaError`, or `undefined` when it reports none. */
+function codexLimitError(finalError: string | undefined, endpoint: boolean): QuotaError | undefined {
+  const atCapacity = finalError === CAPACITY_ERROR;
+  const quota = finalError ? matchQuotaText(finalError) : undefined;
+  if (!atCapacity && (!quota || quota.overloaded)) return undefined;
+  const ownLimit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
+  const limit = atCapacity ? 'OpenAI model at capacity' : ownLimit;
+  // No other credential gets past a model at capacity.
+  const credential = atCapacity ? undefined : endpoint ? 'key' : 'token';
+  return new QuotaError(`${limit}: ${finalError}`, limit, quota?.resetsAt, credential);
+}
+
 // The variable Codex reads an endpoint's key from, and the id of the model provider Manki defines for the endpoint.
 const ENDPOINT_KEY_ENV = 'OPENAI_API_KEY';
 const ENDPOINT_PROVIDER = 'manki';
@@ -220,6 +232,7 @@ const ENDPOINT_PROVIDER = 'manki';
 /**
  * Returns the `-c` overrides that send Codex to the OpenAI-compatible endpoint at `baseUrl` instead of OpenAI's own
  * servers. Codex reads the key from `ENDPOINT_KEY_ENV`, so the key is not on the command line and no login file is needed.
+ * Codex retries no failed stream, since it would sit out any wait the endpoint names. `sendViaCLI` resumes the session.
  */
 function codexEndpointArgs(baseUrl: string): string[] {
   const provider = `model_providers.${ENDPOINT_PROVIDER}`;
@@ -229,7 +242,43 @@ function codexEndpointArgs(baseUrl: string): string[] {
     '-c', `${provider}.base_url=${JSON.stringify(baseUrl)}`,
     '-c', `${provider}.wire_api="responses"`,
     '-c', `${provider}.env_key=${JSON.stringify(ENDPOINT_KEY_ENV)}`,
+    '-c', `${provider}.stream_max_retries=0`,
   ];
+}
+
+// How often one call resumes its Codex session, and the pause before each resume of a model at capacity. The last pause repeats.
+const MAX_RESUMES = 8;
+const CAPACITY_PAUSES_MS = [15_000, 30_000, 60_000];
+// The least time a resumed run is started with. Starting Codex again on its session takes about 2 s before the model
+// writes anything, and the model then has to write the whole answer.
+const MIN_RESUMED_RUN_MS = 30_000;
+// Codex's own words for a connection that ended before the answer did. A failure the endpoint words follows the same
+// prefix, and so does an answer a content filter cut. Neither is a dropped connection.
+const DROPPED_TEXT = /^ERROR: stream disconnected before completion: (?:stream closed before response\.completed|Transport error|idle timeout waiting for SSE)\b/;
+// Codex ends the header of its stderr with the session line, and echoes the prompt after it. The match never passes
+// the header's end, so no line of the prompt is read as the session. The header is a few hundred characters long.
+const HEADER_CHARS = 4000;
+const SESSION_ID = /^(?:(?!--------\r?\nuser\r?\n).*\n)*?session id: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\r?\n--------\r?\nuser\r?\n/;
+const RESUME_PROMPT = 'The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
+const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
+
+/** Reads a wait worded as a duration, such as `in 3s`, `in 320ms` or `in 1m30s`, in milliseconds. Any other text has none. */
+function advisedWaitMs(resetsAt = ''): number | undefined {
+  if (!/^in (?:\d+(?:\.\d+)?(?:ms|[hms]))+$/.test(resetsAt)) return undefined;
+  return Math.ceil([...resetsAt.matchAll(/(\d+(?:\.\d+)?)(ms|[hms])/g)].reduce((sum, [, n, unit]) => sum + Number(n) * UNIT_MS[unit], 0));
+}
+
+/**
+ * Returns why the stream of a Codex run failed and how long to pause before resume number `resume` of the call, or
+ * `undefined` when `finalError` reports anything else, such as a bad key, a refusal or a limit with no wait to sit out.
+ */
+function streamFailure(finalError: string | undefined, resume: number): { reason: string; pauseMs: number } | undefined {
+  if (!finalError) return undefined;
+  if (DROPPED_TEXT.test(finalError)) return { reason: 'connection dropped', pauseMs: 0 };
+  if (finalError === CAPACITY_ERROR) return { reason: 'model at capacity', pauseMs: CAPACITY_PAUSES_MS[Math.min(resume, CAPACITY_PAUSES_MS.length) - 1] };
+  const quota = matchQuotaText(finalError);
+  const pauseMs = quota && !quota.overloaded ? advisedWaitMs(quota.resetsAt) : undefined;
+  return pauseMs === undefined ? undefined : { reason: 'rate limit', pauseMs };
 }
 
 /**
@@ -356,6 +405,7 @@ export class OpenAIClient implements LLMClient {
     }
     const cliPath = await this.ensureCLI();
     const startTime = Date.now();
+    const limitMs = options?.timeoutMs ?? HARD_TIMEOUT_MS;
     // A failed run keeps the readings too, since a used-up limit is when they matter most.
     const limitReadings = () => {
       const limits = readCodexLimits(codexHome, startTime);
@@ -397,20 +447,43 @@ export class OpenAIClient implements LLMClient {
       const instructionsPath = join(promptDir, 'instructions.md');
       writeFileSync(instructionsPath, instructions, { mode: 0o600 });
       const readsFile = relatedReadsFile(promptDir);
+      // A resumed run starts a new tool server, which counts on from the earlier ones in this folder.
+      const stepsDir = endpoint && repoTools ? join(promptDir, 'steps') : undefined;
+      if (stepsDir) mkdirSync(stepsDir);
       const toolArgs = repoTools
-        ? codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related, readsFile }), env)
+        ? codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, stepsDir, related: repoTools.related, readsFile }), env)
         : [];
       const reads = () => (repoTools?.related ? readRelatedReads(readsFile) : undefined);
-      const exit = await runCli({
+      const carry = (error: unknown): never => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); };
+      const run = (runArgs: string[], input: string, usedMs?: number): Promise<CliExit> => runCli({
         label: 'Codex',
         cliPath,
-        args: [...args, ...toolArgs, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, '-'],
+        args: [...args, ...toolArgs, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, ...runArgs],
         env,
-        input: userMessage,
-        hardTimeoutMs: options?.timeoutMs,
+        input,
+        hardTimeoutMs: limitMs,
+        usedMs,
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
-      }).catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); });
+      }).catch(carry);
+      let exit = await run(['-'], userMessage);
+      const session = endpoint && SESSION_ID.exec(exit.stderr.slice(0, HEADER_CHARS))?.[1];
+      for (let resume = 1; session && exit.code !== 0 && resume <= MAX_RESUMES; resume++) {
+        const finalError = codexFinalError(exit, output);
+        const failure = streamFailure(finalError, resume);
+        // A resume whose pause leaves the resumed run too little of the call's time is not started, so the call fails
+        // on this run's error.
+        if (!failure || Date.now() - startTime + failure.pauseMs + MIN_RESUMED_RUN_MS > limitMs) break;
+        core.info(`Codex stream failed (${failure.reason}). Resuming the session in ${failure.pauseMs / 1000}s, resume ${resume} of ${MAX_RESUMES}.`);
+        if (failure.pauseMs > 0) await pause(failure.pauseMs, options?.signal).catch(carry);
+        exit = await run(['resume', session, '-'], RESUME_PROMPT, Date.now() - startTime).catch((error: unknown) => {
+          // A call that runs out of time after a limit fails as that limit, since a new call would meet it again.
+          const limitError = error instanceof CliTimeoutError ? codexLimitError(finalError, !!endpoint) : undefined;
+          if (!limitError) throw error;
+          core.warning(limitError.message);
+          return carry(Object.assign(limitError, { cause: error }));
+        });
+      }
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
@@ -419,17 +492,10 @@ export class OpenAIClient implements LLMClient {
 
     const limits = limitReadings();
     if (code !== 0) {
-      const finalError = codexFinalError({ signal, stderr }, output);
-      const atCapacity = finalError === CAPACITY_ERROR;
-      const quota = finalError ? matchQuotaText(finalError) : undefined;
-      if (atCapacity || (quota && !quota.overloaded)) {
-        const ownLimit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
-        const limit = atCapacity ? 'OpenAI model at capacity' : ownLimit;
-        const message = `${limit}: ${finalError}`;
-        core.warning(message);
-        // No other credential gets past a model at capacity.
-        const credential = atCapacity ? undefined : endpoint ? 'key' : 'token';
-        throw carryReadings(new QuotaError(message, limit, quota?.resetsAt, credential), { relatedReads, ...limits });
+      const limitError = codexLimitError(codexFinalError({ signal, stderr }, output), !!endpoint);
+      if (limitError) {
+        core.warning(limitError.message);
+        throw carryReadings(limitError, { relatedReads, ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,

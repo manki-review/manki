@@ -13,7 +13,7 @@ import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-gr
 import { fenceText, MANKI_VERSION } from './github';
 import { relatedRepoLoader, RelatedRepoPending } from './related-repos';
 import { writableOnlyByUs } from './tool-install';
-import { stepCheck } from './tool-steps';
+import { claimStep, stepCheck } from './tool-steps';
 import { RelatedRepoTools } from './types';
 import { safeJsonParse } from './utils';
 import { gitEnv, WORKSPACE_DEPTH } from './workspace';
@@ -28,6 +28,9 @@ export const FILE_TOOLS_FLAG = '--file-tools';
 
 /** The argument before the number of tool calls the server runs before it refuses every further call. */
 export const STEPS_FLAG = '--steps';
+
+/** The argument before the folder where the tool server counts its calls. Servers that share the folder share one step budget. */
+export const STEPS_DIR_FLAG = '--steps-dir';
 
 /** The argument that gives the tool server, as the JSON of `RelatedRepoTools` in the next argument, the related repos it may read. */
 export const RELATED_REPOS_FLAG = '--related-repos';
@@ -443,9 +446,11 @@ export interface McpServerOptions {
   fileTools?: boolean;
   /** Refuse every tool call after this many, and add the wrap-up note to the call that leaves `WRAP_UP_STEPS`. */
   steps?: number;
+  /** Counts the calls in this folder, so a later server of the same model call counts on from this one. Unset counts in memory. */
+  stepsDir?: string;
   /** Related repos a `repo` argument reads instead of `root`, each fetched on the first call that names it. */
   related?: RelatedRepoTools;
-  /** Where to keep how many calls read each related repo. */
+  /** Where to keep how many calls read each related repo. A server that finds counts there adds to them. */
   readsFile?: string;
   loadApi?: () => Promise<AstGrepApi>;
 }
@@ -457,11 +462,11 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: f
  * Returns Manki's tool server for the repository at `root`. Every tool reads only inside `root` and runs no shell, except
  * `repo_info`, which asks GitHub for a repository's public facts.
  */
-export function createMcpServer(root: string, { fileTools = false, steps, related, readsFile, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
+export function createMcpServer(root: string, { fileTools = false, steps, stepsDir, related, readsFile, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: 'manki', version: MANKI_VERSION });
   let taken = 0;
   const run = async (tool: () => Promise<string>): Promise<ToolResult> => {
-    const check = steps === undefined ? {} : stepCheck(++taken, steps);
+    const check = steps === undefined ? {} : stepCheck(stepsDir ? claimStep(stepsDir) : ++taken, steps);
     if (check.refusal) return { content: [{ type: 'text', text: check.refusal }], isError: true };
     const result = await toolResult(tool);
     if (check.note) result.content.push({ type: 'text', text: check.note });
@@ -474,7 +479,8 @@ export function createMcpServer(root: string, { fileTools = false, steps, relate
   // A client with file tools of its own reads the PR's repository with those, so it gets these only for a related repo.
   const repoArg = (optional: boolean): Record<string, z.ZodType<string | undefined>> =>
     names.length === 0 ? {} : { repo: optional ? repoName.optional() : repoName };
-  const reads: Record<string, number> = {};
+  const kept = readsFile && existsSync(readsFile) ? safeJsonParse(readFileSync(readsFile, 'utf8')) : null;
+  const reads: Record<string, number> = kept && typeof kept === 'object' ? kept as Record<string, number> : {};
   const rootOf = async (args: object): Promise<string> => {
     const repo = (args as { repo?: string }).repo;
     if (!repo || !loadRelated) return root;
@@ -554,9 +560,10 @@ export function createMcpServer(root: string, { fileTools = false, steps, relate
 
 /**
  * Serves Manki's tools over stdin and stdout until the client disconnects. `args` are the repository root, then
- * `FILE_TOOLS_FLAG` for the file tools, `STEPS_FLAG` with a number for a step budget, `RELATED_REPOS_FLAG` with
- * the JSON of the related repos and `READS_FILE_FLAG` with the file for their read counts. Exits with an error on stderr when the arguments are wrong, the root is not a
- * directory or the server cannot start.
+ * `FILE_TOOLS_FLAG` for the file tools, `STEPS_FLAG` with a number for a step budget, `STEPS_DIR_FLAG` with the folder
+ * that counts the steps, `RELATED_REPOS_FLAG` with the JSON of the related repos and `READS_FILE_FLAG` with the file for
+ * their read counts. Exits with an error on stderr when the arguments are wrong, the root is not a directory or the
+ * server cannot start.
  */
 export async function runMcpServer(args: string[]): Promise<void> {
   try {
@@ -569,7 +576,9 @@ export async function runMcpServer(args: string[]): Promise<void> {
     const related = relatedAt === -1 ? undefined : JSON.parse(flags[relatedAt + 1]) as RelatedRepoTools;
     const readsAt = flags.indexOf(READS_FILE_FLAG);
     const readsFile = readsAt === -1 ? undefined : flags[readsAt + 1];
-    await createMcpServer(root, { fileTools: flags.includes(FILE_TOOLS_FLAG), steps, related, readsFile }).connect(new StdioServerTransport());
+    const stepsDirAt = flags.indexOf(STEPS_DIR_FLAG);
+    const stepsDir = stepsDirAt === -1 ? undefined : flags[stepsDirAt + 1];
+    await createMcpServer(root, { fileTools: flags.includes(FILE_TOOLS_FLAG), steps, stepsDir, related, readsFile }).connect(new StdioServerTransport());
   } catch (error) {
     process.stderr.write(`Manki tool server: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);
