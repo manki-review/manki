@@ -2410,6 +2410,8 @@ describe('runFullReview orchestration', () => {
       expect(context!.meta.draft).toBe(true);
       expect(options).toEqual(expect.objectContaining({ draft: true }));
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toEqual(expect.objectContaining({ finalRound: false }));
+      // Only the bench turns on a step under measurement.
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).not.toHaveProperty('internal');
     });
 
     it.each([

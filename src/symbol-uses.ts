@@ -372,7 +372,7 @@ const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 const INLINE_TYPES = new Set(['object_type', 'struct_type']);
 // Nodes that wrap a declaration, so the comments above them belong to it.
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
-const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|spec)s?\.\w+$|(?:^|\/)test_[^/]*\.py$/;
+export const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|spec)s?\.\w+$|(?:^|\/)test_[^/]*\.py$/;
 // Code a repository carries from another project, whose namesakes say nothing about the reference itself.
 const VENDORED_PATH = /(?:^|\/)(?:vendor|third_party|thirdparty|external|extern|depends|deps|node_modules)\//;
 // Code a tool writes, by a directory such as `gen/` or a file name such as `schema.generated.ts`, `api.gen.go` or `app.min.js`.

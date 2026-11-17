@@ -161,6 +161,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
         promptDigest: promptDigest(opts?.promptTemplate ?? systemPrompt),
         ...(stepBudget !== undefined && { stepBudget }),
         ...(opts?.sweep && { sweep: true as const }),
+        ...(opts?.focusArea && { focusArea: opts.focusArea }),
       };
       const start = Date.now();
       try {

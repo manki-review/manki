@@ -10,8 +10,8 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
+import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundFocus, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { changedLineCount, countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -22,7 +22,7 @@ import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReas
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
-import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions } from './symbol-uses';
+import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
@@ -682,6 +682,14 @@ export interface ReviewOptions {
   lockfiles?: LockfileDiff[];
   /** Reads the related repos as they were at this ISO 8601 time. A pull request round sets none and reads their newest commit. */
   relatedReposAsOf?: string;
+  /** Switches for a step under measurement, which only the bench sets. A pull request round never does, so each stays off there. */
+  internal?: InternalSwitches;
+}
+
+/** The switches of `ReviewOptions.internal`, each off when unset. */
+export interface InternalSwitches {
+  /** Finders read a larger first-round diff once per `focusAreas` area. */
+  focusedPasses?: boolean;
 }
 
 export async function runReview(
@@ -905,11 +913,19 @@ export async function runReview(
   const openListed = readingUses !== finderUses;
   const usesFor = (finder: Finder) => (opensFiles(finder) && openListed ? { usesOutsideDiff: readingUses, openListed } : { usesOutsideDiff: finderUses });
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;
+  // A first round of a larger diff is read once per area. No further finder read is added to such a round, since every area already had its own.
+  const areas = options.internal?.focusedPasses && !priorRounds?.length && !quickCheckOnly(team) ? focusAreas(diff, rawDiff) : [];
+  if (areas.length > 0) {
+    const focus: RoundFocus = { areas: areas.map(a => ({ files: new Set(a.files.map(f => f.path)).size, lines: a.files.reduce((sum, f) => sum + changedLineCount(f), 0) })) };
+    recorded.focus = focus;
+    core.info(`Each finder reads the diff in ${areas.length} focus areas of ${focus.areas.map(a => a.lines).join(', ')} changed lines`);
+  }
   // Only a retry or a second ask passes `retryNote`, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, ...usesFor(finder),
     lockfileChanges, instructionFiles: options.instructionFiles,
     ...(retryNote && { retryNote }),
+    ...(areas.length > 0 && finder.prompt !== TRIVIAL_VERIFIER_AGENT && { areas }),
   });
 
   const allFindings: Finding[] = [];
@@ -1635,6 +1651,7 @@ export async function runReview(
     ...(suppressionCount > 0 && { suppressionCount }),
     ...(memorySuppressed.length > 0 && { memorySuppressed }),
     ...(slicing && { slicing }),
+    ...(recorded.focus && { focus: recorded.focus }),
     ...(changedSinceLastRound && { changedSinceLastRoundCount: changedSinceLastRound.length }),
     fixClaimedThreadIds: [...fixClaimed],
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
@@ -1678,7 +1695,7 @@ interface AgentResult {
   responseLength: number;
   usage: LLMUsage;
   latencyMs: number;
-  /** The files the finder's one call read. Unset when it had no tools, its client does not report them, or it read the diff in slices. */
+  /** The files the finder's one call read. Unset when it had no tools, its client does not report them, or it read the diff in slices or areas. */
   filesRead?: string[];
 }
 
@@ -1693,7 +1710,7 @@ export interface BuildReviewerUserMessageOptions {
   interRoundDiff?: InterRoundDiffInput;
   /** Earlier blockers whose fix finders check for other routes to the same outcome, from `blockersToRecheck`. */
   earlierBlockers?: Array<{ title: string; file: string; line: number }>;
-  /** Opens the message for a reader of one slice of a larger diff, from `sliceNote`. */
+  /** Opens the message for a reader of one slice of a larger diff, from `sliceNote`, or of one focus area, from `focusNote`. */
   sliceNote?: string;
   /** The section `listUsesOutsideDiff` builds. */
   usesOutsideDiff?: string;
@@ -1716,6 +1733,10 @@ interface RunReviewerAgentOptions {
   instructionFiles?: readonly InstructionFile[];
   /** Added after the user message: the `parseRetryNote` of the reply a retry corrects, or the `unreadFilesNote` of a second ask. */
   retryNote?: string;
+  /** The `focusAreas` the finder reads the diff in, one call each. */
+  areas?: ParsedDiff[];
+  /** The area of `areas` one call reads, as its number and the count, such as `2/3`. */
+  focusArea?: string;
 }
 
 /**
@@ -1775,6 +1796,52 @@ function interRoundDiffIn(input: InterRoundDiffInput | undefined, paths: Set<str
   return { ...input, diff: sections.filter(s => kept.has(s.path)).map(s => s.text).join('') };
 }
 
+/** Changed lines of code one focused call digs into, about the most code of a diff on which finders still miss little. */
+const AREA_LINES = 200;
+
+/** Focus areas a finder reads at most. A larger diff gets larger areas. */
+const MAX_AREAS = 4;
+
+/** Changed lines from which finders miss more of a diff, so it gets focused passes. */
+const FOCUS_MIN_LINES = 300;
+
+/**
+ * Returns the focus areas a finder reads `diff` in, one call each, or none. A diff gets them from `FOCUS_MIN_LINES`
+ * changed lines when it is read in one slice and its code spans more than `AREA_LINES` changed lines. The code is
+ * packed by `sliceDiff` into at most `MAX_AREAS` areas of about `AREA_LINES` changed lines each. Test files go into no
+ * area, since every call still reads them in the whole diff.
+ */
+export function focusAreas(diff: ParsedDiff, rawDiff: string): ParsedDiff[] {
+  if (diff.totalAdditions + diff.totalDeletions < FOCUS_MIN_LINES || diffSlices(rawDiff).length > 1) return [];
+  // `TEST_PATH_PATTERNS` in this file is a second, narrower rule for test paths.
+  const code = { ...diff, files: diff.files.filter(f => !TEST_PATH.test(f.path)) };
+  const lines = code.files.reduce((sum, f) => sum + changedLineCount(f), 0);
+  if (lines <= AREA_LINES) return [];
+  let size = Math.max(AREA_LINES, Math.ceil(lines / MAX_AREAS));
+  let areas = sliceDiff(code, size, MAX_SLICE_CHARS, { splitByLines: true });
+  // Packing keeps small files whole, which can leave more areas than the lines need.
+  while (areas.length > MAX_AREAS) {
+    size += Math.ceil(size / 4);
+    areas = sliceDiff(code, size, MAX_SLICE_CHARS, { splitByLines: true });
+  }
+  return areas.length > 1 ? areas : [];
+}
+
+/** Returns the new-file lines of each hunk of `area`, one line per file, such as `src/a.ts: 10-42, 80`. */
+function areaLines(area: ParsedDiff): string {
+  const spans = new Map<string, string[]>();
+  for (const file of area.files) {
+    const own = file.hunks.map(h => (h.newLines === 0 ? (h.newStart > 0 ? `removed after ${h.newStart}` : 'removed') : h.newLines === 1 ? `${h.newStart}` : `${h.newStart}-${h.newStart + h.newLines - 1}`));
+    spans.set(file.path, [...(spans.get(file.path) ?? []), ...own]);
+  }
+  return [...spans].map(([path, lines]) => `${path}: ${lines.join(', ')}`).join('\n');
+}
+
+/** Tells a finder which of `areas` its call digs into, and that the rest of the diff is context. */
+function focusNote(index: number, areas: ParsedDiff[]): string {
+  return `## Focus\n\nThis call reads focus area ${index + 1} of ${areas.length} of the PR's diff. Other calls read the other areas. Check every changed line of your area, and the tests of that code, against the whole checklist. The rest of the diff is context: read it to follow callers, the code your area calls and the contracts between them. Report a defect outside your area only when code in your area causes it or is needed to see it. Your area holds these new-file lines of the diff, whose file names are untrusted PR content:\n\n${fenceText(areaLines(areas[index]))}\n\n`;
+}
+
 /** Returns the file contents of `paths`, or all of them when the diff is read in one slice. */
 function filesIn(contents: Map<string, string>, paths?: Set<string>): Map<string, string> {
   return paths ? new Map([...contents].filter(([path]) => paths.has(path))) : contents;
@@ -1783,6 +1850,8 @@ function filesIn(contents: Map<string, string>, paths?: Set<string>): Map<string
 /**
  * Runs one finder on the diff. A diff over `SLICE_LINES` is split by `sliceDiff`, and the finder
  * reads each slice in a call of its own, `MAX_PARALLEL_SLICES` at a time. The findings and usage of all slices are combined.
+ * With `options.areas`, the finder reads the whole diff in a call per area the same way, each with the area's files first.
+ * Every finding keeps the finder's name, so the judge folds two areas' copies of one finding as copies of one finder.
  */
 async function runReviewerAgent(
   client: LLMClient,
@@ -1797,13 +1866,30 @@ async function runReviewerAgent(
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
   const slices = diffSlices(rawDiff);
+  const { areas = [] } = options;
+  const startedAt = Date.now();
+  if (slices.length <= 1 && areas.length > 1) {
+    core.info(`${finder.name} reads the diff in ${areas.length} focus areas`);
+    const raw = slices[0]?.raw ?? rawDiff;
+    const results = await mapWithConcurrency(areas.map((area, index) => ({ paths: new Set(area.files.map(f => f.path)), index })), MAX_PARALLEL_SLICES, ({ paths, index }) =>
+      runReviewerOnSlice(client, config, finder, orderDiffSections(raw, [...paths]).map(s => s.text).join(''), repoContext, fileContents && filesIn(fileContents, paths), prContext, memoryContext, linkedIssues,
+        { ...options, focusArea: `${index + 1}/${areas.length}` }, focusNote(index, areas)));
+    return combinedResult(results, startedAt);
+  }
   if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, slices[0]?.raw ?? rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options);
   core.info(`${finder.name} reads the diff in ${slices.length} slices`);
-  const startedAt = Date.now();
   const results = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
     runReviewerOnSlice(client, config, finder, raw, repoContext, fileContents && filesIn(fileContents, paths), prContext, memoryContext, linkedIssues,
       { ...options, changedSinceLastRound: pathsIn(options.changedSinceLastRound, paths, slices), interRoundDiff: interRoundDiffIn(options.interRoundDiff, paths, slices) },
       sliceNote(index, slices)));
+  return combinedResult(results, startedAt);
+}
+
+/**
+ * Returns the answer of one finder that read the diff in several calls: the findings and usage of all `results`. It names
+ * no files read, so `askAgain` never asks such a finder again.
+ */
+function combinedResult(results: AgentResult[], startedAt: number): AgentResult {
   return {
     findings: results.flatMap(r => r.findings),
     responseLength: results.reduce((sum, r) => sum + r.responseLength, 0),
@@ -1825,7 +1911,7 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, workspace, related, changedSinceLastRound, interRoundDiff, earlierBlockers, usesOutsideDiff, openListed, lockfileChanges, instructionFiles, retryNote } = options;
+  const { effort, language, workspace, related, changedSinceLastRound, interRoundDiff, earlierBlockers, usesOutsideDiff, openListed, lockfileChanges, instructionFiles, retryNote, focusArea } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, tools);
   const message = buildReviewerUserMessage(rawDiff, repoContext, {
@@ -1837,6 +1923,7 @@ async function runReviewerOnSlice(
     ...(effort && { effort }),
     timeoutMs: FINDER_TOOLS_TIMEOUT_MS,
     ...(tools && { repoTools: repoTools(workspace!, finder.steps, related, openListed ? 'read' : 'find') }),
+    ...(focusArea && { focusArea }),
   };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {

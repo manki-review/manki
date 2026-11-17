@@ -13,7 +13,7 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
 import type { PreviousFinding } from './recap';
-import { carryBodyWarnings, ReviewProgress, runReview } from './review';
+import { carryBodyWarnings, InternalSwitches, ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
@@ -120,6 +120,8 @@ export interface LocalReviewInput {
   earlier?: EarlierRound;
   /** Reads the related repos as they were at this ISO 8601 time, for a change reviewed after it was made. Defaults to their newest commit. */
   relatedReposAsOf?: string;
+  /** The switches of a step under measurement, which a bench variant sets. */
+  internal?: InternalSwitches;
   providerInputs: ProviderInputs;
   onProgress?: (progress: ReviewProgress) => void;
   signal?: AbortSignal;
@@ -369,6 +371,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       lockfiles,
       signal,
       ...(input.relatedReposAsOf && { relatedReposAsOf: input.relatedReposAsOf }),
+      ...(input.internal && { internal: input.internal }),
       // A local review without an earlier round has no thread, so a round with nothing to judge skips the judge.
       openThreads: followUp?.openThreads ?? [],
       ...(followUp && {

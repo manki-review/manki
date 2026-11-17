@@ -1445,9 +1445,9 @@ async function fetchToolWorkspace({ octokit, owner, repo, commitSha }: Pick<RunT
   }
 }
 
-/** Runs the review pipeline and mirrors its progress on the dashboard in the progress comment. */
+/** Runs the review pipeline and mirrors its progress on the dashboard in the progress comment. A pull request round sets no `internal` switch. */
 async function reviewRound(
-  run: ReviewRun, clients: ReviewClients, inputs: Omit<ReviewOptions, 'onProgress'>,
+  run: ReviewRun, clients: ReviewClients, inputs: Omit<ReviewOptions, 'onProgress' | 'internal'>,
 ): Promise<ReviewStageResult> {
   const { octokit, owner, repo, commentId, dashboard, progress } = run;
   let reviewEndTime = run.parseEndTime;

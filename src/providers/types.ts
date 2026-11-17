@@ -133,6 +133,8 @@ export interface LLMCall extends LLMUsage {
   fallback?: boolean;
   /** Set on a refuter's call for a finding a sweep raised. The dedup and judge calls on what the sweeps reported have the agent `sweep`. */
   sweep?: true;
+  /** The focus area a finder's call read, as its number and the count of areas, such as `2/3`. */
+  focusArea?: string;
   /** Position among the calls of the same stage and agent, so above 1 means a retry or another pass. */
   attempt: number;
   failed?: boolean;
@@ -200,6 +202,8 @@ export interface SendMessageOptions {
   promptTemplate?: string;
   /** Marks a call that runs for a finding a sweep raised, so the call's record shows it. No provider sends it. */
   sweep?: true;
+  /** The focus area a finder's call reads, such as `2/3`, so the call's record shows it. No provider sends it. */
+  focusArea?: string;
 }
 
 export interface LLMClient {

@@ -25,6 +25,7 @@ import {
   ReviewProgress,
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
+  focusAreas,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
@@ -1865,6 +1866,37 @@ jest.mock('./memory', () => ({
   buildMemoryContext: jest.fn().mockReturnValue('memory context'),
   applySuppressions: jest.fn().mockReturnValue({ kept: [], suppressed: [] }),
 }));
+
+/** A diff that adds `lines` lines to `path` below one line of context, each line naming its file. */
+const addedLines = (path: string, lines: number): string =>
+  `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,${lines + 1} @@\n ctx\n${Array.from({ length: lines }, (_, i) => `+${path} ${i}`).join('\n')}\n`;
+
+describe('focusAreas', () => {
+  const areasOf = (...files: Array<[string, number]>) => {
+    const rawDiff = files.map(([path, lines]) => addedLines(path, lines)).join('');
+    return focusAreas(parsePRDiff(rawDiff), rawDiff).map(area => area.files.map(f => `${f.path} ${f.hunks.map(h => `${h.newStart}+${h.newLines}`).join(' ')}`));
+  };
+
+  it('gives a diff areas from 300 changed lines, read in one slice, with more than 200 changed lines outside test files', () => {
+    expect(areasOf(['src/a.ts', 299])).toEqual([]);
+    expect(areasOf(['src/a.ts', 200], ['src/a.test.ts', 100])).toEqual([]);
+    expect(areasOf(['src/a.ts', 800], ['src/b.ts', 800])).toEqual([]);
+    // A file over the area size splits at a line, and the test file goes into no area.
+    expect(areasOf(['src/a.ts', 201], ['tests/test_a.py', 99])).toEqual([['src/a.ts 1+201'], ['src/a.ts 202+1']]);
+    expect(areasOf(['src/a.ts', 150], ['src/a.test.ts', 100], ['src/b.ts', 150])).toEqual([['src/a.ts 1+151'], ['src/b.ts 1+151']]);
+  });
+
+  it('keeps a finder at 4 areas, which grow on a larger diff, and puts every changed line of code in one of them', () => {
+    const files = Array.from({ length: 9 }, (_, i): [string, number] => [`src/m${i}.ts`, 100]);
+    const areas = focusAreas(parsePRDiff(files.map(([path, lines]) => addedLines(path, lines)).join('')), files.map(([path, lines]) => addedLines(path, lines)).join(''));
+    expect(areas.length).toBeGreaterThan(1);
+    expect(areas.length).toBeLessThanOrEqual(4);
+    expect(areas.flatMap(a => a.files.map(f => f.path))).toEqual(files.map(([path]) => path));
+    const big = areasOf(['src/big.ts', 1400]);
+    expect(big).toHaveLength(4);
+    expect(big.map(area => area[0])).toEqual(['src/big.ts 1+351', 'src/big.ts 352+350', 'src/big.ts 702+350', 'src/big.ts 1052+350']);
+  });
+});
 
 describe('runReview', () => {
   const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
@@ -6089,6 +6121,47 @@ describe('runReview', () => {
       expect(message).toContain('+version = "0.4.3"');
     }
     for (const message of readerMessages) expect(message).not.toContain('## Diff Since the Last Review');
+  });
+
+  it('reads a larger first round once per focus area per finder, with the area first, only when the bench switch is on', async () => {
+    const rawDiff = [addedLines('src/a.ts', 150), addedLines('src/a.test.ts', 100), addedLines('src/b.ts', 150)].join('');
+    const fileContents = new Map([['src/a.ts', 'CONTENT OF A'], ['src/a.test.ts', 'CONTENT OF THE TEST'], ['src/b.ts', 'CONTENT OF B']]);
+    const same = JSON.stringify([{ severity: 'warning', title: 'Same defect', file: 'src/a.ts', line: 2, description: 'd' }]);
+    const review = async (extra: Partial<Parameters<typeof runReview>[1]>) => {
+      const clients = makeClients(same);
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+      const result = await runReview(clients, { config: makeConfig(), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '', fileContents, ...extra });
+      return { result, messages: jest.mocked(clients.reviewer.sendMessage).mock.calls.map(([, user]) => user as string) };
+    };
+
+    const { result, messages } = await review({ internal: { focusedPasses: true } });
+    const finders = result.agentNames;
+    expect(messages).toHaveLength(2 * finders.length);
+    for (const message of messages) expect(message).toMatch(/^## Focus\n\nThis call reads focus area [12] of 2 of the PR's diff\. Other calls read the other areas\./);
+    const second = messages.find(m => m.includes('focus area 2 of 2'))!;
+    expect(second).toContain('untrusted PR content:\n\n```\nsrc/b.ts: 1-151\n```');
+    // The whole diff stays in every call, with the area's files first, and only those files in full.
+    expect(second.indexOf('+++ b/src/b.ts')).toBeLessThan(second.indexOf('+++ b/src/a.ts'));
+    expect(second).toContain('+++ b/src/a.test.ts');
+    expect(second).toContain('CONTENT OF B');
+    expect(second).not.toContain('CONTENT OF A');
+    expect(second).not.toContain('CONTENT OF THE TEST');
+    expect(messages.find(m => m.includes('focus area 1 of 2'))).toContain('CONTENT OF A');
+    // Each call's record names its area, and the round records the areas.
+    expect(result.llmCalls!.filter(c => c.stage === 'reviewer').map(c => c.focusArea).sort()).toEqual(finders.flatMap(() => ['1/2', '2/2']).sort());
+    expect(result.focus).toEqual({ areas: [{ files: 1, lines: 150 }, { files: 1, lines: 150 }] });
+    // Two areas' copies of one finding go to the judge under the one finder's name, never as two finders.
+    expect(result.rawFindings!.map(f => f.reviewers)).toEqual(expect.arrayContaining(finders.map(name => [name])));
+    expect(result.rawFindings!.map(f => f.reviewers.join()).sort()).toEqual(finders.flatMap(name => [name, name]).sort());
+
+    // Without the switch, and on a later round, each finder reads the diff once.
+    for (const extra of [{}, { internal: { focusedPasses: true }, priorRounds: [buildPriorRound(1, [])] }]) {
+      const plain = await review(extra);
+      expect(plain.messages).toHaveLength(plain.result.agentNames.length);
+      for (const message of plain.messages) expect(message).not.toContain('## Focus');
+      expect(plain.result).not.toHaveProperty('focus');
+      expect(plain.result.llmCalls!.filter(c => c.focusArea)).toEqual([]);
+    }
   });
 
   it('shows the verdict reader every changed line of a diff over the character budget, and needs every slice READY', async () => {

@@ -3785,6 +3785,13 @@ describe('runJudgeAgent', () => {
         { ...verdict('Leaked timeout handle', 'blocker', 1), security: true },
       ]);
       expect(secured.map(f => [f.title, f.tags])).toEqual([['Timer never cleared', ['security']], ['Unrelated naming', undefined]]);
+
+      // Two focus areas of one finder report one defect: it is posted once and names the finder once.
+      const areas = await runWith(
+        [makeFinding({ title: 'Timer never cleared', file: 'a.ts', line: 5, reviewers: ['Correctness'] }), makeFinding({ title: 'Timeout handle leaks', file: 'a.ts', line: 6, reviewers: ['Correctness'] })],
+        [verdict('Timer never cleared', 'warning'), verdict('Timeout handle leaks', 'warning', 1)],
+      );
+      expect(areas.map(f => [f.title, f.reviewers])).toEqual([['Timer never cleared', ['Correctness']]]);
     });
 
     it('follows a chain of duplicates to the first finding', async () => {

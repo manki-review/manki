@@ -807,6 +807,25 @@ describe('sliceDiff', () => {
     expect(slices.flatMap(s => s.files.filter(f => f.path === 'big.ts').flatMap(f => f.hunks.map(h => h.newStart)))).toEqual([1, 10, 20, 30]);
   });
 
+  it('with `splitByLines`, splits a unit over the line limit at hunk boundaries, and a hunk over it at line boundaries', () => {
+    const plus = (from: number, count: number) => Array.from({ length: count }, (_, i) => `+line ${from + i}`).join('\n');
+    const twoHunks = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,61 @@\n ctx\n${plus(0, 60)}\n@@ -50,1 +110,61 @@\n ctx\n${plus(60, 60)}\n`;
+    const diff = parsePRDiff(`${twoHunks}${added('src/b.ts', Array.from({ length: 150 }, (_, i) => `b ${i}`))}${added('src/c.ts', ['c'])}`);
+    const changed = (slice: ParsedDiff) => slice.files.reduce((sum, f) => sum + (f.additions ?? 0) + (f.deletions ?? 0), 0);
+
+    const slices = sliceDiff(diff, 100, MAX_SLICE_CHARS, { splitByLines: true });
+    // `src/a.ts` splits between its hunks, and the one hunk of `src/b.ts` within it at a line, with its own line numbers.
+    expect(slices.map(s => s.files.map(f => [f.path, f.hunks.map(h => `${h.newStart}+${h.newLines}`).join(' ')]))).toEqual([
+      [['src/a.ts', '1+61']],
+      [['src/a.ts', '110+61']],
+      [['src/b.ts', '1+100']],
+      [['src/b.ts', '101+50'], ['src/c.ts', '1+1']],
+    ]);
+    expect(slices.map(changed)).toEqual([60, 60, 100, 51]);
+    // Without it, a unit over the line limit stays whole in a slice of its own.
+    expect(paths(sliceDiff(diff, 100))).toEqual([['src/a.ts'], ['src/b.ts'], ['src/c.ts']]);
+  });
+
   it('shortens a line over the line limit, so the slice still fits', () => {
     const long = 'z'.repeat(MAX_LINE_CHARS + 5000);
     const [slice] = sliceDiff(parsePRDiff(added('min.js', [long])), 1500);

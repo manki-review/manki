@@ -749,6 +749,11 @@ describe('runBench and buildReport', () => {
     await runBench([{ ...benchCase, config: { max_diff_lines: 2000 } }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: ownReview, variants: [{ name: 'opus', overrides }] });
     expect(ownReview.mock.calls[0][0].config).toMatchObject({ max_diff_lines: 2000, models: { judge: 'claude-sonnet-5-5' } });
     expect(ownReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
+    // A variant's internal switches reach the review, and only that variant's.
+    const switched = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
+    const [, focused] = await runBench([benchCase], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: switched, variants: [{ name: 'base', overrides: {} }, { name: 'focused', overrides: {}, internal: { focusedPasses: true } }] });
+    expect(switched.mock.calls.map(([input]) => input.internal)).toEqual([undefined, { focusedPasses: true }]);
+    expect(buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [focused]).variants[0]).toMatchObject({ name: 'focused', internal: { focusedPasses: true } });
     expect(onCase).toHaveBeenCalledWith([{ variant, results }]);
     expect(results[0].runs[1]).toMatchObject({ outcome: 'FAILED', complete: false, error: 'provider down', mustCatchRecall: null, verdictCorrect: null });
 
@@ -1433,6 +1438,19 @@ describe('resolveVariants', () => {
         { name: 'empty', overrides: { models: { judge: 'claude-sonnet-5-5' } } },
       ]);
       expect(() => resolveVariants({ variants: [{ name: 'list', file: join(dir, 'list.yml') }], sets: [] })).toThrow('The overrides of variant list');
+
+      // The `internal:` block holds switches the config never sees, and only known ones set to true or false.
+      expect(resolveVariants({ variants: [{ name: 'focused', file: join(__dirname, '..', 'bench', 'variants', 'focused-passes.yml') }], sets })).toEqual([
+        { name: 'focused', overrides: { models: { judge: 'claude-sonnet-5-5' } }, internal: { focusedPasses: true } },
+      ]);
+      for (const [block, error] of [
+        ['internal:\n  focused_pass: true\n', 'The internal: block of variant bad names focused_pass, which is no switch. The switches are: focused_passes'],
+        ['internal:\n  focused_passes: "yes"\n', 'The internal switch focused_passes of variant bad must be true or false'],
+        ['internal: true\n', 'The internal: block of variant bad must be a mapping of switches'],
+      ]) {
+        writeFileSync(join(dir, 'bad.yml'), block);
+        expect(() => resolveVariants({ variants: [{ name: 'bad', file: join(dir, 'bad.yml') }], sets: [] })).toThrow(error);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

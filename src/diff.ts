@@ -564,10 +564,11 @@ export function overlongChangedLines(diff: ParsedDiff): OverlongLine[] {
 /**
  * Splits `diff` into slices of at most about `maxLines` changed lines and at most `maxChars` characters. A file and its
  * test stay in one slice, and files of one folder are packed next to each other. A unit over `maxLines` gets a slice of
- * its own, and a unit over `maxChars` is split at hunk boundaries, or within a hunk at line boundaries. A line over
- * `MAX_LINE_CHARS` is shortened, so every slice fits.
+ * its own, and a unit over `maxChars` is split at hunk boundaries, or within a hunk at line boundaries. With
+ * `splitByLines`, a unit over `maxLines` is split the same way into parts of at most `maxLines` changed lines. A line
+ * over `MAX_LINE_CHARS` is shortened, so every slice fits.
  */
-export function sliceDiff(diff: ParsedDiff, maxLines: number, maxChars = MAX_SLICE_CHARS): ParsedDiff[] {
+export function sliceDiff(diff: ParsedDiff, maxLines: number, maxChars = MAX_SLICE_CHARS, { splitByLines = false }: { splitByLines?: boolean } = {}): ParsedDiff[] {
   const files = diff.files.map(shortenLongLines);
   const chars = (group: DiffFile[]) => group.reduce((sum, f) => sum + fileChars(f), 0);
   if (diff.files.reduce((sum, f) => sum + changedLineCount(f), 0) <= maxLines && chars(files) <= maxChars) return [{ ...diff, files }];
@@ -579,7 +580,10 @@ export function sliceDiff(diff: ParsedDiff, maxLines: number, maxChars = MAX_SLI
   }
   const groups = [...units.keys()].sort().flatMap(key => {
     const unit = units.get(key)!;
-    return chars(unit) <= maxChars ? [unit] : unit.flatMap(f => splitFile(f, maxChars)).map(part => [part]);
+    const overLines = splitByLines && unit.reduce((sum, f) => sum + changedLineCount(f), 0) > maxLines;
+    if (chars(unit) <= maxChars && !overLines) return [unit];
+    const parts = overLines ? unit.flatMap(f => (changedLineCount(f) > maxLines ? splitFile(f, maxLines, 'lines') : [f])) : unit;
+    return parts.flatMap(f => splitFile(f, maxChars)).map(part => [part]);
   });
   const slices: DiffFile[][] = [];
   let current: DiffFile[] = [];
@@ -633,6 +637,7 @@ function changedLineCost(line: string): number {
  * within a hunk at line boundaries.
  */
 function splitFile(file: DiffFile, max: number, measure: PartMeasure = 'chars'): DiffFile[] {
+  if (file.hunks.length === 0) return [file];
   const room = measure === 'chars' ? max - fileChars({ ...file, hunks: [] }) : max;
   const size = (h: DiffHunk) => (measure === 'chars' ? hunkChars(h) : h.content.split('\n').reduce((sum, l) => sum + changedLineCost(l), 0));
   const pieces = file.hunks.flatMap(h => size(h) <= room ? [h] : measure === 'chars' ? splitHunk(h, room - HUNK_HEADER_CHARS, l => l.length + 1) : splitHunk(h, room, changedLineCost));

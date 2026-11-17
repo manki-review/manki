@@ -729,6 +729,12 @@ export interface RoundSlicing {
   reader?: Array<{ verdict: VerdictReport['verdict']; blockers: number }>;
 }
 
+/** The focus areas of a round whose finders read the diff once per area. */
+export interface RoundFocus {
+  /** The changed files and changed lines of code in each area. A file split across areas counts in each. */
+  areas: Array<{ files: number; lines: number }>;
+}
+
 /** What changed a finding's severity. */
 export type GradeChange =
   | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
@@ -1121,6 +1127,8 @@ export interface ReviewResult {
   originsWithoutPrior?: true;
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
+  /** The areas each finder read the diff in, when it read it once per area. */
+  focus?: RoundFocus;
   /** The configured related repos, with the outcome of each fetch. */
   relatedRepos?: RoundRelatedRepo[];
   /** What the finders were shown as uses outside the diff. */
@@ -1806,6 +1814,8 @@ export interface RoundContext {
   runner?: RoundRunner;
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
+  /** The areas each finder read the diff in, when it read it once per area. */
+  focus?: RoundFocus;
   /** The instruction files the round read from the base branch, in the order the prompts print them. */
   instructions?: RoundInstructions;
   /** The configured related repos, with the outcome of each fetch. */

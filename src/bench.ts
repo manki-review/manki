@@ -10,7 +10,7 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { isClaimCheck } from './pr-claims';
 import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
-import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
+import { InternalSwitches, NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
 import { buildLLMClient } from './review-clients';
 import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, gradedAbove, isGradeCell, isSecurityFinding, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, VERDICT_READER_NAME, VerdictReason } from './types';
 import { runGit } from './workspace';
@@ -778,10 +778,14 @@ interface VariantSummary {
   wallTimePerRunMs: number | null;
 }
 
-/** One setup the bench scores: a name and the config it sets on top of each case's own config, or its base `.manki.yml`. */
+/**
+ * One setup the bench scores: a name and the config it sets on top of each case's own config, or its base `.manki.yml`,
+ * and the `internal` switches of a step under measurement, which no config can set.
+ */
 interface Variant {
   name: string;
   overrides: ConfigOverrides;
+  internal?: InternalSwitches;
 }
 
 interface VariantReport extends Variant {
@@ -924,7 +928,8 @@ export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pic
     const scored = new Map(found.flatMap(v => v.cases).map(c => [c.id, c]));
     const unknown = [...scored.keys()].find(id => !cases.some(c => c.id === id));
     if (unknown) throw new Error(`The reports hold case ${unknown}, which is not one of the cases to merge`);
-    return variantReport({ name, overrides: found[0].overrides }, cases.map((c) => {
+    const { overrides, internal } = found[0];
+    return variantReport({ name, overrides, ...(internal && { internal }) }, cases.map((c) => {
       const scoredCase = scored.get(c.id);
       return scoredCase ? { ...scoredCase, set: c.set } : caseReport(c, [failedRun(new Error('No report: the job for this case failed or was cancelled.'))]);
     }));
@@ -984,7 +989,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
   const left = new Map<string, string>();
   const failed = new Set<string>();
   const variants: VariantReport[] = [];
-  for (const { name, overrides, cases: scored } of report.variants) {
+  for (const { name, overrides, internal, cases: scored } of report.variants) {
     const again: CaseReport[] = [];
     for (const c of scored) {
       const loaded = cases.find(b => b.id === c.id);
@@ -1023,7 +1028,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
       rescored.add(c.id);
       again.push(caseReport(benchCase, runs));
     }
-    variants.push(variantReport({ name, overrides }, again));
+    variants.push(variantReport({ name, overrides, ...(internal && { internal }) }, again));
   }
   return { report: { ...report, variants }, rescored: [...rescored], left: [...left].map(([id, reason]) => ({ id, reason })), failed: [...failed] };
 }
@@ -1610,6 +1615,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
             // Only a case with related repos needs a date, so a change that cannot be dated fails no other case.
             ...(config.related_repos?.length && { relatedReposAsOf: await changeDate(checkouts.get(benchCase.repo)!, benchCase) }),
             providerInputs: options.providerInputs, signal: options.signal,
+            ...(variant.internal && { internal: variant.internal }),
             // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
             ...(benchCase.config ? { config } : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
@@ -1722,7 +1728,26 @@ export function parseBenchArgs(argv: string[]): BenchArgs {
   return args;
 }
 
-/** Reads each variant's file and sets every `--set` on top. Without a `--variant`, the one variant is `base`. */
+/** The keys of a variant file's `internal:` block, each with the field of `InternalSwitches` it sets. */
+const INTERNAL_KEYS: Readonly<Record<string, keyof InternalSwitches>> = { focused_passes: 'focusedPasses' };
+
+/** Reads the `internal:` block of variant `name`, which may only set a known switch to `true` or `false`. */
+function internalSwitches(block: unknown, name: string): InternalSwitches {
+  if (block === null || typeof block !== 'object' || Array.isArray(block)) throw new Error(`The internal: block of variant ${name} must be a mapping of switches`);
+  const switches: InternalSwitches = {};
+  for (const [key, value] of Object.entries(block)) {
+    const field = INTERNAL_KEYS[key];
+    if (!field) throw new Error(`The internal: block of variant ${name} names ${key}, which is no switch. The switches are: ${Object.keys(INTERNAL_KEYS).join(', ')}`);
+    if (typeof value !== 'boolean') throw new Error(`The internal switch ${key} of variant ${name} must be true or false`);
+    switches[field] = value;
+  }
+  return switches;
+}
+
+/**
+ * Reads each variant's file and sets every `--set` on top. Without a `--variant`, the one variant is `base`. A file's
+ * top-level `internal:` block holds the variant's `internal` switches and never reaches the config.
+ */
 export function resolveVariants(args: Pick<BenchArgs, 'variants' | 'sets'>): Variant[] {
   const listed = args.variants.length > 0 ? args.variants : [{ name: 'base' }];
   return listed.map(({ name, file }: { name: string; file?: string }) => {
@@ -1730,7 +1755,11 @@ export function resolveVariants(args: Pick<BenchArgs, 'variants' | 'sets'>): Var
     if (parsed !== null && parsed !== undefined && (typeof parsed !== 'object' || Array.isArray(parsed))) {
       throw new Error(`The overrides of variant ${name} in ${file} must be a mapping of config keys`);
     }
-    return { name, overrides: args.sets.reduce(overlayConfig, (parsed ?? {}) as ConfigOverrides) };
+    const { internal, ...overrides } = (parsed ?? {}) as ConfigOverrides;
+    return {
+      name, overrides: args.sets.reduce(overlayConfig, overrides),
+      ...(internal !== undefined && { internal: internalSwitches(internal, name) }),
+    };
   });
 }
 
