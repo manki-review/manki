@@ -79,11 +79,22 @@ async function installWithRetries(download: PinnedDownload): Promise<string> {
   }
 }
 
+/** How `fetchWhole` downloads beyond its defaults. */
+export interface FetchWholeOptions {
+  /** Fails a download that sends more bytes than this, before it reads them all. */
+  maxBytes?: number;
+  /** Fails on a redirect instead of following it, so the download never leaves the host of `url`. */
+  noRedirects?: boolean;
+  headers?: Record<string, string>;
+  /** The time `deadline` allows, which the error names when it aborts. */
+  deadlineMs?: number;
+}
+
 /**
  * Downloads `url` whole. A download that keeps delivering data may take until `deadline` aborts. Throws
  * `TransientDownloadError` for a failure another try may not hit, and `LastingDownloadError` for one it would hit again.
  */
-async function fetchWhole(url: string, deadline: AbortSignal): Promise<Buffer> {
+export async function fetchWhole(url: string, deadline: AbortSignal, { maxBytes, noRedirects, headers, deadlineMs = DOWNLOAD_DEADLINE_MS }: FetchWholeOptions = {}): Promise<Buffer> {
   const stall = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   const moved = (): void => {
@@ -93,11 +104,17 @@ async function fetchWhole(url: string, deadline: AbortSignal): Promise<Buffer> {
   let status: number;
   moved();
   try {
-    const response = await fetch(url, { signal: AbortSignal.any([stall.signal, deadline]) });
+    const response = await fetch(url, { signal: AbortSignal.any([stall.signal, deadline]), ...(noRedirects && { redirect: 'error' as const }), ...(headers && { headers }) });
     if (response.ok) {
       const chunks: Uint8Array[] = [];
+      let bytes = 0;
       for await (const chunk of response.body ?? []) {
         moved();
+        bytes += chunk.length;
+        if (maxBytes !== undefined && bytes > maxBytes) {
+          stall.abort();
+          throw new LastingDownloadError(`download of ${url} is larger than ${maxBytes / 1024 / 1024} MB`);
+        }
         chunks.push(chunk);
       }
       return Buffer.concat(chunks);
@@ -105,7 +122,8 @@ async function fetchWhole(url: string, deadline: AbortSignal): Promise<Buffer> {
     status = response.status;
     await response.body?.cancel();
   } catch (error) {
-    if (deadline.aborted) throw new LastingDownloadError(`download of ${url} did not finish within ${DOWNLOAD_DEADLINE_MS / 1000} seconds`);
+    if (error instanceof LastingDownloadError) throw error;
+    if (deadline.aborted) throw new LastingDownloadError(`download of ${url} did not finish within ${deadlineMs / 1000} seconds`);
     if (stall.signal.aborted) throw new TransientDownloadError(`download of ${url} stalled, no data for ${STALL_TIMEOUT_MS / 1000} seconds`);
     // `fetch` reports a network failure as "fetch failed" and keeps the reason, such as a refused connection, in `cause`.
     const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : '';
@@ -129,7 +147,7 @@ export function writableOnlyByUs(path: string): boolean {
 }
 
 /** Whether `data` has the digest `integrity`, which is in Subresource Integrity form. */
-function matchesIntegrity(data: Buffer, integrity: string): boolean {
+export function matchesIntegrity(data: Buffer, integrity: string): boolean {
   const separator = integrity.indexOf('-');
   return createHash(integrity.slice(0, separator)).update(data).digest('base64') === integrity.slice(separator + 1);
 }

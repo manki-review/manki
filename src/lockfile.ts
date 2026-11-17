@@ -111,6 +111,16 @@ export function lockedGitCommits(path: string, text: string): Map<string, Set<st
   return locked;
 }
 
+/** A package a lockfile locks, with the source and checksum the lockfile names for it. */
+export type LockedPackage = Pick<LockEntry, 'name' | 'version' | 'source' | 'checksum'>;
+
+/** Returns the packages the lockfile at `path` locks, given its `text`. Throws when Manki does not parse that kind of lockfile, or the text does not parse. */
+export function lockedPackages(path: string, text: string): LockedPackage[] {
+  const parse = PARSERS[posix.basename(path)];
+  if (!parse) throw new Error(`Manki does not parse ${posix.basename(path)}`);
+  return parseContent(parse, text).filter(e => e.isPackage).map(({ name, version, source, checksum }) => ({ name, version, source, checksum }));
+}
+
 /**
  * Returns the package changes of each changed lockfile Manki parses. `contents` holds each lockfile on one `side` of the
  * diff, the PR head by default, and the other side is rebuilt from it by replaying the diff. A lockfile that is missing
