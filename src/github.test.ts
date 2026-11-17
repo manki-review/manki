@@ -461,6 +461,10 @@ describe('formatFindingComment', () => {
     const earlier = ['acme/reports:src/import.ts:2', 'acme/unused:lib/rows.py:9', ...hidden];
     const relisted = formatFindingComment({ ...baseFinding, relisted: true, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched);
     expect(relisted).toContain('In a related repository, as an earlier round read it: `acme/reports:src/import.ts:2`, `acme/unused:lib/rows.py:9`\n');
+    // So does a line of a package this round did not read.
+    const relistedPackage = formatFindingComment({ ...baseFinding, relisted: true, evidence: { checks: [], proof: [], relatedProof: ['npm/@scope/pad@1.2.0:index.js:3'] } }, fetched);
+    expect(relistedPackage).toContain('In a dependency\'s published source, as an earlier round read it: `npm/@scope/pad@1.2.0:index.js:3`\n');
+    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [], relatedProof: ['npm/@scope/pad@1.2.0:index.js:3'] } }, fetched)).not.toContain('npm/@scope/pad');
     expect(relisted).not.toContain('https://github.com/acme');
     expect(relisted).not.toContain('Not checked against the code');
     expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched)).not.toContain('acme/unused');

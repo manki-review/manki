@@ -3680,9 +3680,16 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const refutations = refutationParts(finding, links, known);
   // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too. The
   // evidence of a blocker listed again is an earlier round's, and so is the commit its related lines were read at.
-  const ofPackage = (location: string) => [...related].some(([name, { package: isPackage }]) => isPackage && location.startsWith(`${name}:`));
-  const repoLines = relatedLineLinks(finding.evidence?.relatedProof?.filter(l => !ofPackage(l)), related, finding.relisted);
-  const packageLines = relatedLineLinks(finding.evidence?.relatedProof?.filter(ofPackage), related, finding.relisted);
+  // An earlier round's evidence can cite a package this round did not read. A package's key ends in `@<version>`, which
+  // no repo's `owner/name` does, so such a line still shows as a location.
+  const earlierPackages = finding.relisted ? (finding.evidence?.relatedProof ?? []).flatMap((location): Array<[string, { fetched: boolean; package: true }]> => {
+    const key = location.slice(0, Math.max(location.indexOf(':'), 0));
+    return /@[^/@]+$/.test(key) && !related.has(key) ? [[key, { fetched: false, package: true }]] : [];
+  }) : [];
+  const readable: RelatedCommits = earlierPackages.length > 0 ? new Map([...related, ...earlierPackages]) : related;
+  const ofPackage = (location: string) => [...readable].some(([name, { package: isPackage }]) => isPackage && location.startsWith(`${name}:`));
+  const repoLines = relatedLineLinks(finding.evidence?.relatedProof?.filter(l => !ofPackage(l)), readable, finding.relisted);
+  const packageLines = relatedLineLinks(finding.evidence?.relatedProof?.filter(ofPackage), readable, finding.relisted);
   const relatedLines = [...repoLines, ...packageLines];
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
@@ -3714,7 +3721,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
     }),
     ...(listed.length ? [listed.map(listItem).join('\n')] : []),
     ...(repoLines.length ? [`In a related repository${finding.relisted ? ', as an earlier round read it' : ''}: ${repoLines.join(', ')}`] : []),
-    ...(packageLines.length ? [`In a dependency's published source: ${packageLines.join(', ')}`] : []),
+    ...(packageLines.length ? [`In a dependency's published source${finding.relisted ? ', as an earlier round read it' : ''}: ${packageLines.join(', ')}`] : []),
   ];
   const lone = lines.length === 1 && shown.length === 0 && !lines[0].includes('\n');
   const checked: FoldPart[] = lines.length === 0 ? [] : [{
