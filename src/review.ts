@@ -183,10 +183,16 @@ function listedFiles(uses: RoundUses | undefined): string[] {
   return [...new Set(locations.map(location => location.slice(0, location.lastIndexOf(':'))))];
 }
 
-/** Returns a file a client reports as read in the spelling of `listedFiles`: the path after any `owner/name:` without `./`, `..` or a backslash. */
-function asListed(file: string): string {
+/** Splits a file a client reports as read into the `owner/name:` of a related repo, empty for the PR's own repo, and its path without `./`, `..` or a backslash. */
+export function readFileParts(file: string): { repo: string; path: string } {
   const [, repo = '', path] = /^([^/:]+\/[^/:]+:)?(.*)$/s.exec(file)!;
-  return repo + posix.normalize(path.replace(/\\/g, '/'));
+  return { repo, path: posix.normalize(path.replace(/\\/g, '/')) };
+}
+
+/** Returns a file a client reports as read in the spelling of `listedFiles`. */
+function asListed(file: string): string {
+  const { repo, path } = readFileParts(file);
+  return repo + path;
 }
 
 /** The note of the second ask of a finder whose first answer opened none of `files`, which `listedFiles` returns. */

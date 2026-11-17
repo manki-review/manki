@@ -7415,11 +7415,12 @@ describe('recordCalls', () => {
     // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
     const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 }, filesRead: ['src/a.ts'] }), repoTools: true } as unknown as LLMClient;
     await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } });
-    // A call with tools whose model called none reports an empty list, and its record holds no steps and no wrap-up.
+    // A call with tools whose model called none reports an empty list, and its record keeps it apart from a client that reports no steps.
     const idle = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'claude-opus-5-5', toolSteps: [] }), repoTools: true } as unknown as LLMClient;
     const unused: LLMCall[] = [];
     await recordCalls(idle, finder, unused).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } });
-    expect(['toolSteps' in unused[0], 'wrapUpNoted' in unused[0], unused[0].stepBudget]).toEqual([false, false, 3]);
+    expect([unused[0].toolSteps, 'wrapUpNoted' in unused[0], unused[0].stepBudget]).toEqual([[], false, 3]);
+    expect(buildRoundUsage(unused).llmCalls?.[0].toolSteps).toEqual([]);
     // A call that failed keeps the related repo reads and files read its error carries.
     const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 }, filesRead: ['src/b.ts'] });
     const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;

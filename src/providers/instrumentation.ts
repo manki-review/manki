@@ -166,7 +166,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
       try {
         const response = await client.sendMessage(...args);
         const usage = response.usage ?? ZERO_USAGE;
-        const toolSteps = response.toolSteps?.length ? response.toolSteps : undefined;
+        const toolSteps = response.toolSteps;
         calls.push({
           ...base,
           ...(response.model && { model: response.model }),
