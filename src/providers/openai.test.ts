@@ -857,8 +857,9 @@ describe('sendViaCLI (Codex CLI path)', () => {
     );
   });
 
-  it('throws a `QuotaError` on a ChatGPT usage limit, reading only the `ERROR:` line', async () => {
-    const stderr = "user\nreview this: rate limit reached\nERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.\n";
+  it('throws a `QuotaError` on a usage limit or a model at capacity, reading only the `ERROR:` line that ends stderr', async () => {
+    const usageLimit = "ERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.";
+    const stderr = `user\nreview this: rate limit reached\n${usageLimit}\n`;
     setupSpawnMock('', { exitCode: 1, stderr });
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
@@ -883,9 +884,18 @@ describe('sendViaCLI (Codex CLI path)', () => {
     expect(error).toMatchObject({ limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' });
     expect(error).toMatchObject({ limits: [{ account: 'ChatGPT subscription', window: 'weekly', usedPercent: 100 }] });
 
-    setupSpawnMock('', { exitCode: 1, stderr: 'user\nreview this: rate limit reached\nERROR: stream disconnected\n' });
-    const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
-    expect(other).not.toBeInstanceOf(QuotaError);
+    // Codex writes the prompt and the model's text to stderr too, so a limit counts only on the `ERROR:` line that ends it.
+    for (const elsewhere of [
+      'user\nreview this: rate limit reached\nERROR: stream disconnected\n',
+      `user\n${usageLimit}\nERROR: stream disconnected before completion\n`,
+      `user\n${usageLimit}\ncodex\nan answer\ntokens used\n2\n`,
+      `user\nreview this\n  ${usageLimit}\n`,
+    ]) {
+      setupSpawnMock('', { exitCode: 1, stderr: elsewhere });
+      const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(other).not.toBeInstanceOf(QuotaError);
+      expect(other?.message).toContain('Codex CLI invocation failed (exit 1: ');
+    }
 
     // An endpoint has no ChatGPT subscription behind it, so the limit is named as the endpoint's.
     jest.spyOn(core, 'setSecret').mockImplementation(() => {});
@@ -898,6 +908,35 @@ describe('sendViaCLI (Codex CLI path)', () => {
       limit: 'OpenAI endpoint limit reached',
       credential: 'key',
     });
+
+    // What Codex 0.166.0 writes to stderr when the provider reports an overload: the capacity line ends it, twice.
+    const capacity = 'ERROR: Selected model is at capacity. Please try a different model.';
+    const codexStderr = (...lines: string[]): string => [
+      'Reading additional input from stdin...', 'OpenAI Codex v0.166.0', '--------', 'workdir: /tmp/manki-cli-1', 'model: gpt-5.5', 'provider: manki',
+      'approval: never', 'sandbox: read-only', 'reasoning effort: none', 'reasoning summaries: none', 'session id: 01a1e7a6-1a3a-7f72-a92d-693618c25506',
+      '--------', 'user', ...lines, '',
+    ].join('\n');
+    // No other credential helps, so the error names none.
+    for (const busy of [client, endpoint]) {
+      setupSpawnMock('', { exitCode: 1, stderr: codexStderr('review this', capacity, capacity) });
+      const full = await busy.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(full).toBeInstanceOf(QuotaError);
+      expect(full).toMatchObject({ message: `OpenAI model at capacity: ${capacity}`, limit: 'OpenAI model at capacity', resetsAt: undefined, credential: undefined });
+    }
+
+    // Only that exact line at the end of stderr counts. The same words in the prompt, in the model's text or inside another error stay a plain error.
+    for (const [elsewhere, shown] of [
+      [codexStderr(capacity, 'ERROR: stream disconnected before completion: stream closed before response.completed'), 'ERROR: stream disconnected before completion: stream closed before response.completed'],
+      [codexStderr('review this', 'codex', capacity, 'tokens used', '2'), capacity],
+      [codexStderr('review this', ` ${capacity}`), capacity],
+      [codexStderr('review this', `${capacity} Or wait.`), `${capacity} Or wait.`],
+      [codexStderr('review this', 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'), 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'],
+    ]) {
+      setupSpawnMock('', { exitCode: 1, stderr: elsewhere });
+      const plain = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(plain).not.toBeInstanceOf(QuotaError);
+      expect(plain?.message).toContain(`Codex CLI invocation failed (exit 1: ${shown} [`);
+    }
   });
 
   it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {
@@ -1136,7 +1175,7 @@ describe('sendViaCLI — extended coverage', () => {
     expect(result.content).toContain('A');
   });
 
-  it('includes last 500 bytes of stdout in the timeout error message', async () => {
+  it('includes last 500 bytes of stdout, or that Codex was reconnecting, in the timeout error message', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const wiring = makeProc();
@@ -1150,6 +1189,16 @@ describe('sendViaCLI — extended coverage', () => {
       wiring.procHandlers['close']?.(null, 'SIGTERM');
 
       await expect(promise).rejects.toThrow(/timed out after 1200s.*UNIQUE_DIAGNOSTIC_MARKER/s);
+
+      const waiting = makeProc();
+      const waitingPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 });
+      waitingPromise.catch(() => {});
+      await waitForListeners(waiting);
+      waiting.stderrHandlers['data']?.(Buffer.from('user\nthe prompt\nERROR: Reconnecting... 1/30\nERROR: Reconnecting... 2/30\n'));
+      jest.advanceTimersByTime(900_000 + 100);
+      waiting.procHandlers['close']?.(null, 'SIGTERM');
+
+      await expect(waitingPromise).rejects.toThrow('Codex CLI timed out after 900s. The CLI was waiting on the provider and retrying a failed request (retry 2 of 30). stderr: ERROR: Reconnecting... 2/30');
     } finally {
       jest.useRealTimers();
     }

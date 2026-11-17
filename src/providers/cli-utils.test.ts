@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 
@@ -336,6 +336,19 @@ describe('callWithTimeout', () => {
   });
 });
 
+describe('lastLine', () => {
+  it.each([
+    ['first\nlast', 'last'],
+    ['first\nlast\r\n\n  \n', 'last'],
+    ['first\n  indented\n', '  indented'],
+    ['only', 'only'],
+    ['', ''],
+    ['\n\n', ''],
+  ])('returns the last non-empty line of %j as written', (text, line) => {
+    expect(lastLine(text)).toBe(line);
+  });
+});
+
 describe('buildTimeoutDiagnostics', () => {
   it('includes last stdout and stderr snippets', () => {
     const result = buildTimeoutDiagnostics('stdout content', 'stderr content');
@@ -347,6 +360,17 @@ describe('buildTimeoutDiagnostics', () => {
     expect(buildTimeoutDiagnostics('', '')).toBe('');
     expect(buildTimeoutDiagnostics('only stdout', '')).toBe('Last stdout: only stdout');
     expect(buildTimeoutDiagnostics('', 'only stderr')).toBe('stderr: only stderr');
+  });
+
+  it('says the CLI was waiting on the provider when stderr ends on a reconnect line', () => {
+    const waiting = 'The CLI was waiting on the provider and retrying a failed request (retry 2 of 30)';
+    expect(buildTimeoutDiagnostics('', 'user\nthe prompt\nERROR: Reconnecting... 1/30\nERROR: Reconnecting... 2/30\n')).toBe(`${waiting}. stderr: ERROR: Reconnecting... 2/30`);
+    expect(buildTimeoutDiagnostics('half', 'ERROR: Reconnecting... 2/30\r\n\n')).toBe(`Last stdout: half. ${waiting}. stderr: ERROR: Reconnecting... 2/30`);
+    // Whatever follows the counts on the line is kept, with workflow commands cut.
+    expect(buildTimeoutDiagnostics('', 'ERROR: Reconnecting... 2/30 (stream disconnected before completion) ##[error]x\n'))
+      .toBe(`${waiting}. stderr: ERROR: Reconnecting... 2/30 (stream disconnected before completion) [redacted-workflow-cmd]`);
+    // The request went through again, so the CLI was past the wait.
+    expect(buildTimeoutDiagnostics('', 'ERROR: Reconnecting... 2/30\ncodex\nan answer\n')).toBe('stderr: ERROR: Reconnecting... 2/30');
   });
 
   it('truncates stdout to last 500 chars', () => {
