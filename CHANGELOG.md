@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.2] - 2026-11-18
+
+Manki 7.6.2 keeps a review with a GPT model going when an OpenAI-compatible endpoint throttles it. Nothing else changes, and nothing breaks on the upgrade.
+
+### Reliability
+
+- An endpoint that throttles answers 429 without naming a wait. A reviewer on a GPT model then failed at once with "OpenAI endpoint limit reached", and the review ended incomplete after minutes of work. Manki now pauses and resumes the same Codex session, so nothing the reviewer already read is lost. If the endpoint still answers 429 after the last resume, the call fails as before ([#1771](https://github.com/manki-review/manki/pull/1771)).
+- The pauses before a resume are 5, 15, 30 and then 60 seconds, also for a model at capacity. They were 15, 30 and 60, so a short throttle now costs seconds ([#1771](https://github.com/manki-review/manki/pull/1771), [#1773](https://github.com/manki-review/manki/pull/1773)).
+
 ## [7.6.1] - 2026-11-18
 
 Manki 7.6.1 fixes reviews with a GPT model through an OpenAI-compatible endpoint on a fresh runner. Nothing else changes, and nothing breaks on the upgrade.
