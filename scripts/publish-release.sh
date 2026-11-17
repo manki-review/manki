@@ -121,9 +121,13 @@ git merge-base --is-ancestor "$RELEASE_COMMIT" "refs/remotes/$REMOTE/main" ||
 prev_version=$(git show "$RELEASE_COMMIT^:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
 [ "$prev_version" != "$VERSION" ] || [ "$(git diff --name-only "$RELEASE_COMMIT^" "$RELEASE_COMMIT")" = "CHANGELOG.md" ] ||
   die "release commit $RELEASE_COMMIT neither bumps the version to $VERSION nor changes CHANGELOG.md alone. Point $BRANCH at a commit that does."
-later=$(git log --format=%h "$RELEASE_COMMIT..refs/remotes/$REMOTE/main" -- CHANGELOG.md)
-[ -z "$later" ] ||
-  die "$REMOTE/main has a later commit that edits CHANGELOG.md ($(echo $later)). Point $BRANCH at the newest one."
+# A later commit that edits CHANGELOG.md at the same version replaced this release commit.
+# One at another version is the next release and changes nothing here.
+for commit in $(git log --format=%h "$RELEASE_COMMIT..refs/remotes/$REMOTE/main" -- CHANGELOG.md); do
+  later_version=$(git show "$commit:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+  [ "$later_version" != "$VERSION" ] ||
+    die "$REMOTE/main has a later commit that edits the $VERSION notes in CHANGELOG.md ($commit). Point $BRANCH at the newest one."
+done
 if has_dist "$RELEASE_COMMIT"; then
   die "release commit $RELEASE_COMMIT already contains dist/"
 fi

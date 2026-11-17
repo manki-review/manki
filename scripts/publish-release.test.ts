@@ -175,6 +175,9 @@ describe('publish-release.sh --dry-run', () => {
 
   it('publishes a draft and leaves the major tag behind a newer release', () => {
     fx = setup();
+    writeRelease(fx.work, '1.3.0');
+    fx.git('commit', '-q', '-a', '-m', 'next release');
+    fx.git('push', '-q', 'origin', 'main');
     fx.git('tag', 'v1.3.0', fx.release);
     fx.git('push', '-q', 'origin', 'refs/tags/v1.3.0');
     const result = publish(fx, 'v1.2.3', 'draft');
@@ -285,7 +288,7 @@ describe('publish-release.sh --dry-run', () => {
     const later = fx.git('rev-parse', '--short', 'HEAD');
     const result = publish(fx, 'v1.2.3', 'absent', `--verified=${fx.build}`);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain(`origin/main has a later commit that edits CHANGELOG.md (${later})`);
+    expect(result.stderr).toContain(`origin/main has a later commit that edits the 1.2.3 notes in CHANGELOG.md (${later})`);
     expect(result.stdout).not.toContain('dry-run:');
   });
 
