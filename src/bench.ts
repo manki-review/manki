@@ -35,6 +35,7 @@ const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
 /** The outcome of a run that got no review because the config of its case does not load. */
 const CONFIG_INVALID = 'CONFIG_INVALID';
 const MAX_MATCHER_DESCRIPTION = 2000;
+const MATCHER_TIMEOUT_MS = 300_000;
 
 /** One defect a review of the case should report. */
 export interface KeyItem {
@@ -342,7 +343,7 @@ export function llmMatcher(client: LLMClient, model: string, cache: Map<string, 
     const key = matcherKey(model, item, findings);
     const cached = cache.get(key);
     if (cached) return cached;
-    const response = await client.sendMessage(MATCHER_SYSTEM_PROMPT, matcherMessage(item, findings), { effort: 'high' });
+    const response = await client.sendMessage(MATCHER_SYSTEM_PROMPT, matcherMessage(item, findings), { effort: 'high', timeoutMs: MATCHER_TIMEOUT_MS });
     // The reply can quote a finding or the key, and an error is printed, so neither error holds any of the reply.
     let parsed: { verdict?: unknown; findings?: unknown; reason?: unknown };
     try {

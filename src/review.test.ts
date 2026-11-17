@@ -5884,7 +5884,7 @@ describe('runReview', () => {
     expect(result.plannerResult).toEqual(expect.objectContaining({ judgeEffort: 'low', prType: 'feat' }));
 
     for (const call of (clients.reviewer.sendMessage as jest.Mock).mock.calls) {
-      expect(call[2]).toEqual({ effort: 'medium' });
+      expect(call[2]).toEqual({ effort: 'medium', timeoutMs: 900_000 });
     }
     expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('low');
   });

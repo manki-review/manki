@@ -121,7 +121,7 @@ describe('runSweeps', () => {
     ]);
     expect(client.calls.filter(c => c.user.includes(': Broken reply'))).toHaveLength(2);
     // Without tools, the call reads only the diff it is given.
-    expect(client.calls[0].options).toEqual({});
+    expect(client.calls[0].options).toEqual({ timeoutMs: 600_000 });
   });
 
   it('says when the diff it shows is cut, and with tools asks to read the cut files', async () => {

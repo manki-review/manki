@@ -86,7 +86,7 @@ describe('runComparisons', () => {
 
     const plain = fakeClient(() => '[]', false);
     await runComparisons(() => plain, { fields: [fieldQuestion('retired')], implementations: [implementationQuestion('size')] });
-    expect(plain.calls[0].options).toEqual({});
+    expect(plain.calls[0].options).toEqual({ timeoutMs: 600_000 });
     expect(plain.calls[0].system).not.toContain('read-only tools');
     expect(plain.calls[0].user).not.toContain('Read where');
     expect(plain.calls[1].user).toContain('Each of these sibling types has its own `size` function. List every check');

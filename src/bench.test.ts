@@ -331,7 +331,7 @@ describe('llmMatcher', () => {
     expect(message).toContain('Key item (blocker): The reader allocates from a peer length.');
     expect(message).toContain('2. [warning] src/other.rs:1: Second');
     expect(message).toContain('Fix: Bound it.');
-    expect(options).toEqual({ effort: 'high' });
+    expect(options).toEqual({ effort: 'high', timeoutMs: 300_000 });
     expect(cache.size).toBe(1);
   });
 

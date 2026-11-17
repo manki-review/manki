@@ -528,7 +528,7 @@ describe('handlePRComment', () => {
     expect(client.sendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringMatching(/^## PR Diff\n\n```diff\ncut diff\n```\n\n## Question[\s\S]*the changes/),
-      undefined,
+      { timeoutMs: 300_000 },
     );
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringMatching(/^AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: \{"kind":"explain","prNumber":1,/) }),
@@ -626,7 +626,7 @@ describe('handlePRComment', () => {
     expect(client.sendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('what do you think?'),
-      undefined,
+      { timeoutMs: 300_000 },
     );
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringMatching(/^AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: \{"kind":"question","prNumber":1,/) }),
@@ -644,7 +644,7 @@ describe('handlePRComment', () => {
     setContext({ comment: { id: 42, body: '@manki what do you think?', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const client = createMockClient();
     await handlePRComment(createMockOctokit(), TEST_BOT, client, 'test-owner', 'test-repo', 1);
-    expect(client.sendMessage).toHaveBeenCalledWith(expect.any(String), expect.not.stringContaining('@manki'), undefined);
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.any(String), expect.not.stringContaining('@manki'), { timeoutMs: 300_000 });
   });
 
   it('does not block non-LLM commands for NONE association users', async () => {
@@ -762,7 +762,7 @@ describe('handleReviewCommentReply', () => {
     expect(client.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining(WRITING_RULES),
       expect.stringContaining('Can you explain more?'),
-      undefined,
+      { timeoutMs: 300_000 },
     );
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1359,8 +1359,8 @@ describe('handleReviewCommentReply', () => {
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: 'not a bot comment', path: 'file.ts', line: 5 } });
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace);
 
-    expect(jest.mocked(client.sendMessage).mock.calls.map(call => call[2])).toEqual([{ repoTools: { root: '/work/head', steps: 15, checking: true }, timeoutMs: 300_000 }]);
-    expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toBeUndefined();
+    expect(jest.mocked(client.sendMessage).mock.calls.map(call => call[2])).toEqual([{ timeoutMs: 300_000, repoTools: { root: '/work/head', steps: 15, checking: true } }]);
+    expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toEqual({ timeoutMs: 300_000 });
     expect(loadWorkspace).toHaveBeenCalledTimes(1);
   });
 
@@ -1393,8 +1393,8 @@ describe('handleReviewCommentReply', () => {
       const [withRelated, noWorkspace] = jest.mocked(client.sendMessage).mock.calls.map(call => call[2]);
       const tools = withRelated!.repoTools!;
       expect(tools).toEqual({ root: '/work/head', steps: 15, checking: true, related: { repos: related_repos, cacheDir: relatedRepos.relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') } });
-      expect(noWorkspace).toBeUndefined();
-      expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toBeUndefined();
+      expect(noWorkspace).toEqual({ timeoutMs: 300_000 });
+      expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toEqual({ timeoutMs: 300_000 });
       expect(fetchSpy).not.toHaveBeenCalled();
       // The prompt of the call says that the content of a related repo is untrusted, and that a repo it could not read is never answered for from memory.
       const prompt = repoToolsPrompt(tools, 'Read, Grep and Glob');
