@@ -331,7 +331,7 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
     }
     stats.prs++;
     stats.roundsPerPr.push(pr.rounds.length);
-    const numbered = pr.undecodedRounds === 0 && pr.rounds.every((round, index) => inSequence(round, index > 0 ? pr.rounds[index - 1] : undefined));
+    const numbered = roundNumbering(pr) === undefined;
     if (numbered) stats.numberedPrs++;
     if (numbered && pr.rounds[0].meta.outcome === 'READY') stats.passedFirstRound++;
     if (pr.rounds.length >= MANY_ROUNDS) stats.manyRounds++;
@@ -466,6 +466,16 @@ function tokenCallKey(call: TokenServiceCall): string {
  */
 function inSequence(round: RoundContext, previous: RoundContext | undefined): boolean {
   return round.meta.round === (previous ? previous.meta.round + 1 : 1);
+}
+
+/**
+ * Returns why the round records of `pr` are not rounds 1, 2, 3 in posting order, or `undefined` when they are. A record
+ * that did not decode may hold any round, so it counts as a gap.
+ */
+export function roundNumbering(pr: Pick<PrRecords, 'rounds' | 'undecodedRounds'>): string | undefined {
+  if (pr.undecodedRounds > 0) return `${pr.undecodedRounds} round ${pr.undecodedRounds === 1 ? 'record' : 'records'} did not decode`;
+  const index = pr.rounds.findIndex((round, i) => !inSequence(round, i > 0 ? pr.rounds[i - 1] : undefined));
+  return index < 0 ? undefined : `record ${index + 1} in posting order is of round ${pr.rounds[index].meta.round}, not ${index + 1}`;
 }
 
 /**

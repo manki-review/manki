@@ -25,7 +25,7 @@ import { fixedMarker } from '../src/state';
 import { FindingFingerprintEntry, FindingSeverity, isGradeCell, PRE_EXISTING_TAG, RoundContext } from '../src/types';
 import { COMMENT_MARKER } from '../src/utils';
 import { githubToken } from './review-history';
-import { fetchPrRecords, listMergedPrs, originsProven, PrRecords } from './review-stats';
+import { fetchPrRecords, listMergedPrs, originsProven, PrRecords, roundNumbering } from './review-stats';
 
 const DEFAULT_LAST = 40;
 const DEFAULT_OUT = 'bench/drafts';
@@ -50,15 +50,17 @@ function findingKey(entry: FindingFingerprintEntry): string {
 /**
  * Returns the misses in a pull request's rounds: blockers on code the previous round already reviewed, which no earlier
  * round raised as a blocker. A pre-existing finding is left out, since the pull request did not write that code, and so
- * is a blocker of a round whose `origin` tags `originsProven` does not trust.
+ * is a blocker of a round whose `origin` tags `originsProven` does not trust. A PR whose rounds `roundNumbering` cannot
+ * read as rounds 1, 2, 3 in posting order has none, since the round before a blocker is not known.
  */
-export function collectMisses(rounds: RoundContext[]): Miss[] {
-  const sorted = [...rounds].sort((a, b) => a.meta.round - b.meta.round);
+export function collectMisses(records: Pick<PrRecords, 'rounds' | 'undecodedRounds'>): Miss[] {
+  if (roundNumbering(records)) return [];
+  const { rounds } = records;
   const raised = new Set<string>();
   const byHead = new Map<string, Miss>();
-  for (const [i, round] of sorted.entries()) {
+  for (const [i, round] of rounds.entries()) {
     const entries = round.findings?.entries ?? [];
-    const previous = sorted[i - 1];
+    const previous = rounds[i - 1];
     const missed = entries.filter(e => originsProven(round) && e.severity === 'blocker' && e.origin === 'reviewed' && !e.tags?.includes(PRE_EXISTING_TAG)
       && !raised.has(findingKey(e)) && !(e.threadId && raised.has(e.threadId)));
     if (previous && missed.length > 0) {
@@ -104,10 +106,14 @@ export interface ThreadState {
 /**
  * Returns each follow-up round of a pull request, by round number, with what its draft needs. The round's own thread
  * evaluations decide where an earlier open thread goes. Without one, Manki's replies do, and a thread that is resolved
- * now with no reply that dates it is left out.
+ * now with no reply that dates it is left out. A PR whose rounds `roundNumbering` cannot read as rounds 1, 2, 3 in
+ * posting order has none, since the rounds before each one are not known.
  */
-export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment[], states: ReadonlyMap<number, ThreadState> = new Map()): Map<number, FollowUp> {
-  const sorted = [...rounds].sort((a, b) => a.meta.round - b.meta.round);
+export function collectFollowUps(
+  records: Pick<PrRecords, 'rounds' | 'undecodedRounds'>, comments: ThreadComment[], states: ReadonlyMap<number, ThreadState> = new Map(),
+): Map<number, FollowUp> {
+  if (roundNumbering(records)) return new Map();
+  const { rounds } = records;
   const byBot = comments.filter(c => c.user?.type === 'Bot' && c.body);
   const threads = byBot.filter(c => !c.in_reply_to_id).flatMap((root) => {
     const data = parseFindingData(root.body!);
@@ -115,17 +121,17 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
   });
   const before = (c: ThreadComment, time: string) => (c.created_at ?? '') < time;
   const followUps = new Map<number, FollowUp>();
-  for (const [i, round] of sorted.entries()) {
+  for (const [i, round] of rounds.entries()) {
     if (i === 0) continue;
     const latest = new Map<string, FindingFingerprintEntry>();
-    for (const entry of sorted.slice(0, i).flatMap(r => r.findings.entries ?? [])) {
+    for (const entry of rounds.slice(0, i).flatMap(r => r.findings.entries ?? [])) {
       if (DRAFT_SEVERITIES.has(entry.severity)) latest.set(`${entry.fingerprint.file}:${entry.fingerprint.slug}`, entry);
     }
     const { timestamp, commitSha } = round.meta;
-    const next = sorted[i + 1]?.meta.timestamp ?? '\uffff';
-    const followUp: FollowUp = { priorHead: sorted[i - 1].meta.commitSha, findings: [], mustResolve: [], mustKeepOpen: [], mustNotRepeat: [] };
-    const fixedByRound = sorted.slice(0, i).map(r => fixedMarker(r.meta.commitSha));
-    const grades = recordedThreadGrades(sorted.slice(0, i));
+    const next = rounds[i + 1]?.meta.timestamp ?? '\uffff';
+    const followUp: FollowUp = { priorHead: rounds[i - 1].meta.commitSha, findings: [], mustResolve: [], mustKeepOpen: [], mustNotRepeat: [] };
+    const fixedByRound = rounds.slice(0, i).map(r => fixedMarker(r.meta.commitSha));
+    const grades = recordedThreadGrades(rounds.slice(0, i));
     for (const [n, entry] of [...latest.values()].entries()) {
       const id = `P${n + 1}`;
       const title = entry.title ?? entry.fingerprint.slug;
@@ -134,7 +140,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
       const evaluations = (r: RoundContext) => (state ? r.judge.threadEvaluations?.filter(e => e.threadId === state.id) ?? [] : []);
       const last = thread?.replies.filter(c => before(c, timestamp)).at(-1)?.body ?? '';
       // The thread's latest verdict before the round decides, unless a later round found the problem again.
-      const verdict = sorted.slice(0, i).flatMap(r => evaluations(r).map(e => ({ status: e.status, at: r.meta.timestamp }))).at(-1);
+      const verdict = rounds.slice(0, i).flatMap(r => evaluations(r).map(e => ({ status: e.status, at: r.meta.timestamp }))).at(-1);
       const reopened = !!verdict && !!thread?.replies.some(c => !before(c, verdict.at) && before(c, timestamp) && hasOwnMarker(c.body!, FOUND_AGAIN_MARKER, COMMENT_MARKER));
       const fixedEarlier = verdict?.status === 'addressed' && !reopened;
       // A partial fix can have changed the thread's grade since the round that posted it.
@@ -165,7 +171,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
           followUp.mustKeepOpen.push({ id, severity, mechanism: title });
         } else if (resolved) {
           followUp.mustResolve.push(id);
-        } else if (evaluation || !state?.isResolved || sorted.slice(i + 1).some(r => evaluations(r).length > 0
+        } else if (evaluation || !state?.isResolved || rounds.slice(i + 1).some(r => evaluations(r).length > 0
           || thread.replies.some(c => hasOwnMarker(c.body!, fixedMarker(r.meta.commitSha), COMMENT_MARKER)))) {
           // The round left the thread open, and the thread is still open or a later round judged it, so it was open after this round.
           followUp.mustNotRepeat.push(id);
@@ -328,13 +334,19 @@ async function main(args: string[]): Promise<number> {
   mkdirSync(out, { recursive: true });
   let written = 0;
   for (const pr of await listMergedPrs(octokit, owner, repo, last)) {
-    const { rounds, threadComments } = await fetchPrRecords(octokit, owner, repo, pr.number);
-    const misses = collectMisses(rounds);
+    const records = await fetchPrRecords(octokit, owner, repo, pr.number);
+    const { rounds, threadComments } = records;
+    const numbering = roundNumbering(records);
+    if (numbering) {
+      console.error(`PR ${pr.number}: skipped, ${numbering}`);
+      continue;
+    }
+    const misses = collectMisses(records);
     const nodes = await fetchReviewThreadNodes<{ id: string; isResolved: boolean; comments: { nodes: Array<{ databaseId?: number | null }> } }>(
       octokit, owner, repo, pr.number, 'id isResolved comments(first: 1) { nodes { databaseId } }',
     );
     const states = new Map(nodes.flatMap(t => (t.comments.nodes[0]?.databaseId ? [[t.comments.nodes[0].databaseId, { id: t.id, isResolved: t.isResolved }] as const] : [])));
-    const followUps = collectFollowUps(rounds, threadComments, states);
+    const followUps = collectFollowUps(records, threadComments, states);
     const edits = await fetchBodyEdits(octokit, owner, repo, pr.number);
     const drafted = [...new Set([...misses.map(m => m.missedBy), ...followUps.keys()])].sort((a, b) => a - b);
     for (const round of drafted) {

@@ -3,7 +3,7 @@ import { formatApprovalRecord, formatReplyRecord, formatReviewRecord } from '../
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
 import { PRE_EXISTING_TAG } from '../src/types';
 import type { ApprovalRecord, FindingFingerprintEntry, ReplyRecord, RoundContext } from '../src/types';
-import { computeStats, prRecords, renderStats } from './review-stats';
+import { computeStats, prRecords, renderStats, roundNumbering } from './review-stats';
 
 const bot = { login: 'manki-review[bot]', type: 'Bot' };
 const person = { login: 'alice', type: 'User' };
@@ -297,6 +297,10 @@ describe('review stats', () => {
     prs.push(prRecords('o/r', 18, { reviews: [review(180, round(1, '7.6.0', [entry('warning')], {}, 'READY')), { id: 181, body: '<!-- manki-context: {not json} -->', user: bot }], threadComments: [] }));
     errorSpy.mockRestore();
     expect(prs.at(-1)).toMatchObject({ undecodedRounds: 1, rounds: [{ meta: { round: 1 } }] });
+    const numbering = (number: number) => roundNumbering(prs.find(p => p.number === number)!);
+    expect([10, 14, 16, 17, 18].map(numbering)).toEqual([
+      undefined, 'record 1 in posting order is of round 2, not 1', 'record 3 in posting order is of round 1, not 3', 'record 3 in posting order is of round 2, not 3', '1 round record did not decode',
+    ]);
     const stats = computeStats(prs);
     // Only PRs 10, 11, 12, 13, 15 and 19 have records of rounds 1, 2, 3 in posting order that all decode.
     expect(stats).toMatchObject({

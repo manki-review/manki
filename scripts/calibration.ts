@@ -20,6 +20,7 @@ import { classifyAuthorReply, findingFile, judgeAddressedThreadIds, threadMarker
 import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
 import { githubToken, HistoryLine as RecordLine } from './review-history';
+import { roundNumbering } from './review-stats';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -124,8 +125,10 @@ export function labelFinding({ thread, lineChanged, judgeAddressed }: Evidence):
 }
 
 /**
- * Returns the completed rounds of each pull request in the history, oldest first, keyed by `owner/repo#number`.
- * An incomplete round posted no finding and resolved no thread, so it is left out.
+ * Returns the completed rounds of each pull request in the history, in the order the history lists them, which is the
+ * order they were posted in, keyed by `owner/repo#number`. An incomplete round posted no finding and resolved no thread,
+ * so it is left out. A pull request whose rounds `roundNumbering` cannot read as rounds 1, 2, 3 is left out and logged,
+ * since the latest posting of a finding is not known. The history holds no record that did not decode.
  */
 export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundContext[]> {
   const rounds = new Map<string, RoundContext[]>();
@@ -135,7 +138,12 @@ export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundCont
     const key = `${repo}#${pr}`;
     rounds.set(key, [...(rounds.get(key) ?? []), round]);
   }
-  for (const list of rounds.values()) list.sort((a, b) => a.meta.round - b.meta.round);
+  for (const [key, list] of rounds) {
+    const numbering = roundNumbering({ rounds: list, undecodedRounds: 0 });
+    if (!numbering) continue;
+    console.error(`Skipping ${key}: ${numbering}`);
+    rounds.delete(key);
+  }
   return rounds;
 }
 
