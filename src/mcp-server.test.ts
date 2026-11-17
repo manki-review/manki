@@ -235,6 +235,18 @@ describe('Manki tool server', () => {
     expect(results[1].text).toContain('change x');
     const refusal = { text: 'Manki: all 5 tool steps are used, so this call did not run. Call no more tools and give your final answer now.', isError: true };
     expect(results.slice(4)).toEqual([expect.objectContaining({ isError: false }), refusal, refusal]);
+
+    // Servers that share a step folder share the budget, as the servers of one call that resumed its session do.
+    const stepsDir = join(base, 'steps');
+    mkdirSync(stepsDir);
+    const shared = [];
+    for (const calls of [3, 3]) {
+      const server = await connect(repo, { fileTools: true, steps: 5, stepsDir });
+      for (let step = 1; step <= calls; step++) shared.push(await call(server, 'read_file', { path: 'src/a.ts' }));
+      await server.close();
+    }
+    expect(shared.map(r => r.text.endsWith(wrapUp))).toEqual([false, true, false, false, false, false]);
+    expect(shared.slice(3)).toEqual([expect.objectContaining({ isError: false }), expect.objectContaining({ isError: false }), refusal]);
   });
 
   it('exits with an error on a bad step budget or a root that is not a directory', async () => {
@@ -316,6 +328,11 @@ describe('Manki tool server', () => {
       expect((await call(claude, 'read_file', { path: 'src/a.ts' })).isError).toBe(true);
       // Every call that named a related repo counts, a refused one too, and a call on the PR's repository does not.
       expect(JSON.parse(readFileSync(readsFile, 'utf8'))).toEqual({ 'o/r': 7, 'o/missing': 1 });
+      // A later server of the same call adds to the counts in the file.
+      const later = await connect(repo, { related, readsFile });
+      await call(later, 'read_file', { repo: 'o/r', path: 'lib.rs' });
+      await later.close();
+      expect(JSON.parse(readFileSync(readsFile, 'utf8'))).toEqual({ 'o/r': 8, 'o/missing': 1 });
     } finally {
       await claude.close();
       await codex.close();
