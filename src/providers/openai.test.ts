@@ -426,12 +426,14 @@ describe('sendMessage (API path)', () => {
 
     await expect(client.sendMessage('sys', 'user')).rejects.toThrow('rate limited');
 
-    // The SDK ends each try of a request after its own 300 seconds, and its error for the last try is a timeout like any other.
+    // The SDK's error for a request that ran past its limit on the last try is a timeout like any other.
     const sdkTimeout = new OpenAI.APIConnectionTimeoutError();
     mockCreate.mockRejectedValueOnce(sdkTimeout);
     const error = await client.sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
     expect(error).toBeInstanceOf(TimeoutError);
-    expect(error).toMatchObject({ name: 'TimeoutError', message: 'OpenAI API timed out after 300s per request', cause: sdkTimeout });
+    expect(error).toMatchObject({ name: 'TimeoutError', message: 'OpenAI API timed out after 900s per request', cause: sdkTimeout });
+    // The SDK's limit for one request is the call's own, so its timer never ends a request before the call's signal does.
+    expect(mockCreate.mock.calls.map(call => call[1])).toEqual([{ timeout: 300_000 }, { timeout: 900_000, signal: expect.any(AbortSignal) }]);
   });
 });
 
