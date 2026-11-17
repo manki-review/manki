@@ -1,4 +1,8 @@
-import { compareTools, heldTools, heldToolsCall, offeredTools, runProblems, searchSources } from './codex-tools-check';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { compareTools, heldTools, heldToolsCall, offeredTools, plantRunnerSetup, runProblems, searchSources } from './codex-tools-check';
 
 describe('offeredTools', () => {
   it('names the tools of the request and of an `additional_tools` item, a namespace\'s as `namespace.name`', () => {
@@ -85,5 +89,27 @@ describe('runProblems', () => {
     const problems = ['gpt-a: a request carries Codex\'s skill text', 'gpt-a: tried to reach ab.chatgpt.com:443'];
     expect(runProblems('gpt-a', [{}, catalog], ['ab.chatgpt.com:443', 'ab.chatgpt.com:443'])).toEqual(problems);
     expect(runProblems('gpt-a', [skill], ['ab.chatgpt.com:443'])).toEqual(problems);
+  });
+
+  it('reports each part of the runner\'s planted setup that a request carries, wherever in the request it is', () => {
+    const home = mkdtempSync(join(tmpdir(), 'manki-runner-home-'));
+    try {
+      plantRunnerSetup(home, { command: '/usr/bin/node', args: ['server.js'] });
+      const files = ['.codex/skills/runner-codex-skill/SKILL.md', '.agents/skills/runner-agents-skill/SKILL.md', '.codex/config.toml', '.codex/AGENTS.md'];
+      const planted = files.map(file => readFileSync(join(home, file), 'utf8'));
+      expect(planted[2]).toBe('[mcp_servers.runner_mcp_server]\ncommand = "/usr/bin/node"\nargs = ["server.js"]\n');
+      const body = {
+        tools: [{ type: 'namespace', name: 'mcp__runner_mcp_server', tools: [] }],
+        input: [message('developer', planted[0], planted[1]), message('user', planted[3])],
+      };
+      expect(runProblems('gpt-a', [{}, body], [])).toEqual([
+        'gpt-a: a request carries the runner\'s skill in ~/.codex/skills',
+        'gpt-a: a request carries the runner\'s skill in ~/.agents/skills',
+        'gpt-a: a request carries the runner\'s MCP server in ~/.codex/config.toml',
+        'gpt-a: a request carries the runner\'s AGENTS.md in ~/.codex',
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

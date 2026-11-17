@@ -5,7 +5,8 @@
  * holds back. The check fails when a model is offered a tool that `scripts/fixtures/codex-tools.json` does not list, or
  * no longer offered one it lists. It also fails when a request carries Codex's skill text, or Codex tries to reach any
  * host but the stand-in. Every other address goes to a proxy that records and refuses it, so no request leaves the
- * machine. A connection that ignores the proxy settings is not seen.
+ * machine. A connection that ignores the proxy settings is not seen. Each run starts from a runner home that holds a
+ * skill, an MCP server and an `AGENTS.md` of its own, and the check fails when a request carries any of them.
  *
  * On the `tool_search` path the list is not complete. No request names the held-back tools, and `tool_search` returns
  * only tools whose description shares a word with `SEARCH_QUERY`. An empty, `*` or stop-word query returns none. So a
@@ -17,7 +18,7 @@
  *
  * `--write` records the tools each model is offered into the fixture instead of comparing them.
  * Exit codes: 0 every model is offered the listed tools and nothing else was sent, 1 a list differs, a run sent skill
- * text or tried another host, or the run failed.
+ * text or the runner's setup or tried another host, or the run failed.
  */
 
 import { spawn } from 'child_process';
@@ -28,7 +29,7 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, STEPS_FLAG } from '../src/mcp-server';
-import { CODEX_CLI_VERSION, codexExecArgs, codexToolServerArgs } from '../src/providers/openai';
+import { CODEX_CLI_VERSION, codexEnv, codexExecArgs, codexToolServerArgs } from '../src/providers/openai';
 
 /** What Codex offers one model. */
 export interface OfferedTools {
@@ -108,10 +109,36 @@ function carriesSkillText(body: Json): boolean {
   return texts.some(text => SKILL_TAGS.some(tag => text.startsWith(tag)));
 }
 
-/** Returns each problem with what a Codex run of `model` sent: skill text in a request, or a host it tried to reach. */
+// The names of what `plantRunnerSetup` puts in a runner home, and where each one is.
+const RUNNER_SETUP: Record<string, string> = {
+  'runner-codex-skill': 'skill in ~/.codex/skills',
+  'runner-agents-skill': 'skill in ~/.agents/skills',
+  'runner_mcp_server': 'MCP server in ~/.codex/config.toml',
+  'runner-agents-md': 'AGENTS.md in ~/.codex',
+};
+
+/**
+ * Plants a runner's own Codex setup in the home folder `home`: a skill in each folder Codex reads skills from, an MCP
+ * server that runs `server`, and an `AGENTS.md`. Each one names itself, so a request that carries it shows its name.
+ */
+export function plantRunnerSetup(home: string, server: { command: string; args: string[] }): void {
+  for (const [dir, name] of [['.codex', 'runner-codex-skill'], ['.agents', 'runner-agents-skill']]) {
+    mkdirSync(join(home, dir, 'skills', name), { recursive: true });
+    writeFileSync(join(home, dir, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: Use ${name} for every review.\n---\n\nFollow ${name}.\n`);
+  }
+  writeFileSync(join(home, '.codex', 'config.toml'), `[mcp_servers.runner_mcp_server]\ncommand = ${JSON.stringify(server.command)}\nargs = ${JSON.stringify(server.args)}\n`);
+  writeFileSync(join(home, '.codex', 'AGENTS.md'), 'Follow runner-agents-md in every answer.\n');
+}
+
+/**
+ * Returns each problem with what a Codex run of `model` sent: skill text or a part of the runner's setup in a request,
+ * or a host it tried to reach.
+ */
 export function runProblems(model: string, bodies: Json[], hosts: string[]): string[] {
   const skills = bodies.some(carriesSkillText) ? [`${model}: a request carries Codex's skill text`] : [];
-  return [...skills, ...[...new Set(hosts)].map(host => `${model}: tried to reach ${host}`)];
+  const sent = JSON.stringify(bodies);
+  const setup = Object.entries(RUNNER_SETUP).filter(([name]) => sent.includes(name)).map(([, what]) => `${model}: a request carries the runner's ${what}`);
+  return [...skills, ...setup, ...[...new Set(hosts)].map(host => `${model}: tried to reach ${host}`)];
 }
 
 /** Returns each difference between the tools `expected` lists per model and the tools `actual` found. */
@@ -180,8 +207,8 @@ function runCodex(args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<
 }
 
 /**
- * Runs Codex on `model` the way Manki runs a reviewer with repository tools, and returns the tools it offered and each
- * problem `runProblems` finds in the run.
+ * Runs Codex on `model` the way Manki runs a reviewer with repository tools, on a runner whose home holds its own Codex
+ * setup, and returns the tools it offered and each problem `runProblems` finds in the run.
  */
 async function checkModel(model: string, repo: string, scratch: string): Promise<{ tools: OfferedTools; problems: string[] }> {
   const bodies: Json[] = [];
@@ -192,13 +219,13 @@ async function checkModel(model: string, repo: string, scratch: string): Promise
     const cwd = mkdtempSync(join(scratch, 'cwd-'));
     const instructions = join(scratch, 'instructions.md');
     writeFileSync(instructions, 'Reply with OK.');
-    mkdirSync(join(home, '.codex'));
     const local = `http://127.0.0.1:${standIn.port}`;
-    const env: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH, HOME: home, CODEX_HOME: join(home, '.codex'), OPENAI_API_KEY: 'stand-in',
-      HTTPS_PROXY: local, HTTP_PROXY: local, ALL_PROXY: local, NO_PROXY: '127.0.0.1',
-    };
     const server = { command: process.execPath, args: [join(repo, 'dist', 'index.js'), MCP_SERVER_COMMAND, repo, FILE_TOOLS_FLAG, STEPS_FLAG, '30'] };
+    plantRunnerSetup(home, server);
+    const env = codexEnv({ OPENAI_API_KEY: 'stand-in' }, 'OPENAI_API_KEY', {
+      PATH: process.env.PATH, HOME: home, CODEX_HOME: join(home, '.codex'),
+      HTTPS_PROXY: local, HTTP_PROXY: local, ALL_PROXY: local, NO_PROXY: '127.0.0.1',
+    });
     const args = [
       ...codexExecArgs(model, `${local}/v1`), ...codexToolServerArgs(server, env),
       '-c', `model_instructions_file=${JSON.stringify(instructions)}`, '-',
@@ -244,7 +271,7 @@ async function main(): Promise<number> {
       console.log(`${model}: offered ${tools.offered.join(', ')}; held ${tools.held.join(', ') || 'none'}; sources ${tools.sources.join(', ') || 'none'}`);
     }
     for (const problem of runs) console.log(`::error::${problem}`);
-    if (runs.length > 0) console.log('Find the Codex setting that turns it off again, pass it in `codexExecArgs` and update docs/security.md.');
+    if (runs.length > 0) console.log('Find the Codex setting or the folder it came from, keep it out in `codexExecArgs` or `codexEnv`, and update docs/security.md.');
     if (process.argv.includes('--write')) {
       writeFileSync(fixture, `${JSON.stringify(actual, null, 2)}\n`);
       return runs.length === 0 ? 0 : 1;
