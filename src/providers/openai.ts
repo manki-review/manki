@@ -206,6 +206,8 @@ function openAITimeoutError(error: unknown, requestTimeoutMs: number): TimeoutEr
 
 // The line Codex ends its stderr with when the provider reports an overload.
 const CAPACITY_ERROR = 'ERROR: Selected model is at capacity. Please try a different model.';
+// Codex's own words once every try of one request met a 429. The endpoint named no wait with it.
+const THROTTLED_ERROR = /^ERROR: exceeded retry limit, last status: 429\b/;
 
 // Once a request of the run has used tokens, Codex prints their count below its error, which it prints twice.
 const ERROR_ABOVE_TOKENS = /\n(ERROR:[^\n]*)\r?\n\1\r?\ntokens used\r?\n\d[\d,]*\s*$/;
@@ -255,9 +257,10 @@ function codexEndpointArgs(baseUrl: string): string[] {
   ];
 }
 
-// How often one call resumes its Codex session, and the pause before each resume of a model at capacity. The last pause repeats.
+// How often one call resumes its Codex session, and the pause before each resume of a model at capacity or of an
+// endpoint that answers 429 and names no wait. The last pause repeats.
 const MAX_RESUMES = 8;
-const CAPACITY_PAUSES_MS = [15_000, 30_000, 60_000];
+const CAPACITY_PAUSES_MS = [5_000, 30_000, 60_000];
 // The least time a resumed run is started with. Starting Codex again on its session takes about 2 s before the model
 // writes anything, and the model then has to write the whole answer.
 const MIN_RESUMED_RUN_MS = 30_000;
@@ -279,12 +282,14 @@ function advisedWaitMs(resetsAt = ''): number | undefined {
 
 /**
  * Returns why the stream of a Codex run failed and how long to pause before resume number `resume` of the call, or
- * `undefined` when `finalError` reports anything else, such as a bad key, a refusal or a limit with no wait to sit out.
+ * `undefined` when `finalError` reports anything else, such as a bad key, a refusal or a used-up quota.
  */
 function streamFailure(finalError: string | undefined, resume: number): { reason: string; pauseMs: number } | undefined {
   if (!finalError) return undefined;
   if (DROPPED_TEXT.test(finalError)) return { reason: 'connection dropped', pauseMs: 0 };
-  if (finalError === CAPACITY_ERROR) return { reason: 'model at capacity', pauseMs: CAPACITY_PAUSES_MS[Math.min(resume, CAPACITY_PAUSES_MS.length) - 1] };
+  const backoffMs = CAPACITY_PAUSES_MS[Math.min(resume, CAPACITY_PAUSES_MS.length) - 1];
+  if (finalError === CAPACITY_ERROR) return { reason: 'model at capacity', pauseMs: backoffMs };
+  if (THROTTLED_ERROR.test(finalError)) return { reason: 'rate limit', pauseMs: backoffMs };
   const quota = matchQuotaText(finalError);
   const pauseMs = quota && !quota.overloaded ? advisedWaitMs(quota.resetsAt) : undefined;
   return pauseMs === undefined ? undefined : { reason: 'rate limit', pauseMs };
