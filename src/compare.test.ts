@@ -1,7 +1,11 @@
-import { runComparisons } from './compare';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { runComparisons, runRelatedChecks } from './compare';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
+import { RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
 import { fakeClient, HANG } from './test-utils';
 
 jest.mock('@actions/core');
@@ -131,5 +135,90 @@ describe('runComparisons', () => {
     const skipped = await runComparisons(() => late, { fields: [fieldQuestion('quick')], implementations: [] }, { signal: deadline.signal });
     expect(late.calls).toEqual([]);
     expect(skipped.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: idle vs quick', at: ['src/claim.py:2'], status: 'timed_out' }]);
+  });
+});
+
+describe('runRelatedChecks', () => {
+  const question = (kind: RelatedQuestion['kind'], name: string, extra: Partial<RelatedQuestion> = {}): RelatedQuestion => ({
+    kind, name, lines: ['acme/node:src/net.cpp:2'], quoted: ['acme/node:src/net.cpp:2: if (nVersion < MIN_PEER_VERSION) return false;'], changed: 1,
+    hunks: ['diff --git a/src/peer.rs b/src/peer.rs\n@@ -1,1 +1,2 @@\n+const MIN_PEER_VERSION: u32 = 70016;'], ...extra,
+  });
+
+  it('checks each counterpart in a call of its own, and keeps a finding only with a line on both sides that exists', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-related-check-'));
+    const checkout = mkdtempSync(join(tmpdir(), 'manki-related-checkout-'));
+    const stateDir = mkdtempSync(join(tmpdir(), 'manki-related-state-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src/peer.rs'), 'fn accept() {}\nconst MIN_PEER_VERSION: u32 = 70016;\n');
+    mkdirSync(join(checkout, 'src'));
+    writeFileSync(join(checkout, 'src/net.cpp'), 'bool Accept() {\n    if (nVersion < MIN_PEER_VERSION) return false;\n}\n');
+    writeFileSync(join(stateDir, `${encodeURIComponent('acme/node')}.done`), checkout);
+    const related = { repos: [{ repo: 'acme/node', kind: 'reference' as const }], cacheDir: '/cache', stateDir };
+    const finding = (title: string, proof: string[]) => ({
+      severity: 'warning', title, file: 'src/peer.rs', line: 2, description: 'The reference rejects an older peer.', evidence: ['acme/node:src/net.cpp:2 rejects it with `nVersion < MIN_PEER_VERSION`'], proof,
+    });
+    const client = fakeClient(user => user.includes('`MIN_PEER_VERSION`, and the lines below are where the reference')
+      ? [
+        finding('Both sides', ['src/peer.rs:2', 'acme/node:src/net.cpp:2']),
+        finding('Only the PR', ['src/peer.rs:2']),
+        finding('Only the reference', ['acme/node:src/net.cpp:2']),
+        finding('A line the reference does not hold', ['src/peer.rs:2', 'acme/node:src/net.cpp:40']),
+      ]
+      : []);
+    let result;
+    try {
+      result = await runRelatedChecks(() => client, [
+        question('reference', 'MIN_PEER_VERSION', { as: ['nMinPeerVersion'], notShown: 3 }),
+        question('consumer', 'PeerInfo', { hunks: [] }),
+        question('dependency', 'read_varint'),
+      ], { effort: 'high', workspace, related });
+    } finally {
+      for (const dir of [workspace, checkout, stateDir]) rmSync(dir, { recursive: true, force: true });
+    }
+
+    const [reference, consumer, dependency] = client.calls;
+    expect(reference.options).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 12, related }, timeoutMs: 600_000 });
+    expect(reference.system).toContain('You check a pull request\'s change against one counterpart in a related repository');
+    expect(reference.system).toContain('- Every defect cites a line on both sides in `proof`: at least one `file:line` of the PR\'s head commit and one `owner/name:path:line` of the related repo, each a line you read. A defect without both is dropped.');
+    expect(reference.system).toContain('- When the answer is no, when the code on both sides agrees, or when you could not open the counterpart, respond with [].');
+    expect(reference.system).toContain(`- ${RELATED_REPO_TRUST_RULE}\n- ${UNTRUSTED_CONTENT_RULE}\n- ${VERIFY_CLAIMS_RULE}`);
+    expect(reference.user).toContain('The change touches `MIN_PEER_VERSION`, and the lines below are where the reference repo holds it. Compare what the change does with what the reference does, in both directions');
+    expect(reference.user).toContain('Open the counterpart\'s file with your tools before you answer. Some lines were found by a guess at what that repo calls the name');
+    expect(reference.user).toContain(`## In the Reference Repo\n\nEach line starts with \`owner/name:path:line\` and is quoted from the related repo's fetched commit. ${RELATED_REPO_TRUST_RULE}\n\n\`\`\`\nacme/node:src/net.cpp:2: if (nVersion < MIN_PEER_VERSION) return false;\n\`\`\`\n\n3 more lines not shown.\n\n## Changed Hunks\n\n\`\`\`diff\ndiff --git a/src/peer.rs`);
+    expect(consumer.user).toContain('The change touches `PeerInfo`, and the consumer repo uses it on the lines below. Check that each use still works with the change');
+    expect(consumer.user).not.toContain('## Changed Hunks');
+    expect(consumer.user).not.toContain('found by a guess');
+    expect(dependency.user).toContain('The change calls or reads `read_varint`, and the dependency repo holds it on the lines below. Check each assumption the change makes about it against that code');
+    // Every line of a repo and every path sits inside a fence: outside the fences only Manki's own text and the searched names remain.
+    for (const { user } of client.calls) expect(user.replace(/^(`{3,})[^\n]*\n[\s\S]*?^\1$/gm, '')).not.toMatch(/acme\/|src\//);
+
+    expect(result.findings).toEqual([expect.objectContaining({
+      title: 'Both sides', reviewers: ['Reference check: MIN_PEER_VERSION'],
+      evidence: { checks: ['acme/node:src/net.cpp:2 rejects it with `nVersion < MIN_PEER_VERSION`'], proof: ['src/peer.rs:2'], relatedProof: ['acme/node:src/net.cpp:2'] },
+    })]);
+    expect(result.comparisons).toEqual([
+      { kind: 'reference', reviewer: 'Reference check: MIN_PEER_VERSION', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 1, dropped: 3 },
+      { kind: 'consumer', reviewer: 'Consumer check: PeerInfo', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 0 },
+      { kind: 'dependency', reviewer: 'Dependency check: read_varint', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 0 },
+    ]);
+  });
+
+  it('asks at most eight counterparts in their order and records the rest as cut, and asks none without repository tools', async () => {
+    const names = Array.from({ length: 10 }, (_, i) => `name_${i}`);
+    const client = fakeClient(() => '[]');
+    const result = await runRelatedChecks(() => client, [...names.map(name => question('consumer', name)), question('consumer', 'name_0')], { workspace: '/repo' });
+    expect(client.calls.map(c => c.user.match(/`(name_\d)`/)![1])).toEqual(names.slice(0, 8));
+    expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual([
+      ...names.slice(0, 8).map(name => `Consumer check: ${name}: answered`),
+      'Consumer check: name_8: cut', 'Consumer check: name_9: cut', 'Consumer check: name_0 #2: cut',
+    ]);
+
+    // A call that could not open the counterpart would report nothing, so none is made.
+    const plain = fakeClient(() => '[]', false);
+    for (const workspace of ['/repo', undefined]) {
+      const skipped = await runRelatedChecks(() => plain, [question('reference', 'MIN_PEER_VERSION')], { workspace });
+      expect(skipped).toEqual({ findings: [], comparisons: [{ kind: 'reference', reviewer: 'Reference check: MIN_PEER_VERSION', at: ['acme/node:src/net.cpp:2'], status: 'skipped' }] });
+    }
+    expect(plain.calls).toEqual([]);
   });
 });

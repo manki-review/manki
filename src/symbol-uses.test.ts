@@ -8,7 +8,8 @@ import go from '@ast-grep/lang-go';
 import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
-import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
+import { parsePRDiff } from './diff';
+import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, UsesOutsideDiff } from './symbol-uses';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
@@ -1134,13 +1135,13 @@ describe('listRelatedUses', () => {
       // Two names can share a spelling, here `sharednamex`. It takes room in the pattern once, so its second copy is
       // not left out when the 15 KiB are nearly full, and both names are searched.
       const fill = [...Array.from({ length: 100 }, (_, i) => `${'F'.repeat(150)}${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26))}`), 'G'.repeat(29)];
-      expect(await listRelatedUses([server], [...fill, 'shared_name_x', 'sharednamex'])).toEqual({ section: '', finderSection: '', readingSection: '', record: { referenceMissing: [...fill, 'shared_name_x', 'sharednamex'] } });
+      expect(await listRelatedUses([server], [...fill, 'shared_name_x', 'sharednamex'])).toEqual({ section: '', finderSection: '', readingSection: '', record: { referenceMissing: [...fill, 'shared_name_x', 'sharednamex'] }, counterparts: [] });
       // A name longer than an identifier is not searched and not named, alone or next to others. A name of 160
       // characters is the longest one searched.
       const huge = `HUGE_${'A'.repeat(200_000)}`;
       const [longest, tooLong] = ['L'.repeat(160), 'L'.repeat(161)];
       writeFileSync(join(dir, 'src/long.h'), `${longest}\n${tooLong}\n`);
-      expect(await listRelatedUses([server], [huge])).toEqual({ section: '', finderSection: '', readingSection: '' });
+      expect(await listRelatedUses([server], [huge])).toEqual({ section: '', finderSection: '', readingSection: '', counterparts: [] });
       const short = await listRelatedUses([server], [huge, tooLong, longest, 'MAX_HEADER_COUNT']);
       expect(short.record).toEqual({ reference: [{ name: longest, lines: ['example/server:src/long.h:1'] }], referenceMissing: ['MAX_HEADER_COUNT'] });
       expect(short.section).not.toContain('AAAA');
@@ -1153,8 +1154,8 @@ describe('listRelatedUses', () => {
       expect(capped.section).toContain('The cap of 40 lines left out: `CAPPED_NAME_10` (4 lines).');
       expect(capped.record?.referenceCapped).toEqual(['CAPPED_NAME_10']);
       expect(capped.record?.reference).toHaveLength(10);
-      expect(await listRelatedUses([], ['MAX_SIZE'])).toEqual({ section: '', finderSection: '', readingSection: '' });
-      expect(await listRelatedUses([server], ['NOT_THERE'])).toEqual({ section: '', finderSection: '', readingSection: '', record: { referenceMissing: ['NOT_THERE'] } });
+      expect(await listRelatedUses([], ['MAX_SIZE'])).toEqual({ section: '', finderSection: '', readingSection: '', counterparts: [] });
+      expect(await listRelatedUses([server], ['NOT_THERE'])).toEqual({ section: '', finderSection: '', readingSection: '', record: { referenceMissing: ['NOT_THERE'] }, counterparts: [] });
 
       // A translated name is searched too. A line only it finds is listed under the diff's name as a guess, after that name's own lines.
       const translation = { names: new Map([
@@ -1214,7 +1215,7 @@ describe('listRelatedUses', () => {
           consumer: [{ name: 'MAX_SIZE', lines: ['example/app:upload.ts:1', 'example/app:limits.ts:1'] }, { name: 'CRetryPolicy', lines: ['example/app:upload.ts:2'] }],
           consumerMissing: ['MAX_HEADER_COUNT'],
         });
-        expect(await listRelatedUses([{ repo: 'example/app', kind: 'consumer', dir: app }], ['NOT_THERE'])).toEqual({ section: '', finderSection: '', readingSection: '', record: { consumerMissing: ['NOT_THERE'] } });
+        expect(await listRelatedUses([{ repo: 'example/app', kind: 'consumer', dir: app }], ['NOT_THERE'])).toEqual({ section: '', finderSection: '', readingSection: '', record: { consumerMissing: ['NOT_THERE'] }, counterparts: [] });
 
         // A dependency gets its own section last and changes neither of the others. Like a reference, it shows the line that declares a constant first.
         const lib = { repo: 'example/lib', kind: 'dependency' as const, dir: app };
@@ -1237,6 +1238,26 @@ describe('listRelatedUses', () => {
           dependency: [{ name: 'CRetryPolicy', lines: ['example/lib:upload.ts:2'] }, { name: 'MAX_SIZE', lines: ['example/lib:limits.ts:1', 'example/lib:upload.ts:1'] }],
           translation: { names: [] },
         });
+        // Each name of the finders' lists is a counterpart of its kind, with the lines they were shown.
+        expect(all.counterparts.map(c => `${c.kind} ${c.name}`)).toEqual(['reference MAX_SIZE', 'reference CRetryPolicy', 'consumer MAX_SIZE', 'consumer CRetryPolicy', 'dependency CRetryPolicy', 'dependency MAX_SIZE']);
+        expect(all.counterparts[4]).toEqual({ kind: 'dependency', name: 'CRetryPolicy', lines: ['example/lib:upload.ts:2'], quoted: ['example/lib:upload.ts:2: const policy = new CRetryPolicy();'] });
+        // The counterparts whose name more added and removed lines hold come first, a tie keeps its order, and each shows its hunks.
+        // An `ALL_CAPS` name keeps its case, so the removed `max_size` is not counted.
+        const change = parsePRDiff([
+          'diff --git a/src/limits.ts b/src/limits.ts', '--- a/src/limits.ts', '+++ b/src/limits.ts', '@@ -1,3 +1,3 @@',
+          ' // limits', '-export const max_size = 8;', '+export const MAX_SIZE = 16;', ' export const policy = new CRetryPolicy();',
+          'diff --git a/src/upload.ts b/src/upload.ts', '--- a/src/upload.ts', '+++ b/src/upload.ts', '@@ -4,2 +4,1 @@',
+          ' const body = read();', '-if (body.length > MAX_SIZE) throw tooLarge();', '',
+        ].join('\n'));
+        const questions = relatedQuestions(all.counterparts, change);
+        expect(questions.map(q => `${q.kind} ${q.name} ${q.changed}`)).toEqual([
+          'reference MAX_SIZE 2', 'consumer MAX_SIZE 2', 'dependency MAX_SIZE 2', 'reference CRetryPolicy 0', 'consumer CRetryPolicy 0', 'dependency CRetryPolicy 0',
+        ]);
+        expect(questions[0].hunks).toEqual([
+          'diff --git a/src/limits.ts b/src/limits.ts\n--- a/src/limits.ts\n+++ b/src/limits.ts\n@@ -1,3 +1,3 @@\n // limits\n-export const max_size = 8;\n+export const MAX_SIZE = 16;\n export const policy = new CRetryPolicy();',
+          'diff --git a/src/upload.ts b/src/upload.ts\n--- a/src/upload.ts\n+++ b/src/upload.ts\n@@ -4,2 +4,1 @@\n const body = read();\n-if (body.length > MAX_SIZE) throw tooLarge();',
+        ]);
+        expect(questions[3].hunks).toEqual([]);
 
         // Without a list of its own, a dependency is searched for the names of the other kinds.
         expect((await listRelatedUses([lib], ['CRetryPolicy'])).record).toEqual({ dependency: [{ name: 'CRetryPolicy', lines: ['example/lib:upload.ts:2'] }] });

@@ -50,6 +50,7 @@ import { repoToolsPrompt } from './providers/cli-utils';
 
 /** A planner whose call fails, so the round takes the fail-safe triage. */
 const failedPlanner = (): LLMClient => ({ sendMessage: jest.fn().mockRejectedValue(new Error('planner unavailable')) });
+const isRelatedCheck = (system: string) => system.startsWith('You check a pull request\'s change against one counterpart in a related repository');
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -2187,13 +2188,22 @@ describe('runReview', () => {
     writeFileSync(join(reference, 'AGENTS.md'), '# Repository map\n');
     const consumer = mkdtempSync(join(tmpdir(), 'manki-consumer-'));
     writeFileSync(join(consumer, 'app.ts'), 'const fee = computeFee(2);\n');
-    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }, { repo: 'o/app', kind: 'consumer', dir: consumer }]);
+    const checkouts = [{ repo: 'o/ref', kind: 'reference' as const, dir: reference }, { repo: 'o/app', kind: 'consumer' as const, dir: consumer }];
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockImplementation(async ({ stateDir }) => {
+      // The markers a fetch leaves, by which a cited line of a related repo is found in its checkout.
+      for (const { repo, dir } of checkouts) writeFileSync(join(stateDir, `${encodeURIComponent(repo)}.done`), dir);
+      return checkouts;
+    });
     const withDedup = (sendMessage: jest.Mock): ReviewClients => {
       const made = { ...makeClients(), dedup: { sendMessage } as unknown as import('./providers').LLMClient };
       Object.assign(made.reviewer, { repoTools: true });
       return made;
     };
     const clients = withDedup(jest.fn().mockResolvedValue({ content: JSON.stringify({ 'o/ref': { ComputeFee: ['CalcFee'] } }) }));
+    const differs = { severity: 'warning', title: 'The fee differs from the reference', file: 'cmd/fee.go', line: 5, description: 'd', evidence: ['o/ref:fee.cpp:1 returns `n`'], proof: ['cmd/fee.go:5', 'o/ref:fee.cpp:1'] };
+    jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => ({
+      content: isRelatedCheck(system) && user.includes('the reference repo holds it') ? JSON.stringify([differs]) : '[]',
+    }));
     let result: Awaited<ReturnType<typeof runReview>>;
     let untranslated: Awaited<ReturnType<typeof runReview>>;
     try {
@@ -2208,13 +2218,33 @@ describe('runReview', () => {
 
     const uses = mockedRunJudgeAgent.mock.calls[0][2].usesOutsideDiff;
     expect(uses).toContain('### `ComputeFee` (function)\n\n```\ndeclared at cmd/fee.go:5\ncmd/use.go:3: var fee = ComputeFee(2)\n```');
+    // Each counterpart the lists name gets a call of its own on the first reader's model, recorded beside the comparisons.
+    const checks = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => isRelatedCheck(system));
+    expect(checks.map(([, user]) => user.split('\n')[2].split('. ')[0])).toEqual([
+      'The change touches `ComputeFee`, and the lines below are where the reference repo holds it',
+      'The change touches `ComputeFee`, and the consumer repo uses it on the lines below',
+    ]);
+    expect(checks[0][1]).toContain('```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\no/ref:legacy.cpp:1: int CalcFee(int n);\n```');
+    expect(checks.map(([, , sent]) => sent?.repoTools?.related?.guides)).toEqual([{ 'o/ref': 'AGENTS.md' }, { 'o/ref': 'AGENTS.md' }]);
+    const reviewers = ['Reference check: ComputeFee', 'Consumer check: ComputeFee'];
+    expect(result.comparisons).toEqual([
+      { kind: 'reference', reviewer: reviewers[0], at: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], status: 'answered', findings: 1 },
+      { kind: 'consumer', reviewer: reviewers[1], at: ['o/app:app.ts:1'], status: 'answered', findings: 0 },
+    ]);
+    expect(result.llmCalls?.filter(c => c.stage === 'related_check').map(c => c.agent)).toEqual(reviewers);
+    expect(result.agentNames).not.toContain(reviewers[0]);
+    // Its finding reaches the judge like a finder's, under its own name and with the lines it cites on both sides.
+    expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({
+      title: differs.title, reviewers: [reviewers[0]], evidence: { checks: differs.evidence, proof: ['cmd/fee.go:5'], relatedProof: ['o/ref:fee.cpp:1'] },
+    })]);
+
     expect(uses).toContain('## In the Reference Repos');
     expect(uses).toContain('### `ComputeFee`, also searched as `CalcFee`\n\n```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\no/ref:legacy.cpp:1: int CalcFee(int n);\n```');
     expect(uses).toContain('## In the Consumer Repos');
     expect(uses).toContain('### `ComputeFee`\n\n```\no/app:app.ts:1: const fee = computeFee(2);\n```');
     // A finder that can open files gets the copy of both sections that tells it to open them. The judge's copy does not.
     expect(uses).not.toContain('Before you answer');
-    const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls;
+    const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => !isRelatedCheck(system));
     expect(finderCalls.length).toBeGreaterThan(0);
     for (const [, message, sent] of finderCalls) {
       expect(message).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files, and check that every use still holds after the change.');
@@ -2231,7 +2261,7 @@ describe('runReview', () => {
       translation: { names: [{ repo: 'o/ref', name: 'ComputeFee', as: 'CalcFee', lines: 1 }] },
     });
     // A finder with repository tools on the checked-out head gets the checklist items for the configured kinds.
-    for (const [system] of jest.mocked(clients.reviewer.sendMessage).mock.calls) {
+    for (const [system] of finderCalls) {
       expect(system).toContain('. Specifications: when the change touches a wire format');
       expect(system).toContain('. Consumers: for each public type, function or serialized format the change alters');
     }
@@ -2248,7 +2278,7 @@ describe('runReview', () => {
       translation: { skipped: 'model down' },
     });
     // The finders are pointed to a guide only for the fetched repo whose checkout holds one, and the round record names it.
-    const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
+    const finderGuides = finderCalls.map(call => call[2]?.repoTools?.related?.guides);
     expect(finderGuides).toEqual(finderCalls.map(() => ({ 'o/ref': 'AGENTS.md' })));
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
 
@@ -2311,11 +2341,11 @@ describe('runReview', () => {
     type Asked = { first: { toolSteps?: []; filesRead?: string[] }; second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string };
     const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner }: Asked) => {
       const clients = makeClients();
-      const sendMessage = jest.fn(async (_system: string, message: string) => (message.includes(NOTE) ? second() : { ...answer('First'), ...first }));
+      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(NOTE) ? second() : { ...answer('First'), ...first }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
       const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(workspace.diff), repoContext: '', workspace: workspace.root });
-      const messages = sendMessage.mock.calls.map(call => call[1]);
+      const messages = sendMessage.mock.calls.filter(([system]) => !isRelatedCheck(system)).map(call => call[1]);
       return { result, first: messages.filter(m => !m.includes(NOTE)), again: messages.filter(m => m.includes(NOTE)), kept: [...new Set(result.rawFindings?.map(f => f.title))] };
     };
     try {
@@ -2358,6 +2388,8 @@ describe('runReview', () => {
       expect(trivial.result.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
       expect(trivial.result.usesOutsideDiff?.symbols).toEqual([{ name: 'ComputeFeeA', declared: 'docs/fee.md:3', uses: ['cmd/use.go:3'] }]);
       expect([trivial.again, trivial.result.agentsAskedAgain]).toEqual([[], []]);
+      // Nor is a counterpart of the trivial verifier's round checked in a call of its own.
+      expect([trivial.result.usesOutsideDiff?.reference, trivial.result.comparisons]).toEqual([[{ name: 'ComputeFeeA', lines: ['o/ref:fee.cpp:1'] }], undefined]);
 
       // A second ask that fails, or whose reply does not parse, leaves the first answer and the round complete.
       for (const [second, reason] of [
