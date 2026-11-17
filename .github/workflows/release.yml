@@ -82,7 +82,9 @@ jobs:
           fi
           # A later commit that edits CHANGELOG.md at the same version replaced this release
           # commit. One at another version is the next release and changes nothing here.
-          for COMMIT in $(git log --format=%h HEAD..origin/main -- CHANGELOG.md); do
+          # The list is assigned first, so a failing `git log` stops the step.
+          LATER_COMMITS=$(git log --format=%h HEAD..origin/main -- CHANGELOG.md)
+          for COMMIT in $LATER_COMMITS; do
             LATER_VERSION=$(git show "$COMMIT:package.json" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
             if [ "$LATER_VERSION" = "$VERSION" ]; then
               echo "::error::main has a later commit that edits the $VERSION notes in CHANGELOG.md ($COMMIT). Point $GITHUB_REF_NAME at the newest one"

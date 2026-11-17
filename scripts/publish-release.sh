@@ -123,7 +123,9 @@ prev_version=$(git show "$RELEASE_COMMIT^:package.json" | node -p 'JSON.parse(re
   die "release commit $RELEASE_COMMIT neither bumps the version to $VERSION nor changes CHANGELOG.md alone. Point $BRANCH at a commit that does."
 # A later commit that edits CHANGELOG.md at the same version replaced this release commit.
 # One at another version is the next release and changes nothing here.
-for commit in $(git log --format=%h "$RELEASE_COMMIT..refs/remotes/$REMOTE/main" -- CHANGELOG.md); do
+# The list is assigned first, so a failing `git log` stops the script.
+later_commits=$(git log --format=%h "$RELEASE_COMMIT..refs/remotes/$REMOTE/main" -- CHANGELOG.md)
+for commit in $later_commits; do
   later_version=$(git show "$commit:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
   [ "$later_version" != "$VERSION" ] ||
     die "$REMOTE/main has a later commit that edits the $VERSION notes in CHANGELOG.md ($commit). Point $BRANCH at the newest one."
