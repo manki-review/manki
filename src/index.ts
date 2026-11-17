@@ -22,7 +22,7 @@ import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, parseContextBlocks, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
-import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
@@ -1079,25 +1079,6 @@ async function collectLockfiles(target: RunTarget, fullDiff: ParsedDiff): Promis
   return readLockfileChanges(fullDiff, heads);
 }
 
-function initialDashboard(diff: ParsedDiff, config: ReviewConfig, clients: ReviewClients, deeper?: boolean): DashboardData {
-  // Without a planner the team is the fail-safe one. With one, `runReview` reports the team after triage.
-  const previewTeam = selectTeam(diff, config, undefined, deeper, clients);
-  const lineCount = diff.totalAdditions + diff.totalDeletions;
-  return clients.planner
-    ? {
-        phase: 'planning',
-        lineCount,
-        agentCount: 0,
-      }
-    : {
-        phase: 'started',
-        lineCount,
-        agentCount: previewTeam.finders.length,
-        agentProgress: previewTeam.finders.map(a => ({ name: a.name, status: 'reviewing' as const })),
-        routing: previewTeam.routing,
-      };
-}
-
 /**
  * Dismisses the reviews `reviewId` replaces. Throws `SupersededError` instead when the head moved since,
  * so a review of an old commit never lifts the merge block on a new one. Past that check the round is final,
@@ -2056,7 +2037,8 @@ async function runFullReview(
     const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
-    const dashboard = initialDashboard(diff, config, clients, options.deeper);
+    // `runReview` reports the team after triage.
+    const dashboard: DashboardData = { phase: 'planning', lineCount, agentCount: 0 };
     await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(target, progress));
     const unreviewedMetadata = (): ReviewMetadata => ({
       config: metadataConfig(config, models, 'none', []),
@@ -2123,7 +2105,7 @@ async function runFullReview(
     ]);
 
     const run: ReviewRun = {
-      ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models, plannerEnabled: !!clients.planner,
+      ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models,
       recap, priorRoundCount, maxAutoRounds,
       diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis, instructions: repoContext,
       commentId, dashboard, progress, startTime, parseEndTime,

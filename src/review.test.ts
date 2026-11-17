@@ -48,6 +48,9 @@ import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls,
 import { isClaimCheck } from './pr-claims';
 import { repoToolsPrompt } from './providers/cli-utils';
 
+/** A planner whose call fails, so the round takes the fail-safe triage. */
+const failedPlanner = (): LLMClient => ({ sendMessage: jest.fn().mockRejectedValue(new Error('planner unavailable')) });
+
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
   blockers: [],
@@ -1368,7 +1371,7 @@ describe('selectTeam', () => {
       // The first finder's model has no `xhigh`, as Claude Sonnet 4.6 does not. The second finder's model takes every tier.
       const noXhigh: LLMClient = { sendMessage: jest.fn(), sentEffort: effort => (effort === 'xhigh' ? 'high' : effort) };
       const everyTier: LLMClient = { sendMessage: jest.fn() };
-      const clients: ReviewClients = { reviewer: noXhigh, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noXhigh], ['anthropic/claude-opus-5-5', everyTier]]), judge: everyTier };
+      const clients: ReviewClients = { reviewer: noXhigh, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noXhigh], ['anthropic/claude-opus-5-5', everyTier]]), judge: everyTier, planner: everyTier };
       const team = (triage: ReturnType<typeof t>, deeper: boolean, config = makeConfig()) => selectTeam(makeDiff({ files: code }), config, triage, deeper, clients);
 
       // A subtle change already runs at high, so the step to xhigh sends the first model the same effort.
@@ -1581,14 +1584,14 @@ describe('selectTeam', () => {
       const related_repos = related.map(kind => ({ repo: `acme/${kind}`, kind }));
       return selectTeam(plainDiff, makeConfig({ reviewers, related_repos }), { trivial: false, subtle: true, paired: true }, false, clients, workspace).finders.map(f => f.prompt.focus);
     };
-    const toolClients: ReviewClients = { reviewer: withTools, judge: withTools };
+    const toolClients: ReviewClients = { reviewer: withTools, judge: withTools, planner: withTools };
     const focusWith = (...related: RelatedRepoKind[]) => focusesWith(related, toolClients, '/work/pr-head')[0];
     expect(focusWith()).toBe(focus);
     expect(focusesWith(['reference', 'consumer'])).toEqual([focus, focus]);
     expect(focusesWith(['reference', 'consumer'], toolClients)).toEqual([focus, focus]);
-    expect(focusesWith(['reference', 'consumer'], { reviewer: noTools, judge: withTools }, '/work/pr-head')).toEqual([focus, focus]);
+    expect(focusesWith(['reference', 'consumer'], { reviewer: noTools, judge: withTools, planner: withTools }, '/work/pr-head')).toEqual([focus, focus]);
     // In a pair, only the finder whose client has the tools gets the checks.
-    const mixed = focusesWith(['consumer'], { reviewer: noTools, reviewerByModel: new Map([['anthropic/claude-opus-5-5', withTools]]), judge: withTools }, '/work/pr-head');
+    const mixed = focusesWith(['consumer'], { reviewer: noTools, reviewerByModel: new Map([['anthropic/claude-opus-5-5', withTools]]), judge: withTools, planner: withTools }, '/work/pr-head');
     expect(mixed.filter(f => f === focus)).toHaveLength(1);
     expect(mixed.filter(f => f.includes('Consumers:'))).toHaveLength(1);
     const withReference = focusWith('reference');
@@ -1878,6 +1881,7 @@ describe('runReview', () => {
 
   function makeClients(reviewerResponse: string = '[]'): ReviewClients {
     return {
+      planner: failedPlanner(),
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: reviewerResponse }),
       } as unknown as import('./providers').LLMClient,
@@ -2478,7 +2482,7 @@ describe('runReview', () => {
       const run = async (clients: ReviewClients) => {
         mockedRunJudgeAgent.mockClear();
         mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
-        const { prClaims, llmCalls, agentDurationMs: _agentDurationMs, judgeDurationMs: _judgeDurationMs, ...result } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
+        const { prClaims, llmCalls, plannerDurationMs: _plannerDurationMs, agentDurationMs: _agentDurationMs, judgeDurationMs: _judgeDurationMs, ...result } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
         return {
           prClaims,
           checks: reviewerCalls(clients).filter(([system]) => isCheck(system)).length,
@@ -4761,6 +4765,7 @@ describe('runReview', () => {
   ])('returns COMMENT verdict after retries when all agents fail because %s', async (_label, respond, reason) => {
     const sendMessage = jest.fn().mockImplementation(respond);
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: { sendMessage } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
@@ -4859,6 +4864,7 @@ describe('runReview', () => {
   it('fires onProgress with failure then retrying then success when agent fails and retry succeeds', async () => {
     let callCount = 0;
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: {
         sendMessage: jest.fn().mockImplementation(() => {
           callCount++;
@@ -4897,6 +4903,7 @@ describe('runReview', () => {
 
   it('fires onProgress with failure status when all agents fail including retries', async () => {
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: {
         sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
       } as unknown as import('./providers').LLMClient,
@@ -5676,7 +5683,7 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent.mock.calls[0][2].findings[0].toolEvidence).toEqual(expect.objectContaining({ status: 'none' }));
   });
 
-  it('uses default judgeEffort of high when planner is absent', async () => {
+  it('uses default judgeEffort of high when the planner fails', async () => {
     const clients = makeClients();
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
@@ -5697,11 +5704,11 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('max');
     expect(fixed.plannerResult?.judgeEffort).toBe('max');
     const onProgress = jest.fn();
-    const withoutPlanner = await runReview(makeClients(), {
+    const plannerFailed = await runReview(makeClients(), {
       config: makeConfig({ judge: { tool_steps: 0, effort: 'xhigh' } }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress,
     });
     expect(mockedRunJudgeAgent.mock.calls[1][2].effort).toBe('xhigh');
-    expect(withoutPlanner.judgeEffort).toBe('xhigh');
+    expect(plannerFailed.judgeEffort).toBe('xhigh');
     expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: 'planning', teamAgentNames: expect.any(Array), judgeEffort: 'xhigh' }));
     const auto = await review('auto', true);
     expect(mockedRunJudgeAgent.mock.calls[2][2].effort).toBe('low');
@@ -5779,20 +5786,6 @@ describe('runReview', () => {
     expect(fallback!.plannerDurationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it('emits a planning event without the fallback marker when the planner is disabled', async () => {
-    const onProgress = jest.fn();
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    const result = await runReview(makeClients(), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
-    expect(result.reviewComplete).toBe(true);
-
-    const planningCalls = onProgress.mock.calls
-      .map((c: [import('./review').ReviewProgress]) => c[0])
-      .filter(p => p.phase === 'planning');
-    expect(planningCalls).toEqual([expect.objectContaining({ teamAgentNames: result.agentNames })]);
-    expect(planningCalls[0].heuristicFallback).toBeUndefined();
-  });
-
   it('warns when agent returns 0 findings with short duration', async () => {
     const clients = makeClients('[]');
     const config = makeConfig();
@@ -5819,6 +5812,7 @@ describe('runReview', () => {
   it('does not warn for 0 findings with normal duration', async () => {
     // Simulate a slow response by delaying the mock
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: {
         sendMessage: jest.fn().mockImplementation(() => {
           // Use fake timers to simulate passage of time
@@ -5868,6 +5862,7 @@ describe('runReview', () => {
       latencyMs: 800,
     });
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: { sendMessage: reviewerSend } as unknown as import('./providers').LLMClient,
       judge: { sendMessage: judgeSend } as unknown as import('./providers').LLMClient,
     };
@@ -5909,6 +5904,7 @@ describe('runReview', () => {
       };
     });
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: { sendMessage: reviewerSend } as unknown as import('./providers').LLMClient,
       judge: { sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }) } as unknown as import('./providers').LLMClient,
     };
@@ -6005,6 +6001,7 @@ describe('runReview', () => {
   it('records `agentFailureReasons` when an agent fails after all retries', async () => {
     const failingSend = jest.fn().mockRejectedValue(new Error('Provider down'));
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: { sendMessage: failingSend } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
@@ -6025,6 +6022,7 @@ describe('runReview', () => {
   it('records `unknown failure` sentinel in `agentFailureReasons` when rejection reason is falsy', async () => {
     const failingSend = jest.fn().mockRejectedValue(undefined);
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: { sendMessage: failingSend } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
@@ -6067,6 +6065,7 @@ describe('runReview', () => {
 
   function pairedClients(primary: jest.Mock, pair: jest.Mock): ReviewClients {
     return {
+      planner: failedPlanner(),
       reviewer: { sendMessage: primary } as unknown as import('./providers').LLMClient,
       reviewerByModel: new Map([['anthropic/claude-opus-5-5', { sendMessage: pair } as unknown as import('./providers').LLMClient]]),
       judge: {
@@ -6138,10 +6137,10 @@ describe('runReview', () => {
     expect(judged.map(f => [f.title, f.reviewers])).toEqual([['Unchecked sum', ['Claude Opus 5.5 · high']]]);
   });
 
-  it.each<[string, () => ReviewClients, string[]]>([
-    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Claude Sonnet 5.5 · high']],
-    ['the only finder', () => ({ ...pairedClients(jest.fn().mockRejectedValue(new Error('Timeout')), jest.fn()), planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as import('./providers').LLMClient }), ['Quick check · Claude Sonnet 5.5']],
-  ])('ends INCOMPLETE when %s fails all retries', async (_label, build, failed) => {
+  it.each<[string, () => ReviewClients, string[], 'high' | 'low']>([
+    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Claude Sonnet 5.5 · high'], 'high'],
+    ['the only finder', () => ({ ...pairedClients(jest.fn().mockRejectedValue(new Error('Timeout')), jest.fn()), planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as import('./providers').LLMClient }), ['Quick check · Claude Sonnet 5.5'], 'low'],
+  ])('ends INCOMPLETE when %s fails all retries', async (_label, build, failed, judgeEffort) => {
     const clients = build();
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 2, totalDeletions: 0 }), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.reviewComplete).toBe(false);
@@ -6151,10 +6150,11 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
     expect((clients.reviewer.sendMessage as jest.Mock).mock.calls.length).toBe(MAX_AGENT_RETRIES + 1);
     // An incomplete round keeps what it already produced for its record.
-    expect(result).toMatchObject({ judgeEffort: clients.planner ? 'low' : 'high', rawFindings: [], llmCalls: expect.any(Array) });
+    expect(result).toMatchObject({ judgeEffort, rawFindings: [], llmCalls: expect.any(Array), plannerDurationMs: expect.any(Number) });
     expect(result.agentRetryCount?.get(failed[0])).toBe(MAX_AGENT_RETRIES);
     expect(result.agentFailureReasons?.[failed[0]]).toBeDefined();
-    if (clients.planner) expect(result).toMatchObject({ plannerResult: expect.objectContaining({ prType: 'docs' }), plannerDurationMs: expect.any(Number) });
+    // Only the second case has a planner that answers.
+    if (judgeEffort === 'low') expect(result.plannerResult).toMatchObject({ prType: 'docs' });
   });
 
   it('ends INCOMPLETE without retrying a finder whose subscription limit is used up', async () => {
@@ -6191,6 +6191,7 @@ describe('runReview', () => {
 
     const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
@@ -6314,6 +6315,7 @@ describe('runReview post-judge suppression', () => {
 
   function makeClients(): ReviewClients {
     return {
+      planner: failedPlanner(),
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
       } as unknown as import('./providers').LLMClient,
@@ -7404,6 +7406,7 @@ describe('runReview triage', () => {
 
   function makeClients(plannerResponse?: string): ReviewClients {
     const clients: ReviewClients = {
+      planner: failedPlanner(),
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
       } as unknown as import('./providers').LLMClient,
@@ -7451,13 +7454,10 @@ describe('runReview triage', () => {
     info.mockRestore();
   });
 
-  it.each<[string, string | undefined, string, string | undefined]>([
-    ['the planner fails', 'not json', 'heuristic_fallback', 'exception'],
-    ['the planner is disabled', undefined, 'disabled', undefined],
-  ])('runs two finders at high effort with the fail-safe triage when %s', async (_label, plannerResponse, source, reason) => {
-    const result = await runReview(makeClients(plannerResponse), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
-    expect(result.plannerSource).toBe(source);
-    expect(result.plannerFallbackReason).toBe(reason);
+  it('runs two finders at high effort with the fail-safe triage when the planner fails', async () => {
+    const result = await runReview(makeClients('not json'), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
+    expect(result.plannerSource).toBe('heuristic_fallback');
+    expect(result.plannerFallbackReason).toBe('exception');
     expect(result.triage).toEqual({ trivial: false, subtle: true, paired: true });
     expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
     expect([...result.agentEffortMap!.values()]).toEqual(['high', 'high']);

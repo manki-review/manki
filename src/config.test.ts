@@ -31,7 +31,6 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.memory).toBe('object');
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
-      expect(DEFAULT_CONFIG.planner).toEqual({ enabled: true });
     });
 
     it('defaults models.judge to Opus and the planner and dedup to Haiku, and names no finder', () => {
@@ -379,14 +378,13 @@ planner:
         'Unknown config key: "another_unknown"',
         'Unknown config key: "nit_handling"',
         'Unknown config key: "review_level"',
-        'Unknown config key: "planner.paired"',
+        'Unknown config key: "planner"',
       ]);
     });
 
     it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
       loadConfigFromContent(`
 reviewers: [{ name: a, focus: b, fokus: c }]
-planner: { enabled: true, enabeld: false }
 static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], wait_timeout_seconds: 60, analyzers: all, check: false }
 convergence: { max_auto_rounds: 3, test_path_patterns: ['**/*.test.ts'], suppress_resolved_threads: true, max_rounds: 2 }
 metrics: { fix_rate: true, fixrate: false }
@@ -395,7 +393,6 @@ memory: { enabled: false, repo: '', repository: x/y }
       const unknown = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).filter(m => m.startsWith('Unknown config key'));
       expect(unknown).toEqual([
         'Unknown config key: "reviewers[0].fokus"',
-        'Unknown config key: "planner.enabeld"',
         'Unknown config key: "static_analysis.check"',
         'Unknown config key: "convergence.max_rounds"',
         'Unknown config key: "metrics.fixrate"',
@@ -708,22 +705,6 @@ models:
     });
   });
 
-  describe('planner config', () => {
-    it('accepts planner key in config validation', () => {
-      const config = loadConfig('planner:\n  enabled: false\n');
-      expect(config.planner?.enabled).toBe(false);
-    });
-
-    it('defaults planner to enabled', () => {
-      const config = loadConfig(undefined);
-      expect(config.planner?.enabled).toBe(true);
-    });
-
-    it('rejects invalid planner.enabled type', () => {
-      expect(() => loadConfig('planner:\n  enabled: "yes"\n')).toThrow();
-    });
-  });
-
   describe('judge config', () => {
     it('gives the judge no tool steps and auto effort by default, and takes tool steps from 0 to 100 and an effort level', () => {
       expect(loadConfig(undefined).judge).toEqual({ tool_steps: 0, effort: 'auto' });
@@ -759,8 +740,8 @@ models:
     it('names the keys whose values differ, whatever their order in the file', () => {
       const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  second_refuter: gpt-5.5\nmax_diff_lines: 2000\n');
       expect(changedKeys(loadConfigFromContent('models:\n  second_refuter: gpt-5.5\n  judge: claude-opus-5-5\nmax_diff_lines: 2000\n'), base)).toEqual([]);
-      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nmax_diff_lines: 2000\nplanner:\n  enabled: false\n');
-      expect(changedKeys(head, base)).toEqual(['exclude_paths', 'models', 'planner']);
+      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nmax_diff_lines: 2000\ndrafts: review\n');
+      expect(changedKeys(head, base)).toEqual(['exclude_paths', 'models', 'drafts']);
     });
   });
 

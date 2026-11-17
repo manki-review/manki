@@ -64,11 +64,6 @@ models:
   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: the first model of `full` other than the stage's own)
 
-# Planner stage (default: enabled). A fast pre-review pass triages the
-# change (trivial, subtle, paired) and picks the judge effort and PR type.
-planner:
-  enabled: true
-
 # Who reviews each class of PR (default: the built-ins). A config that sets
 # `groups` defines `trivial`, `solo` and `full`. Read from the base branch,
 # never from the PR. See "Review groups" in docs/how-reviews-work.md.
@@ -161,10 +156,8 @@ memory:
 | `models.second_refuter` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons. Two disproofs lower a blocker only when the judge alone raised it above every finder's grade. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `models.dedup` | model id | `claude-haiku-5-5` | The dedup pass against resolved findings from earlier rounds, and the small side calls: same-defect checks, related work and name translation. |
 | `models.fallback` | model id | the first model of the `full` group other than the stage's own | Reruns a stage once when a provider's safety filter refuses it. Without it, or for a stage already on this model, the stage moves to the first model of the `full` group that is another model than its own. When `full` has no other model, the stage is not rerun. |
-| `planner` | map | see below | The planner stage. |
-| `planner.enabled` | boolean | `true` | Run the planner. Without it, every round takes the side that adds review: two finders at high effort. |
 | `judge` | map | see below | The judge stage. |
-| `judge.effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | The judge's effort, which the refuter follows. `auto` takes the level the planner picks for the change, low, medium or high, and high without a planner. A fixed level replaces that pick on every round. Read from the base branch. |
+| `judge.effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | The judge's effort, which the refuter follows. `auto` takes the level the planner picks for the change, low, medium or high, and high when the planner gives no answer. A fixed level replaces that pick on every round. Read from the base branch. |
 | `judge.tool_steps` | integer from 0 to 100 | `0` | Read-only repository tool calls the judge may make while it grades, on a judge that runs on the Claude or Codex CLI. With them the judge reads the code a finding rests on itself, at the cost of a longer judge call. A round whose judge fallback model has no tools runs the judge without them. `0` gives it none. |
 | `review` | map | the built-in groups | Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.groups` | map of groups | `trivial`, `solo` and `full` | Each group is a list of one or more reviewers. An entry is a model id, or a map with `model`, `effort` and `focus`. A config that sets `groups` defines all three of `trivial`, `solo` and `full`, and may add groups under other names. `full` must hold at least two finders on two distinct models, whatever routes to it, or the config does not load. The readers of `trivial` run the quick check of a trivial change. The sibling comparisons, claim checks and sweeps run on the first reviewer of the group that reads the PR. |

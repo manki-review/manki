@@ -243,7 +243,7 @@ function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedA
   ].join(' ');
 }
 
-/** The answers used when the planner is disabled or fails: each takes the side that adds review. */
+/** The answers used when the planner fails: each takes the side that adds review. */
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
 const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'xhigh', xhigh: 'max', max: 'max' };
@@ -373,7 +373,7 @@ export interface ReviewClients {
   judge: LLMClient;
   /** The second refuter, on `models.second_refuter`. */
   refuterPair?: LLMClient;
-  planner?: LLMClient;
+  planner: LLMClient;
   dedup?: LLMClient;
   /** Where each stage moves when a safety filter refuses it. The verdict reader uses `judge`'s. */
   fallbacks?: {
@@ -700,34 +700,25 @@ export async function runReview(
     : Promise.resolve(options.relatedWork);
   // Listed while the planner runs, since only the claim checks beside the finders read the list.
   const claimsPromise = extractPrClaims(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claims'), prContext, diff);
-  let plannerResult: PlannerResult | null = null;
-  let plannerUsage: LLMUsage | undefined;
-  let plannerDurationMs: number | undefined;
-  let plannerSource: RoundPlannerSource = 'disabled';
-  let plannerFallbackReason: string | undefined;
-
-  if (clients.planner) {
-    if (onProgress) {
-      onProgress({ phase: 'planning' });
-    }
-    const plannerStart = Date.now();
-    const plannerWrap = wrapClientForUsage(withFallback({ client: clients.planner, fallback: clients.fallbacks?.planner }, 'planner'));
-    const outcome: PlannerOutcomeSink = {};
-    plannerResult = await runPlanner(plannerWrap.client, diffWithLockfiles, outcome);
-    // A set `judge.effort` replaces the planner's pick, so the progress comment and the round record show the level that runs.
-    if (plannerResult && config.judge?.effort && config.judge.effort !== 'auto') plannerResult = { ...plannerResult, judgeEffort: config.judge.effort };
-    plannerUsage = plannerWrap.getTotals().usage;
-    logOutputTokens('Planner', plannerUsage);
-    plannerDurationMs = Date.now() - plannerStart;
-    plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
-    plannerFallbackReason = outcome.fallbackReason;
+  if (onProgress) {
+    onProgress({ phase: 'planning' });
   }
+  const plannerStart = Date.now();
+  const plannerWrap = wrapClientForUsage(withFallback({ client: clients.planner, fallback: clients.fallbacks?.planner }, 'planner'));
+  const plannerOutcome: PlannerOutcomeSink = {};
+  let plannerResult = await runPlanner(plannerWrap.client, diffWithLockfiles, plannerOutcome);
+  // A set `judge.effort` replaces the planner's pick, so the progress comment and the round record show the level that runs.
+  if (plannerResult && config.judge?.effort && config.judge.effort !== 'auto') plannerResult = { ...plannerResult, judgeEffort: config.judge.effort };
+  logOutputTokens('Planner', plannerWrap.getTotals().usage);
+  const plannerDurationMs = Date.now() - plannerStart;
+  const plannerSource: RoundPlannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
+  const plannerFallbackReason = plannerOutcome.fallbackReason;
   const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper, clients, workspace);
   const setEffort = config.judge?.effort;
   const judgeEffort = setEffort && setEffort !== 'auto' ? setEffort : plannerResult?.judgeEffort ?? 'high';
   // What the round has produced so far. A round that ends incomplete keeps it all in its record.
   const recorded: Partial<ReviewResult> = {
-    plannerResult: plannerResult ?? undefined, judgeEffort, ...(plannerDurationMs != null && { plannerDurationMs }),
+    plannerResult: plannerResult ?? undefined, judgeEffort, plannerDurationMs,
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
   };
   const { trivial, subtle, paired } = team.triage;
@@ -748,7 +739,7 @@ export async function runReview(
       routing,
       ...(plannerResult && { plannerResult }),
       ...(plannerSource === 'heuristic_fallback' && { heuristicFallback: true }),
-      ...(plannerDurationMs !== undefined && { plannerDurationMs }),
+      plannerDurationMs,
     });
   }
 
@@ -1564,7 +1555,7 @@ export async function runReview(
     agentWarnings,
     agentsAskedAgain,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-    ...(plannerDurationMs != null && { plannerDurationMs }),
+    plannerDurationMs,
     ...(judgeSkipped && { judgeSkipped }),
     ...(judgeDurationMs != null && { judgeDurationMs }),
     judgeRetryCount,

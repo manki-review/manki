@@ -1373,9 +1373,6 @@ export interface ReviewConfig {
     /** Model a stage moves to when a safety filter refuses it. Unset means the first model of the `full` group other than the stage's own. */
     fallback?: string;
   };
-  planner?: {
-    enabled?: boolean;
-  };
   judge?: {
     /** Read-only repository tool calls the judge may make while it grades. 0 gives it none. */
     tool_steps?: number;
@@ -2110,7 +2107,8 @@ export interface RoundModelFallback {
  * - `heuristic_fallback`: the planner was attempted but failed (timeout,
  *   truncation, parse error), so every answer took the side that adds review.
  * - `heuristic`: written by releases that skipped the planner for a pinned `review_level`.
- * - `disabled`: `planner.enabled` is false, so every answer took the side that adds review.
+ * - `disabled`: no planner was called, as in the record of an earlier round that `reviewLocal` builds, or in a
+ *   round of a release that could turn the planner off. Every answer took the side that adds review.
  */
 export type RoundPlannerSource = 'planner' | 'heuristic' | 'heuristic_fallback' | 'disabled';
 

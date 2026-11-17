@@ -1489,7 +1489,7 @@ describe('runFullReview end to end', () => {
 
   describe('dispatched by the webhook service', () => {
     it('reviews a push with the base branch\'s config, not the one the PR carries at its head', async () => {
-      mockGitHub.configs = { main: 'planner:\n  enabled: false\n', [HEAD_SHA]: 'auto_review: false\n' };
+      mockGitHub.configs = { main: 'judge:\n  effort: max\n', [HEAD_SHA]: 'auto_review: false\n' };
       // GitHub answers the lookup of the workflow run only once the review is posted, so the review does not wait for it.
       let answerRun!: (run: { run_started_at: string }) => void;
       mockGitHub.workflowRun = new Promise(resolve => { answerRun = resolve; });
@@ -1504,7 +1504,7 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.roundContext(review).runner).toMatchObject({ os: process.platform, peakCliProcesses: expect.any(Number) });
       expect(jest.mocked(core.info).mock.calls.at(-1)?.[0]).toMatch(/^Runner: .* · started after \d+m \d+s · /);
       expect(mockGitHub.roundContext(review).meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
-      expect(mockLLM.calls).not.toContain('planner');
+      expect(mockGitHub.roundContext(review).judge.effort).toBe('max');
       expect(mockGitHub.stateReports).toEqual([
         { owner: OWNER, repo: REPO, pr: PR_NUMBER, reviewed: { commit: HEAD_SHA }, approval: { commit: HEAD_SHA, held: false }, pause: null },
       ]);

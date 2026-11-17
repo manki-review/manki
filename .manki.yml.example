@@ -99,17 +99,14 @@
 # Models are auto-detected by prefix: `claude-*` -> Anthropic, `gpt-*` / `o*` -> OpenAI, `gemini-*` -> Gemini.
 # You can also use explicit `provider/model` syntax (e.g. `anthropic/claude-haiku-5-5`).
 
-# Planner stage (default: enabled)
-# A fast pre-review pass answers three questions about the nature of the change:
-# trivial (a single quick check reads it), subtle (finders run at high effort
-# instead of medium) and paired (a second finder on another model reads it
-# too). These are the defaults, and the `review` block below changes who reads
-# what. An unclear answer takes the side that adds review. Disabled, every
-# round gets two finders at high effort by default. A diff that touches a
-# security-sensitive path, CI, a dependency manifest or a data contract
-# (migrations, SQL, protobuf, schemas, OpenAPI) always gets two finders.
-# planner:
-#   enabled: true
+# The planner is a fast pre-review pass on `models.planner`. It answers three
+# questions about the nature of the change: trivial (a single quick check reads
+# it), subtle (finders run at high effort instead of medium) and paired (a
+# second finder on another model reads it too). These are the defaults, and the
+# `review` block below changes who reads what. An unclear answer takes the side
+# that adds review. A diff that touches a security-sensitive path, CI, a
+# dependency manifest or a data contract (migrations, SQL, protobuf, schemas,
+# OpenAPI) always gets two finders.
 
 # Judge stage. `effort` is low, medium, high, xhigh, max or auto (default),
 # which takes the level the planner picks. `tool_steps` is the number of

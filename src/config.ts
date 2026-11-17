@@ -42,9 +42,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     judge: OPUS_MODEL,
     dedup: HAIKU_MODEL,
   },
-  planner: {
-    enabled: true,
-  },
   judge: {
     tool_steps: 0,
     effort: 'auto',
@@ -93,7 +90,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'project',
   'memory',
   'models',
-  'planner',
   'judge',
   'review',
   'static_analysis',
@@ -116,7 +112,6 @@ const QUICK_CHECK_KEYS: ReadonlySet<string> = new Set(['model', 'effort']);
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
-const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'rounds_after_restart', 'test_path_patterns', 'suppress_resolved_threads']);
@@ -234,18 +229,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       for (const [key, model] of Object.entries(models)) {
         if (!MODEL_KEYS.has(key)) warnings.push(`Unknown config key: "models.${key}"`);
         else if (typeof model === 'string' && model !== '') pushModelError(errors, `models.${key}`, model);
-      }
-    }
-  }
-
-  if ('planner' in config) {
-    const planner = config.planner as Record<string, unknown>;
-    if (!planner || typeof planner !== 'object' || Array.isArray(planner)) {
-      errors.push('`planner` must be an object');
-    } else {
-      warnUnknownKeys(planner, PLANNER_KEYS, 'planner', warnings);
-      if ('enabled' in planner && typeof planner.enabled !== 'boolean') {
-        errors.push('`planner.enabled` must be a boolean');
       }
     }
   }
@@ -612,8 +595,6 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
     } else if (key === 'models' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       const known = Object.entries(value as Record<string, unknown>).filter(([name]) => MODEL_KEYS.has(name));
       result.models = { ...defaults.models, ...Object.fromEntries(known) } as ReviewConfig['models'];
-    } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];
     } else if (key === 'judge' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.judge = { ...defaults.judge, ...(value as Record<string, unknown>) } as ReviewConfig['judge'];
     } else if (key === 'static_analysis' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
