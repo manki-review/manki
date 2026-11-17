@@ -22,8 +22,8 @@ import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReas
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
-import { listClaimLines, listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
-import { runComparisons } from './compare';
+import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions } from './symbol-uses';
+import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
@@ -804,7 +804,7 @@ export async function runReview(
     };
     return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit, finderDeadline)];
   }));
-  // The sibling comparisons, claim checks and sweeps run on the model of the group's first reader.
+  // The sibling comparisons, related repo checks, claim checks and sweeps run on the model of the group's first reader.
   const comparisonModel = team.finders[0].model;
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
   // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them. The
@@ -893,6 +893,9 @@ export async function runReview(
   const relatedUses = await listRelatedUses(checkouts, referenceNames, translation, dependencyNames);
   const guides = pointedTo.guides = relatedRepoGuides(checkouts);
   const relatedTools = related && { ...related, ...(guides && { guides }) };
+  // Each counterpart in a related repo gets a call of its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
+  const relatedChecksPromise = runRelatedChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'related_check', reviewer),
+    checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], { effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal });
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;
   const readingUses = uses.readingSection + relatedUses.readingSection;
@@ -1133,10 +1136,12 @@ export async function runReview(
 
   // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
   const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), COMPARISON_GRACE_MS);
-  const { findings: comparisonFindings, comparisons } = await comparisonsPromise;
+  const { findings: comparisonFindings, comparisons: siblingComparisons } = await comparisonsPromise;
+  const relatedChecks = await relatedChecksPromise;
   const claimChecks = await claimChecksPromise;
   clearTimeout(comparisonGrace);
-  allFindings.push(...comparisonFindings, ...claimChecks.findings);
+  allFindings.push(...comparisonFindings, ...relatedChecks.findings, ...claimChecks.findings);
+  const comparisons = [...siblingComparisons, ...relatedChecks.comparisons];
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   const usesWithTerms = usesRecord || claimChecks.terms ? { ...usesRecord, ...(claimChecks.terms && { claimTerms: claimChecks.terms }) } : undefined;
   finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
@@ -2132,7 +2137,7 @@ export function parseFindings(responseText: string, reviewerName: string, instru
 }
 
 /** Whether a reply element says anything a finding can carry: a title, a description, or what a lead checked or left open. */
-function isUsableElement(element: unknown): element is Record<string, unknown> {
+export function isUsableElement(element: unknown): element is Record<string, unknown> {
   if (element === null || typeof element !== 'object' || Array.isArray(element)) return false;
   const f = element as Record<string, unknown>;
   return [f.title, f.description, ...(f.lead === true ? [f.checked, f.left] : [])].some(value => textOf(value) !== '');

@@ -642,18 +642,24 @@ export interface RoundUsesSymbol {
 
 /** A targeted call comparing changed code with the code beside it, asked alongside the finders. */
 export interface RoundComparison {
-  /** `field` asks whether a sibling field can hold the item a change looks up, `implementations` compares sibling functions. */
-  kind: 'field' | 'implementations';
+  /**
+   * `field` asks whether a sibling field can hold the item a change looks up, `implementations` compares sibling functions.
+   * A related repo kind checks one counterpart of that kind of repo.
+   */
+  kind: 'field' | 'implementations' | RelatedRepoKind;
   /** The reviewer name its findings carry. */
   reviewer: string;
-  /** The changed lookup, or each function compared, as `file:line`. */
+  /** The changed lookup, or each function compared, as `file:line`. For a counterpart, its lines as `owner/name:path:line`. */
   at: string[];
   /**
-   * `failed` when the call failed or its reply did not parse twice, `cut` when the round's cap left it out, and
-   * `timed_out` when it was still unanswered once the grace after the finders ran out.
+   * `failed` when the call failed or its reply did not parse twice, `cut` when the round's cap left it out, `timed_out`
+   * when it was still unanswered once the grace after the finders ran out, and `skipped` when a counterpart's call had
+   * no repository tools to open it.
    */
-  status: 'answered' | 'failed' | 'cut' | 'timed_out';
+  status: 'answered' | 'failed' | 'cut' | 'timed_out' | 'skipped';
   findings?: number;
+  /** The findings of a counterpart's answer dropped since they cite no line of the PR or none of the related repo that exists. */
+  dropped?: number;
 }
 
 /** A search of the diff for other instances of one finding's defect class. */
@@ -935,7 +941,10 @@ export interface FindingEvidence {
   checks: string[];
   /** The `file:line` or `file:start-end` locations that show the failure. A blocker without them is posted as a warning at most. */
   proof: string[];
-  /** The lines of related repos that show the failure, as `owner/name:path:line`. Only a check adds them, when it adds its lines to `proof`. */
+  /**
+   * The lines of related repos that show the failure, as `owner/name:path:line`. Only a check adds them, when it adds its
+   * lines to `proof`, and the check of a related repo counterpart, whose finding cites one.
+   */
   relatedProof?: string[];
   /**
    * Set when the finding says something is missing or handled nowhere: the search that came back empty, or an empty
@@ -2066,7 +2075,7 @@ export interface RoundDiff {
 /** Resolved model IDs per pipeline stage. */
 export interface RoundModels {
   planner?: string;
-  /** Model of the first reader of the round's review group. The sibling comparisons, claim checks and sweeps ran on it too. */
+  /** Model of the first reader of the round's review group. The sibling comparisons, related repo checks, claim checks and sweeps ran on it too. */
   reviewer?: string;
   judge: string;
   /** Model of the second refuter, on rounds where it checked a finding or an earlier round's answer of it was reused. */
@@ -2634,7 +2643,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'related_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */
