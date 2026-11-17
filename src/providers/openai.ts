@@ -271,7 +271,12 @@ const DROPPED_TEXT = /^ERROR: stream disconnected before completion: (?:stream c
 // the header's end, so no line of the prompt is read as the session. The header is a few hundred characters long.
 const HEADER_CHARS = 4000;
 const SESSION_ID = /^(?:(?!--------\r?\nuser\r?\n).*\n)*?session id: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\r?\n--------\r?\nuser\r?\n/;
-const RESUME_PROMPT = 'The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
+// Codex prints this line when it cannot reach the provider at all, as when the connection is refused or the host does not
+// resolve. It then tries again after a wait that grows to about a minute, and never gives up within the call.
+const NO_NETWORK_LINE = /^ERROR: Reconnecting\.\.\. waiting for network\s*$/;
+// How long a run may print nothing but `NO_NETWORK_LINE` before it ends. Codex tries five times within it.
+const NO_NETWORK_LIMIT_MS = 120_000;
+const RESUME_PROMPT ='The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
 const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
 
 /** Reads a wait worded as a duration, such as `in 3s`, `in 320ms` or `in 1m30s`, in milliseconds. Any other text has none. */
@@ -481,6 +486,7 @@ export class OpenAIClient implements LLMClient {
         hardTimeoutMs: limitMs,
         usedMs,
         signal: options?.signal,
+        waiting: { line: NO_NETWORK_LINE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network' },
         onStdout: (chunk) => { output += chunk; },
       }).catch(carry);
       let exit = await run(['-'], userMessage);

@@ -22,7 +22,7 @@ import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, parseContextBlocks, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
-import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, stringifyFindingFingerprint } from './review';
+import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
@@ -1487,7 +1487,9 @@ async function reviewRound(
         if (dashboard.agentProgress && event.agentName) {
           const entry = dashboard.agentProgress.find(a => a.name === event.agentName);
           if (entry) {
-            if (event.agentStatus === 'retrying') {
+            if (event.notStarted) {
+              entry.notStarted = event.notStarted;
+            } else if (event.agentStatus === 'retrying') {
               entry.status = 'retrying';
               entry.retryCount = event.retryCount;
             } else {
@@ -2122,6 +2124,8 @@ async function runFullReview(
         await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
       },
       signal: stop.signal,
+      // Counted from the start of the action, which is as close to the job's start as a step can see.
+      deadline: Date.now() - process.uptime() * 1000 + ROUND_TIME_MS,
       config,
       diff,
       rawDiff,

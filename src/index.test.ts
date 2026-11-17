@@ -194,6 +194,7 @@ jest.mock('./review', () => ({
   }),
   teamModels: jest.requireActual('./review').teamModels,
   RETRY_HINT: jest.requireActual('./review').RETRY_HINT,
+  ROUND_TIME_MS: jest.requireActual('./review').ROUND_TIME_MS,
   stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
   carryBodyWarnings: jest.requireActual('./review').carryBodyWarnings,
@@ -3713,6 +3714,7 @@ describe('runFullReview orchestration', () => {
       { stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' },
       { stage: 'reviewer', agent: primaryName, fallbackModel: 'gpt-5.5', reason: 'Claude subscription limit reached', limit: true },
     ];
+    const notStarted: NonNullable<RoundContext['notStarted']> = [{ kind: 'fallback', stage: 'judge', reason: 'the failed call left no time' }];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings, highlights: [], reviewComplete: true,
@@ -3722,10 +3724,14 @@ describe('runFullReview orchestration', () => {
       agentEffortMap: new Map([[primaryName, 'high'], [pairName, 'high']]),
       routing: { class: 'behavior', rank: 50, matched: ['behavior'], classSource: 'triage', group: 'full', groupSource: 'routing' },
       modelFallbacks,
+      notStarted,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
+    const started = Date.now() - process.uptime() * 1000;
     await callRunFullReview();
+    // The round's model calls end 25 minutes after the action started.
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].deadline).toBeCloseTo(started + 25 * 60_000, -3);
 
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4].routing).toEqual(expect.objectContaining({ class: 'behavior', group: 'full' }));
     const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
@@ -3746,6 +3752,7 @@ describe('runFullReview orchestration', () => {
     // The record names the model of the group's first reader.
     expect(ctx!.models.reviewer).toBe('claude-sonnet-5-5');
     expect(ctx!.models.fallbacks).toEqual(modelFallbacks);
+    expect(ctx!.notStarted).toEqual(notStarted);
     // The progress comment names the finder model that reached its limit and the model that read for it.
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[5]?.config.limitFallbacks).toEqual(['`claude-sonnet-5-5` reached its limit, so `gpt-5.5` read in its place']);
   });
@@ -5153,6 +5160,7 @@ describe('runFullReview orchestration', () => {
             completedAgents: 1,
             totalAgents: 1,
           });
+          onProgress({ phase: 'agent-complete', agentName: 'general', notStarted: ['not retried: it ran out of time, and a retry would start over'] });
         }
         jest.advanceTimersByTime(600);
         await Promise.resolve();
@@ -5174,7 +5182,9 @@ describe('runFullReview orchestration', () => {
     const agentFlushDashboard = dashboardCalls[1][4];
     expect(agentFlushDashboard.agentProgress).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'general', status: 'failed', findingCount: 0 }),
+        expect.objectContaining({
+          name: 'general', status: 'failed', findingCount: 0, durationMs: 50, notStarted: ['not retried: it ran out of time, and a retry would start over'],
+        }),
       ]),
     );
   });

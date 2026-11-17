@@ -786,10 +786,11 @@ function renderAgentLines(agents: AgentProgressEntry[]): string {
       return `${INDENT}✅ ${name}: ${countOf(a.findingCount ?? 0, 'finding')} (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
+      const why = (a.notStarted ?? []).map(line => `. ${sanitizeMarkdown(line.charAt(0).toUpperCase() + line.slice(1))}`).join('');
       if (a.retryCount && a.retryCount > 0) {
-        return `${INDENT}🔴 ${name}: failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})`;
+        return `${INDENT}🔴 ${name}: failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})${why}`;
       }
-      return `${INDENT}🔴 ${name}: failed (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}🔴 ${name}: failed (${formatDuration(a.durationMs ?? 0)})${why}`;
     }
     if (a.status === 'retrying') {
       if (a.retryCount != null) {

@@ -1452,6 +1452,50 @@ describe('sendViaCLI — extended coverage', () => {
     }
   });
 
+  it('ends a run that shows only that Codex waits for the network for two minutes, and resumes no endpoint session after it', async () => {
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    jest.spyOn(core, 'info').mockImplementation(() => {});
+    const noNetwork = 'ERROR: Reconnecting... waiting for network\n';
+    const header = 'session id: 01a1ea55-c867-71d0-b260-faea7b058ed3\n--------\nuser\nthe prompt\n';
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
+    try {
+      const client = new OpenAIClient({ auth: { kind: 'endpoint', key: 'sk-test', baseUrl: 'http://127.0.0.1:1/v1' }, model: 'gpt-4o' });
+      const lost = makeProc();
+      const lostPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      await waitForListeners(lost);
+      lost.stderrHandlers['data']?.(Buffer.from(`${header}${noNetwork}`));
+      jest.advanceTimersByTime(60_000);
+      // A repeat of the line keeps the first one's clock.
+      lost.stderrHandlers['data']?.(Buffer.from(noNetwork));
+      jest.advanceTimersByTime(59_000);
+      expect(lost.proc.kill).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1_000);
+      expect(lost.proc.kill).toHaveBeenCalledWith('SIGTERM');
+      lost.procHandlers['close']?.(null, 'SIGTERM');
+      const failed = await lostPromise;
+      expect(failed).not.toBeInstanceOf(TimeoutError);
+      expect(failed?.message).toBe('Codex CLI was waiting for the network for 120s, so the call ends as a failed connection. stderr: ERROR: Reconnecting... waiting for network');
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+
+      // Any other output in between starts the clock again, and a run that answers keeps its answer.
+      const back = makeProc();
+      const backPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 });
+      await waitForListeners(back);
+      back.stderrHandlers['data']?.(Buffer.from(`${header}${noNetwork}`));
+      jest.advanceTimersByTime(100_000);
+      back.stderrHandlers['data']?.(Buffer.from('codex\nI looked at the diff.\n'));
+      back.stderrHandlers['data']?.(Buffer.from(noNetwork));
+      jest.advanceTimersByTime(100_000);
+      back.stdoutHandlers['data']?.(Buffer.from('[]'));
+      jest.advanceTimersByTime(100_000);
+      expect(back.proc.kill).not.toHaveBeenCalled();
+      back.procHandlers['close']?.(0, null);
+      expect((await backPromise).content).toBe('[]');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('fails a call Manki ended itself on the time limit or the abort reason, whatever stderr ends on', async () => {
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     const capacity = 'ERROR: Selected model is at capacity. Please try a different model.';

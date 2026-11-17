@@ -617,6 +617,11 @@ export interface RunCliOptions {
   usedMs?: number;
   /** Kills the CLI once it aborts. The run then rejects with the signal's reason. */
   signal?: AbortSignal;
+  /**
+   * Kills the CLI once its stderr has ended on a line that `line` matches for `limitMs`, with no other output since that
+   * line first showed. The run then rejects with an error that says the CLI was `doing`.
+   */
+  waiting?: { line: RegExp; limitMs: number; doing: string };
 }
 
 export interface CliExit {
@@ -628,7 +633,7 @@ export interface CliExit {
 
 /**
  * Spawn a provider CLI in an empty directory, feed it `input` on stdin and resolve once it exits. Rejects when
- * the CLI fails to spawn, prints nothing for `staleTimeoutMs`, runs past the hard timeout,
+ * the CLI fails to spawn, prints nothing for `staleTimeoutMs`, waits as long as `waiting` allows, runs past the hard timeout,
  * exceeds the output cap or stdin cannot be written. A non-zero exit still resolves, so
  * the caller can build its own diagnostics.
  */
@@ -648,6 +653,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     let stderr = '';
     let timedOut = false;
     let stale = false;
+    let waitedOut = false;
     let aborted = false;
     let outputExceeded = false;
     let settled = false;
@@ -665,6 +671,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     const clearAllTimers = (): void => {
       clearTimeout(timer);
       clearTimeout(staleTimer);
+      clearTimeout(waitTimer);
       killTimers.forEach(clearTimeout);
       opts.signal?.removeEventListener('abort', onAbort);
     };
@@ -690,6 +697,27 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       staleTimer.unref();
     };
     resetStaleTimer();
+
+    let waitTimer: NodeJS.Timeout | undefined;
+    const stopWaitTimer = (): void => {
+      clearTimeout(waitTimer);
+      waitTimer = undefined;
+    };
+    const watchWaiting = (): void => {
+      if (!opts.waiting) return;
+      if (!opts.waiting.line.test(lastLine(stderr))) {
+        stopWaitTimer();
+        return;
+      }
+      waitTimer ??= setTimeout(() => {
+        if (outputExceeded || timedOut || stale || aborted) return;
+        waitedOut = true;
+        clearTimeout(timer);
+        clearTimeout(staleTimer);
+        terminate();
+      }, opts.waiting.limitMs);
+      waitTimer.unref();
+    };
 
     const onAbort = (): void => {
       aborted = true;
@@ -722,12 +750,14 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     child.stdout.on('data', (data: Buffer) => {
       if (outputExceeded || settled || stale || timedOut || aborted) return;
       resetStaleTimer();
+      stopWaitTimer();
       if (!countBytes(data.length)) return;
       takeStdout(stdoutDecoder.write(data));
     });
     child.stderr.on('data', (data: Buffer) => {
       if (outputExceeded || settled) return;
       stderr += stderrDecoder.write(data);
+      watchWaiting();
       countBytes(data.length);
     });
 
@@ -745,6 +775,12 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       if (stale && staleTimeoutMs !== undefined) {
         const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
         const msg = `${label} CLI stale — no output for ${staleTimeoutMs / 1000}s${details ? `. ${details}` : ''}`;
+        core.warning(msg);
+        reject(new Error(msg));
+        return;
+      }
+      if (waitedOut && opts.waiting) {
+        const msg = `${label} CLI was ${opts.waiting.doing} for ${opts.waiting.limitMs / 1000}s, so the call ends as a failed connection. stderr: ${extractCliErrorSnippet(stderr)}`;
         core.warning(msg);
         reject(new Error(msg));
         return;

@@ -5,12 +5,12 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
-import { jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
+import { formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -153,6 +153,17 @@ const FINDER_STEPS = 30;
 const RISKY_FINDER_STEPS = 40;
 // A safety net for a call of a finder or the judge. With tools, the step budget is what normally ends the call.
 export const FINDER_TOOLS_TIMEOUT_MS = 900_000;
+/**
+ * How long the model calls of a round in the action may take, from the action's start. No step can read the job's
+ * `timeout-minutes`, so this sits below the 30 minutes of the workflow template and leaves time to post the round.
+ */
+export const ROUND_TIME_MS = 25 * 60_000;
+/** The time a finder's call, retry or fallback leaves before the round's end for the dedup, the judge and the stages after it. */
+const AFTER_FINDERS_MS = 8 * 60_000;
+/** The least time a finder's retry starts with. */
+const MIN_RETRY_MS = 5 * 60_000;
+/** The least time the judge starts with. */
+const MIN_JUDGE_MS = 2 * 60_000;
 /** How long the round still waits for the sibling comparisons once the finders are done. */
 const COMPARISON_GRACE_MS = 60_000;
 /** How long the claim checks wait for their lines of the related repos before they start without them. */
@@ -403,6 +414,8 @@ export interface ReviewProgress {
   agentFindingCount?: number;
   agentDurationMs?: number;
   agentStatus?: 'success' | 'failure' | 'retrying';
+  /** Why a retry or a move to the fallback model of the failed finder `agentName` was not started, one line each. */
+  notStarted?: string[];
   rawFindingCount?: number;
   judgeInputCount?: number;
   staticDedupCount?: number;
@@ -637,6 +650,8 @@ export interface ReviewOptions {
   checkpoint?: () => Promise<void>;
   /** Stops every model call of the review once it aborts. */
   signal?: AbortSignal;
+  /** The time, in ms since the epoch, by which every model call of the round must end. Unset leaves each call its own limit. */
+  deadline?: number;
   isFollowUp?: boolean;
   openThreads?: OpenThread[] | null;
   previousFindings?: PreviousFinding[];
@@ -668,7 +683,7 @@ export async function runReview(
   options: ReviewOptions,
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
-    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal,
+    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal, deadline,
     isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfiles = [],
   } = options;
   const overlong = overlongChangedLines(diff);
@@ -691,7 +706,16 @@ export async function runReview(
   const readingModels = new Map<string, number>();
   const addReader = (model: string, step: 1 | -1): void => { readingModels.set(model, (readingModels.get(model) ?? 0) + step); };
   const llmCalls: LLMCall[] = [];
-  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined): LLMClient => {
+  const finderDeadline = deadline === undefined ? undefined : deadline - AFTER_FINDERS_MS;
+  const notStarted: RoundNotStarted[] = [];
+  const skip = (entry: RoundNotStarted): void => {
+    if (notStarted.some(e => e.kind === entry.kind && e.stage === entry.stage && e.agent === entry.agent && e.reason === entry.reason)) return;
+    notStarted.push(entry);
+    const what = entry.kind === 'judge' ? 'The judge' : entry.kind === 'retry' ? `The retry of ${entry.agent}` : `The move of ${entry.agent ?? entry.stage} to its fallback model`;
+    core.warning(`${what} is not started, since ${entry.reason}`);
+  };
+  // Every call ends by `until`, and a fallback gets only what the failed call left of that.
+  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined, until = deadline): LLMClient => {
     const label = { stage, ...(agent && { agent }) };
     const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
     return withSignal(withModelFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
@@ -702,7 +726,7 @@ export async function runReview(
       modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: limit ? error.limit : error.reason, ...(limit && { limit: true as const }) });
       // A limit already holds its fallback model for the finder.
       if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
-    }, movesOnLimit), signal);
+    }, movesOnLimit, () => skip({ kind: 'fallback', stage, ...(agent && { agent }), reason: 'the failed call left no time' })), signal, until);
   };
   // Classified while the review runs, since only the posted note reads it.
   const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
@@ -762,7 +786,7 @@ export async function runReview(
     const movesOnLimit = (): (() => void) | undefined => {
       const model = modelIdentity(stage.fallback!.model);
       if ((readingModels.get(model) ?? 0) > 0) {
-        core.info(`${f.name} reached a limit and is not sent to ${stage.fallback!.model}, which already reads for a finder of this round`);
+        skip({ kind: 'fallback', stage: 'reviewer', agent: f.name, reason: `${stage.fallback!.model} already reads for a finder of this round` });
         return undefined;
       }
       addReader(model, 1);
@@ -772,7 +796,7 @@ export async function runReview(
         held = false;
       };
     };
-    return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit)];
+    return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit, finderDeadline)];
   }));
   // The sibling comparisons, claim checks and sweeps run on the model of the group's first reader.
   const comparisonModel = team.finders[0].model;
@@ -808,7 +832,7 @@ export async function runReview(
     verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
     agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext, ...relatedRecord(),
+    ...(modelFallbacks.length > 0 && { modelFallbacks }), ...(notStarted.length > 0 && { notStarted }), llmCalls, ...finderContext, ...relatedRecord(),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
   });
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
@@ -888,8 +912,9 @@ export async function runReview(
   const agentWarnings = new Map<string, string[]>();
   const agentsAskedAgain: string[] = [];
   Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentsAskedAgain });
-  // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
   const quotaErrors = new Map<string, QuotaError>();
+  // Why a failed finder is not run again: a used-up limit, or its own time limit, which a retry from the start would meet again.
+  const noRetry = new Map<string, string>();
   // The note each finder's next retry gets: one that names the parse error when its last reply did not parse.
   const retryNotes = new Map<string, string>();
   // A retry takes the note, so no later call of the finder can carry it again.
@@ -905,11 +930,15 @@ export async function runReview(
   };
   const recordFailure = (name: string, error: unknown): void => {
     agentFailureReasons.set(name, recordWarning(name, error));
-    if (error instanceof QuotaError) quotaErrors.set(name, error);
+    if (error instanceof QuotaError) {
+      quotaErrors.set(name, error);
+      noRetry.set(name, error.limit);
+    } else if (error instanceof TimeoutError) noRetry.set(name, 'it ran out of time, and a retry would start over');
+    else noRetry.delete(name);
     if (error instanceof FinderReplyError) retryNotes.set(name, parseRetryNote(error, 'array'));
     else retryNotes.delete(name);
   };
-  const retryable = (name: string): boolean => !quotaErrors.has(name);
+  const retryable = (name: string): boolean => !noRetry.has(name);
   // The finder has the changed files in its message, so one it opens is no code outside the diff.
   const changedPaths = new Set(diff.files.map(f => f.path));
   const listed = listedFiles(usesRecord).filter(file => !changedPaths.has(file));
@@ -999,10 +1028,19 @@ export async function runReview(
     }
   }
 
-  // Retry failed agents up to MAX_AGENT_RETRIES times
+  // Retry failed agents up to MAX_AGENT_RETRIES times, each only with the time the round has left for the finders
   const retryCount: Record<string, number> = {};
-  for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.some(retryable); retry++) {
-    const agentsToRetry = failedAgents.filter(retryable).map(name => team.finders.find(a => a.name === name)!);
+  for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.length > 0; retry++) {
+    const leftMs = finderDeadline === undefined ? Infinity : finderDeadline - Date.now();
+    const noTime = leftMs < MIN_RETRY_MS
+      ? `the round has ${formatDuration(Math.max(0, leftMs))} left for the finders, less than the ${formatDuration(MIN_RETRY_MS)} a retry starts with`
+      : undefined;
+    for (const name of failedAgents) {
+      const reason = noRetry.get(name) ?? noTime;
+      if (reason) skip({ kind: 'retry', stage: 'reviewer', agent: name, reason });
+    }
+    const agentsToRetry = noTime ? [] : failedAgents.filter(retryable).map(name => team.finders.find(a => a.name === name)!);
+    if (agentsToRetry.length === 0) break;
     const skipped = failedAgents.filter(name => !retryable(name));
     core.info(`Retry ${retry}/${MAX_AGENT_RETRIES}: retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
 
@@ -1080,6 +1118,12 @@ export async function runReview(
 
     failedAgents.splice(0, failedAgents.length, ...skipped, ...stillFailed);
   }
+  // A failed finder's line in the progress comment says why a retry or a move to its fallback model was not started.
+  for (const name of failedAgents) {
+    const lines = notStarted.filter(e => e.stage === 'reviewer' && e.agent === name)
+      .map(e => `${e.kind === 'retry' ? 'not retried' : 'not moved to the fallback model'}: ${e.reason}`);
+    if (lines.length > 0) onProgress?.({ phase: 'agent-complete', agentName: name, notStarted: lines });
+  }
 
   // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
   const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), COMPARISON_GRACE_MS);
@@ -1092,11 +1136,19 @@ export async function runReview(
   finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
+    // A limit names itself in `quotaRoundSummary`, so only the other reasons a finder was not retried are said here.
+    const unretried = failedAgents.flatMap(name => {
+      const reason = !quotaErrors.has(name) && notStarted.find(e => e.kind === 'retry' && e.agent === name)?.reason;
+      return reason ? [{ name, line: `${name} failed and was not retried: ${reason}.` }] : [];
+    });
+    const retried = failedAgents.filter(name => !unretried.some(u => u.name === name));
     const summary = quotaErrors.size > 0
-      ? quotaRoundSummary(quotaErrors, failedAgents)
-      : failedAgents.length === team.finders.length
-        ? `All reviewers failed. ${RETRY_HINT}`
-        : `${failedAgents.join(', ')} failed after retries. ${RETRY_HINT}`;
+      ? [quotaRoundSummary(quotaErrors, retried), ...unretried.map(u => u.line)].join(' ')
+      : unretried.length > 0
+        ? [...unretried.map(u => u.line), ...(retried.length > 0 ? [`${retried.join(', ')} failed after retries.`] : []), RETRY_HINT].join(' ')
+        : failedAgents.length === team.finders.length
+          ? `All reviewers failed. ${RETRY_HINT}`
+          : `${failedAgents.join(', ')} failed after retries. ${RETRY_HINT}`;
     return incomplete(summary, { failedAgents });
   }
 
@@ -1248,6 +1300,12 @@ export async function runReview(
     allJudgedFindings = [];
     finalFindings = [];
   } else {
+    const judgeLeftMs = deadline === undefined ? Infinity : deadline - Date.now();
+    if (judgeLeftMs < MIN_JUDGE_MS) {
+      const reason = `the round has ${formatDuration(Math.max(0, judgeLeftMs))} left, less than the ${formatDuration(MIN_JUDGE_MS)} the judge starts with`;
+      skip({ kind: 'judge', stage: 'judge', reason });
+      return incomplete(`The judge was not started, since ${reason}. ${RETRY_HINT}`, { ...(openLeads.length > 0 && { openLeads }) });
+    }
     try {
       core.info(`Running judge on ${findingsForJudge.length} findings...`);
       const judgeStart = Date.now();
@@ -1589,6 +1647,7 @@ export async function runReview(
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
     ...(modelFallbacks.length > 0 && { modelFallbacks }),
+    ...(notStarted.length > 0 && { notStarted }),
     llmCalls,
     ...finderContext,
     ...relatedRecord(),

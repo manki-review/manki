@@ -44,7 +44,7 @@ import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, withModelFallback, wrapClientForUsage } from './providers';
+import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { repoToolsPrompt } from './providers/cli-utils';
 
@@ -5379,6 +5379,31 @@ describe('runReview', () => {
     const slow = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect([slow.outcome, slow.summary]).toEqual(['INCOMPLETE', 'The judge ran out of time. Retry with /manki review.']);
 
+    // Finders that leave the judge less than two minutes of the round end it incomplete, with their findings in the record.
+    const start = Date.now();
+    let now = start;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const lateClients = makeClients(findingJson);
+      jest.mocked(lateClients.reviewer.sendMessage).mockImplementation(async () => {
+        await Promise.resolve();
+        now = start + 18.5 * 60_000;
+        return { content: findingJson };
+      });
+      mockedRunJudgeAgent.mockClear();
+      const late = await runReview(lateClients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', deadline: start + 20 * 60_000 });
+      expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+      expect([late.outcome, late.reviewComplete, late.summary]).toEqual([
+        'INCOMPLETE', false, 'The judge was not started, since the round has 1m 30s left, less than the 2m 0s the judge starts with. Retry with /manki review.',
+      ]);
+      expect(late.notStarted).toEqual([{ kind: 'judge', stage: 'judge', reason: 'the round has 1m 30s left, less than the 2m 0s the judge starts with' }]);
+      expect(late.rawFindings?.map(f => f.title)).toEqual(['Some code improvement', 'Some code improvement']);
+      // Each finder call had only the time the round left for the finders: all but the eight minutes kept for the stages after them.
+      expect(jest.mocked(lateClients.reviewer.sendMessage).mock.calls.map(([, , opts]) => opts?.timeoutMs)).toEqual([12 * 60_000, 12 * 60_000]);
+    } finally {
+      clock.mockRestore();
+    }
+
     const actualJudge = jest.requireActual<typeof import('./judge')>('./judge');
     mockedRunJudgeAgent.mockImplementation(actualJudge.runJudgeAgent);
     for (const judgeOutput of ['not json {broken', '{"summary":"ok","findings":[]}']) {
@@ -6148,7 +6173,7 @@ describe('runReview', () => {
     };
   }
 
-  it('retries a failed finder and completes when the retry succeeds', async () => {
+  it('retries a failed finder when the round has the time and completes when the retry succeeds, and ends incomplete without the time', async () => {
     const findingJson = JSON.stringify([
       { severity: 'note', title: 'Found something', file: 'src/a.ts', line: 5, description: 'Desc.' },
     ]);
@@ -6180,6 +6205,37 @@ describe('runReview', () => {
     expect(pairFailure).toHaveLength(1);
     expect(pairSuccess).toHaveLength(1);
     expect(pairSuccess[0].completedAgents).toBeGreaterThan(pairFailure[0].completedAgents!);
+
+    // A retry starts only with five minutes of what the round leaves for the finders, and gets no more than that.
+    const start = Date.now();
+    let now = start;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const failsAt = (minutes: number) => jest.fn().mockImplementationOnce(async () => {
+        await Promise.resolve();
+        now = start + minutes * 60_000;
+        throw new Error('Codex CLI invocation failed');
+      }).mockResolvedValue({ content: findingJson });
+      const review = (pair: jest.Mock, progress?: jest.Mock) => runReview(pairedClients(jest.fn().mockResolvedValue({ content: findingJson }), pair), {
+        config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', deadline: start + 20 * 60_000, onProgress: progress,
+      });
+      const early = failsAt(5);
+      expect((await review(early)).reviewComplete).toBe(true);
+      expect(early.mock.calls.map(([, , opts]) => opts.timeoutMs)).toEqual([12 * 60_000, 7 * 60_000]);
+
+      now = start;
+      const late = failsAt(8);
+      const lateProgress = jest.fn();
+      const incomplete = await review(late, lateProgress);
+      const why = 'the round has 4m 0s left for the finders, less than the 5m 0s a retry starts with';
+      expect(late).toHaveBeenCalledTimes(1);
+      expect([incomplete.outcome, incomplete.summary]).toEqual(['INCOMPLETE', `Claude Opus 5.5 · high failed and was not retried: ${why}. Retry with /manki review.`]);
+      expect(incomplete.notStarted).toEqual([{ kind: 'retry', stage: 'reviewer', agent: 'Claude Opus 5.5 · high', reason: why }]);
+      expect(incomplete.rawFindings?.map(f => f.title)).toEqual(['Found something']);
+      expect(lateProgress.mock.calls.map(([p]: [ReviewProgress]) => p).filter(p => p.agentStatus === 'retrying')).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it.each<[string, string, RegExp]>([
@@ -6231,7 +6287,7 @@ describe('runReview', () => {
     if (judgeEffort === 'low') expect(result.plannerResult).toMatchObject({ prType: 'docs' });
   });
 
-  it('ends INCOMPLETE without retrying a finder whose subscription limit is used up', async () => {
+  it('ends INCOMPLETE without retrying a finder whose subscription limit is used up or that ran out of time', async () => {
     const limit = new QuotaError("You've hit your weekly limit", 'Claude subscription limit reached', 'Nov 6, 8pm (UTC)', 'token');
     const primary = jest.fn().mockRejectedValue(limit);
     const pair = jest.fn().mockResolvedValue({ content: '[]' }).mockRejectedValueOnce(new Error('Timeout'));
@@ -6246,6 +6302,19 @@ describe('runReview', () => {
     const retried = onProgress.mock.calls.map(([p]: [ReviewProgress]) => p).filter(p => p.agentStatus === 'retrying').map(p => p.agentName);
     expect(retried).not.toContain('Claude Sonnet 5.5 · high');
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+    expect(result.notStarted).toEqual([{ kind: 'retry', stage: 'reviewer', agent: 'Claude Sonnet 5.5 · high', reason: 'Claude subscription limit reached' }]);
+
+    // A finder that used up its time limit is not run again from the start either, and the record and its progress line say why.
+    const slowProgress = jest.fn();
+    const slowPair = jest.fn().mockRejectedValue(new TimeoutError('Codex CLI timed out after 900s'));
+    const slow = await runReview(pairedClients(jest.fn().mockResolvedValue({ content: '[]' }), slowPair), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress: slowProgress });
+    const why = 'it ran out of time, and a retry would start over';
+    expect(slowPair).toHaveBeenCalledTimes(1);
+    expect([slow.outcome, slow.summary]).toEqual(['INCOMPLETE', `Claude Opus 5.5 · high failed and was not retried: ${why}. Retry with /manki review.`]);
+    expect(slow.notStarted).toEqual([{ kind: 'retry', stage: 'reviewer', agent: 'Claude Opus 5.5 · high', reason: why }]);
+    expect(slowProgress.mock.calls.map(([p]: [ReviewProgress]) => p).filter(p => p.notStarted)).toEqual([
+      { phase: 'agent-complete', agentName: 'Claude Opus 5.5 · high', notStarted: [`not retried: ${why}`] },
+    ]);
 
     const run = (pairFailure: Error) => runReview(pairedClients(jest.fn().mockRejectedValue(limit), jest.fn().mockRejectedValue(pairFailure)), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token.');
@@ -7118,20 +7187,35 @@ describe('withModelFallback', () => {
 
       jest.mocked(fallback.sendMessage).mockClear();
       onFallback.mockClear();
-      const usedUp = await withModelFallback(refusedAfter(900), fallback, onFallback).sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      const onNoTime = jest.fn();
+      const usedUp = await withModelFallback(refusedAfter(900), fallback, onFallback, undefined, onNoTime).sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
       expect(usedUp).toBeInstanceOf(TimeoutError);
       expect(usedUp).toMatchObject({ message: 'The refused call used up its 900s, so it is not sent to the fallback model', cause: refusal });
       expect(fallback.sendMessage).not.toHaveBeenCalled();
       expect(onFallback).toHaveBeenCalledTimes(1);
+      expect(onNoTime).toHaveBeenCalledTimes(1);
 
       // A call that reached a limit leaves its fallback the same time, and fails with the limit itself when none is left.
       onFallback.mockClear();
+      onNoTime.mockClear();
       const limitedAfter = (seconds: number) => ({ sendMessage: jest.fn(async () => { now += seconds * 1000; throw limit; }) }) as unknown as LLMClient;
-      await withModelFallback(limitedAfter(300), fallback, onFallback).sendMessage('sys', 'limited', { timeoutMs: 900_000 });
+      await withModelFallback(limitedAfter(300), fallback, onFallback, undefined, onNoTime).sendMessage('sys', 'limited', { timeoutMs: 900_000 });
       expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'limited', { timeoutMs: 600_000 }]]);
-      await expect(withModelFallback(limitedAfter(900), fallback, onFallback).sendMessage('sys', 'user', { timeoutMs: 900_000 })).rejects.toBe(limit);
+      await expect(withModelFallback(limitedAfter(900), fallback, onFallback, undefined, onNoTime).sendMessage('sys', 'user', { timeoutMs: 900_000 })).rejects.toBe(limit);
       expect(fallback.sendMessage).toHaveBeenCalledTimes(1);
       expect(onFallback.mock.calls).toEqual([[limit]]);
+      expect(onNoTime).toHaveBeenCalledTimes(1);
+
+      // A deadline gives the call, and so its fallback, no more than the time left until it, and sends nothing once it passed.
+      jest.mocked(fallback.sendMessage).mockClear();
+      const limited = limitedAfter(300);
+      const capped = withSignal(withModelFallback(limited, fallback, onFallback), undefined, now + 400_000);
+      await capped.sendMessage('sys', 'capped', { timeoutMs: 900_000 });
+      expect(jest.mocked(limited.sendMessage).mock.calls).toEqual([['sys', 'capped', { timeoutMs: 400_000 }]]);
+      expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'capped', { timeoutMs: 100_000 }]]);
+      now += 100_000;
+      await expect(capped.sendMessage('sys', 'late', { timeoutMs: 900_000 })).rejects.toThrow(new TimeoutError('No time is left for the call, so it is not sent'));
+      expect(limited.sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       clock.mockRestore();
     }
