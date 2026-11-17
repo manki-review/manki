@@ -1,7 +1,8 @@
 import type { LLMCall } from '../src/providers';
 import { formatApprovalRecord, formatReplyRecord, formatReviewRecord } from '../src/review-record';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
-import type { ApprovalRecord, ReplyRecord, RoundContext } from '../src/types';
+import { PRE_EXISTING_TAG } from '../src/types';
+import type { ApprovalRecord, FindingFingerprintEntry, ReplyRecord, RoundContext } from '../src/types';
 import { computeStats, prRecords, renderStats } from './review-stats';
 
 const bot = { login: 'manki-review[bot]', type: 'Bot' };
@@ -247,6 +248,70 @@ describe('review stats', () => {
     ].join('\n'));
     expect(report).toContain('| blocker disproved | 1 |');
     expect(report).toContain('- Follow-up rounds whose inter-round diff was cut or unknown: 40% (2 of 5)');
+  });
+
+  it('counts the blockers and warnings round 1 found against those a later round found on reviewed code, over the PRs whose records prove it', () => {
+    let made = 0;
+    const entry = (severity: 'blocker' | 'warning' | 'note', more: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry =>
+      ({ ...makeFindingFingerprintEntry({ severity, title: `Finding ${++made}` }), ...more });
+    const round = (number: number, mankiVersion: string, entries: FindingFingerprintEntry[], originsWithoutPrior?: true) =>
+      makeRoundContext(number, { meta: { prNumber: 1, commitSha: 'a', round: number, timestamp: 't', mankiVersion }, findings: { count: entries.length, severityCounts: {}, entries, ...(originsWithoutPrior && { originsWithoutPrior }) } });
+    const pr = (number: number, rounds: RoundContext[]) => prRecords('o/r', number, { reviews: rounds.map((context, i) => review(number * 10 + i, context)), threadComments: [] });
+    const prs = [
+      pr(10, [
+        // Round 1 needs no origin. A note and a pre-existing finding count in no column.
+        round(1, '7.6.0', [entry('blocker', { origin: 'new' }), entry('warning', { origin: 'new' }), entry('warning'), entry('note'), entry('warning', { tags: [PRE_EXISTING_TAG] })]),
+        // A finding on code the push changed, one that restates an earlier one, one under an earlier thread and a pre-existing one are not late.
+        round(2, '7.6.0', [
+          entry('warning', { origin: 'reviewed' }), entry('blocker', { origin: 'new' }), entry('note', { origin: 'reviewed' }), entry('warning', { origin: 'earlier', raisedIn: 1 }),
+          entry('warning', { origin: 'reviewed', posted: 'earlier_thread' }), entry('blocker', { origin: 'reviewed', tags: [PRE_EXISTING_TAG] }),
+        ]),
+        round(3, '7.6.1', [entry('blocker', { origin: 'reviewed' })]),
+      ]),
+      // A later round of a release that did not flag a round without the earlier change cannot prove a finding new.
+      pr(11, [round(1, '7.4.0', [entry('warning')]), round(2, '7.4.0', [entry('warning', { origin: 'new' })]), round(3, '7.4.0', [entry('note', { origin: 'reviewed' })])]),
+      // A round without the earlier change, and one whose findings have no origin, prove nothing either.
+      pr(12, [round(1, '7.6.0', [entry('blocker')]), round(2, '7.6.0', [entry('warning', { origin: 'new' })], true), round(3, '7.6.0', [entry('warning')])]),
+      // A later round of an old release that posted no blocker or warning adds nothing late, so the PR still counts.
+      pr(13, [round(1, '6.1.0', [entry('warning')]), round(2, '6.1.0', [entry('note')])]),
+      // Without the record of round 1 the PR's first findings are unknown.
+      pr(14, [round(2, '7.6.0', [entry('warning', { origin: 'reviewed' })])]),
+      pr(15, [round(1, '7.6.0', [])]),
+    ];
+    const stats = computeStats(prs);
+    const grades = (blocker: [number, number], warning: [number, number]) => ({
+      blocker: { firstRound: blocker[0], later: blocker[1] }, warning: { firstRound: warning[0], later: warning[1] },
+    });
+    expect(stats.firstRound).toEqual([
+      { number: 10, grades: grades([1, 1], [2, 1]), unproven: 0 },
+      { number: 11, grades: grades([0, 0], [1, 0]), unproven: 1 },
+      { number: 12, grades: grades([1, 0], [0, 0]), unproven: 2 },
+      { number: 13, grades: grades([0, 0], [1, 0]), unproven: 0 },
+      { number: 14, grades: grades([0, 0], [0, 1]), unproven: 1 },
+      { number: 15, grades: grades([0, 0], [0, 0]), unproven: 0 },
+    ]);
+    const report = renderStats(stats);
+    expect(report).toContain([
+      '## Found in round 1', '',
+      '| grade | round 1 | later, on code an earlier round reviewed | found in round 1 |',
+      '| --- | ---: | ---: | ---: |',
+      '| blocker | 1 | 1 | 50% (1 of 2) |',
+      '| warning | 3 | 1 | 75% (3 of 4) |',
+      '| both | 4 | 2 | 67% (4 of 6) |',
+    ].join('\n'));
+    expect(report).toContain('\n\nLeft out, because their records cannot say where a finding was first raised: 3 PRs with 4 such round records (#11, #12, #14).\n\n');
+    expect(report).toContain([
+      '| PR | round 1 blockers | round 1 warnings | later blockers | later warnings | found in round 1 |',
+      '| --- | ---: | ---: | ---: | ---: | ---: |',
+      '| #10 | 1 | 2 | 1 | 1 | 60% (3 of 5) |',
+      '| #13 | 0 | 1 | 0 | 0 | 100% (1 of 1) |',
+      '',
+      '## Fix rate',
+    ].join('\n'));
+    const none = renderStats(computeStats([]));
+    expect(none).toContain('| both | 0 | 0 | - |');
+    expect(none).not.toContain('Left out, because');
+    expect(none).not.toContain('| PR | round 1 blockers');
   });
 
   it('tallies every decision the round and reply records keep, and lists each in the report', () => {
