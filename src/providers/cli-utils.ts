@@ -346,20 +346,24 @@ export async function withPromptDir<T>(run: (dir: string) => Promise<T>): Promis
   }
 }
 
-let emptyCwd: string | undefined;
+/** Returns a function that creates a folder with `create` on its first call, returns it on every call, and removes it when the process exits. */
+export function processFolder(create: () => string): () => string {
+  let folder: string | undefined;
+  return () => {
+    if (!folder) {
+      const dir = create();
+      process.once('exit', () => rmSync(dir, { recursive: true, force: true }));
+      folder = dir;
+    }
+    return folder;
+  };
+}
 
 /**
  * Returns an empty directory, created once per process, to run the CLIs in. In the PR
  * checkout they would load the PR's own hooks, MCP servers and settings files.
  */
-function emptyCliCwd(): string {
-  if (!emptyCwd) {
-    const dir = mkdtempSync(join(tmpdir(), 'manki-cli-'));
-    process.once('exit', () => rmSync(dir, { recursive: true, force: true }));
-    emptyCwd = dir;
-  }
-  return emptyCwd;
-}
+const emptyCliCwd = processFolder(() => mkdtempSync(join(tmpdir(), 'manki-cli-')));
 
 // Besides `SYSTEM_ENV`, a CLI needs a home, the user's name, the locale and the CA bundles a proxy may need.
 // On macOS a CLI finds its stored login in the keychain by the user's name.

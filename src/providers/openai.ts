@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 
@@ -9,7 +9,7 @@ import * as core from '@actions/core';
 
 import { makeScratchDir } from '../tool-install';
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, processFolder, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -17,22 +17,12 @@ const execFileAsync = promisify(execFile);
 // Re-export for existing test imports.
 export { STALE_TIMEOUT_MS };
 
-let ownCodexHome: string | undefined;
-
 /**
- * Returns the private folder this process's Codex runs use as their home, created on first use and removed when the
- * process exits. Codex reads skills, `AGENTS.md`, `config.toml` and `.env` from its home and skills from `~/.agents`,
- * so a runner's own setup would reach a review. The calls of a run share the folder, because Codex writes a login's
- * refreshed tokens and the sessions a call resumes into it.
+ * Returns the private folder this process's Codex runs use as their home. Codex reads skills, `AGENTS.md`,
+ * `config.toml` and `.env` from its home and skills from `~/.agents`, so a runner's own setup would reach a review. The
+ * calls of a run share the folder, because Codex writes a login's refreshed tokens and the sessions a call resumes into it.
  */
-function codexHome(): string {
-  if (!ownCodexHome) {
-    const dir = makeScratchDir('codex-home');
-    process.once('exit', () => rmSync(dir, { recursive: true, force: true }));
-    ownCodexHome = dir;
-  }
-  return ownCodexHome;
-}
+const codexHome = processFolder(() => makeScratchDir('codex-home'));
 
 /** Returns the environment of a Codex run, the `cliEnv` of `vars` with `HOME` and `CODEX_HOME` set to `codexHome`. */
 export function codexEnv(vars: NodeJS.ProcessEnv, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
