@@ -190,8 +190,7 @@
 #   checks: true             # check-run annotations, needs `checks: read`
 #   code_scanning: true      # code scanning alerts, needs `security-events: read`
 #   dependency_review: true  # vulnerable packages the PR adds
-#   wait_for_checks: []      # check runs to wait for, such as [lint, CodeQL]
-#   wait_timeout_seconds: 300
+#   wait_for_checks: []      # check runs to wait for up to 300 seconds, such as [lint, CodeQL]
 #   analyzers:               # analyzers Manki runs itself, or `all`
 #     ast_grep: false        # Manki's ast-grep rules for JS, TS and Python. The Rust rules run in a Cargo repository
 #     secrets: false         # gitleaks on the added lines

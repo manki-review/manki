@@ -89,14 +89,14 @@ describe('config', () => {
   });
 
   describe('static_analysis config', () => {
-    const defaults = { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [], wait_timeout_seconds: 300, analyzers: {} };
+    const defaults = { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [], analyzers: {} };
 
     it('turns every CI source on and every analyzer off by default, and merges a partial block', () => {
       expect(loadConfigFromContent('').static_analysis).toEqual(defaults);
       expect(loadConfigFromContent('static_analysis:\n  code_scanning: false\n').static_analysis)
         .toEqual({ ...defaults, code_scanning: false });
-      expect(loadConfigFromContent('static_analysis:\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n  analyzers: all\n').static_analysis)
-        .toEqual({ ...defaults, wait_for_checks: ['lint'], wait_timeout_seconds: 60, analyzers: 'all' });
+      expect(loadConfigFromContent('static_analysis:\n  wait_for_checks: [lint]\n  analyzers: all\n').static_analysis)
+        .toEqual({ ...defaults, wait_for_checks: ['lint'], analyzers: 'all' });
       expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: true\n    secrets: true\n    dependencies: false\n    semgrep:\n      rules: [.semgrep/manki.yml, rules/extra.yaml]\n    actionlint: false\n    zizmor: true\n    shellcheck: false\n').static_analysis?.analyzers)
         .toEqual({ ast_grep: true, secrets: true, dependencies: false, semgrep: { rules: ['.semgrep/manki.yml', 'rules/extra.yaml'] }, actionlint: false, zizmor: true, shellcheck: false });
       expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    semgrep: false\n').static_analysis?.analyzers).toEqual({ semgrep: false });
@@ -107,9 +107,6 @@ describe('config', () => {
       expect(() => loadConfigFromContent('static_analysis: true\n')).toThrow(/`static_analysis` must be an object/);
       expect(() => loadConfigFromContent('static_analysis:\n  wait_for_checks: lint\n')).toThrow(/wait_for_checks/);
       expect(() => loadConfigFromContent('static_analysis:\n  wait_for_checks: [""]\n')).toThrow(/wait_for_checks/);
-      for (const timeout of ['0', '1.5', '3601', '"300"']) {
-        expect(() => loadConfigFromContent(`static_analysis:\n  wait_timeout_seconds: ${timeout}\n`)).toThrow(/wait_timeout_seconds/);
-      }
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers: some\n')).toThrow(/`static_analysis.analyzers` must be `all` or an object/);
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    astgrep: true\n')).toThrow(/`static_analysis.analyzers.astgrep` is not a known analyzer/);
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: "on"\n')).toThrow(/`static_analysis.analyzers.ast_grep` must be a boolean/);
@@ -385,7 +382,7 @@ planner:
     it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
       loadConfigFromContent(`
 reviewers: [{ name: a, focus: b, fokus: c }]
-static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], wait_timeout_seconds: 60, analyzers: all, check: false }
+static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], analyzers: all, check: false }
 convergence: { max_auto_rounds: 3, test_path_patterns: ['**/*.test.ts'], suppress_resolved_threads: true, max_rounds: 2 }
 metrics: { fix_rate: true, fixrate: false }
 memory: { enabled: false, repo: '', repository: x/y }

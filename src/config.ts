@@ -6,8 +6,6 @@ import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, FULL_GROUP, OPUS_MODEL, PATH_ALIASES, TRIVIAL_GROUP, canonicalJson, finderShortfall, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
 import { ANALYZERS, AUTHOR_CLEAR_ROLES, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig, RULES_MODES, SWEEP_MODES } from './types';
 
-const MAX_WAIT_TIMEOUT_SECONDS = 3600;
-
 const HAIKU_MODEL = 'claude-haiku-5-5';
 
 /** The config file Manki reads, at the root of the base branch. */
@@ -50,7 +48,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     code_scanning: true,
     dependency_review: true,
     wait_for_checks: [],
-    wait_timeout_seconds: 300,
     analyzers: {},
   },
   memory: {
@@ -109,7 +106,7 @@ const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
-const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
+const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'rounds_after_restart', 'test_path_patterns', 'suppress_resolved_threads']);
 const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
 const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
@@ -257,10 +254,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       const waitFor = staticAnalysis.wait_for_checks;
       if (waitFor !== undefined && (!Array.isArray(waitFor) || !waitFor.every(name => typeof name === 'string' && name.trim() !== ''))) {
         errors.push('`static_analysis.wait_for_checks` must be a list of check run names');
-      }
-      const timeout = staticAnalysis.wait_timeout_seconds;
-      if (timeout !== undefined && (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1 || timeout > MAX_WAIT_TIMEOUT_SECONDS)) {
-        errors.push(`\`static_analysis.wait_timeout_seconds\` must be an integer from 1 to ${MAX_WAIT_TIMEOUT_SECONDS}`);
       }
       const analyzers = staticAnalysis.analyzers;
       if (analyzers !== undefined && analyzers !== 'all') {

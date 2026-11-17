@@ -1516,7 +1516,6 @@ export interface StaticAnalysisConfig {
   dependency_review: boolean;
   /** Check runs to wait for on the PR head before reading the results. */
   wait_for_checks: string[];
-  wait_timeout_seconds: number;
   /** `all` turns on every analyzer that needs no rules from the user. */
   analyzers: 'all' | AnalyzerSettings;
 }

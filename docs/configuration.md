@@ -85,8 +85,7 @@ static_analysis:
   checks: true             # check-run annotations, needs `checks: read`
   code_scanning: true      # code scanning alerts, needs `security-events: read`
   dependency_review: true  # vulnerable packages the PR adds
-  wait_for_checks: []      # check runs to wait for, such as [lint, CodeQL]
-  wait_timeout_seconds: 300
+  wait_for_checks: []      # check runs to wait for up to 300 seconds, such as [lint, CodeQL]
   analyzers:               # analyzers Manki runs itself, or `all`
     ast_grep: false        # Manki's ast-grep rules
     secrets: false         # gitleaks on the added lines
@@ -174,8 +173,7 @@ memory:
 | `static_analysis.checks` | boolean | `true` | Read check-run annotations. Needs `checks: read` in the workflow. |
 | `static_analysis.code_scanning` | boolean | `true` | Read open code scanning alerts. Needs `security-events: read` in the workflow. |
 | `static_analysis.dependency_review` | boolean | `true` | Read the vulnerable packages the PR adds, from the dependency review. |
-| `static_analysis.wait_for_checks` | list of check run names | none | Check runs to wait for before reading the results, when CI runs in a separate workflow. |
-| `static_analysis.wait_timeout_seconds` | integer from 1 to 3600 | `300` | How long to wait for `wait_for_checks` before reading what is there. |
+| `static_analysis.wait_for_checks` | list of check run names | none | Check runs to wait for before reading the results, when CI runs in a separate workflow. Manki waits up to 300 seconds, then reads what is there. |
 | `static_analysis.analyzers` | `all` or a map | per analyzer, below | Analyzers Manki runs itself. `all` turns on every one that needs no rules from you. See [Running Manki's analyzers](how-reviews-work.md#running-mankis-analyzers). |
 | `static_analysis.analyzers.ast_grep` | boolean | `false`, but the Rust rules run in a Cargo repository | Manki's ast-grep rules on the changed JavaScript, TypeScript and Python files. `false` also stops the Rust rules. |
 | `static_analysis.analyzers.secrets` | boolean | `false` | gitleaks on the lines the PR adds. |

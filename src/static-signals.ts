@@ -33,7 +33,9 @@ const MIN_QUOTE_CHARS = 6;
 // `owner/name:path:line` or `owner/name:path:start-end`, the form reviewers cite a related repo's code in.
 const RELATED_CITATION = /(?<![\w./-])([\w.-]+\/[\w.-]+):([^\s:`'"()<>]+):(\d+)(?:-(\d+))?/g;
 const CHECK_POLL_MS = 15_000;
-// The last poll of `waitForChecks` starts when `wait_timeout_seconds` is over, and may take this long.
+/** How long `waitForChecks` waits for the checks in `wait_for_checks` before reading what is there. */
+const WAIT_TIMEOUT_SECONDS = 300;
+// The last poll of `waitForChecks` starts when `WAIT_TIMEOUT_SECONDS` is over, and may take this long.
 const CHECK_POLL_TIMEOUT_MS = 10_000;
 const MAX_ANALYZED_FILE_BYTES = 1024 * 1024;
 const MAX_ANALYZED_TOTAL_BYTES = 8 * 1024 * 1024;
@@ -328,7 +330,7 @@ async function rustRulePaths(octokit: Octokit, { owner, repo, baseRef, diff }: S
 /**
  * Polls the check runs named in `wait_for_checks` until each has finished, and returns the ones still running at the timeout.
  * A poll that fails or meets a rate limit ends the wait with no names. A poll still running `CHECK_POLL_TIMEOUT_MS` after
- * `wait_timeout_seconds` is cut off, and the wait then ends as timed out with the names the last answered poll saw unfinished.
+ * `WAIT_TIMEOUT_SECONDS` is cut off, and the wait then ends as timed out with the names the last answered poll saw unfinished.
  */
 async function waitForChecks(
   octokit: Octokit, { owner, repo, headSha }: StaticSignalRequest, settings: StaticAnalysisConfig, runtime: Pick<StaticAnalysisRuntime, 'sleep' | 'withDeadline'>,
@@ -336,13 +338,13 @@ async function waitForChecks(
   // Manki's own run never finishes before this one reads it.
   const names = settings.wait_for_checks.filter(name => name !== github.context.job);
   if (names.length === 0) return [];
-  const deadline = Date.now() + settings.wait_timeout_seconds * 1000;
-  const cutOff = AbortSignal.timeout(settings.wait_timeout_seconds * 1000 + CHECK_POLL_TIMEOUT_MS);
+  const deadline = Date.now() + WAIT_TIMEOUT_SECONDS * 1000;
+  const cutOff = AbortSignal.timeout(WAIT_TIMEOUT_SECONDS * 1000 + CHECK_POLL_TIMEOUT_MS);
   // The names the last answered poll saw unfinished. Without an answered poll no name counts as finished.
   let pending: string[] | undefined;
   const timedOut = () => {
     const state = pending ? 'still running or not started' : 'no poll was answered, so none of these counts as finished';
-    core.warning(`Static analysis: stopped waiting after ${settings.wait_timeout_seconds}s, ${state}: ${(pending ?? names).join(', ')}`);
+    core.warning(`Static analysis: stopped waiting after ${WAIT_TIMEOUT_SECONDS}s, ${state}: ${(pending ?? names).join(', ')}`);
     return pending ?? names;
   };
   try {
