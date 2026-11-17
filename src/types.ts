@@ -1354,8 +1354,6 @@ export interface ReviewConfig {
   max_diff_lines: number;
   /** Reviewable lines above which a PR gets no automatic review, only a forced one. */
   auto_review_max_lines?: number;
-  /** Changed lines a finder reads in one call. A larger diff is split into slices read in parallel. */
-  slice_lines?: number;
   reviewers: ReviewerAgent[];
   instructions: string;
   /** A short phrase naming what the project is, such as `blockchain consensus library`. */

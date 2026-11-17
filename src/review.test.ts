@@ -2242,7 +2242,11 @@ describe('runReview', () => {
     // Nine unchanged files use the three new functions, one more than a second ask names. A changed file uses one too, on a line the change leaves.
     const users = Object.fromEntries(functions.flatMap(name => [1, 2, 3].map(n => [`cmd/${name.toLowerCase()}_${n}.go`, `package main\n\nvar fee${name}${n} = ${name}(2)\n`])));
     const limit = 'package main\n\nvar limitFee = ComputeFeeA(1)\n';
-    const change = gitWorkspace({ 'cmd/fee.go': fee(''), 'cmd/limit.go': limit, ...users }, { 'cmd/fee.go': fee(functions.map(name => `\nfunc ${name}(n int) int { return n }\n`).join('')), 'cmd/limit.go': `${limit}\nvar limit = 1\n` });
+    const base = { 'cmd/fee.go': fee(''), 'cmd/limit.go': limit, ...users };
+    const head = { 'cmd/fee.go': fee(functions.map(name => `\nfunc ${name}(n int) int { return n }\n`).join('')), 'cmd/limit.go': `${limit}\nvar limit = 1\n` };
+    const change = gitWorkspace(base, head);
+    // The same change with a file long enough that the diff is read in slices.
+    const sliced = gitWorkspace(base, { ...head, 'notes/rates.txt': 'rate\n'.repeat(1600) });
     // No other file and no reference line holds what this change adds, so both lists are empty.
     const unlisted = gitWorkspace({ 'cmd/fee.go': fee('') }, { 'cmd/fee.go': fee('\nfunc RoundDown(n int) int { return n }\n') });
     // A docs change the trivial verifier reads, which names a function another file uses.
@@ -2252,13 +2256,13 @@ describe('runReview', () => {
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }]);
     const NOTE = '\n\nYou answered this message before without opening any file outside the changed files that "Uses Outside the Diff" or "In the Reference Repos" lists. ';
     const answer = (title: string) => ({ content: JSON.stringify([{ severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
-    type Asked = { first: { toolSteps?: []; filesRead?: string[] }; second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string; config?: Partial<ReviewConfig> };
-    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, config }: Asked) => {
+    type Asked = { first: { toolSteps?: []; filesRead?: string[] }; second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string };
+    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner }: Asked) => {
       const clients = makeClients();
       const sendMessage = jest.fn(async (_system: string, message: string) => (message.includes(NOTE) ? second() : { ...answer('First'), ...first }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
-      const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }], ...config }), diff: workspace.diff, rawDiff: rebuildRawDiff(workspace.diff), repoContext: '', workspace: workspace.root });
+      const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(workspace.diff), repoContext: '', workspace: workspace.root });
       const messages = sendMessage.mock.calls.map(call => call[1]);
       return { result, first: messages.filter(m => !m.includes(NOTE)), again: messages.filter(m => m.includes(NOTE)), kept: [...new Set(result.rawFindings?.map(f => f.title))] };
     };
@@ -2291,8 +2295,9 @@ describe('runReview', () => {
       expect([empty.result.usesOutsideDiff?.symbols, empty.result.usesOutsideDiff?.reference, empty.again, empty.result.agentsAskedAgain]).toEqual([undefined, undefined, [], []]);
       // A finder without tools, one whose client does not report what it read and one that reads the diff in slices are never asked again.
       const reads: { toolSteps: [] } = { toolSteps: [] };
-      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: reads, config: { slice_lines: 1 } }]) {
+      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: reads, workspace: sliced }]) {
         const result = await run(unknown);
+        if (unknown.workspace === sliced) expect(result.first.every(message => message.startsWith('## Slice'))).toBe(true);
         expect(result.result.usesOutsideDiff?.symbols).toHaveLength(3);
         expect([result.again, result.result.agentsAskedAgain]).toEqual([[], []]);
       }
@@ -2317,7 +2322,7 @@ describe('runReview', () => {
     } finally {
       fetchSpy.mockRestore();
       warnSpy.mockRestore();
-      for (const dir of [change.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [change.root, sliced.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
     }
   }, 4 * GIT_TEST_TIMEOUT_MS);
 
@@ -5891,10 +5896,10 @@ describe('runReview', () => {
     infoSpy.mockRestore();
   });
 
-  it('reads a diff over `slice_lines` in parallel slices per finder and combines their findings and usage', async () => {
+  it('reads a diff over 1,500 changed lines in parallel slices per finder and combines their findings and usage', async () => {
     const fileDiff = (path: string, lines: number) =>
       `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,${lines + 1} @@\n ctx\n${Array.from({ length: lines }, (_, i) => `+line ${i}`).join('\n')}`;
-    const rawDiff = [fileDiff('src/a.ts', 3), fileDiff('src/a.test.ts', 2), fileDiff('src/b.ts', 4)].join('\n');
+    const rawDiff = [fileDiff('src/a.ts', 900), fileDiff('src/a.test.ts', 600), fileDiff('src/b.ts', 1)].join('\n');
     const reviewerSend = jest.fn().mockImplementation(async (_system: string, user: string) => {
       await new Promise(resolve => setTimeout(resolve, 20));
       return {
@@ -5910,7 +5915,7 @@ describe('runReview', () => {
     };
     mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
 
-    const result = await runReview(clients, { config: makeConfig({ slice_lines: 5 }), diff: makeDiff({ totalAdditions: 9, totalDeletions: 0 }), rawDiff, repoContext: '' });
+    const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 1501, totalDeletions: 0 }), rawDiff, repoContext: '' });
 
     const finders = result.agentNames.length;
     expect(reviewerSend).toHaveBeenCalledTimes(2 * finders);
@@ -5931,14 +5936,14 @@ describe('runReview', () => {
   });
 
   it('lists a lockfile the push changed in every slice, and gives each finder slice only its own files of the diff since the last review', async () => {
-    const fileDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,5 @@\n ctx\n${Array.from({ length: 4 }, (_, i) => `+line ${i}`).join('\n')}`;
+    const fileDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,801 @@\n ctx\n${Array.from({ length: 800 }, (_, i) => `+line ${i}`).join('\n')}`;
     const rawDiff = [fileDiff('src/a.ts'), fileDiff('src/b.ts')].join('\n');
     const lockfile = parsePRDiff('diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -5,1 +5,1 @@\n-version = "0.4.2"\n+version = "0.4.3"').files[0];
     const pushed = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -2,1 +2,1 @@\n-line 0\n+fixed in ${path}\n`;
     const clients = makeClients();
 
     await runReview(clients, {
-      config: makeConfig({ slice_lines: 5 }), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '',
+      config: makeConfig(), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '',
       lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }] }],
       priorRounds: [buildPriorRound(1, [])],
       interRoundDiff: `${pushed('src/a.ts')}${pushed('src/b.ts')}${rebuildRawDiff({ files: [lockfile], totalAdditions: 1, totalDeletions: 1 })}`,
@@ -5970,7 +5975,7 @@ describe('runReview', () => {
     }));
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
-    const result = await runReview(clients, { config: makeConfig({ slice_lines: 20_000 }), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '' });
+    const result = await runReview(clients, { config: makeConfig(), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '' });
 
     const readerMessages = jest.mocked(clients.judge.sendMessage).mock.calls.map(([, user]) => user as string);
     expect(readerMessages.length).toBeGreaterThan(2);

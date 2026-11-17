@@ -410,13 +410,12 @@ memory: { enabled: false, repo: '', repository: x/y }
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
     });
 
-    it('defaults the review size limits to 15,000, 8,000 and 1,500 lines, and accepts only positive whole numbers', () => {
-      expect([DEFAULT_CONFIG.max_diff_lines, DEFAULT_CONFIG.auto_review_max_lines, DEFAULT_CONFIG.slice_lines]).toEqual([15_000, 8_000, 1_500]);
-      expect(loadConfigFromContent('auto_review_max_lines: 4000\nslice_lines: 900\n')).toEqual(expect.objectContaining({ auto_review_max_lines: 4000, slice_lines: 900 }));
-      for (const yaml of ['auto_review_max_lines: 0', 'slice_lines: 1.5', 'slice_lines: "big"']) {
+    it('defaults the review size limits to 15,000 and 8,000 lines, and accepts only positive whole numbers', () => {
+      expect([DEFAULT_CONFIG.max_diff_lines, DEFAULT_CONFIG.auto_review_max_lines]).toEqual([15_000, 8_000]);
+      expect(loadConfigFromContent('auto_review_max_lines: 4000\n')).toEqual(expect.objectContaining({ auto_review_max_lines: 4000 }));
+      for (const yaml of ['auto_review_max_lines: 0', 'auto_review_max_lines: 1.5', 'auto_review_max_lines: "big"']) {
         expect(() => loadConfigFromContent(yaml)).toThrow('must be a positive whole number');
       }
-      expect(() => loadConfigFromContent('slice_lines: 199')).toThrow('`slice_lines` must be at least 200');
     });
 
     it('throws on invalid auto_review type', () => {

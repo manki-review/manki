@@ -49,12 +49,11 @@ exclude_paths:
 # Review again in its settings block, and no review: a request for changes stays, and Manki's
 # earlier approvals are dismissed. A forced review covers
 # the whole PR up to `max_diff_lines` (default: 15000). Above that Manki never
-# reviews, even when forced. Each finder reads a diff over `slice_lines`
-# (default: 1500, at least 200) in slices of that size, four at a time. A file
-# and its test, and the files of one folder, stay in one slice where they fit.
+# reviews, even when forced. Each finder reads a diff over 1500 changed lines
+# in slices of about that size, four at a time. A file and its test, and the
+# files of one folder, stay in one slice where they fit.
 auto_review_max_lines: 8000
 max_diff_lines: 15000
-slice_lines: 1500
 
 # Per-stage model selection. The finders are in `review.groups`.
 models:
@@ -149,7 +148,6 @@ memory:
 | `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, `review` reviews it automatically. A draft review never approves and does not count toward `convergence.max_auto_rounds`. |
 | `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with Review again in its settings block. Read from the base branch. |
 | `max_diff_lines` | positive integer | `15000` | Reviewable lines above which Manki never reviews a PR, even when forced. Read from the base branch. |
-| `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder or the verdict reader reads in one call. A larger diff is read in slices of about this size, and of at most 200,000 characters, four at a time. Read from the base branch. |
 | `models` | map | see below | The model of each stage. The finders are not here: `review.groups` says who reviews. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
 | `models.planner` | model id | `claude-haiku-5-5` | The planner, a fast pass that triages the change before the review. |
 | `models.judge` | model id | `claude-opus-5-5` | The judge, which filters the findings and sets their severity, the verdict reader and the refuter. |

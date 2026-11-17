@@ -4,7 +4,6 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { DEFAULT_CONFIG } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
@@ -1420,7 +1419,7 @@ export async function runReview(
 
   let verdictReport: VerdictReport | undefined;
   let verdictUsage: LLMUsage | undefined;
-  const roundSlices = diffSlices(rawDiff, config);
+  const roundSlices = diffSlices(rawDiff);
   const slicing: RoundSlicing | undefined = roundSlices.length > 1 ? { files: roundSlices.map(s => s.paths?.size ?? 0) } : undefined;
   Object.assign(recorded, {
     threadEvaluations, ...(slicing && { slicing }), ...(suppressionCount > 0 && { suppressionCount }), ...(memorySuppressed.length > 0 && { memorySuppressed }),
@@ -1635,6 +1634,9 @@ function filesChangedSinceLastRound(diff: ParsedDiff, priorRounds: RoundContext[
   return diff.files.map(f => f.path).filter(path => changed.has(path));
 }
 
+/** Changed lines a finder or the verdict reader reads in one call. */
+const SLICE_LINES = 1500;
+
 /** Slices one finder reads at once, so a large diff does not flood the provider with calls. */
 const MAX_PARALLEL_SLICES = 4;
 
@@ -1642,8 +1644,8 @@ const MAX_PARALLEL_SLICES = 4;
  * Returns the slices `sliceDiff` splits `rawDiff` into, each as the text a prompt shows and, when there are several, the
  * paths it holds. A diff that fits one slice keeps its own text, unless it is too long to show uncut.
  */
-function diffSlices(rawDiff: string, config: ReviewConfig): Array<{ raw: string; paths?: Set<string> }> {
-  const slices = sliceDiff(parsePRDiff(rawDiff), config.slice_lines ?? DEFAULT_CONFIG.slice_lines!);
+function diffSlices(rawDiff: string): Array<{ raw: string; paths?: Set<string> }> {
+  const slices = sliceDiff(parsePRDiff(rawDiff), SLICE_LINES);
   if (slices.length === 1) return [{ raw: rawDiff.length <= MAX_SLICE_CHARS ? rawDiff : rebuildRawDiff(slices[0]) }];
   return slices.map(slice => ({ raw: rebuildRawDiff(slice), paths: new Set(slice.files.map(f => f.path)) }));
 }
@@ -1685,7 +1687,7 @@ function filesIn(contents: Map<string, string>, paths?: Set<string>): Map<string
 }
 
 /**
- * Runs one finder on the diff. A diff over `config.slice_lines` is split by `sliceDiff`, and the finder
+ * Runs one finder on the diff. A diff over `SLICE_LINES` is split by `sliceDiff`, and the finder
  * reads each slice in a call of its own, `MAX_PARALLEL_SLICES` at a time. The findings and usage of all slices are combined.
  */
 async function runReviewerAgent(
@@ -1700,7 +1702,7 @@ async function runReviewerAgent(
   linkedIssues?: LinkedIssue[],
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
-  const slices = diffSlices(rawDiff, config);
+  const slices = diffSlices(rawDiff);
   if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, slices[0]?.raw ?? rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options);
   core.info(`${finder.name} reads the diff in ${slices.length} slices`);
   const startedAt = Date.now();

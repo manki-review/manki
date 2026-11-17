@@ -33,7 +33,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   skip_branches: [],
   max_diff_lines: 15000,
   auto_review_max_lines: 8000,
-  slice_lines: 1500,
   reviewers: [],
   instructions: '',
   project: '',
@@ -70,9 +69,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
 
 const SKIP_KEYS = ['skip_labels', 'skip_authors', 'skip_branches'] as const;
 
-const LIMIT_KEYS = ['max_diff_lines', 'auto_review_max_lines', 'slice_lines'] as const;
-/** Smaller slices would multiply the model calls a review makes. */
-const MIN_SLICE_LINES = 200;
+const LIMIT_KEYS = ['max_diff_lines', 'auto_review_max_lines'] as const;
 
 export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'auto_review',
@@ -84,7 +81,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'skip_branches',
   'max_diff_lines',
   'auto_review_max_lines',
-  'slice_lines',
   'reviewers',
   'instructions',
   'project',
@@ -148,9 +144,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     if (key in config && (typeof config[key] !== 'number' || !Number.isInteger(config[key]) || (config[key] as number) <= 0)) {
       errors.push(`\`${key}\` must be a positive whole number`);
     }
-  }
-  if (typeof config.slice_lines === 'number' && Number.isInteger(config.slice_lines) && config.slice_lines > 0 && config.slice_lines < MIN_SLICE_LINES) {
-    errors.push(`\`slice_lines\` must be at least ${MIN_SLICE_LINES}`);
   }
 
   if ('auto_review' in config && typeof config.auto_review !== 'boolean') {

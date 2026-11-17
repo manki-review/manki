@@ -2228,7 +2228,7 @@ describe('runFullReview orchestration', () => {
     );
     // Reset to default config for each test
     jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, max_diff_lines: 15_000, auto_review_max_lines: 8_000, slice_lines: 1_500,
+      auto_review: true, auto_approve: false, max_diff_lines: 15_000, auto_review_max_lines: 8_000,
       exclude_paths: [],
       reviewers: [],
       instructions: '',
