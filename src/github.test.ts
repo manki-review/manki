@@ -4637,9 +4637,12 @@ describe('postReview fallback paths', () => {
       agentNames: [],
     };
 
-    const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
+    const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, undefined, makeContext({ verdict: 'REQUEST_CHANGES' }));
     expect(reviewId).toEqual({ id: 4, approvalHeld: false, warningsHeld: false });
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
+    // The record tells this comment apart from a held approval: it names no approval.
+    const [record] = extractReviewRecords(createReviewMock.mock.calls[1][0].body as string).records.map(r => JSON.parse(r) as RoundContext);
+    expect([record.verdict, record.approval]).toEqual(['REQUEST_CHANGES', undefined]);
   });
 
   it.each([

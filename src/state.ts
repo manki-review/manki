@@ -646,10 +646,12 @@ const NEXT_ROUND_LINE = `The next review round decides. To start one, tick **Rev
  * that cannot be read, a round that blocked without naming a blocker, and a blocker without a live thread. A warning
  * the record marks with `holds` also holds it when the round listed it only in its body or no live thread carries it.
  * `report` is what the change does and how to test it, which the round kept for the approval because warnings held it.
+ * `hold` names the hold that the record proves on a round that approved and names no blocker: the files no model read or
+ * the config that did not load, as its `approval` says, or else such a warning without a thread.
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
-): { held?: string; named: Set<string>; report?: RoundContext['readyReport'] } {
+): { held?: string; named: Set<string>; report?: RoundContext['readyReport']; hold?: 'unread' | 'config' | 'warnings' } {
   const sha = `\`${commitSha.slice(0, 7)}\``;
   // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
   const review = reviews.filter(r => isBotReview(bot, r) && reviewedCommit(r) === commitSha && givesVerdict(r) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
@@ -700,7 +702,9 @@ function blockOf(
     ...warnedOf(count => `The record of Manki's review of ${sha} names a thread that does not exist for ${count}`, gone),
   ];
   const held = [...told('names no thread', loose.filter(b => !claimed(b))), ...told('names a thread that does not exist', loose.filter(claimed)), ...warned].join('\n\n');
-  return { ...(held && { held }), named, ...(round.readyReport && { report: round.readyReport }) };
+  const person = round.approval?.held === 'unread' || round.approval?.held === 'config' ? round.approval.held : undefined;
+  const hold = round.verdict === 'APPROVE' && blockers.length === 0 ? person ?? (warned.length > 0 ? 'warnings' as const : undefined) : undefined;
+  return { ...(held && { held }), named, ...(round.readyReport && { report: round.readyReport }), ...(hold && { hold }) };
 }
 
 /**
@@ -889,9 +893,11 @@ function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string
 
 /**
  * What `approveOrSayWhy` decided. `standing` marks an approval that was already there. `why` tells a person why the PR is
- * not approved and what lifts that. `answered` marks a reason already posted on the PR.
+ * not approved and what lifts that. `answered` marks a reason already posted on the PR. `held` names the hold the check
+ * stopped at, when that hold is certain: a draft, a warning, files no model read, a config that did not load, a conflict
+ * or a refusal by GitHub. A block, and a reason the check cannot name for certain, set none.
  */
-type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true };
+type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true; held?: Exclude<ApprovalHeld, false> };
 
 /** Post an approval review if all findings are resolved. */
 async function checkAndAutoApprove(
@@ -905,7 +911,10 @@ async function checkAndAutoApprove(
   return (await approveOrSayWhy(octokit, bot, owner, repo, prNumber, config)).approved;
 }
 
-/** Post an approval review if all findings are resolved, and return the decision with its reason. */
+/**
+ * Post an approval review if all findings are resolved, and return the decision with its reason. With `head`, it decides
+ * and writes nothing unless that commit is still the PR's head.
+ */
 async function approveOrSayWhy(
   octokit: Octokit,
   bot: BotIdentity,
@@ -913,8 +922,11 @@ async function approveOrSayWhy(
   repo: string,
   prNumber: number,
   config?: ReviewConfig,
+  head?: string,
 ): Promise<ApprovalCheck> {
-  const withheld = (why: string | (() => Promise<string>)): ApprovalCheck => ({ approved: false, why: typeof why === 'string' ? async () => why : why });
+  /** Declines with the reason `why`. Every exit states `held`: the hold it is certain of, or `false` for a block and for a reason it cannot name. */
+  const withheld = (why: string | (() => Promise<string>), held: ApprovalHeld): Extract<ApprovalCheck, { approved: false }> =>
+    ({ approved: false, why: typeof why === 'string' ? async () => why : why, ...(held && { held }) });
   const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
 
   const totalCount = threads.length;
@@ -932,7 +944,11 @@ async function approveOrSayWhy(
   });
   if (pr.state === 'closed') {
     core.info('Skipping auto-approve — the PR is merged or closed');
-    return withheld(`This pull request is ${pr.merged ? 'merged' : 'closed'}, so Manki approves nothing on it.`);
+    return withheld(`This pull request is ${pr.merged ? 'merged' : 'closed'}, so Manki approves nothing on it.`, false);
+  }
+  if (head && pr.head.sha !== head) {
+    core.info(`Skipping auto-approve — the head is ${pr.head.sha.slice(0, 7)}, no longer ${head.slice(0, 7)}`);
+    return withheld(`The head of this pull request is no longer \`${head.slice(0, 7)}\`, so Manki decides nothing for that commit.`, false);
   }
   const prAuthorLogin = pr.user?.login;
   const clearRole = config?.author_clear_role;
@@ -962,7 +978,7 @@ async function approveOrSayWhy(
   };
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');
-    return withheld(async () => explain(await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole)));
+    return withheld(async () => explain(await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole)), 'draft');
   }
 
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
@@ -976,7 +992,7 @@ async function approveOrSayWhy(
   const uncleared = (named?: ReadonlySet<string>) => unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole, named);
   if (uncleared().length > 0) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
-    return withheld(why);
+    return withheld(why, false);
   }
 
   const reviews = await listReviews();
@@ -1000,14 +1016,14 @@ async function approveOrSayWhy(
     } else {
       core.info(`A push review covers ${pr.head.sha.slice(0, 7)}, so no withheld notice is posted`);
     }
-    return withheld(why);
+    return withheld(why, false);
   }
 
   // An open warning thread declines as an open blocking thread does, also beside an approval that stands.
   const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole);
   if (warnings.length > 0) {
     core.info('A warning thread holds the approval — skipping auto-approve');
-    return withheld(why);
+    return withheld(why, 'warnings');
   }
 
   if (latestBotReview?.state === 'APPROVED') {
@@ -1019,21 +1035,21 @@ async function approveOrSayWhy(
     return { approved: true, standing: true };
   }
 
+  const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
   if (heldForPerson(bot, reviews, pr.head.sha)) {
     core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
-    return withheld(why);
+    return withheld(why, block.hold ?? false);
   }
 
-  const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
   if (block.held) {
     core.info(`${block.held}\nSkipping auto-approve, the next review round decides`);
-    return withheld(why);
+    return withheld(why, block.hold ?? false);
   }
   // A thread the record names for a blocker blocks whatever its own severity says.
   const open = uncleared(block.named);
   if (open.length > 0) {
     core.info('A thread the covering review blocks on is not resolved — skipping auto-approve');
-    return withheld(why);
+    return withheld(why, false);
   }
 
   const recordFor = (cause: string) => approvalRecord('held', cause, pr.head.sha);
@@ -1044,7 +1060,7 @@ async function approveOrSayWhy(
   const heldBy = async (held: HeldApproval): Promise<ApprovalCheck> => {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
     if (held.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', held.line, held.reason));
-    return { approved: false, why: async () => held.line, ...(held.posted && { answered: true as const }) };
+    return { ...withheld(held.line, held.reason), ...(held.posted && { answered: true as const }) };
   };
   const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor);
   if (hold) return heldBy(hold);

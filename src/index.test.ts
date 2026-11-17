@@ -176,6 +176,7 @@ jest.mock('./recap', () => ({
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
   currentFindingLine: jest.requireActual('./recap').currentFindingLine,
+  parseContextBlocks: jest.requireActual('./recap').parseContextBlocks,
   replyShownToJudge: jest.requireActual('./recap').replyShownToJudge,
   collectResolvedThreadIds: jest.requireActual('./recap').collectResolvedThreadIds,
   sanitize: jest.requireActual('./recap').sanitize,
@@ -273,6 +274,7 @@ jest.mock('./github', () => ({
 
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
+  approveOrSayWhy: jest.fn(),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
   fetchHeldWarnings: jest.fn().mockResolvedValue([]),
   holdApproval: jest.fn().mockResolvedValue(false),
@@ -307,7 +309,7 @@ jest.mock('./related-work', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { buildRoundRecap } from './round-context';
-import type { Finding, ParsedDiff, PrState, ReviewConfig, RunMode, ThreadEvaluation } from './types';
+import type { Finding, ParsedDiff, PrState, ReviewConfig, RoundContext, RunMode, ThreadEvaluation } from './types';
 import { SettingsView, withSettingsBlock } from './settings';
 import { registerSecret, withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec, removeSeededAuthFiles } from './providers';
@@ -332,6 +334,7 @@ import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
 import * as relatedWorkModule from './related-work';
 import { citedLine } from './finding-fingerprint';
+import { formatReviewRecord } from './review-record';
 import { LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_BOT } from './test-utils';
 
 /**
@@ -1457,6 +1460,12 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       },
     };
     const warning = { id: 'T1', isResolved: false, isBlocking: false, isWarning: true as const, findingTitle: 'Retry never stops' };
+    let configBefore: ReviewConfig | undefined;
+    /** Sets `auto_approve` in the config every branch loads, until `afterEach` puts the config back. */
+    const autoApprove = (on = true) => {
+      configBefore ??= configModule.loadConfig(undefined);
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...configBefore, auto_approve: on });
+    };
 
     /** Seeds the review `state` found on the head, with `newest` saying whether it is Manki's newest review, and a waiting check on `queuedOn`. */
     function seed(exit: keyof typeof exits, state: string | undefined, newest: boolean, queuedOn = head): void {
@@ -1474,6 +1483,9 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       jest.mocked(ghUtils.fetchApprovalHold).mockResolvedValue(undefined);
       jest.mocked(stateModule.fetchHeldWarnings).mockResolvedValue([]);
       jest.mocked(stateModule.checkAndAutoApprove).mockResolvedValue(false);
+      jest.mocked(stateModule.approveOrSayWhy).mockReset();
+      if (configBefore) jest.mocked(configModule.loadConfig).mockReturnValue(configBefore);
+      configBefore = undefined;
       // A check no exit took is offered on a head no other test reviews.
       offerQueuedCheck(mockOctokitInstance as never, { id: 0, headSha: 'no-head' });
     });
@@ -1518,7 +1530,6 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     });
 
     it.each([
-      ['the review found is a comment', 'Bot already reviewed commit', 'COMMENTED', false, () => {}],
       ['the reviews cannot be read again', 'Already approved on this commit', undefined, true, () => {}],
       ['a newer review of another commit overrides the approval found', 'Bot already reviewed commit', 'APPROVED', false, () => {}],
       ['the base branch config cannot be read', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited'))],
@@ -1536,6 +1547,84 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       expect(mockChecksUpdate).not.toHaveBeenCalled();
       expect(mockChecksCreate).not.toHaveBeenCalled();
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    });
+
+    const declines = (held?: 'warnings' | 'draft' | 'conflict' | 'unread' | 'config') => jest.mocked(stateModule.approveOrSayWhy).mockResolvedValue({ approved: false, why: async () => '', ...(held && { held }) });
+    /** The approval check completes the waiting check itself, as it does when it approves or posts the notice of a hold. */
+    const reportsItself = (result: Awaited<ReturnType<typeof stateModule.approveOrSayWhy>>, report: Parameters<typeof reportCheck>[4]) =>
+      jest.mocked(stateModule.approveOrSayWhy).mockImplementation(async octokit => {
+        await reportCheck(octokit, 'test-owner', 'test-repo', head, report);
+        return result;
+      });
+    /** The body of a comment review whose round record is `round`, on the head unless `commitSha` names another commit. */
+    const recorded = (round: Partial<RoundContext>, commitSha = head) =>
+      `<!-- manki -->\n${formatReviewRecord(makeRoundContext(1, { ...round, meta: { ...makeRoundContext(1).meta, commitSha } }))}`;
+    const heldBody = recorded({ verdict: 'APPROVE', approval: { held: 'warnings', warningsHeld: true } });
+    const seedComment = (exit: keyof typeof exits, body: string) => {
+      seed(exit, 'COMMENTED', false);
+      jest.mocked(ghUtils.findBotReviewOnCommit).mockResolvedValue({ ...found('COMMENTED'), body });
+    };
+    const heldTitle = 'Approval held: warnings wait for a fix or an accepted answer';
+    const conflictReport = { conclusion: 'neutral' as const, title: 'Approval held: the PR conflicts with its base', summary: 'This PR conflicts with `main`.' };
+
+    it.each([
+      ['a warning thread still holds it', 'Bot already reviewed commit', () => { autoApprove(); declines('warnings'); }, 1, [['neutral', heldTitle, 'This commit already has a review.']]],
+      ['a warning thread still holds it, on a review command', 'a review command', () => { autoApprove(); declines('warnings'); }, 1, [['neutral', heldTitle, 'This commit already has a review.']]],
+      ['a warning thread still holds it, on a run queued behind the review', 'a run queued behind the review', () => { autoApprove(); declines('warnings'); }, 1, [['neutral', heldTitle, 'This commit already has a review.']]],
+      ['files no model read still hold it', 'Bot already reviewed commit', () => { autoApprove(); declines('unread'); }, 1, [['neutral', 'Approval held: some changed files were not read', 'This commit already has a review.']]],
+      ['a config that did not load still holds it', 'Bot already reviewed commit', () => { autoApprove(); declines('config'); }, 1, [['neutral', 'Approval held: a config file did not load', 'This commit already has a review.']]],
+      ['a draft still holds it', 'Bot already reviewed commit', () => { autoApprove(); declines('draft'); }, 1, [['neutral', 'Approval held: the PR is a draft', 'This commit already has a review.']]],
+      ['a conflict still holds it and its notice is posted already', 'Bot already reviewed commit', () => { autoApprove(); declines('conflict'); }, 1, [['neutral', conflictReport.title, 'This commit already has a review.']]],
+      // The approval check reports what it posts, so the run reports nothing more.
+      ['nothing holds it any more and the approval check approves', 'Bot already reviewed commit',
+        () => { autoApprove(); reportsItself({ approved: true }, { conclusion: 'success', title: 'Approved', summary: 'All blocking threads are resolved.' }); }, 1, [['success', 'Approved', 'All blocking threads are resolved.']]],
+      ['the approval check posts the notice of a conflict', 'Bot already reviewed commit',
+        () => { autoApprove(); reportsItself({ approved: false, why: async () => '', held: 'conflict', answered: true }, conflictReport); }, 1, [['neutral', conflictReport.title, conflictReport.summary]]],
+      // Without a hold the approval check names, nothing says that the approval is only held.
+      ['the approval check names no hold, as for an open blocking thread', 'Bot already reviewed commit', () => { autoApprove(); declines(); }, 1, []],
+      ['the approval check approves without reporting a check', 'Bot already reviewed commit', () => { autoApprove(); jest.mocked(stateModule.approveOrSayWhy).mockResolvedValue({ approved: true, standing: true }); }, 1, []],
+      ['the approval check cannot read the hold', 'Bot already reviewed commit', () => { autoApprove(); jest.mocked(stateModule.approveOrSayWhy).mockRejectedValue(new Error('rate limited')); }, 1, []],
+      // The approval check approves a PR nothing holds, so it never runs where Manki may not approve.
+      ['`auto_approve` is off', 'Bot already reviewed commit', () => { autoApprove(false); declines('warnings'); }, 0, []],
+      ['the base branch config cannot be read', 'Bot already reviewed commit', () => { autoApprove(); declines('warnings'); jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited')); }, 0, []],
+    ] as const)('for a review that held its approval, reports what the approval check decides when %s', async (_label, exit, setup, checks, reports) => {
+      seedComment(exit, heldBody);
+      setup();
+
+      await exits[exit]();
+
+      // The approval check gets the commit, so it decides nothing once the PR's head is another one.
+      expect(jest.mocked(stateModule.approveOrSayWhy).mock.calls).toEqual(Array.from({ length: checks }, () => [expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.objectContaining({ auto_approve: true }), head]));
+      // Only the approval check reads what holds the approval.
+      expect(jest.mocked(ghUtils.fetchApprovalHold)).not.toHaveBeenCalled();
+      expect(jest.mocked(stateModule.fetchHeldWarnings)).not.toHaveBeenCalled();
+      expect(mockChecksUpdate.mock.calls).toEqual(reports.map(([conclusion, title, summary]) => [expect.objectContaining({ check_run_id: 77, status: 'completed', conclusion, output: { title, summary } })]));
+      expect(mockChecksCreate).not.toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    });
+
+    // GitHub turns a request for changes it refuses into a comment review, so only the record tells a held approval apart.
+    it.each([
+      ['is of a request for changes that GitHub refused, with a warning thread open', recorded({ verdict: 'REQUEST_CHANGES' }), 'warnings'],
+      ['is of a request for changes that GitHub refused, on a draft', recorded({ verdict: 'REQUEST_CHANGES' }), 'draft'],
+      ['is of a request for changes that GitHub refused, on a review that waits for a person', `${recorded({ verdict: 'REQUEST_CHANGES' })}\n\n<!-- manki-held-for-person -->`, 'unread'],
+      ['is of a request for changes that GitHub refused, with a warning that has no thread',
+        recorded({ verdict: 'REQUEST_CHANGES', findings: { count: 1, severityCounts: {}, entries: [{ ...makeFindingFingerprintEntry({ title: 'Retry never stops', posted: 'body' }), holds: true }] } }), 'warnings'],
+      ['cannot be parsed', '<!-- manki -->\n<!-- manki-context: {"meta": -->', 'warnings'],
+      ['is missing', '<!-- manki -->\nNothing blocks this change.', 'warnings'],
+      ['is of another commit', recorded({ verdict: 'APPROVE', approval: { held: 'warnings' } }, 'def4567890123'), 'warnings'],
+      ['says that the approval was not held', recorded({ verdict: 'APPROVE', approval: { held: false } }), 'warnings'],
+      ['says that the round approved nothing', recorded({ verdict: 'REQUEST_CHANGES', approval: { held: 'warnings' } }), 'warnings'],
+    ] as const)('leaves the check of a comment review as it is, and runs no approval check, when its round record %s', async (_label, body, hold) => {
+      seedComment('Bot already reviewed commit', body);
+      autoApprove();
+      declines(hold);
+
+      await exits['Bot already reviewed commit']();
+
+      expect(jest.mocked(stateModule.approveOrSayWhy)).not.toHaveBeenCalled();
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
+      expect(mockChecksCreate).not.toHaveBeenCalled();
     });
 
     it.each(Object.keys(exits) as Array<keyof typeof exits>)('%s reports nothing and reads nothing when the waiting check sits on another head', async exit => {
