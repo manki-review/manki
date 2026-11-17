@@ -1,8 +1,9 @@
 import type { LLMCall } from '../src/providers';
 import { formatApprovalRecord, formatReplyRecord, formatReviewRecord } from '../src/review-record';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
-import type { ApprovalRecord, ReplyRecord, RoundContext } from '../src/types';
-import { computeStats, prRecords, renderStats } from './review-stats';
+import { PRE_EXISTING_TAG } from '../src/types';
+import type { ApprovalRecord, FindingFingerprintEntry, ReplyRecord, RoundContext } from '../src/types';
+import { computeStats, prRecords, renderStats, roundNumbering } from './review-stats';
 
 const bot = { login: 'manki-review[bot]', type: 'Bot' };
 const person = { login: 'alice', type: 'User' };
@@ -64,7 +65,7 @@ describe('review stats', () => {
       },
     });
     const second = makeRoundContext(2, {
-      meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: 't', mankiVersion: '7', outcome: 'READY' },
+      meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: 't', mankiVersion: '7.6.0', outcome: 'READY' },
       judge: {
         summary: '', interRoundDiffState: 'changed',
         // A finding a disproof dropped is listed with the judge's drops, and its refutations count too.
@@ -144,7 +145,7 @@ describe('review stats', () => {
       4: { count: 1, severityCounts: {}, originsWithoutPrior: true, entries: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'new', posted: 'thread' }] },
     };
     const later = [2, 3, 4, 5].map(round => makeRoundContext(round, {
-      meta: { prNumber: 2, commitSha: `c${round}`, round, timestamp: 't', mankiVersion: '7', ...(round === 2 && { outcome: 'READY' as const }) },
+      meta: { prNumber: 2, commitSha: `c${round}`, round, timestamp: 't', mankiVersion: '7.6.0', ...(round === 2 && { outcome: 'READY' as const }) },
       judge: { summary: '', ...(round === 2 && { interRoundDiffState: 'changed', interRoundDiffTruncated: true }), ...(round >= 4 && { interRoundDiffState: 'empty' }) },
       ...(placed[round] && { findings: placed[round] }),
     }));
@@ -172,7 +173,8 @@ describe('review stats', () => {
       approvedRounds: 2, roundsAfterApproval: [3],
       severities: {
         blocker: { posted: 1, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 },
-        warning: { posted: 5, inApprovedRounds: 1, raisedLater: 3, onReviewedCode: 3 },
+        // Round 3 of the second PR did not read the diff since round 2, so its findings on reviewed code are not known to be late.
+        warning: { posted: 5, inApprovedRounds: 1, raisedLater: 1, onReviewedCode: 1 },
         note: { posted: 2, inApprovedRounds: 2, raisedLater: 1, onReviewedCode: 0 },
       },
       blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
@@ -208,9 +210,9 @@ describe('review stats', () => {
       '| severity | total | per round | in approved rounds | per approved round | first raised in a later round, on code an earlier round reviewed |',
       '| --- | ---: | ---: | ---: | ---: | ---: |',
       '| blocker | 1 | 0.14 | 0 | 0.00 | - |',
-      '| warning | 5 | 0.71 | 1 | 0.50 | 100% (3 of 3) |',
+      '| warning | 5 | 0.71 | 1 | 0.50 | 100% (1 of 1) |',
       '| note | 2 | 0.29 | 2 | 1.00 | 0% (0 of 1) |',
-      '| all | 8 | 1.14 | 3 | 1.50 | 75% (3 of 4) |',
+      '| all | 8 | 1.14 | 3 | 1.50 | 50% (1 of 2) |',
     ].join('\n'));
     expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 3 | 1 | 1 | 1 | 33% | 33% |\n\n| checkStatus | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| proven | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
@@ -247,6 +249,106 @@ describe('review stats', () => {
     ].join('\n'));
     expect(report).toContain('| blocker disproved | 1 |');
     expect(report).toContain('- Follow-up rounds whose inter-round diff was cut or unknown: 40% (2 of 5)');
+  });
+
+  it('counts the blockers and warnings round 1 found against those a later round found on reviewed code, over the PRs whose records prove it, and leaves PRs with rounds out of sequence out of every figure that reads a round number', () => {
+    let made = 0;
+    const entry = (severity: 'blocker' | 'warning' | 'note', more: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry =>
+      ({ ...makeFindingFingerprintEntry({ severity, title: `Finding ${++made}` }), ...more });
+    const round = (
+      number: number, mankiVersion: string, entries: FindingFingerprintEntry[], more: Partial<RoundContext['findings']> = {}, outcome?: 'READY',
+      interRoundDiffState: RoundContext['judge']['interRoundDiffState'] = number > 1 ? 'changed' : undefined,
+    ) => makeRoundContext(number, {
+      meta: { prNumber: 1, commitSha: 'a', round: number, timestamp: 't', mankiVersion, ...(outcome && { outcome }) },
+      judge: { summary: '', ...(interRoundDiffState && { interRoundDiffState }) }, findings: { count: entries.length, severityCounts: {}, entries, ...more },
+    });
+    const carried = { carried: [entry('warning', { raisedIn: 1 })] };
+    const pr = (number: number, rounds: RoundContext[]) => prRecords('o/r', number, { reviews: rounds.map((context, i) => review(number * 10 + i, context)), threadComments: [] });
+    const prs = [
+      pr(10, [
+        // Round 1 needs no origin. A note and a pre-existing finding count in no column.
+        round(1, '7.6.0', [entry('blocker', { origin: 'new' }), entry('warning', { origin: 'new' }), entry('warning'), entry('note'), entry('warning', { tags: [PRE_EXISTING_TAG] })]),
+        // A finding on code the push changed, one that restates an earlier one, one under an earlier thread and a pre-existing one are not late.
+        round(2, '7.6.0', [
+          entry('warning', { origin: 'reviewed' }), entry('blocker', { origin: 'new' }), entry('note', { origin: 'reviewed' }), entry('warning', { origin: 'earlier', raisedIn: 1 }),
+          entry('warning', { origin: 'reviewed', posted: 'earlier_thread' }), entry('blocker', { origin: 'reviewed', tags: [PRE_EXISTING_TAG] }),
+        ]),
+        round(3, '7.6.1', [entry('blocker', { origin: 'reviewed' })], carried),
+      ]),
+      // A later round of a release that did not flag a round without the earlier change cannot prove a finding new.
+      pr(11, [round(1, '7.4.0', [entry('warning')]), round(2, '7.4.0', [entry('warning', { origin: 'new' })]), round(3, '7.4.0', [entry('note', { origin: 'reviewed' })])]),
+      // A round without the earlier change, and one whose findings have no origin, prove nothing either.
+      pr(12, [round(1, '7.6.0', [entry('blocker')]), round(2, '7.6.0', [entry('warning', { origin: 'new' })], { originsWithoutPrior: true }), round(3, '7.6.0', [entry('warning')])]),
+      // A later round of an old release that posted no blocker or warning adds nothing late, so the PR still counts.
+      pr(13, [round(1, '6.1.0', [entry('warning')]), round(2, '6.1.0', [entry('note')])]),
+      // Without the record of round 1 the PR's first findings are unknown, and so are those its later rounds call late.
+      // Nor did it pass after one round, and its later round is no known follow-up round.
+      pr(14, [round(2, '7.6.0', [entry('warning', { origin: 'reviewed' })], {}, 'READY'), round(3, '7.6.0', [entry('warning', { origin: 'reviewed' })])]),
+      pr(15, [round(1, '7.6.0', [], {}, 'READY')]),
+      // A round that could not read the earlier records numbers itself round 1 again. Only the first record can be round 1.
+      pr(16, [round(1, '7.6.0', [entry('warning')]), round(2, '7.6.0', [entry('note', { origin: 'new' })]), round(1, '7.6.0', [entry('warning', { origin: 'new' })])]),
+      // Two records of one round leave the order unknown, and so the rounds since a carried warning was first listed.
+      pr(17, [round(1, '7.6.0', [entry('blocker')]), round(2, '7.6.0', []), round(2, '7.6.0', [entry('warning', { origin: 'reviewed' })], carried)]),
+      // Without the diff since the round before, a line a push deleted or restored can read as reviewed.
+      pr(19, [round(1, '7.6.0', [entry('warning')]), round(2, '7.6.0', [entry('warning', { origin: 'reviewed' })], {}, undefined, 'unknown')]),
+    ];
+    // A record that does not decode may hold any round, findings on reviewed code included.
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    prs.push(prRecords('o/r', 18, { reviews: [review(180, round(1, '7.6.0', [entry('warning')], {}, 'READY')), { id: 181, body: '<!-- manki-context: {not json} -->', user: bot }], threadComments: [] }));
+    errorSpy.mockRestore();
+    expect(prs.at(-1)).toMatchObject({ undecodedRounds: 1, rounds: [{ meta: { round: 1 } }] });
+    const numbering = (number: number) => roundNumbering(prs.find(p => p.number === number)!);
+    expect([10, 14, 16, 17, 18].map(numbering)).toEqual([
+      undefined, 'record 1 in posting order is of round 2, not 1', 'record 3 in posting order is of round 1, not 3', 'record 3 in posting order is of round 2, not 3', '1 round record did not decode',
+    ]);
+    const stats = computeStats(prs);
+    // Only PRs 10, 11, 12, 13, 15 and 19 have records of rounds 1, 2, 3 in posting order that all decode.
+    expect(stats).toMatchObject({
+      prs: 10, numberedPrs: 6, passedFirstRound: 1, followUpRounds: 8, interRoundDiffCutOrUnknown: 1,
+      // The findings of PR 11 on 7.4.0 and of PR 19 without the diff since the round before are not known to be first raised later.
+      severities: { blocker: { raisedLater: 3, onReviewedCode: 2 }, warning: { raisedLater: 1, onReviewedCode: 1 } },
+    });
+    expect(Object.fromEntries(stats.decisions.get('Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)')!)).toEqual({ 'listed again, 2 rounds on': 1 });
+    const grades = (blocker: [number, number], warning: [number, number]) => ({
+      blocker: { firstRound: blocker[0], later: blocker[1] }, warning: { firstRound: warning[0], later: warning[1] },
+    });
+    const counts = (number: number, blocker: [number, number], warning: [number, number], unproven = 0, noFirstRound = false) => ({ number, grades: grades(blocker, warning), noFirstRound, unproven });
+    expect(stats.firstRound).toEqual([
+      counts(10, [1, 1], [2, 1]),
+      counts(11, [0, 0], [1, 0], 1),
+      counts(12, [1, 0], [0, 0], 2),
+      counts(13, [0, 0], [1, 0]),
+      counts(14, [0, 0], [0, 1], 0, true),
+      counts(15, [0, 0], [0, 0]),
+      counts(16, [0, 0], [1, 0], 1),
+      counts(17, [1, 0], [0, 0], 1),
+      counts(19, [0, 0], [1, 0], 1),
+      counts(18, [0, 0], [1, 0], 1),
+    ]);
+    const report = renderStats(stats);
+    expect(report).toContain('- Passed after one round: 17% (1 of 6)');
+    expect(report).toContain('- PRs left out of the share passed after one round, the findings first raised in a later round, the follow-up rounds and the rounds a carried warning waited, because a round record did not decode or the records are not rounds 1, 2, 3 in posting order: 4\n');
+    expect(report).toContain([
+      '## Found in round 1', '',
+      '| grade | round 1 | later, on code an earlier round reviewed | found in round 1 |',
+      '| --- | ---: | ---: | ---: |',
+      '| blocker | 1 | 1 | 50% (1 of 2) |',
+      '| warning | 3 | 1 | 75% (3 of 4) |',
+      '| both | 4 | 2 | 67% (4 of 6) |',
+    ].join('\n'));
+    expect(report).toContain('\n\n7 PRs left out (#11, #12, #14, #16, #17, #19, #18): 1 without a round 1 record, 7 round records that cannot say where a finding was first raised.\n\n');
+    expect(report).toContain([
+      '| PR | round 1 blockers | round 1 warnings | later blockers | later warnings | found in round 1 |',
+      '| --- | ---: | ---: | ---: | ---: | ---: |',
+      '| #10 | 1 | 2 | 1 | 1 | 60% (3 of 5) |',
+      '| #13 | 0 | 1 | 0 | 0 | 100% (1 of 1) |',
+      '',
+      '## Fix rate',
+    ].join('\n'));
+    const none = renderStats(computeStats([]));
+    expect(none).toContain('| both | 0 | 0 | - |');
+    expect(none).not.toContain('left out (');
+    expect(none).not.toContain('| PR | round 1 blockers');
   });
 
   it('tallies every decision the round and reply records keep, and lists each in the report', () => {
@@ -305,7 +407,8 @@ describe('review stats', () => {
       decision, reason, head: 'h', threads: { total: 2, resolved: 2 }, timestamp: 't', mankiVersion: '7',
     });
     const pr = prRecords('o/r', 4, {
-      reviews: [review(1, round), { id: 3, body: `Approved.\n${approval('approved', 'all blocking threads are resolved')}`, user: bot }],
+      // Round 2 follows the record of round 1, so the rounds its carried warning waited are known.
+      reviews: [review(0, makeRoundContext(1)), review(1, round), { id: 3, body: `Approved.\n${approval('approved', 'all blocking threads are resolved')}`, user: bot }],
       threadComments: [{ id: 60, in_reply_to_id: 59, body: `Fixed.\n\n<!-- manki -->\n${formatReplyRecord(reply as ReplyRecord)}`, user: bot }],
       issueComments: [
         { id: 70, body: `Approval held.\n\n${approval('held', 'conflict')}`, user: bot },
@@ -353,7 +456,7 @@ describe('review stats', () => {
 
     const report = renderStats(stats);
     expect(report).toContain('### Pause causes\n\n| value | count |\n| --- | ---: |\n| repeated | 1 |');
-    expect(renderStats(stats, 'o/r')).toMatch(/^# Review statistics for o\/r over 2 merged PRs and 2 rounds\n/);
+    expect(renderStats(stats, 'o/r')).toMatch(/^# Review statistics for o\/r over 2 merged PRs and 3 rounds\n/);
     expect(report).toContain('- Threads with a fix claim, per round: mean 2.0, median 2.0, max 2.0');
     // A value from a record never breaks the table.
     expect(report).toContain('| dependency_review skipped: Bad \\| injected \\| row | 1 |');

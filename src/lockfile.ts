@@ -366,7 +366,7 @@ function namesTarball(source: string, name: string, version: string): boolean {
 }
 
 /** Compares two versions by semver order, or returns `undefined` when either is not a version. */
-function compareVersions(a: string, b: string): number | undefined {
+export function compareVersions(a: string, b: string): number | undefined {
   const parse = (v: string) => /^v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/.exec(v);
   const pa = parse(a);
   const pb = parse(b);

@@ -56,10 +56,13 @@ describe('labelFinding', () => {
 });
 
 describe('roundsByPullRequest and findThread', () => {
-  it('groups rounds per pull request oldest first, fills missing blocks and skips reply records, incomplete rounds and records without a commit', () => {
+  it('groups rounds per pull request in posting order, fills missing blocks and skips reply records, incomplete rounds, records without a commit and rounds out of sequence', () => {
     const lines: HistoryLine[] = [
-      { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: '' }, findings: { count: 1, severityCounts: {}, entries: [entry('x')] } } as HistoryLine['record'] },
       { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'a', round: 1, timestamp: '' } } as HistoryLine['record'] },
+      // A round that could not read the earlier records numbers itself round 1 again, so the latest posting of a finding is unknown.
+      { repo: 'o/r', pr: 4, record: { meta: { prNumber: 4, commitSha: 'd', round: 1, timestamp: '' } } as HistoryLine['record'] },
+      { repo: 'o/r', pr: 4, record: { meta: { prNumber: 4, commitSha: 'e', round: 1, timestamp: '' } } as HistoryLine['record'] },
+      { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: '' }, findings: { count: 1, severityCounts: {}, entries: [entry('x')] } } as HistoryLine['record'] },
       { repo: 'o/r', pr: 2, record: {} },
       // An incomplete round whose judge finished resolved no thread, whatever its evaluations say.
       {
@@ -73,7 +76,10 @@ describe('roundsByPullRequest and findThread', () => {
       { kind: 'reply', repo: 'o/r', pr: 3, record: { meta: { prNumber: 3, commitSha: 'c', round: 1, timestamp: '' } } as HistoryLine['record'] },
     ];
 
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const rounds = roundsByPullRequest(lines);
+    expect(errorSpy).toHaveBeenCalledWith('Skipping o/r#4: record 2 in posting order is of round 1, not 2');
+    errorSpy.mockRestore();
 
     expect([...rounds.keys()]).toEqual(['o/r#1']);
     expect(rounds.get('o/r#1')!.map(r => [r.meta.commitSha, r.findings.entries.length, r.judge])).toEqual([['a', 0, {}], ['b', 1, {}]]);

@@ -14,13 +14,14 @@ import { readFileSync } from 'fs';
 
 import { findPriorThreadId } from '../src/finding-fingerprint';
 import { replyOutcome } from '../src/interaction';
+import { compareVersions } from '../src/lockfile';
 import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
 import { findingPlace, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { readFileParts } from '../src/review';
 import { extractApprovalRecords } from '../src/review-record';
-import { isSweepName, outcomeOf, SEVERITY_ORDER } from '../src/types';
-import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, RoundSweep, TokenServiceCall } from '../src/types';
+import { isSweepName, outcomeOf, PRE_EXISTING_TAG, SEVERITY_ORDER } from '../src/types';
+import type { ApprovalRecord, FindingFingerprintEntry, Refutation, ReplyRecord, RoundContext, RoundSweep, TokenServiceCall } from '../src/types';
 import { aggregate, renderTable } from './fix-rate-report';
 import { githubToken, historyLines } from './review-history';
 
@@ -50,6 +51,8 @@ export interface PrRecords {
   reviewIds: number[];
   /** The records of its incomplete rounds, which no later round read as an earlier round. */
   incompleteRounds: RoundContext[];
+  /** The round records in its reviews that could not be decoded or parsed. */
+  undecodedRounds: number;
   /** The records of Manki's thread replies. */
   replies: ReplyRecord[];
   /** The decisions of the review state checks, from their approval reviews and the notices still standing. */
@@ -96,6 +99,26 @@ interface SeverityStats {
 
 const noFindings = (): SeverityStats => ({ posted: 0, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 });
 
+const FIRST_ROUND_GRADES = ['blocker', 'warning'] as const;
+
+type FirstRoundGrade = (typeof FIRST_ROUND_GRADES)[number];
+
+// Before this release a round without the earlier round's change tagged every finding `new` and did not say so.
+const ORIGINS_PROVEN_FROM = '7.5.0';
+
+/** The condition `originsProven` checks, as the report and the docs name it. */
+const ORIGINS_PROVEN_TEXT = `ran on Manki ${ORIGINS_PROVEN_FROM} or later, read the change the round before reviewed, and read the diff since that round`;
+
+/** The blockers and warnings one PR posted: those round 1 found, and those a later round first raised on code an earlier round reviewed. */
+interface FirstRoundPr {
+  number: number;
+  grades: Record<FirstRoundGrade, { firstRound: number; later: number }>;
+  /** Whether the PR's first record in posting order is of a round other than 1. Such a PR counts in no share. */
+  noFirstRound: boolean;
+  /** The PR's round records that cannot say where a finding was first raised. A PR with any counts in no share. */
+  unproven: number;
+}
+
 const SWEEP_STATUSES: readonly RoundSweep['status'][] = ['answered', 'too_specific', 'failed', 'cut'];
 
 /** What the sweeps of the rounds did. A round with `review.sweep` off has none. */
@@ -141,6 +164,11 @@ export interface ReviewStats {
   /** Merged PRs without such a record, such as one Manki never reviewed. */
   unreviewed: number;
   roundsPerPr: number[];
+  /**
+   * PRs whose round records all decoded and are rounds 1, 2, 3 in posting order. Only they count in the figures that
+   * read a round number: `passedFirstRound`, `raisedLater`, the follow-up rounds and the rounds a carried warning waited.
+   */
+  numberedPrs: number;
   passedFirstRound: number;
   manyRounds: number;
   rounds: number;
@@ -151,6 +179,8 @@ export interface ReviewStats {
   /** Per PR with rounds after its first approved round, the number of those rounds. */
   roundsAfterApproval: number[];
   severities: Record<string, SeverityStats>;
+  /** Per reviewed PR, the blockers and warnings round 1 found against those a later round found on reviewed code. */
+  firstRound: FirstRoundPr[];
   /** The tables `aggregate` builds from the fix-rate lines of these PRs. */
   fixRate: ReturnType<typeof aggregate>;
   blockerOutcomes: { fixed: number; withdrawn: number; other: number };
@@ -216,7 +246,10 @@ function tally(stats: ReviewStats, decision: Decision, value: string, by = 1): v
 export function prRecords(
   repo: string, number: number, posted: { reviews: Posted[]; threadComments: ThreadComment[]; issueComments?: Posted[] },
 ): PrRecords {
-  const lines = historyLines(repo, number, { reviews: posted.reviews, comments: posted.threadComments });
+  let undecodedRounds = 0;
+  const lines = historyLines(repo, number, { reviews: posted.reviews, comments: posted.threadComments }, (kind) => {
+    if (kind === 'round') undecodedRounds++;
+  });
   // The state check's approval decisions ride on its approval reviews and on its notices while they stand.
   const approvals = [...posted.reviews, ...(posted.issueComments ?? [])]
     .filter(item => item.user?.type === 'Bot' && item.body)
@@ -234,6 +267,7 @@ export function prRecords(
     rounds: completed.map(round => round.record),
     reviewIds: completed.map(round => round.reviewId),
     incompleteRounds: rounds.filter(round => round.record.meta?.incomplete).map(round => round.record),
+    undecodedRounds,
     replies: lines.filter(line => line.kind === 'reply').map(line => line.record as ReplyRecord),
     approvals,
     threadComments: posted.threadComments,
@@ -280,7 +314,7 @@ function finder(stats: ReviewStats, model: string): FinderStats {
  */
 export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): ReviewStats {
   const stats: ReviewStats = {
-    prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, approvedRounds: 0, roundsAfterApproval: [], severities: {},
+    prs: 0, unreviewed: 0, roundsPerPr: [], numberedPrs: 0, passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, approvedRounds: 0, roundsAfterApproval: [], severities: {}, firstRound: [],
     fixRate: aggregate(fixRateLines, new Set(prs.map(pr => pr.number))),
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), pairRefutations: new Map(), pairRefutationCalls: [],
@@ -297,13 +331,18 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
     }
     stats.prs++;
     stats.roundsPerPr.push(pr.rounds.length);
-    if (pr.rounds[0]?.meta.outcome === 'READY') stats.passedFirstRound++;
+    const numbered = roundNumbering(pr) === undefined;
+    if (numbered) stats.numberedPrs++;
+    if (numbered && pr.rounds[0].meta.outcome === 'READY') stats.passedFirstRound++;
     if (pr.rounds.length >= MANY_ROUNDS) stats.manyRounds++;
     const firstApproval = pr.rounds.findIndex(round => round.meta.outcome === 'READY');
     if (firstApproval >= 0 && firstApproval < pr.rounds.length - 1) stats.roundsAfterApproval.push(pr.rounds.length - 1 - firstApproval);
     let prCost = 0;
     const answers = new Set<string>();
     const threads = mankiThreads(pr.threadComments);
+    // A record that did not decode may hold any round.
+    const found: FirstRoundPr = { number: pr.number, grades: { blocker: { firstRound: 0, later: 0 }, warning: { firstRound: 0, later: 0 } }, noFirstRound: false, unproven: pr.undecodedRounds };
+    stats.firstRound.push(found);
     for (const [index, round] of pr.rounds.entries()) {
       stats.rounds++;
       const cost = round.usage?.estimatedCostUsd ?? 0;
@@ -313,18 +352,21 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
       if (approved) stats.approvedRounds++;
       // A review's id grows with the order the reviews were posted in.
       const earlierThreads = threads.filter(thread => thread.reviewId < pr.reviewIds[index]);
-      for (const entry of round.findings?.entries ?? []) {
+      const posted = (round.findings?.entries ?? []).filter((entry) => {
         // A record without `posted` is read by the rules the review posts by. An entry's `threadId` names the earlier thread
         // the finding restates or adds to, and a finding that matches a thread an earlier review opened gets no thread either.
         const carried = entry.posted ? entry.posted === 'earlier_thread' : !!entry.threadId || findPriorThreadId(entry.fingerprint, earlierThreads) !== undefined;
         // An earlier blocker listed again to get a thread is no finding of this round.
-        if (carried || entry.relisted) continue;
+        return !carried && !entry.relisted;
+      });
+      tallyFirstRound(found, round, index > 0 ? pr.rounds[index - 1] : undefined, posted);
+      for (const entry of posted) {
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
         if (fromSweep(entry)) increment(stats.sweeps.posted, entry.severity);
         if (approved) severity.inApprovedRounds++;
         // A finding with the origin `earlier` restates one an earlier round listed.
-        if (round.meta.round > 1 && !round.findings?.originsWithoutPrior && entry.origin && entry.origin !== 'earlier') {
+        if (numbered && round.meta.round > 1 && originsProven(round) && entry.origin && entry.origin !== 'earlier') {
           severity.raisedLater++;
           if (entry.origin === 'reviewed') severity.onReviewedCode++;
         }
@@ -392,12 +434,12 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         stat.filesInListedRounds += own.length;
         stat.filesInDiff += own.filter(file => changed.has(file)).length;
       }
-      tallyRound(stats, round);
+      tallyRound(stats, round, numbered);
       if (round.judge?.verdictReason === 'verdict_reader') {
         stats.readerRounds++;
         stats.readerBlockers += round.judge.verdictTrace?.survivingBlockers.length ?? 0;
       }
-      if (round.meta.round > 1) {
+      if (numbered && round.meta.round > 1) {
         stats.followUpRounds++;
         if (round.judge?.interRoundDiffTruncated || (round.judge?.interRoundDiffState ?? 'unknown') === 'unknown') stats.interRoundDiffCutOrUnknown++;
       }
@@ -416,6 +458,60 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
 
 function tokenCallKey(call: TokenServiceCall): string {
   return call.status !== undefined && call.status < 300 ? `${call.endpoint} ok` : `${call.endpoint} failed: ${call.status ?? call.error ?? 'unknown'}`;
+}
+
+/**
+ * Whether `round` holds the number after `previous`, or 1 when it is the first record in posting order. A round numbers
+ * itself from the earlier records it could read, so a round after a failed read can call itself round 1 again.
+ */
+function inSequence(round: RoundContext, previous: RoundContext | undefined): boolean {
+  return round.meta.round === (previous ? previous.meta.round + 1 : 1);
+}
+
+/**
+ * Returns why the round records of `pr` are not rounds 1, 2, 3 in posting order, or `undefined` when they are. A record
+ * that did not decode may hold any round, so it counts as a gap.
+ */
+export function roundNumbering(pr: Pick<PrRecords, 'rounds' | 'undecodedRounds'>): string | undefined {
+  if (pr.undecodedRounds > 0) return `${pr.undecodedRounds} round ${pr.undecodedRounds === 1 ? 'record' : 'records'} did not decode`;
+  const index = pr.rounds.findIndex((round, i) => !inSequence(round, i > 0 ? pr.rounds[i - 1] : undefined));
+  return index < 0 ? undefined : `record ${index + 1} in posting order is of round ${pr.rounds[index].meta.round}, not ${index + 1}`;
+}
+
+/**
+ * Whether a later round's `origin` tags can be trusted. A round without the change the round before reviewed tags every
+ * finding `new`, and says so with `originsWithoutPrior` from 7.5.0 on. A round without the diff since the last round can
+ * tag a line a push deleted or restored `reviewed`, and records `judge.interRoundDiffState` as `unknown` or not at all.
+ */
+export function originsProven(round: RoundContext): boolean {
+  const diffState = round.judge?.interRoundDiffState;
+  return (compareVersions(round.meta.mankiVersion, ORIGINS_PROVEN_FROM) ?? -1) >= 0 && !round.findings?.originsWithoutPrior
+    && diffState !== undefined && diffState !== 'unknown';
+}
+
+/**
+ * Adds the blockers and warnings `round` posted to `found`. Each counts in the round that first raised it: round 1, or a
+ * later round when it sits on code an earlier round reviewed. A pre-existing finding counts in neither. A later round
+ * that posted one but cannot prove its origins counts as unproven instead, and so does a record out of sequence.
+ */
+function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: RoundContext | undefined, posted: FindingFingerprintEntry[]): void {
+  const graded = posted.filter((entry): entry is FindingFingerprintEntry & { severity: FirstRoundGrade } =>
+    (FIRST_ROUND_GRADES as readonly string[]).includes(entry.severity) && !entry.tags?.includes(PRE_EXISTING_TAG));
+  if (!inSequence(round, previous)) {
+    if (previous) found.unproven++;
+    else found.noFirstRound = true;
+    return;
+  }
+  if (!previous) {
+    for (const entry of graded) found.grades[entry.severity].firstRound++;
+    return;
+  }
+  if (graded.length === 0) return;
+  if (!originsProven(round) || graded.some(entry => !entry.origin)) {
+    found.unproven++;
+    return;
+  }
+  for (const entry of graded) if (entry.origin === 'reviewed') found.grades[entry.severity].later++;
 }
 
 function fromSweep(finding: { reviewers?: string[] }): boolean {
@@ -439,8 +535,11 @@ function tallySweeps({ sweeps }: ReviewStats, round: RoundContext): void {
   sweeps.calls.push(...(round.usage?.llmCalls ?? []).filter(c => c.stage === 'sweep' || c.agent === 'sweep' || c.sweep));
 }
 
-/** Adds the decisions one round records to the tallies. Records from before a field existed add nothing for it. */
-function tallyRound(stats: ReviewStats, round: RoundContext): void {
+/**
+ * Adds the decisions one round records to the tallies. Records from before a field existed add nothing for it. Unless
+ * the PR's records are `numbered`, the rounds a carried warning waited are not known.
+ */
+function tallyRound(stats: ReviewStats, round: RoundContext, numbered: boolean): void {
   tallySweeps(stats, round);
   for (const [stage, digests] of Object.entries(round.meta.promptVersions ?? {})) {
     for (const digest of digests) tally(stats, 'Prompt versions (rounds per stage and digest)', `${stage} ${digest}`);
@@ -469,7 +568,7 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
   for (const entry of round.findings?.unposted ?? []) {
     tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.unpostedReason ?? entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
   }
-  for (const entry of round.findings?.carried ?? []) {
+  for (const entry of numbered ? round.findings?.carried ?? [] : []) {
     const rounds = round.meta.round - (entry.raisedIn ?? round.meta.round);
     tally(stats, 'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)', `listed again, ${rounds} ${rounds === 1 ? 'round' : 'rounds'} on`);
   }
@@ -613,6 +712,46 @@ function finderToolLines(finders: [string, FinderStats][]): string[] {
   ];
 }
 
+/**
+ * Returns the lines on the blockers and warnings found in round 1: the totals per grade over the PRs whose records prove
+ * them, the PRs left out, and a row per counted PR that posted one.
+ */
+function firstRoundLines(prs: FirstRoundPr[]): string[] {
+  const counted = prs.filter(pr => !pr.noFirstRound && pr.unproven === 0);
+  const left = prs.filter(pr => pr.noFirstRound || pr.unproven > 0);
+  const cells = (of: FirstRoundPr[], grades: readonly FirstRoundGrade[]) => {
+    const sum = (key: 'firstRound' | 'later') => of.reduce((n, pr) => n + grades.reduce((m, grade) => m + pr.grades[grade][key], 0), 0);
+    const [firstRound, later] = [sum('firstRound'), sum('later')];
+    return { firstRound, later, share: share(firstRound, firstRound + later) };
+  };
+  const total = (grades: readonly FirstRoundGrade[]) => {
+    const c = cells(counted, grades);
+    return `${c.firstRound} | ${c.later} | ${c.share}`;
+  };
+  const rows = counted.flatMap((pr) => {
+    const [blocker, warning, both] = [cells([pr], ['blocker']), cells([pr], ['warning']), cells([pr], FIRST_ROUND_GRADES)];
+    return both.firstRound + both.later > 0
+      ? [`| #${pr.number} | ${blocker.firstRound} | ${warning.firstRound} | ${blocker.later} | ${warning.later} | ${both.share} |`]
+      : [];
+  });
+  const records = left.reduce((n, pr) => n + pr.unproven, 0);
+  const noFirstRound = left.filter(pr => pr.noFirstRound).length;
+  return [
+    '| grade | round 1 | later, on code an earlier round reviewed | found in round 1 |',
+    '| --- | ---: | ---: | ---: |',
+    ...FIRST_ROUND_GRADES.map(grade => `| ${grade} | ${total([grade])} |`),
+    `| both | ${total(FIRST_ROUND_GRADES)} |`,
+    '',
+    `A blocker or warning counts once, in the round that first raised it. A finding of a later round counts only when it sits on code an earlier round reviewed, so one on code a push changed since the round before counts in neither column. A finding round 1 posted counts even when its thread was resolved later. A pre-existing finding counts in neither. The record says only that an earlier round reviewed the lines, not which one, so a later finding on code a push after round 1 added counts as late too. A PR counts only when its records prove where each finding was first raised: every record decodes, its first record in posting order is of round 1, each later record is of the round after the one before, and each later round that posted a blocker or warning ${ORIGINS_PROVEN_TEXT}.`,
+    ...(left.length > 0
+      ? ['', `${left.length} ${left.length === 1 ? 'PR' : 'PRs'} left out (${left.map(pr => `#${pr.number}`).join(', ')}): ${noFirstRound} without a round 1 record, ${records} round ${records === 1 ? 'record' : 'records'} that cannot say where a finding was first raised.`]
+      : []),
+    ...(rows.length > 0
+      ? ['', '| PR | round 1 blockers | round 1 warnings | later blockers | later warnings | found in round 1 |', '| --- | ---: | ---: | ---: | ---: | ---: |', ...rows]
+      : []),
+  ];
+}
+
 /** Renders the report, headed with `repo` when one is given. */
 export function renderStats(stats: ReviewStats, repo?: string): string {
   const per = (count: number, rounds: number) => (rounds > 0 ? (count / rounds).toFixed(2) : '-');
@@ -633,9 +772,10 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     '## Rounds',
     '',
     `- Rounds per PR: ${summary(stats.roundsPerPr)}`,
-    `- Passed after one round: ${share(stats.passedFirstRound, stats.prs)}`,
+    `- Passed after one round: ${share(stats.passedFirstRound, stats.numberedPrs)}`,
     `- Needed ${MANY_ROUNDS} or more rounds: ${share(stats.manyRounds, stats.prs)}`,
     `- Rounds that ended incomplete, counted in no other figure: ${stats.incompleteRounds}`,
+    `- PRs left out of the share passed after one round, the findings first raised in a later round, the follow-up rounds and the rounds a carried warning waited, because a round record did not decode or the records are not rounds 1, 2, 3 in posting order: ${stats.prs - stats.numberedPrs}`,
     `- Approved rounds: ${share(stats.approvedRounds, stats.rounds)}`,
     `- PRs with rounds after their first approval: ${share(stats.roundsAfterApproval.length, stats.prs)}, ${stats.roundsAfterApproval.reduce((sum, n) => sum + n, 0)} such rounds`,
     '',
@@ -646,10 +786,14 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     ...[...SEVERITIES, ...Object.keys(stats.severities).filter(s => !SEVERITIES.includes(s))].map(s => findingsRow(s, stats.severities[s])),
     findingsRow('all', all),
     '',
-    'The table leaves out a finding the round put under an earlier Manki thread, such as another instance of a finding that went into its thread as a reply. A record from before the `posted` field does not say where a finding went. For those the script leaves out a finding that names an earlier thread, or that matches one by file, title and line. It cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`. A record that says so is left out of the reviewed-code share. An older record does not say so, and its findings on reviewed code are missing from the share, so the share reads too low. A note on reviewed code is not posted, so it counts in none of these either, and shows under `reviewed_code` in the table of findings recorded without posting.',
+    'The table leaves out a finding the round put under an earlier Manki thread, such as another instance of a finding that went into its thread as a reply. A record from before the `posted` field does not say where a finding went. For those the script leaves out a finding that names an earlier thread, or that matches one by file, title and line. It cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved. A finding first raised in a later round counts only when that round ' + ORIGINS_PROVEN_TEXT + '. A round without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`. A round without the diff since the last round can tag a line a push deleted or restored as reviewed. A note on reviewed code is not posted, so it counts in none of these either, and shows under `reviewed_code` in the table of findings recorded without posting.',
     '',
     `- Blocker threads: ${blockerThreads}, fixed ${stats.blockerOutcomes.fixed}, withdrawn ${stats.blockerOutcomes.withdrawn}, other ${stats.blockerOutcomes.other}`,
     `- Verdict reader blockers: ${stats.readerBlockers} in ${stats.readerRounds} rounds`,
+    '',
+    '## Found in round 1',
+    '',
+    ...firstRoundLines(stats.firstRound),
     '',
     '## Fix rate',
     '',

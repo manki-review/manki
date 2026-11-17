@@ -9,15 +9,20 @@ function entry(title: string, overrides: Partial<FindingFingerprintEntry> & { fi
   return { ...makeFindingFingerprintEntry({ title, file: overrides.file, severity: 'blocker' }), origin: 'reviewed', ...overrides };
 }
 
-function round(n: number, entries: FindingFingerprintEntry[]) {
-  return makeRoundContext(n, { findings: { count: entries.length, severityCounts: {}, entries } });
+function round(n: number, entries: FindingFingerprintEntry[], interRoundDiffState: RoundContext['judge']['interRoundDiffState'] = 'changed') {
+  const context = makeRoundContext(n, { judge: { summary: '', ...(interRoundDiffState && { interRoundDiffState }) }, findings: { count: entries.length, severityCounts: {}, entries } });
+  context.meta.mankiVersion = '7.6.0';
+  return context;
+}
+
+function pr(rounds: RoundContext[], undecodedRounds = 0) {
+  return { rounds, undecodedRounds };
 }
 
 describe('collectMisses', () => {
   it('keeps blockers on code the previous round reviewed that no earlier round raised, by the commit that round reviewed', () => {
     const deadlock = entry('Deadlock in stop', { file: 'src/a.rs', judgeNotes: 'Both paths take the lock.' });
-    const misses = collectMisses([
-      round(3, [entry('Lock order', { file: 'src/b.rs' }), entry('Old warning', { severity: 'warning' }), deadlock]),
+    const rounds = [
       round(1, [entry('Found first', { file: 'src/c.rs', origin: 'new' })]),
       round(2, [
         entry('Fresh code', { origin: 'new' }),
@@ -25,17 +30,25 @@ describe('collectMisses', () => {
         entry('Found first', { file: 'src/c.rs' }),
         entry('Overflow', { file: 'src/d.rs', threadId: 'T1' }),
       ]),
+      round(3, [entry('Lock order', { file: 'src/b.rs' }), entry('Old warning', { severity: 'warning' }), deadlock]),
       round(4, [entry('Overflow, renamed', { file: 'src/d.rs', threadId: 'T1' }), entry('Lock order', { file: 'src/b.rs' })]),
-    ]);
+      // Without the diff since round 4, a line a push deleted or restored can read as reviewed.
+      round(5, [entry('Race on close', { file: 'src/e.rs' })], 'unknown'),
+    ];
+    const misses = collectMisses(pr(rounds));
 
     expect(misses.map(({ missedBy, foundIn, head, blockers }) => ({ missedBy, foundIn, head, titles: blockers.map(b => b.title) }))).toEqual([
       { missedBy: 1, foundIn: [2], head: 'sha1', titles: ['Overflow'] },
       { missedBy: 2, foundIn: [3], head: 'sha2', titles: ['Lock order', 'Deadlock in stop'] },
     ]);
+    // Without round 2, which did not decode, a round 3 blocker would read as a miss of round 1. A round that numbered
+    // itself round 1 again after a failed read leaves the round before each blocker unknown too.
+    expect(collectMisses(pr([rounds[0], ...rounds.slice(2)], 1))).toEqual([]);
+    expect(collectMisses(pr([...rounds.slice(0, 2), round(1, rounds[2].findings.entries)]))).toEqual([]);
   });
 
   it('finds no miss in a single round', () => {
-    expect(collectMisses([round(1, [entry('On reviewed code')])])).toEqual([]);
+    expect(collectMisses(pr([round(1, [entry('On reviewed code')])]))).toEqual([]);
   });
 });
 
@@ -93,9 +106,12 @@ describe('collectFollowUps', () => {
   const states = new Map([1, 2, 4, 5, 6, 7, 8, 10, 11, 12].map(id => [id, { id: `T${id}`, isResolved: [1, 2, 4, 6, 8, 11, 12].includes(id) }]));
 
   it('keys each follow-up round by the threads it resolved, found partly fixed, found again later or left open, and the body findings it posted again', () => {
-    const followUps = collectFollowUps(rounds, comments, states);
+    const followUps = collectFollowUps(pr(rounds), comments, states);
 
     expect([...followUps.keys()]).toEqual([2, 3, 4, 5]);
+    // A record that did not decode, or rounds out of sequence, leave the rounds before each one unknown.
+    expect(collectFollowUps(pr(rounds, 1), comments, states)).toEqual(new Map());
+    expect(collectFollowUps(pr([rounds[0], ...rounds.slice(2)]), comments, states)).toEqual(new Map());
     expect(followUps.get(2)).toEqual({
       priorHead: 'sha1',
       findings: [
@@ -132,11 +148,11 @@ describe('collectFollowUps', () => {
     expect(followUps.get(4)!.mustKeepOpen).toContainEqual({ id: 'P9', severity: 'warning', mechanism: 'The handle leaks on the error path.' });
     expect(followUps.get(5)!.mustNotRepeat).toContain('P9');
     // Without the thread states, a thread the round resolved with no reply reads as still open.
-    expect(collectFollowUps(rounds, comments).get(2)).toMatchObject({ mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5', 'P6', 'P7', 'P8', 'P9', 'P10', 'P11'] });
+    expect(collectFollowUps(pr(rounds), comments).get(2)).toMatchObject({ mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5', 'P6', 'P7', 'P8', 'P9', 'P10', 'P11'] });
   });
 
   it('drafts a follow-up case that parses with the earlier round and its follow-up lists', () => {
-    const followUp = collectFollowUps(rounds, comments, states).get(2)!;
+    const followUp = collectFollowUps(pr(rounds), comments, states).get(2)!;
     const miss = { missedBy: 2, foundIn: [3], head: 'b'.repeat(40), blockers: [entry('Race on close', { file: 'src/f.go' })] };
     const { id, text } = draftCase('manki-review/token-service', { number: 12, title: 'fix: retry', body: 'Retries.' }, miss, 'a'.repeat(40), { ...followUp, priorHead: 'c'.repeat(40) });
 
