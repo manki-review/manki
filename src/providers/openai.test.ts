@@ -909,20 +909,34 @@ describe('sendViaCLI (Codex CLI path)', () => {
       credential: 'key',
     });
 
-    // Codex prints the capacity message twice. No other credential helps, so the error names none.
+    // What Codex 0.166.0 writes to stderr when the provider reports an overload: the capacity line ends it, twice.
     const capacity = 'ERROR: Selected model is at capacity. Please try a different model.';
+    const codexStderr = (...lines: string[]): string => [
+      'Reading additional input from stdin...', 'OpenAI Codex v0.166.0', '--------', 'workdir: /tmp/manki-cli-1', 'model: gpt-5.5', 'provider: manki',
+      'approval: never', 'sandbox: read-only', 'reasoning effort: none', 'reasoning summaries: none', 'session id: 01a1e7a6-1a3a-7f72-a92d-693618c25506',
+      '--------', 'user', ...lines, '',
+    ].join('\n');
+    // No other credential helps, so the error names none.
     for (const busy of [client, endpoint]) {
-      setupSpawnMock('', { exitCode: 1, stderr: `user\nreview this\n${capacity}\n${capacity}\n` });
+      setupSpawnMock('', { exitCode: 1, stderr: codexStderr('review this', capacity, capacity) });
       const full = await busy.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
       expect(full).toBeInstanceOf(QuotaError);
       expect(full).toMatchObject({ message: `OpenAI model at capacity: ${capacity}`, limit: 'OpenAI model at capacity', resetsAt: undefined, credential: undefined });
     }
 
-    // Only Codex's own capacity sentence counts, so "overloaded" in other text stays a plain error.
-    setupSpawnMock('', { exitCode: 1, stderr: 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded\n' });
-    const unrelated = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
-    expect(unrelated).not.toBeInstanceOf(QuotaError);
-    expect(unrelated?.message).toContain('Codex CLI invocation failed (exit 1: ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded');
+    // Only that exact line at the end of stderr counts. The same words in the prompt, in the model's text or inside another error stay a plain error.
+    for (const [elsewhere, shown] of [
+      [codexStderr(capacity, 'ERROR: stream disconnected before completion: stream closed before response.completed'), 'ERROR: stream disconnected before completion: stream closed before response.completed'],
+      [codexStderr('review this', 'codex', capacity, 'tokens used', '2'), capacity],
+      [codexStderr('review this', ` ${capacity}`), capacity],
+      [codexStderr('review this', `${capacity} Or wait.`), `${capacity} Or wait.`],
+      [codexStderr('review this', 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'), 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'],
+    ]) {
+      setupSpawnMock('', { exitCode: 1, stderr: elsewhere });
+      const plain = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(plain).not.toBeInstanceOf(QuotaError);
+      expect(plain?.message).toContain(`Codex CLI invocation failed (exit 1: ${shown} [`);
+    }
   });
 
   it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {

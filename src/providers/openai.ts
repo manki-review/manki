@@ -195,8 +195,8 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
   return new QuotaError(`${limit}: ${text}`, limit, matchQuotaText(text)?.resetsAt, 'key');
 }
 
-// How Codex words an overload the provider reports: "Selected model is at capacity. Please try a different model."
-const CAPACITY_TEXT = /\bmodel is at capacity\b/i;
+// The line Codex ends its stderr with when the provider reports an overload.
+const CAPACITY_ERROR = 'ERROR: Selected model is at capacity. Please try a different model.';
 
 /**
  * Returns the `ERROR:` line that ends Codex's stderr, or `undefined` when stderr ends on any other line. Codex prints
@@ -414,7 +414,7 @@ export class OpenAIClient implements LLMClient {
     const limits = limitReadings();
     if (code !== 0) {
       const finalError = codexFinalError(stderr);
-      const atCapacity = !!finalError && CAPACITY_TEXT.test(finalError);
+      const atCapacity = finalError === CAPACITY_ERROR;
       const quota = finalError ? matchQuotaText(finalError) : undefined;
       if (atCapacity || (quota && !quota.overloaded)) {
         const ownLimit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
