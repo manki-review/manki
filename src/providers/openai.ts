@@ -401,16 +401,17 @@ export class OpenAIClient implements LLMClient {
         ? codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related, readsFile }), env)
         : [];
       const reads = () => (repoTools?.related ? readRelatedReads(readsFile) : undefined);
-      const exit = await runCli({
+      const run = (runArgs: string[], input: string): Promise<CliExit> => runCli({
         label: 'Codex',
         cliPath,
-        args: [...args, ...toolArgs, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, '-'],
+        args: [...args, ...toolArgs, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, ...runArgs],
         env,
-        input: userMessage,
+        input,
         hardTimeoutMs: options?.timeoutMs,
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
       }).catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); });
+      const exit = await run(['-'], userMessage);
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
