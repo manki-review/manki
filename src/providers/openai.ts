@@ -213,6 +213,18 @@ function codexFinalError({ signal, stderr }: Pick<CliExit, 'signal' | 'stderr'>,
   return /^ERROR:\s/.test(line) ? extractCliErrorSnippet(line) : undefined;
 }
 
+/** Returns the limit that `finalError`, Codex's final error, reports as a `QuotaError`, or `undefined` when it reports none. */
+function codexLimitError(finalError: string | undefined, endpoint: boolean): QuotaError | undefined {
+  const atCapacity = finalError === CAPACITY_ERROR;
+  const quota = finalError ? matchQuotaText(finalError) : undefined;
+  if (!atCapacity && (!quota || quota.overloaded)) return undefined;
+  const ownLimit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
+  const limit = atCapacity ? 'OpenAI model at capacity' : ownLimit;
+  // No other credential gets past a model at capacity.
+  const credential = atCapacity ? undefined : endpoint ? 'key' : 'token';
+  return new QuotaError(`${limit}: ${finalError}`, limit, quota?.resetsAt, credential);
+}
+
 // The variable Codex reads an endpoint's key from, and the id of the model provider Manki defines for the endpoint.
 const ENDPOINT_KEY_ENV = 'OPENAI_API_KEY';
 const ENDPOINT_PROVIDER = 'manki';
@@ -469,17 +481,10 @@ export class OpenAIClient implements LLMClient {
 
     const limits = limitReadings();
     if (code !== 0) {
-      const finalError = codexFinalError({ signal, stderr }, output);
-      const atCapacity = finalError === CAPACITY_ERROR;
-      const quota = finalError ? matchQuotaText(finalError) : undefined;
-      if (atCapacity || (quota && !quota.overloaded)) {
-        const ownLimit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
-        const limit = atCapacity ? 'OpenAI model at capacity' : ownLimit;
-        const message = `${limit}: ${finalError}`;
-        core.warning(message);
-        // No other credential gets past a model at capacity.
-        const credential = atCapacity ? undefined : endpoint ? 'key' : 'token';
-        throw carryReadings(new QuotaError(message, limit, quota?.resetsAt, credential), { relatedReads, ...limits });
+      const limitError = codexLimitError(codexFinalError({ signal, stderr }, output), !!endpoint);
+      if (limitError) {
+        core.warning(limitError.message);
+        throw carryReadings(limitError, { relatedReads, ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
