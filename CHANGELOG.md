@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.3] - 2026-11-18
+
+Manki 7.6.3 makes a review finish when a model is limited or its endpoint cannot be reached. A limited stage moves to its fallback model, a reviewer that ran out of time is not started over, and a round keeps inside the job's time so it always posts. Codex reviewers also lose the built-in tools they were never meant to have. No setting changes.
+
+### Reliability
+
+- A model that hit a rate limit, a used-up quota or a "model at capacity" error ended the review incomplete. That stage now moves to its fallback model with the time its call has left, the same model a safety refusal moves to (`models.fallback`, or else the first other model of the `full` group). A finder that reads the repository with tools moves only to a fallback that has them too, and two finders never move onto one model ([#1777](https://github.com/manki-review/manki/pull/1777)).
+- A reviewer that used up its time was started again from scratch with the same time, which could run past the job's limit, and a job that is stopped posts nothing. A reviewer that timed out is now not retried. A round in the action keeps its model calls inside 25 minutes and stops the finders 8 minutes before that, so the judge and the posting always fit within the template's 30-minute job. A stage that no longer fits ends the round incomplete, with the findings of the finders that finished, and the review says why a retry or fallback did not start. A workflow with a longer `timeout-minutes` still stops at 25 minutes, and one with a shorter limit is not covered ([#1789](https://github.com/manki-review/manki/pull/1789)).
+- A Codex call whose endpoint could not be reached printed only "Reconnecting... waiting for network" and waited out its whole time limit. It now ends after 2 minutes of only that line and counts as a failed connection ([#1789](https://github.com/manki-review/manki/pull/1789)).
+
+### Security
+
+- A Codex reviewer was offered tools of Codex's own, such as subagents, goal tools and a request for user input, although `docs/security.md` said it had only Manki's read-only tools. Four more Codex switches now remove them. What Codex 0.166.0 still offers and cannot switch off is listed in `docs/security.md`: a script host without file, network or shell access, empty resource tools, and a patch tool whose writes the sandbox refuses but which can confirm a guessed line of a file the runner user can read. A new CI check fails when a Codex version offers a tool that is not on the recorded list ([#1786](https://github.com/manki-review/manki/pull/1786)).
+
 ## [7.6.2] - 2026-11-18
 
 Manki 7.6.2 keeps a review with a GPT model going when an OpenAI-compatible endpoint throttles it. Nothing else changes, and nothing breaks on the upgrade.
