@@ -229,20 +229,39 @@ describe('publish-release.sh --dry-run', () => {
     expect(result.stderr).toContain(`release commit ${fx.release} is not on origin/main`);
   });
 
-  it('refuses a later main commit at the same version', () => {
+  it('takes a later main commit at the same version only when it edits CHANGELOG.md', () => {
     fx = setup();
+    const buildOnMain = (): string => {
+      fx.git('push', '-q', 'origin', 'main');
+      fx.git('checkout', '-q', '--detach');
+      fs.mkdirSync(path.join(fx.work, 'dist'));
+      fs.writeFileSync(path.join(fx.work, 'dist', 'index.js'), 'built\n');
+      fx.git('add', '-f', 'dist/');
+      fx.git('commit', '-q', '-m', 'build');
+      const build = fx.git('rev-parse', 'HEAD');
+      fx.git('push', '-q', '-f', 'origin', 'HEAD:refs/heads/release/v1.2.3');
+      fx.git('checkout', '-q', 'main');
+      return build;
+    };
+
     fx.git('commit', '-q', '--allow-empty', '-m', 'feature');
-    fx.git('push', '-q', 'origin', 'main');
     const feature = fx.git('rev-parse', 'HEAD');
-    fx.git('checkout', '-q', '--detach');
-    fs.mkdirSync(path.join(fx.work, 'dist'));
-    fs.writeFileSync(path.join(fx.work, 'dist', 'index.js'), 'built\n');
-    fx.git('add', '-f', 'dist/');
-    fx.git('commit', '-q', '-m', 'build');
-    fx.git('push', '-q', '-f', 'origin', 'HEAD:refs/heads/release/v1.2.3');
-    const result = publish(fx, 'v1.2.3');
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain(`release commit ${feature} doesn't bump the version to 1.2.3`);
+    buildOnMain();
+    const refused = publish(fx, 'v1.2.3');
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain(`release commit ${feature} doesn't edit CHANGELOG.md`);
+    expect(refused.stdout).not.toContain('dry-run:');
+
+    const changelog = path.join(fx.work, 'CHANGELOG.md');
+    fs.writeFileSync(changelog, fs.readFileSync(changelog, 'utf8').replace('Notes for 1.2.3.', 'Rewritten notes.'));
+    fx.git('commit', '-q', '-a', '-m', 'rewrite the notes');
+    const build = buildOnMain();
+    const taken = publish(fx, 'v1.2.3');
+    expect(taken.stderr).toBe('');
+    expect(taken.status).toBe(0);
+    expect(taken.stdout).toContain(`dry-run: git tag -fa v1.2.3 ${build} -m v1.2.3`);
+    expect(taken.stdout).toContain('- Rewritten notes.');
+    expect(taken.stdout).not.toContain('Notes for 1.2.3.');
   });
 
   it('refuses a release branch whose name does not match package.json', () => {

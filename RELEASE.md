@@ -37,12 +37,18 @@ npm run check-changelog-version
 3. Bump `version` in `package.json` to `X.Y.Z`.
 4. Refresh `package-lock.json` (`npm install` will do it).
 5. Open the release PR. CI runs `check-changelog-version` automatically.
-6. Once merged, push the merged release commit on `main` to a release branch: `git push origin <sha>:refs/heads/release/vX.Y.Z`. The `Release` workflow (`.github/workflows/release.yml`) checks that the commit is on `main`, that it is the commit that bumps the version, and that `package.json` and `CHANGELOG.md` say `X.Y.Z`. It then builds `dist/`, commits it on top of the release commit and pushes that build commit to `release/vX.Y.Z`. It never writes tags. `main` never carries `dist/`.
+6. Once merged, push the merged release commit on `main` to a release branch: `git push origin <sha>:refs/heads/release/vX.Y.Z`. The `Release` workflow (`.github/workflows/release.yml`) checks that the commit is on `main`, that it edits `CHANGELOG.md` as only a release PR does, that no later commit on `main` edits it, and that `package.json` and `CHANGELOG.md` say `X.Y.Z`. It then builds `dist/`, commits it on top of the release commit and pushes that build commit to `release/vX.Y.Z`. It never writes tags. `main` never carries `dist/`.
 7. Once the `Release` workflow finishes, the `Publish release` workflow (`.github/workflows/publish-release.yml`) starts on its own. To start it by hand, run it from `main` with the tag `vX.Y.Z`. Its `verify` job runs `scripts/publish-release.sh --dry-run vX.Y.Z` without any secret and prints what it will write: the tag, the release notes and the major tag move. Read that log, then approve the `release` deployment on the run. The `publish` job then mints a token from the release App and runs the script again on the build commit the dry run verified, skipping the rebuild. If the App isn't set up, the job fails without writing anything.
 
    As a fallback, a repository admin of `manki` runs `scripts/publish-release.sh vX.Y.Z` from a clone of the repo, with Node 24 and `gh` signed in. Run it with `--dry-run` first to print the commands that write tags or the release without running them.
 
    Either way, the script waits for the build commit and repeats the workflow's checks on the release commit. It then rebuilds `dist/` from the release commit and refuses unless the build commit is exactly the release commit plus that fresh `dist/`. It creates the annotated tag `vX.Y.Z` on the build commit, pushes it, publishes the GitHub Release with the `CHANGELOG.md` section as its notes, and moves the major tag (`vX`) to the same commit. It leaves `vX` alone when a newer `vX` release exists. Keep the release branch, because the script reads the build commit from it.
+
+## Changing a release that is not published
+
+A release whose PR is merged can still take more changes as long as its tag `vX.Y.Z` does not exist. Merge the changes, then open one more PR that rewrites the `## [X.Y.Z]` section of `CHANGELOG.md` and leaves the version as it is. CI lets a PR edit `CHANGELOG.md` when it changes the version or when the version it is on has no tag yet. That PR's commit is the new release commit. If `release/vX.Y.Z` already exists, delete it first (`git push origin --delete release/vX.Y.Z`), then push the new commit as in step 6. The version never goes back, and there is no new version number for a release nobody could install.
+
+Once the tag exists the release is published for good, and a change needs a new version.
 
 ## Tag ruleset
 

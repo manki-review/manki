@@ -73,9 +73,14 @@ jobs:
             exit 1
           fi
           node scripts/check-changelog-version.js
-          PREV_VERSION=$(git show HEAD^:package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
-          if [ "$PREV_VERSION" = "$VERSION" ]; then
-            echo "::error::$GITHUB_REF_NAME must point at the commit that bumps the version to $VERSION"
+          # Only a release PR edits CHANGELOG.md, so its commit is the one that does.
+          if [ -z "$(git diff --name-only HEAD^ HEAD -- CHANGELOG.md)" ]; then
+            echo "::error::$GITHUB_REF_NAME must point at a release PR's commit, and this commit does not edit CHANGELOG.md"
+            exit 1
+          fi
+          LATER=$(git log --format=%h HEAD..origin/main -- CHANGELOG.md)
+          if [ -n "$LATER" ]; then
+            echo "::error::main has a later commit that edits CHANGELOG.md ($(echo $LATER)). Point $GITHUB_REF_NAME at the newest one"
             exit 1
           fi
 
