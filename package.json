@@ -1,6 +1,6 @@
 {
   "name": "manki",
-  "version": "7.6.1",
+  "version": "7.6.2",
   "description": "Multi-agent AI code review GitHub Action",
   "main": "dist/index.js",
   "bin": {
