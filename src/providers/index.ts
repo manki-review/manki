@@ -2,7 +2,7 @@ export { buildAuthForProvider, hasAnyProviderCredentials, readProviderInputsFrom
 export type { ProviderInputs } from './auth';
 export { cutLegacyCommands, removeSeededAuthFiles, sanitizeLogOutput } from './cli-utils';
 export { createLLMClient } from './factory';
-export { latestLimits, recordCalls, summarizeCalls, withRefusalFallback, withSignal, wrapClientForUsage } from './instrumentation';
+export { latestLimits, recordCalls, summarizeCalls, withModelFallback, withSignal, wrapClientForUsage } from './instrumentation';
 export { estimateCostUsd, modelDisplayName, parseModelSpec } from './model-registry';
 export type { ModelSpec } from './model-registry';
 export type {

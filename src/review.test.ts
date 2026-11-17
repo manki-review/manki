@@ -44,7 +44,7 @@ import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, withRefusalFallback, wrapClientForUsage } from './providers';
+import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, withModelFallback, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { repoToolsPrompt } from './providers/cli-utils';
 
@@ -6907,14 +6907,14 @@ describe('runPlanner language', () => {
   });
 });
 
-describe('withRefusalFallback', () => {
+describe('withModelFallback', () => {
   const refusal = new RefusalError('declined', 'content_filter');
 
   it('moves to the fallback client after a refusal and stays there', async () => {
     const primary = { sendMessage: jest.fn().mockRejectedValue(refusal) } as unknown as LLMClient;
     const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
     const onFallback = jest.fn();
-    const client = withRefusalFallback(primary, fallback, onFallback);
+    const client = withModelFallback(primary, fallback, onFallback);
 
     await expect(client.sendMessage('sys', 'first', { effort: 'low' })).resolves.toEqual({ content: 'ok' });
     await expect(client.sendMessage('sys', 'second')).resolves.toEqual({ content: 'ok' });
@@ -6931,18 +6931,18 @@ describe('withRefusalFallback', () => {
     const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
     const onFallback = jest.fn();
     try {
-      const client = withRefusalFallback(refusedAfter(100), fallback, onFallback);
+      const client = withModelFallback(refusedAfter(100), fallback, onFallback);
       await expect(client.sendMessage('sys', 'first', { effort: 'low', timeoutMs: 900_000 })).resolves.toEqual({ content: 'ok' });
       // A call after the stage moved has its whole limit, and a call without one gets none.
       await client.sendMessage('sys', 'second', { timeoutMs: 500_000 });
-      await withRefusalFallback(refusedAfter(100), fallback, onFallback).sendMessage('sys', 'third', { effort: 'low' });
+      await withModelFallback(refusedAfter(100), fallback, onFallback).sendMessage('sys', 'third', { effort: 'low' });
       expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([
         ['sys', 'first', { effort: 'low', timeoutMs: 800_000 }], ['sys', 'second', { timeoutMs: 500_000 }], ['sys', 'third', { effort: 'low' }],
       ]);
 
       jest.mocked(fallback.sendMessage).mockClear();
       onFallback.mockClear();
-      const usedUp = await withRefusalFallback(refusedAfter(900), fallback, onFallback).sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      const usedUp = await withModelFallback(refusedAfter(900), fallback, onFallback).sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
       expect(usedUp).toBeInstanceOf(TimeoutError);
       expect(usedUp).toMatchObject({ message: 'The refused call used up its 900s, so it is not sent to the fallback model', cause: refusal });
       expect(fallback.sendMessage).not.toHaveBeenCalled();
@@ -6956,7 +6956,7 @@ describe('withRefusalFallback', () => {
     const primary = { sendMessage: jest.fn().mockRejectedValue(refusal) } as unknown as LLMClient;
     const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
     const onFallback = jest.fn();
-    const client = withRefusalFallback(primary, fallback, onFallback);
+    const client = withModelFallback(primary, fallback, onFallback);
 
     await Promise.all([client.sendMessage('sys', 'a'), client.sendMessage('sys', 'b'), client.sendMessage('sys', 'c')]);
     expect(primary.sendMessage).toHaveBeenCalledTimes(3);
@@ -6969,8 +6969,8 @@ describe('withRefusalFallback', () => {
     const fallback = { sendMessage: jest.fn() } as unknown as LLMClient;
     const onFallback = jest.fn();
 
-    await expect(withRefusalFallback({ sendMessage: jest.fn().mockRejectedValue(overloaded) }, fallback, onFallback).sendMessage('s', 'u')).rejects.toBe(overloaded);
-    await expect(withRefusalFallback({ sendMessage: jest.fn().mockRejectedValue(refusal) }, undefined, onFallback).sendMessage('s', 'u')).rejects.toBe(refusal);
+    await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(overloaded) }, fallback, onFallback).sendMessage('s', 'u')).rejects.toBe(overloaded);
+    await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(refusal) }, undefined, onFallback).sendMessage('s', 'u')).rejects.toBe(refusal);
     expect(fallback.sendMessage).not.toHaveBeenCalled();
     expect(onFallback).not.toHaveBeenCalled();
   });
@@ -6995,7 +6995,7 @@ describe('recordCalls', () => {
     await expect(judge.sendMessage('sys', 'user')).rejects.toThrow('timed out');
     await judge.sendMessage('sys', 'user');
     await judge.sendMessage('sys', 'user');
-    await withRefusalFallback(recordCalls(refusing, finder, calls), recordCalls(fallback, { ...finder, fallback: true }, calls), () => {}).sendMessage('sys', 'user');
+    await withModelFallback(recordCalls(refusing, finder, calls), recordCalls(fallback, { ...finder, fallback: true }, calls), () => {}).sendMessage('sys', 'user');
 
     const none = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
     // The digest is the first 12 hex digits of the SHA-256 of the system prompt, `sys` here.

@@ -42,7 +42,7 @@ export function wrapClientForUsage(client: LLMClient): {
  * A refused request with a `timeoutMs` gets only the time the refused call left of it on `fallback`,
  * and fails with a `TimeoutError` when none is left.
  */
-export function withRefusalFallback(
+export function withModelFallback(
   client: LLMClient,
   fallback: LLMClient | undefined,
   onFallback: (error: RefusalError) => void,
