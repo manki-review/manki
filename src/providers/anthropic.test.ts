@@ -524,6 +524,8 @@ describe('sendViaOAuth — error paths', () => {
       request(2), toolUse('t2', 'mcp__manki__git_history', { path: 'src/b.rs' }), toolResult('t2'),
       request(3), toolUse('t3', 'Read', { file_path: '/work/repo/src/a.rs', offset: 400 }), toolResult('t3'),
       request(4), toolUse('t4', 'mcp__manki__read_file', { repo: 'dashpay/dash', path: 'src/net.cpp' }), toolResult('t4', [{ type: 'text', text: 'int a;' }, { type: 'text', text: 'int b;' }]),
+      // A file of a dependency is not the PR's file at the same path.
+      toolUse('t5', 'mcp__manki__read_file', { dependency: 'crates.io/time', path: 'src/a.rs' }), toolResult('t5'),
       request(5), result(150),
     ];
     setupSpawnMock({ stdout: `${events.map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
@@ -594,8 +596,9 @@ describe('sendViaOAuth — error paths', () => {
       { tool: 'mcp__manki__git_history', file: undefined, resultChars: 1 },
       { tool: 'Read', file: 'src/a.rs', resultChars: 1 },
       { tool: 'mcp__manki__read_file', file: 'dashpay/dash:src/net.cpp', resultChars: 12 },
+      { tool: 'mcp__manki__read_file', file: 'crates.io/time:src/a.rs', resultChars: 1 },
     ]);
-    expect(onToolStep).toHaveBeenCalledTimes(4);
+    expect(onToolStep).toHaveBeenCalledTimes(5);
     expect(response.usage).toEqual({ inputTokens: 16_650, outputTokens: 75, cacheReadTokens: 15_000, cacheWriteTokens: 1500, reasoningTokens: 0, largestRequestInputTokens: 5550 });
     // Requests that do not add up to the `result` leave the largest unknown, since the missing one could be it. The largest
     // one seen is kept as a lower bound.
@@ -608,7 +611,7 @@ describe('sendViaOAuth — error paths', () => {
     setupSpawnMock({ stdout: 'ok' });
     expect((await client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15, related: undefined } })).toolSteps).toEqual([]);
     expect((await client.sendMessage('sys', 'user')).toolSteps).toBeUndefined();
-    expect(response.filesRead).toEqual(['src/a.rs', 'dashpay/dash:src/net.cpp']);
+    expect(response.filesRead).toEqual(['src/a.rs', 'dashpay/dash:src/net.cpp', 'crates.io/time:src/a.rs']);
     expect(response.relatedReads).toEqual({ 'dashpay/dash': 3 });
 
     // A call that fails still reports the reads it made, on its error.

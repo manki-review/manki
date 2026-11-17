@@ -641,13 +641,15 @@ export function relatedReadsFile(dir: string): string {
 
 /**
  * Returns the file a `Read` or `read_file` call reads, relative to `root` when the call names its full path. A file in a
- * related repo gets `owner/name:` in front.
+ * related repo gets `owner/name:` in front, and a file of a dependency the package as the call names it, such as
+ * `crates.io/time:`.
  */
 export function fileReadBy(tool: string, input: unknown, root: string | undefined): string | undefined {
   if (!input || typeof input !== 'object') return undefined;
-  const { file_path: filePath, path, repo } = input as Record<string, unknown>;
+  const { file_path: filePath, path, repo, dependency } = input as Record<string, unknown>;
+  const source = [repo, dependency].find((s): s is string => typeof s === 'string' && s !== '');
   const file = tool === 'Read' && typeof filePath === 'string' ? filePath
-    : tool === 'mcp__manki__read_file' && typeof path === 'string' ? (typeof repo === 'string' && repo ? `${repo}:${path}` : path)
+    : tool === 'mcp__manki__read_file' && typeof path === 'string' ? (source ? `${source}:${path}` : path)
       : undefined;
   return file && root && isAbsolute(file) ? relative(root, file) : file;
 }
