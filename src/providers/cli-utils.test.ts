@@ -313,7 +313,7 @@ describe('callWithTimeout', () => {
   it('names the label and the limit when its signal aborts the call', async () => {
     const error = await callWithTimeout('Anthropic API', { timeoutMs: 20 }, untilAborted).then(() => null, (e: Error) => e);
     expect(error).toBeInstanceOf(TimeoutError);
-    expect(error?.message).toBe('Anthropic API timed out after 0.02s');
+    expect(String(error)).toBe('TimeoutError: Anthropic API timed out after 0.02s');
     expect((error?.cause as Error).message).toBe('Request was aborted.');
   });
 

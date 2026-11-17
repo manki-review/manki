@@ -105,7 +105,12 @@ export class QuotaError extends Error {
 }
 
 /** Thrown when a model call ran past its time limit. */
-export class TimeoutError extends Error {}
+export class TimeoutError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'TimeoutError';
+  }
+}
 
 /** A tool step an LLM call took. */
 export interface ToolStep {
