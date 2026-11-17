@@ -1,4 +1,4 @@
-import { compareTools, heldTools, heldToolsCall, offeredTools, searchSources } from './codex-tools-check';
+import { compareTools, heldTools, heldToolsCall, offeredTools, runProblems, searchSources } from './codex-tools-check';
 
 describe('offeredTools', () => {
   it('names the tools of the request and of an `additional_tools` item, a namespace\'s as `namespace.name`', () => {
@@ -68,5 +68,22 @@ describe('compareTools', () => {
   it('reports a new source of held-back tools that the search did not return', () => {
     const actual = { ...expected, 'gpt-b': { offered: ['tool_search'], held: ['mcp__manki.grep'], sources: ['Calendar', 'manki'] } };
     expect(compareTools(expected, actual)).toEqual(['gpt-b: new in sources: Calendar']);
+  });
+});
+
+describe('runProblems', () => {
+  const message = (role: string, ...texts: string[]) => ({ type: 'message', role, content: texts.map(text => ({ type: 'input_text', text })) });
+
+  it('passes a run whose requests carry no skill text and that tried no other host', () => {
+    const body = { input: [message('developer', 'Review the diff.', '<permissions instructions>\nRead-only.'), message('user', 'Mentions <skill> and $imagegen in passing.')] };
+    expect(runProblems('gpt-a', [body, body], [])).toEqual([]);
+  });
+
+  it('reports the skill catalog, a skill added in full, and each host once', () => {
+    const catalog = { input: [message('developer', 'Review the diff.', '<skills_instructions>\n## Skills')] };
+    const skill = { input: [message('user', '<skill>\n<name>imagegen</name>')] };
+    const problems = ['gpt-a: a request carries Codex\'s skill text', 'gpt-a: tried to reach ab.chatgpt.com:443'];
+    expect(runProblems('gpt-a', [{}, catalog], ['ab.chatgpt.com:443', 'ab.chatgpt.com:443'])).toEqual(problems);
+    expect(runProblems('gpt-a', [skill], ['ab.chatgpt.com:443'])).toEqual(problems);
   });
 });

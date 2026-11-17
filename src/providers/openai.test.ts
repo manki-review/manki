@@ -500,7 +500,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     return { stdin: stdin.write, instructions, starts };
   }
 
-  it('runs `codex exec` read-only with every built-in tool it can switch off turned off and Manki\'s instructions in a file, in an empty temp directory', async () => {
+  it('runs `codex exec` read-only with every built-in tool it can switch off turned off, no analytics, no built-in skills and Manki\'s instructions in a file, in an empty temp directory', async () => {
     const { stdin, instructions } = setupSpawnMock('hello\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
@@ -513,6 +513,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
       '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
       '-c', 'tools.experimental_request_user_input.enabled=false',
+      '-c', 'analytics.enabled=false', '-c', 'skills.bundled.enabled=false',
       '-c', expect.stringMatching(/^model_instructions_file=".*\/instructions\.md"$/), '-',
     ]);
     expect(instructions).toEqual(['sys']);
@@ -607,6 +608,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
       '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
       '-c', 'tools.experimental_request_user_input.enabled=false',
+      '-c', 'analytics.enabled=false', '-c', 'skills.bundled.enabled=false',
       '-c', 'model_provider="manki"',
       '-c', 'model_providers.manki.name="OpenAI-compatible endpoint"',
       '-c', 'model_providers.manki.base_url="https://llm.example/v1"',

@@ -315,6 +315,8 @@ export function codexExecArgs(model: string, baseUrl?: string): string[] {
     '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
     '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
     '-c', 'tools.experimental_request_user_input.enabled=false',
+    // No analytics leave the machine, and Codex's built-in skills add no text to the prompt.
+    '-c', 'analytics.enabled=false', '-c', 'skills.bundled.enabled=false',
     ...(baseUrl ? codexEndpointArgs(baseUrl) : []),
   ];
 }

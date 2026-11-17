@@ -1,7 +1,8 @@
 name: Codex tools
 
 # Runs the Codex CLI version Manki pins against a stand-in endpoint on localhost, and fails when a model is offered a
-# tool that `scripts/fixtures/codex-tools.json` does not list, or no longer one it lists. Needs no secret.
+# tool that `scripts/fixtures/codex-tools.json` does not list, or no longer one it lists, when a request carries Codex's
+# skill text, or when Codex tries to reach another host. Needs no secret.
 on:
   push:
     branches: [main]

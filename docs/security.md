@@ -44,3 +44,10 @@ Manki turns these off, and each switch was shown to remove the tools named with 
 Manki also sets `features.apps=false`, `features.plugins=false`, `features.multi_agent=false` and `features.image_generation=false`. On an endpoint none of them removes a tool once the switches above are set. They stay for the ChatGPT login (`openai_oauth_token`), whose tools were not measured, because Codex reads that login's model list from OpenAI's servers.
 
 Codex has no switch for the rest. The script host, `apply_patch`, `tool_search` and the clock come with the model's entry in Codex's list, and the MCP resource tools come with any MCP server, so with Manki's own. Of these, only `apply_patch` reaches outside the repository, as described above.
+
+Two more settings keep a review to what it needs. Both were measured the same way, and Manki sets them on the endpoint and on the ChatGPT login:
+
+- `analytics.enabled=false`: without it, Codex sends usage metrics to `ab.chatgpt.com` on every run, also on an endpoint. On the ChatGPT login it also posts analytics events to `chatgpt.com`. With it, a run tries to reach no host but the endpoint, and the login posts no analytics events. Codex's source switches both off with this one setting.
+- `skills.bundled.enabled=false`: without it, Codex writes its built-in skills into `$CODEX_HOME/skills/.system` and lists them in every request, about 4,700 characters. A PR text that names a skill as `$imagegen` added that skill's whole text. With it, no request carries skill text. Skills a self-hosted runner keeps in its own Codex home or in `~/.agents/skills` are still listed.
+
+The `Codex tools` workflow also fails when a request carries skill text, or when Codex tries to reach any host but the stand-in. It sees the connections that use the proxy settings, as Codex's analytics did.
