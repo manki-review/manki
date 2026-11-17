@@ -3,7 +3,9 @@
  * gives a reviewer on an OpenAI-compatible endpoint, against a stand-in endpoint on localhost that records each
  * request. The first answer asks Codex's script host for every tool it holds, or `tool_search` for the tools it
  * holds back. The check fails when a model is offered a tool that `scripts/fixtures/codex-tools.json` does not list, or
- * no longer offered one it lists. Every other address goes to a proxy that refuses it, so no request leaves the machine.
+ * no longer offered one it lists. It also fails when a request carries Codex's skill text, or Codex tries to reach any
+ * host but the stand-in. Every other address goes to a proxy that records and refuses it, so no request leaves the
+ * machine. A connection that ignores the proxy settings is not seen.
  *
  * On the `tool_search` path the list is not complete. No request names the held-back tools, and `tool_search` returns
  * only tools whose description shares a word with `SEARCH_QUERY`. An empty, `*` or stop-word query returns none. So a
@@ -14,7 +16,8 @@
  *   npx tsx scripts/codex-tools-check.ts [--write]
  *
  * `--write` records the tools each model is offered into the fixture instead of comparing them.
- * Exit codes: 0 every model is offered the listed tools, 1 a list differs or the run failed.
+ * Exit codes: 0 every model is offered the listed tools and nothing else was sent, 1 a list differs, a run sent skill
+ * text or tried another host, or the run failed.
  */
 
 import { spawn } from 'child_process';
@@ -96,6 +99,21 @@ export function heldToolsCall(offered: string[]): Json | undefined {
   return undefined;
 }
 
+// Codex opens its skill catalog with the first tag and each skill it adds in full with the second.
+const SKILL_TAGS = ['<skills_instructions>', '<skill>'];
+
+function carriesSkillText(body: Json): boolean {
+  const input = Array.isArray(body.input) ? body.input as Json[] : [];
+  const texts = input.flatMap(item => Array.isArray(item.content) ? (item.content as Json[]).map(part => String(part.text ?? '')) : []);
+  return texts.some(text => SKILL_TAGS.some(tag => text.startsWith(tag)));
+}
+
+/** Returns each problem with what a Codex run of `model` sent: skill text in a request, or a host it tried to reach. */
+export function runProblems(model: string, bodies: Json[], hosts: string[]): string[] {
+  const skills = bodies.some(carriesSkillText) ? [`${model}: a request carries Codex's skill text`] : [];
+  return [...skills, ...[...new Set(hosts)].map(host => `${model}: tried to reach ${host}`)];
+}
+
 /** Returns each difference between the tools `expected` lists per model and the tools `actual` found. */
 export function compareTools(expected: Record<string, OfferedTools>, actual: Record<string, OfferedTools>): string[] {
   const problems: string[] = [];
@@ -117,13 +135,18 @@ function sse(type: string, data: Json): string {
   return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 }
 
-/** Starts the stand-in endpoint. It answers the first request with `heldToolsCall` and every later one with `OK`. */
-function startStandIn(bodies: Json[]): Promise<{ port: number; close: () => void }> {
+/**
+ * Starts the stand-in endpoint. It answers the first request with `heldToolsCall` and every later one with `OK`, and
+ * adds each host Codex asks it for as a proxy to `hosts`.
+ */
+function startStandIn(bodies: Json[], hosts: string[]): Promise<{ port: number; close: () => void }> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     let raw = '';
     req.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
     req.on('end', () => {
-      if (req.method !== 'POST' || !req.url?.endsWith('/responses')) {
+      // A plain HTTP request through a proxy names the whole URL, a request to the stand-in only the path.
+      if (req.url && !req.url.startsWith('/')) hosts.push(new URL(req.url).host);
+      if (req.method !== 'POST' || !req.url?.startsWith('/') || !req.url.endsWith('/responses')) {
         res.writeHead(404).end();
         return;
       }
@@ -138,7 +161,10 @@ function startStandIn(bodies: Json[]): Promise<{ port: number; close: () => void
     });
   });
   // Codex sends every other host through this server as its proxy, and the tunnel is refused.
-  server.on('connect', (_req, socket) => socket.destroy());
+  server.on('connect', (req: IncomingMessage, socket) => {
+    hosts.push(String(req.url));
+    socket.destroy();
+  });
   return new Promise(done => server.listen(0, '127.0.0.1', () => done({ port: (server.address() as AddressInfo).port, close: () => server.close() })));
 }
 
@@ -153,10 +179,14 @@ function runCodex(args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<
   });
 }
 
-/** Runs Codex on `model` the way Manki runs a reviewer with repository tools, and returns the tools it offered. */
-async function checkModel(model: string, repo: string, scratch: string): Promise<OfferedTools> {
+/**
+ * Runs Codex on `model` the way Manki runs a reviewer with repository tools, and returns the tools it offered and each
+ * problem `runProblems` finds in the run.
+ */
+async function checkModel(model: string, repo: string, scratch: string): Promise<{ tools: OfferedTools; problems: string[] }> {
   const bodies: Json[] = [];
-  const standIn = await startStandIn(bodies);
+  const hosts: string[] = [];
+  const standIn = await startStandIn(bodies, hosts);
   try {
     const home = mkdtempSync(join(scratch, 'home-'));
     const cwd = mkdtempSync(join(scratch, 'cwd-'));
@@ -176,7 +206,8 @@ async function checkModel(model: string, repo: string, scratch: string): Promise
     const { code, stderr } = await runCodex(args, env, cwd);
     if (code !== 0 || bodies.length === 0) throw new Error(`Codex exited with ${code} on ${model}:\n${stderr.slice(-2000)}`);
     const offered = offeredTools(bodies[0]);
-    return { offered, held: heldToolsCall(offered) && bodies[1] ? heldTools(bodies[1]) : [], sources: searchSources(bodies[0]) };
+    const tools = { offered, held: heldToolsCall(offered) && bodies[1] ? heldTools(bodies[1]) : [], sources: searchSources(bodies[0]) };
+    return { tools, problems: runProblems(model, bodies, hosts) };
   } finally {
     standIn.close();
   }
@@ -205,18 +236,23 @@ async function main(): Promise<number> {
   const scratch = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'manki-codex-tools-'));
   try {
     const actual: Record<string, OfferedTools> = {};
+    const runs: string[] = [];
     for (const model of Object.keys(expected)) {
-      actual[model] = await checkModel(model, repo, scratch);
-      console.log(`${model}: offered ${actual[model].offered.join(', ')}; held ${actual[model].held.join(', ') || 'none'}; sources ${actual[model].sources.join(', ') || 'none'}`);
+      const { tools, problems } = await checkModel(model, repo, scratch);
+      actual[model] = tools;
+      runs.push(...problems);
+      console.log(`${model}: offered ${tools.offered.join(', ')}; held ${tools.held.join(', ') || 'none'}; sources ${tools.sources.join(', ') || 'none'}`);
     }
+    for (const problem of runs) console.log(`::error::${problem}`);
+    if (runs.length > 0) console.log('Find the Codex setting that turns it off again, pass it in `codexExecArgs` and update docs/security.md.');
     if (process.argv.includes('--write')) {
       writeFileSync(fixture, `${JSON.stringify(actual, null, 2)}\n`);
-      return 0;
+      return runs.length === 0 ? 0 : 1;
     }
     const problems = compareTools(expected, actual);
     for (const problem of problems) console.log(`::error::${problem}`);
     if (problems.length > 0) console.log('Check what each changed tool can do, update docs/security.md, then record the new lists with --write.');
-    return problems.length === 0 ? 0 : 1;
+    return problems.length === 0 && runs.length === 0 ? 0 : 1;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
