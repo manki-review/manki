@@ -162,8 +162,10 @@ export const ROUND_TIME_MS = 25 * 60_000;
 const AFTER_FINDERS_MS = 8 * 60_000;
 /** The least time a finder's retry starts with. */
 const MIN_RETRY_MS = 5 * 60_000;
-/** The least time the judge and each stage after it start with: the judge on the sweep's findings, the refuter and the verdict reader. */
+/** The least time each call of the judge, the refuters, the sweeps and the verdict reader starts with. */
 const MIN_JUDGE_MS = 2 * 60_000;
+/** The least time a dedup call after the finders starts with. */
+const MIN_DEDUP_MS = 30_000;
 /** How long the round still waits for the sibling comparisons once the finders are done. */
 const COMPARISON_GRACE_MS = 60_000;
 /** How long the claim checks wait for their lines of the related repos before they start without them. */
@@ -717,16 +719,21 @@ export async function runReview(
   const skip = (entry: RoundNotStarted): void => {
     if (notStarted.some(e => e.kind === entry.kind && e.stage === entry.stage && e.agent === entry.agent && e.reason === entry.reason)) return;
     notStarted.push(entry);
-    const what = entry.kind === 'call' ? `The ${lateCallName(entry)}` : entry.kind === 'retry' ? `The retry of ${entry.agent}` : `The move of ${entry.agent ?? entry.stage} to its fallback model`;
+    const what = entry.kind === 'call' ? `A ${lateCallName(entry)}` : entry.kind === 'retry' ? `The retry of ${entry.agent}` : `The move of ${entry.agent ?? entry.stage} to its fallback model`;
     core.warning(`${what} is not started, since ${entry.reason}`);
   };
-  // Records `call` as not started and returns the summary of the incomplete round, when the round has less than `MIN_JUDGE_MS` left.
+  // The summary of the incomplete round, set once a call after the finders could not start. No later call starts then.
+  let stopped: string | undefined;
+  // Records `call` as not started and returns `stopped`, when the round has less time left than the call starts with.
   const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>): string | undefined => {
+    if (stopped) return stopped;
     const leftMs = deadline === undefined ? Infinity : deadline - Date.now();
-    if (leftMs >= MIN_JUDGE_MS) return undefined;
-    const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(MIN_JUDGE_MS)} the ${lateCallName(call)} starts with`;
+    const minMs = call.stage === 'dedup' ? MIN_DEDUP_MS : MIN_JUDGE_MS;
+    if (leftMs >= minMs) return undefined;
+    const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });
-    return `The ${lateCallName(call)} was not started, since ${reason}. ${RETRY_HINT}`;
+    stopped = `A ${lateCallName(call)} was not started, since ${reason}. ${RETRY_HINT}`;
+    return stopped;
   };
   // Every call ends by `until`, and a fallback gets only what the failed call left of that.
   const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined, until = deadline): LLMClient => {
@@ -745,6 +752,19 @@ export async function runReview(
       // A limit already holds its fallback model for the finder.
       if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
     }, movesOnLimit, () => skip({ kind: 'fallback', stage, ...(agent && { agent }), reason: 'the failed call left no time' })), signal, until);
+  };
+  // A call of `lateFallback` that `noTimeFor` stops fails like one that ran out of time, which every stage after the finders
+  // survives without confirming anything. The round then ends incomplete once that stage is done.
+  const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient => {
+    const client = withFallback(stageClient, stage, agent);
+    return {
+      ...client,
+      sendMessage: async (...args) => {
+        const late = noTimeFor({ stage, ...(agent && { agent }) });
+        if (late) throw new TimeoutError(late);
+        return client.sendMessage(...args);
+      },
+    };
   };
   // Classified while the review runs, since only the posted note reads it.
   const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
@@ -1219,7 +1239,7 @@ export async function runReview(
 
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
-      const dedupWrap = wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+      const dedupWrap = wrapClientForUsage(lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
       const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
@@ -1280,13 +1300,13 @@ export async function runReview(
   let judgeUsage: LLMUsage | undefined;
   let judgeDurationMs: number | undefined;
   let judgeRetryCount = 0;
-  const judgeWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
+  const judgeWrap = wrapClientForUsage(lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
   // Its own label keeps the refutation calls out of the judge's retry count.
   const refutation = workspace && clients.judge.repoTools ? {
-    client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'refute'),
+    client: lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'refute'),
     workspace,
     related: relatedTools,
-    ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
+    ...(clients.refuterPair?.repoTools && { pair: lateFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
     doubtBudget: { left: MAX_DOUBT_CHECKS },
   } : undefined;
   if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.second_refuter` needs the PR head checked out and repository tools on both its model and the judge\'s');
@@ -1352,7 +1372,7 @@ export async function runReview(
     } catch (error) {
       core.warning(`Judge failed: ${error}`);
       logOutputTokens('Judge', judgeWrap.getTotals().usage);
-      return incomplete(judgeFailureSummary(error), {
+      return incomplete(stopped ?? judgeFailureSummary(error), {
         // The failed attempts count too, since the judge ended on one.
         judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
       });
@@ -1373,10 +1393,11 @@ export async function runReview(
     allJudgedFindings, rawFindings: [...allFindings, ...sweepRaw], rawFindingCount: checkedFindings.length + sweepRaw.length, staticDedupCount, llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(sweeps && { sweeps }), ...(openLeads.length > 0 && { openLeads }),
   });
+  if (stopped) return incompleteAfterJudge(stopped);
   // Below blocker, a finding on code the PR did not change is posted only once a later check confirms it, so it starts none.
   const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
   if (sweepSources.length > 0) {
-    const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
+    const sweep = await runSweeps(reviewer => lateFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
       rawDiff, effort: comparisonEffort, workspace, related: relatedTools,
     });
     sweeps = sweep.sweeps;
@@ -1392,7 +1413,7 @@ export async function runReview(
     });
     // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
     const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
-    const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
+    const dedupClient = clients.dedup && lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
     sweepRaw = unmatched.filter((_, i) => !restated.has(i)).map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
@@ -1409,11 +1430,9 @@ export async function runReview(
       fresh = llm.unique;
     }
     if (fresh.length > 0) {
-      const late = noTimeFor({ stage: 'judge', agent: 'sweep' });
-      if (late) return incompleteAfterJudge(late);
       try {
         core.info(`Judging ${fresh.length} finding(s) the sweep found`);
-        const sweepJudge = withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'sweep');
+        const sweepJudge = lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'sweep');
         // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
         const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
         // A rank only compares the notes of one judge call, so only the first call's ranks order the notes.
@@ -1427,7 +1446,7 @@ export async function runReview(
       } catch (error) {
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
-        return incompleteAfterJudge(judgeFailureSummary(error, 'the findings of the sweep'));
+        return incompleteAfterJudge(stopped ?? judgeFailureSummary(error, 'the findings of the sweep'));
       }
     }
   }
@@ -1446,14 +1465,11 @@ export async function runReview(
   if (refutation) {
     const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
     const kept = finalFindings;
-    let late: string | undefined;
     const checked = await refuteBlockers(refutation.client, kept, {
       workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
       outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
       preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
-      mayStart: () => !(late = noTimeFor({ stage: 'judge', agent: 'refute' })),
     });
-    if (late) return incompleteAfterJudge(late);
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
     finalFindings = checked.filter(f => f.severity !== 'ignore');
@@ -1508,7 +1524,7 @@ export async function runReview(
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
   if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
   const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
-  const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+  const earlierWrap = clients.dedup && wrapClientForUsage(lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
   threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
@@ -1533,9 +1549,7 @@ export async function runReview(
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
   });
   if (outcome === 'READY') {
-    const late = noTimeFor({ stage: 'verdict' });
-    if (late) return incompleteAfterJudge(late);
-    const verdictWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
+    const verdictWrap = wrapClientForUsage(lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     // The reader reads the slices the finders read, so no slice of the diff is cut.
     const slices = roundSlices;
@@ -1550,7 +1564,7 @@ export async function runReview(
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
-      return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`);
+      return incompleteAfterJudge(stopped ?? (error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`));
     }
     verdictUsage = verdictWrap.getTotals().usage;
     logOutputTokens('Verdict reader', verdictUsage);
@@ -1567,7 +1581,7 @@ export async function runReview(
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
-      const foldWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+      const foldWrap = clients.dedup && wrapClientForUsage(lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
@@ -1619,6 +1633,7 @@ export async function runReview(
   }
   core.endGroup();
 
+  if (stopped) return incompleteAfterJudge(stopped);
   const leads = recordLeads([...current, ...carried].filter(f => f.lead), listedLeads, allJudgedFindings ?? [], finalFindings, round);
   const relatedWork = await relatedWorkPromise;
 
@@ -1683,11 +1698,14 @@ export async function runReview(
   };
 }
 
-/** Names the call of the judge or a stage after it that `call` stands for. */
+/** Names the kind of model call after the finders that `call` stands for. */
 function lateCallName({ stage, agent }: Pick<RoundNotStarted, 'stage' | 'agent'>): string {
-  if (stage === 'verdict') return 'verdict reader';
-  if (agent === 'refute') return 'refuter';
-  return agent === 'sweep' ? 'judge call on the sweep\'s findings' : 'judge';
+  if (stage === 'verdict') return 'verdict reader call';
+  if (stage === 'sweep') return 'sweep call';
+  if (stage === 'dedup') return agent === 'sweep' ? 'dedup call on the sweep\'s findings' : 'dedup call';
+  if (agent === 'refute') return 'refuter call';
+  if (agent === 'refute_pair') return 'second refuter call';
+  return agent === 'sweep' ? 'judge call on the sweep\'s findings' : 'judge call';
 }
 
 interface InterRoundDiffInput {

@@ -34,7 +34,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, RoundNotStarted, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -1870,6 +1870,27 @@ describe('runReview', () => {
   const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
   const mockedApplySuppressions = jest.mocked(applySuppressions);
 
+  /** Runs `body` on a fixed clock with a round deadline 20 minutes ahead. `leave(ms)` moves the clock to `ms` before that deadline. */
+  async function lateRound<T>(body: (deadline: number, leave: (ms: number) => void) => Promise<T>): Promise<T> {
+    const start = Date.now();
+    let now = start;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      return await body(start + 20 * 60_000, ms => { now = start + 20 * 60_000 - ms; });
+    } finally {
+      clock.mockRestore();
+    }
+  }
+
+  /** The parts of an incomplete round whose model call `call`, named `name`, did not start with `left` of the round left. */
+  function notStartedRound(call: Pick<RoundNotStarted, 'stage' | 'agent'>, name: string, left = '1m 30s', least = '2m 0s') {
+    const reason = `the round has ${left} left, less than the ${least} a ${name} starts with`;
+    return {
+      outcome: 'INCOMPLETE', reviewComplete: false, findings: [], summary: `A ${name} was not started, since ${reason}. Retry with /manki review.`,
+      notStarted: [{ kind: 'call', ...call, reason }],
+    };
+  }
+
   /** A finder reply with one finding, so the round has something for the judge. */
   const RAISED = JSON.stringify([{ severity: 'warning', title: 'Raised', file: 'src/x.ts', line: 1, description: 'd' }]);
 
@@ -3057,10 +3078,7 @@ describe('runReview', () => {
     expect(result.summary).toContain('verdict reader failed');
     expect(result.allJudgedFindings?.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([[title, 'ignore', 'disproved']]);
 
-    expect([late.reviewComplete, late.outcome, late.findings, late.summary]).toEqual([
-      false, 'INCOMPLETE', [], 'The refuter was not started, since the round has 1m 30s left, less than the 2m 0s the refuter starts with. Retry with /manki review.',
-    ]);
-    expect(late.notStarted).toEqual([{ kind: 'call', stage: 'judge', agent: 'refute', reason: 'the round has 1m 30s left, less than the 2m 0s the refuter starts with' }]);
+    expect(late).toMatchObject(notStartedRound({ stage: 'judge', agent: 'refute' }, 'refuter call'));
     expect(late.llmCalls?.filter(c => c.agent === 'refute')).toEqual([]);
     expect(late.allJudgedFindings?.map(f => [f.title, f.severity, f.refutation, f.checkStatus])).toEqual([[title, 'warning', undefined, undefined]]);
   });
@@ -3077,6 +3095,8 @@ describe('runReview', () => {
     const sweeping = (system: string) => system.startsWith('A code review reported the finding');
     const refuterCalls: string[] = [];
     const clients = makeClients();
+    // Set for a run whose judge call leaves 90 seconds of the round, and with `fails` then fails on its own time limit.
+    let late: { leave: (ms: number) => void; fails: boolean } | undefined;
     // One finder reports them, so the judge merges no copies.
     let reported = false;
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => {
@@ -3088,6 +3108,8 @@ describe('runReview', () => {
     Object.assign(clients.judge, { repoTools: true });
     jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
       if (system.startsWith('You are a code review judge')) {
+        late?.leave(90_000);
+        if (late?.fails) throw new TimeoutError('The judge call timed out');
         const judged = user.includes(swept.title)
           ? [{ id: 1, title: swept.title, row: 'degraded', doubts: [{ premise: 'No caller adds the tenant', decides: 'defect' }], reasoning: 'r' }]
           : [{ id: 1, title: blocker.title, row: 'severe', reasoning: 'r' }, ...old.map((f, i) => ({ id: i + 2, title: f.title, row: 'degraded', preExisting: true, reasoning: 'r' }))];
@@ -3100,12 +3122,32 @@ describe('runReview', () => {
       return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    const options = { config: makeConfig({ review: { sweep: 'warnings' as const } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root };
     let result: ReviewResult;
+    const lateResults: ReviewResult[] = [];
+    let checkedFirst = 0;
     try {
-      result = await runReview(clients, { config: makeConfig({ review: { sweep: 'warnings' } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+      result = await runReview(clients, options);
+      checkedFirst = refuterCalls.length;
+      for (const fails of [false, true]) {
+        reported = false;
+        lateResults.push(await lateRound((deadline, leave) => {
+          late = { leave, fails };
+          // A judge with tools grades once more without them after a failed call.
+          return runReview(clients, { ...options, deadline, ...(fails && { config: makeConfig({ review: { sweep: 'warnings' }, judge: { tool_steps: 10 } }) }) });
+        }));
+      }
     } finally {
+      late = undefined;
       rmSync(root, { recursive: true, force: true });
     }
+    // With 90 seconds left after the judge's call, the refuter starts no check of the blocker, which stays unconfirmed.
+    // A judge with tools whose call failed on its time limit starts no second call without them either.
+    expect(refuterCalls).toHaveLength(checkedFirst);
+    expect(lateResults[0]).toMatchObject(notStartedRound({ stage: 'judge', agent: 'refute' }, 'refuter call'));
+    expect(lateResults[0].allJudgedFindings?.filter(f => f.severity === 'blocker').map(f => [f.title, f.refutation, f.checkStatus])).toEqual([[blocker.title, undefined, undefined]]);
+    expect(lateResults[1]).toMatchObject(notStartedRound({ stage: 'judge' }, 'judge call'));
+    expect(lateResults[1].llmCalls?.filter(c => c.stage === 'judge').map(c => c.failed)).toEqual([true]);
 
     expect(result.reviewComplete).toBe(true);
     // A warning on code the PR did not change starts no sweep, although its cited lines prove it.
@@ -3136,31 +3178,41 @@ describe('runReview', () => {
     const sweeping = (system: string) => system.startsWith('A code review reported the finding');
     const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
     const evaluation: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'r' };
-    const run = async (sweep: SweepMode, disproved = false, sweepJudgeError?: Error, budget?: { deadline: number; onJudged: () => void }) => {
+    // `late.on` runs in each call of the judge, a sweep or the dedup model, before it answers.
+    type Late = { deadline: number; on: (call: 'judge' | 'sweep' | 'dedup') => void; previousFindings?: Parameters<typeof runReview>[1]['previousFindings'] };
+    const run = async (sweep: SweepMode, disproved = false, sweepJudgeError?: Error, late?: Late) => {
       const clients = makeClients();
-      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({
-        content: sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped] }) : JSON.stringify([original, other, dropped]),
-      }));
-      clients.dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}]' }) } as unknown as import('./providers').LLMClient;
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => {
+        if (sweeping(system)) late?.on('sweep');
+        return {
+          content: sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped] }) : JSON.stringify([original, other, dropped]),
+        };
+      });
+      clients.dedup = { sendMessage: jest.fn().mockImplementation(async () => {
+        late?.on('dedup');
+        return { content: '[{"pair": 1, "sameDefect": true}]' };
+      }) } as unknown as import('./providers').LLMClient;
       mockedRunJudgeAgent.mockClear();
       // The sweep's judge call grades one finding as a note and ranks it first of its own notes.
-      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => {
+      mockedRunJudgeAgent.mockImplementation(async (client, _config, input) => {
+        if (late) await client.sendMessage('judge', 'findings');
         if (sweepJudgeError) throw sweepJudgeError;
         return { findings: input.findings.map((f, i) => (i === 1 ? { ...f, severity: 'note' as const, noteRank: 0 } : f)), summary: 'ok' };
       });
       // The judge merges the finders' copies of the blocker into one, which the refuters may have disproved.
       const refutation = { outcome: 'disproved' as const, reason: 'Bounded.', files: [], codeDigest: '' };
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => {
-        budget?.onJudged();
+        late?.on('judge');
         return {
           findings: input.findings.slice(0, 3).map(f => (disproved && f.severity === 'blocker' ? { ...f, refutation } : f.severity === 'note' ? { ...f, severity: 'ignore' as const } : { ...f, noteRank: 1 })),
           summary: 'ok', threadEvaluations: [evaluation],
         };
       });
       const result = await runReview(clients, {
-        config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts', 'src/retry.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread], deadline: budget?.deadline,
+        config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts', 'src/retry.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread],
+        deadline: late?.deadline, previousFindings: late?.previousFindings,
       });
-      return { result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])) };
+      return { result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])), dedupCalls: jest.mocked(clients.dedup.sendMessage).mock.calls.length };
     };
 
     const off = await run('off');
@@ -3207,22 +3259,27 @@ describe('runReview', () => {
       expect(failed.rawFindings?.map(f => f.title)).toEqual(expect.arrayContaining([elsewhere.title, nearCited.title, citedByDropped.title]));
     }
 
-    // A first judge call that leaves the judge call on the sweep's findings less than two minutes ends the round the same way.
-    const start = Date.now();
-    let now = start;
-    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
-    let late: ReviewResult;
-    try {
-      late = (await run('blockers', false, undefined, { deadline: start + 20 * 60_000, onJudged: () => { now = start + 18.5 * 60_000; } })).result;
-    } finally {
-      clock.mockRestore();
+    // A call after the first judge call that would start with less of the round left than it needs is not sent. The
+    // round then starts no other call and ends incomplete, with that call in its record. Each case moves the clock in the
+    // `nth` call of a kind before it. The dedup calls on the sweep's findings compare them with the judged findings near
+    // them, and then with an earlier resolved finding, which also gets a dedup call before the judge.
+    const resolved = [{ title: 'Old thing', file: 'src/old.ts', line: 1, severity: 'warning' as const, status: 'resolved' as const }];
+    const sweepDedup = { stage: 'dedup', agent: 'sweep' } as const;
+    const cases = [
+      ['judge', 1, 90_000, undefined, notStartedRound({ stage: 'sweep', agent: reviewer }, 'sweep call'), 0],
+      ['sweep', 1, 20_000, undefined, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 0],
+      ['dedup', 2, 20_000, resolved, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 2],
+      ['sweep', 1, 90_000, undefined, notStartedRound({ stage: 'judge', agent: 'sweep' }, 'judge call on the sweep\'s findings'), 1],
+    ] as const;
+    for (const [call, nth, ms, previousFindings, refused, dedupCalls] of cases) {
+      const late = await lateRound((deadline, leave) => {
+        let seen = 0;
+        return run('blockers', false, undefined, { deadline, previousFindings, on: c => { if (c === call && ++seen === nth) leave(ms); } });
+      });
+      expect([call, nth, late.dedupCalls]).toEqual([call, nth, dedupCalls]);
+      expect(late.result).toMatchObject(refused);
+      expect(late.result.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
     }
-    const why = 'the round has 1m 30s left, less than the 2m 0s the judge call on the sweep\'s findings starts with';
-    expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
-    expect([late.outcome, late.reviewComplete, late.findings, late.summary]).toEqual(['INCOMPLETE', false, [], `The judge call on the sweep's findings was not started, since ${why}. Retry with /manki review.`]);
-    expect(late.notStarted).toEqual([{ kind: 'call', stage: 'judge', agent: 'sweep', reason: why }]);
-    expect(late.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
-    expect(late.rawFindings?.map(f => f.title)).toEqual(expect.arrayContaining([elsewhere.title, nearCited.title, citedByDropped.title]));
   });
 
   it('stops waiting for a comparison and a claim check a grace period after the finders are done, records them as timed out and completes the round', async () => {
@@ -3672,6 +3729,19 @@ describe('runReview', () => {
       }),
     });
     const folded = await runReview(sameCause, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    // A reader that leaves less than 30 seconds starts no dedup call on a finding near its blocker, and the round ends incomplete.
+    const dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as LLMClient;
+    const judgedOnce = mockedRunJudgeAgent.mock.calls.length;
+    const unfolded = await lateRound((deadline, leave) => {
+      mockedRunJudgeAgent.mockResolvedValueOnce({ summary: 'One warning.', findings: [{ severity: 'warning', title: 'The `tasks` lock is never released on error', file: 'src/a.ts', line: 14, description: 'Leaks.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:14'] } }] });
+      jest.mocked(sameCause.judge.sendMessage).mockImplementationOnce(async () => {
+        leave(20_000);
+        return { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/a.ts', line: 12, title: 'Stop hangs', description: 'd' }], summary: 'Deadlock.', whatThisDoes: '', whatToTest: '' }) };
+      });
+      return runReview({ ...sameCause, dedup }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', deadline });
+    });
+    expect([mockedRunJudgeAgent.mock.calls.length - judgedOnce, jest.mocked(dedup.sendMessage).mock.calls.length]).toEqual([1, 0]);
+    expect(unfolded).toMatchObject(notStartedRound({ stage: 'dedup' }, 'dedup call', '20s', '30s'));
     expect(folded.findings).toEqual([
       expect.objectContaining({ severity: 'note', title: 'Rename the helper' }),
       expect.objectContaining({ severity: 'warning', title: 'The `tasks` lock is never released on error' }),
@@ -3810,6 +3880,21 @@ describe('runReview', () => {
       expect(refuterPair.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([workspace]);
       expect(formatFindingComment(twice.findings[0], TEST_LINKS)).toMatch(/\*\*Doubt found\*\*\n[^\n]*Every write clears the cache first\.[^\n]*\n\n\*\*Second check, on another model\*\*\nDoubt found\. Only tests read the cache\./);
       expect(twice.llmCalls?.filter(c => c.agent?.startsWith('refute')).map(c => c.agent).sort()).toEqual(['refute', 'refute_pair']);
+      // A first refuter that reuses its stored outcome makes no call, so a reader that leaves 90 seconds refuses the second one alone.
+      const entry = { ...makeFindingFingerprintEntry({ title: 'The cache is never invalidated.', file: 'a.ts', lineStart: 1 }), refutation: twice.findings[0].refutation };
+      const stored = makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [entry] } });
+      const latePair = { repoTools: true, sendMessage: jest.fn() };
+      const pairRefused = await lateRound((deadline, leave) => {
+        const clients = refutingClients();
+        const read = jest.mocked(clients.judge.sendMessage).getMockImplementation()!;
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (system, message, options) => {
+          if (!options?.repoTools) leave(90_000);
+          return read(system, message, options);
+        });
+        return runReview({ ...clients, refuterPair: latePair }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace, priorRounds: [stored], deadline });
+      });
+      expect(latePair.sendMessage).not.toHaveBeenCalled();
+      expect(pairRefused).toMatchObject(notStartedRound({ stage: 'judge', agent: 'refute_pair' }, 'second refuter call'));
       // A judge without tools runs no refuter, so the second one cannot run either, and the log says so.
       const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
       await runReview({ ...makeClients(), refuterPair }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
@@ -3870,6 +3955,16 @@ describe('runReview', () => {
       }));
       const disproved = await runReview(refuting, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace });
       expect([disproved.outcome, disproved.findings]).toEqual(['READY', []]);
+      // A reader that leaves 90 seconds starts no refuter call on its blockers, so no disproof drops the claim, and the round ends incomplete.
+      const unchecked = await lateRound((deadline, leave) => {
+        jest.mocked(refuting.judge.sendMessage).mockImplementationOnce(async () => {
+          leave(90_000);
+          return { content: reader([compileClaim]) };
+        });
+        return runReview(refuting, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace, deadline });
+      });
+      expect(unchecked).toMatchObject(notStartedRound({ stage: 'judge', agent: 'refute' }, 'refuter call'));
+      expect(unchecked.llmCalls?.filter(c => c.agent === 'refute')).toEqual([]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -4398,9 +4493,10 @@ describe('runReview', () => {
       // A thread the judge finds addressed takes nothing, and a judge link to it is ignored.
       finding('warning', 'Cache never cleared', 'src/x.ts', 40, { variantOf: 'src/x.ts:40:40:cache-never-cleared' }),
     ];
-    mockedRunJudgeAgent.mockResolvedValue({ findings, summary: 'Findings.', threadEvaluations: [{ threadId: 'T2', status: 'addressed', reason: 'Cleared now.' }] });
+    const judged = { findings, summary: 'Findings.', threadEvaluations: [{ threadId: 'T2', status: 'addressed' as const, reason: 'Cleared now.' }] };
+    mockedRunJudgeAgent.mockResolvedValue(judged);
     const dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}, {"pair": 2, "sameDefect": false}]' }) } as unknown as LLMClient;
-    const result = await runReview({ ...makeClients(), dedup }, {
+    const options = {
       config: makeConfig(),
       diff: diffChanging('src/x.ts', 'src/y.ts'),
       rawDiff: 'raw diff',
@@ -4410,7 +4506,8 @@ describe('runReview', () => {
       previousFindings: [],
       priorRounds: [prior],
       headSha: 'sha2',
-    });
+    };
+    const result = await runReview({ ...makeClients(), dedup }, options);
 
     expect(result.findings.map(f => [f.title, f.threadId, f.variantOf, f.raisedIn])).toEqual([
       ['Retry loop has no cap', 'T1', undefined, undefined],
@@ -4430,6 +4527,17 @@ describe('runReview', () => {
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
     expect(calls).toHaveLength(1);
     expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"');
+    // A judge that leaves less than 30 seconds starts no dedup call on the nearby pairs, and the round ends incomplete.
+    jest.mocked(dedup.sendMessage).mockClear();
+    const unfolded = await lateRound((deadline, leave) => {
+      mockedRunJudgeAgent.mockImplementationOnce(async () => {
+        leave(20_000);
+        return judged;
+      });
+      return runReview({ ...makeClients(), dedup }, { ...options, deadline });
+    });
+    expect(dedup.sendMessage).not.toHaveBeenCalled();
+    expect(unfolded).toMatchObject(notStartedRound({ stage: 'dedup' }, 'dedup call', '20s', '30s'));
 
     // A verdict reader blocker that restates an open blocker thread goes to that thread too, but never to a lower one.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
@@ -4445,6 +4553,17 @@ describe('runReview', () => {
     const read = await readAgainst(blockerThreadOf);
     expect(read.outcome).toBe('ADDRESS_FIRST');
     expect(read.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends', threadId: 'T1' })]);
+    // A reader that leaves less than 30 seconds starts no dedup call on its blocker near the thread, and the round ends incomplete.
+    jest.mocked(dedup.sendMessage).mockClear();
+    const unmatched = await lateRound((deadline, leave) => {
+      jest.mocked(reading.judge.sendMessage).mockImplementationOnce(async () => {
+        leave(20_000);
+        return { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 14, title: 'File handle leaks', description: 'd' }], summary: 'Leaks.', whatThisDoes: '', whatToTest: '' }) };
+      });
+      return runReview({ ...reading, dedup }, { ...options, diff: diffChanging('src/x.ts'), openThreads: [blockerThreadOf], deadline });
+    });
+    expect(dedup.sendMessage).not.toHaveBeenCalled();
+    expect(unmatched).toMatchObject(notStartedRound({ stage: 'dedup' }, 'dedup call', '20s', '30s'));
     for (const severity of ['warning', 'note'] as const) {
       const lower = await readAgainst(makePriorOpenThread({ title: 'Retry never ends', severity }));
       expect(lower.outcome).toBe('ADDRESS_FIRST');
@@ -5254,6 +5373,20 @@ describe('runReview', () => {
     expect(result.llmDedupCount).toBe(2);
     const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
     expect(judgeInput.findings).toEqual([]);
+
+    // Finders that leave less than 30 seconds start no dedup call, and the round ends incomplete before the judge.
+    jest.mocked(clients.dedup!.sendMessage).mockClear();
+    mockedRunJudgeAgent.mockClear();
+    const late = await lateRound((deadline, leave) => {
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async () => {
+        await Promise.resolve();
+        leave(20_000);
+        return { content: findingJson };
+      });
+      return runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', previousFindings, deadline });
+    });
+    expect([jest.mocked(clients.dedup!.sendMessage).mock.calls.length, mockedRunJudgeAgent.mock.calls.length]).toEqual([0, 0]);
+    expect(late).toMatchObject(notStartedRound({ stage: 'dedup' }, 'dedup call', '20s', '30s'));
   });
 
   it('skips LLM dedup when no dedup client is provided', async () => {
@@ -5461,43 +5594,33 @@ describe('runReview', () => {
     expect([slow.outcome, slow.summary]).toEqual(['INCOMPLETE', 'The judge ran out of time. Retry with /manki review.']);
 
     // Finders that leave the judge less than two minutes of the round end it incomplete, with their findings in the record.
-    const start = Date.now();
-    let now = start;
-    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
-    try {
-      const lateClients = makeClients(findingJson);
+    const lateClients = makeClients(findingJson);
+    mockedRunJudgeAgent.mockClear();
+    const late = await lateRound((deadline, leave) => {
       jest.mocked(lateClients.reviewer.sendMessage).mockImplementation(async () => {
         await Promise.resolve();
-        now = start + 18.5 * 60_000;
+        leave(90_000);
         return { content: findingJson };
       });
-      mockedRunJudgeAgent.mockClear();
-      const late = await runReview(lateClients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', deadline: start + 20 * 60_000 });
-      expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
-      expect([late.outcome, late.reviewComplete, late.summary]).toEqual([
-        'INCOMPLETE', false, 'The judge was not started, since the round has 1m 30s left, less than the 2m 0s the judge starts with. Retry with /manki review.',
-      ]);
-      expect(late.notStarted).toEqual([{ kind: 'call', stage: 'judge', reason: 'the round has 1m 30s left, less than the 2m 0s the judge starts with' }]);
-      expect(late.rawFindings?.map(f => f.title)).toEqual(['Some code improvement', 'Some code improvement']);
-      // Each finder call had only the time the round left for the finders: all but the eight minutes kept for the stages after them.
-      expect(jest.mocked(lateClients.reviewer.sendMessage).mock.calls.map(([, , opts]) => opts?.timeoutMs)).toEqual([12 * 60_000, 12 * 60_000]);
+      return runReview(lateClients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', deadline });
+    });
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+    expect(late).toMatchObject(notStartedRound({ stage: 'judge' }, 'judge call'));
+    expect(late.rawFindings?.map(f => f.title)).toEqual(['Some code improvement', 'Some code improvement']);
+    // Each finder call had only the time the round left for the finders: all but the eight minutes kept for the stages after them.
+    expect(jest.mocked(lateClients.reviewer.sendMessage).mock.calls.map(([, , opts]) => opts?.timeoutMs)).toEqual([12 * 60_000, 12 * 60_000]);
 
-      // A judge that leaves the verdict reader less than two minutes ends the round incomplete, so it never approves.
-      now = start;
+    // A judge that leaves the verdict reader less than two minutes ends the round incomplete, so it never approves.
+    const unread = await lateRound((deadline, leave) => {
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => {
-        now = start + 18.5 * 60_000;
+        leave(90_000);
         return { findings: input.findings.map(f => ({ ...f, severity: 'note' as const })), summary: 'ok' };
       });
-      const unread = await runReview(makeClients(findingJson), { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', deadline: start + 20 * 60_000 });
-      expect([unread.outcome, unread.reviewComplete, unread.findings, unread.summary]).toEqual([
-        'INCOMPLETE', false, [], 'The verdict reader was not started, since the round has 1m 30s left, less than the 2m 0s the verdict reader starts with. Retry with /manki review.',
-      ]);
-      expect(unread.notStarted).toEqual([{ kind: 'call', stage: 'verdict', reason: 'the round has 1m 30s left, less than the 2m 0s the verdict reader starts with' }]);
-      expect(unread.llmCalls?.filter(c => c.stage === 'verdict')).toEqual([]);
-      expect(unread.allJudgedFindings?.map(f => [f.title, f.severity])).toEqual([['Some code improvement', 'note'], ['Some code improvement', 'note']]);
-    } finally {
-      clock.mockRestore();
-    }
+      return runReview(makeClients(findingJson), { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', deadline });
+    });
+    expect(unread).toMatchObject(notStartedRound({ stage: 'verdict' }, 'verdict reader call'));
+    expect(unread.llmCalls?.filter(c => c.stage === 'verdict')).toEqual([]);
+    expect(unread.allJudgedFindings?.map(f => [f.title, f.severity])).toEqual([['Some code improvement', 'note'], ['Some code improvement', 'note']]);
 
     const actualJudge = jest.requireActual<typeof import('./judge')>('./judge');
     mockedRunJudgeAgent.mockImplementation(actualJudge.runJudgeAgent);
