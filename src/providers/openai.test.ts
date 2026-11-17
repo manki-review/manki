@@ -1151,7 +1151,7 @@ describe('sendViaCLI — extended coverage', () => {
     expect(result.content).toContain('A');
   });
 
-  it('includes last 500 bytes of stdout in the timeout error message', async () => {
+  it('includes last 500 bytes of stdout, or that Codex was reconnecting, in the timeout error message', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const wiring = makeProc();
@@ -1165,6 +1165,16 @@ describe('sendViaCLI — extended coverage', () => {
       wiring.procHandlers['close']?.(null, 'SIGTERM');
 
       await expect(promise).rejects.toThrow(/timed out after 1200s.*UNIQUE_DIAGNOSTIC_MARKER/s);
+
+      const waiting = makeProc();
+      const waitingPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 });
+      waitingPromise.catch(() => {});
+      await waitForListeners(waiting);
+      waiting.stderrHandlers['data']?.(Buffer.from('user\nthe prompt\nERROR: Reconnecting... 1/30\nERROR: Reconnecting... 2/30\n'));
+      jest.advanceTimersByTime(900_000 + 100);
+      waiting.procHandlers['close']?.(null, 'SIGTERM');
+
+      await expect(waitingPromise).rejects.toThrow('Codex CLI timed out after 900s. The CLI was waiting on the provider and retrying a failed request (retry 2 of 30)');
     } finally {
       jest.useRealTimers();
     }
