@@ -1871,14 +1871,22 @@ describe('runReview', () => {
   const mockedApplySuppressions = jest.mocked(applySuppressions);
 
   /** Runs `body` on a fixed clock with a round deadline 20 minutes ahead. `leave(ms)` moves the clock to `ms` before that deadline. */
+  // The call that did not start shows only in `notStarted`: no log line quotes its error, and the round logs no review summary.
   async function lateRound<T>(body: (deadline: number, leave: (ms: number) => void) => Promise<T>): Promise<T> {
     const start = Date.now();
     let now = start;
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const warnings = jest.spyOn(core, 'warning');
+    const groups = jest.spyOn(core, 'startGroup');
     try {
-      return await body(start + 20 * 60_000, ms => { now = start + 20 * 60_000 - ms; });
+      const result = await body(start + 20 * 60_000, ms => { now = start + 20 * 60_000 - ms; });
+      expect(warnings.mock.calls.map(([message]) => String(message)).filter(message => message.includes('was not started'))).toEqual([]);
+      expect(groups.mock.calls.map(([name]) => name)).not.toContain('Review Summary');
+      return result;
     } finally {
       clock.mockRestore();
+      warnings.mockRestore();
+      groups.mockRestore();
     }
   }
 
@@ -1888,6 +1896,8 @@ describe('runReview', () => {
     return {
       outcome: 'INCOMPLETE', reviewComplete: false, findings: [], summary: `A ${name} was not started, since ${reason}. Retry with /manki review.`,
       notStarted: [{ kind: 'call', ...call, reason }],
+      // Each call in the record was sent.
+      llmCalls: expect.not.arrayContaining([expect.objectContaining({ error: expect.stringContaining('not started') })]),
     };
   }
 
@@ -3141,12 +3151,13 @@ describe('runReview', () => {
       late = undefined;
       rmSync(root, { recursive: true, force: true });
     }
-    // With 90 seconds left after the judge's call, the refuter starts no check of the blocker, which stays unconfirmed.
-    // A judge with tools whose call failed on its time limit starts no second call without them either.
+    // With 90 seconds left after the judge's call, the refuter starts no check of the blocker, so the judge's call ends
+    // the round with nothing judged in its record and the finders' blocker unconfirmed. A judge with tools whose call
+    // failed on its time limit starts no second call without them either. Neither refused call counts as a retry.
     expect(refuterCalls).toHaveLength(checkedFirst);
-    expect(lateResults[0]).toMatchObject(notStartedRound({ stage: 'judge', agent: 'refute' }, 'refuter call'));
-    expect(lateResults[0].allJudgedFindings?.filter(f => f.severity === 'blocker').map(f => [f.title, f.refutation, f.checkStatus])).toEqual([[blocker.title, undefined, undefined]]);
-    expect(lateResults[1]).toMatchObject(notStartedRound({ stage: 'judge' }, 'judge call'));
+    expect(lateResults[0]).toMatchObject({ ...notStartedRound({ stage: 'judge', agent: 'refute' }, 'refuter call'), judgeRetryCount: 0 });
+    expect([lateResults[0].allJudgedFindings, lateResults[0].rawFindings?.find(f => f.title === blocker.title)?.refutation]).toEqual([undefined, undefined]);
+    expect(lateResults[1]).toMatchObject({ ...notStartedRound({ stage: 'judge' }, 'judge call'), judgeRetryCount: 0 });
     expect(lateResults[1].llmCalls?.filter(c => c.stage === 'judge').map(c => c.failed)).toEqual([true]);
 
     expect(result.reviewComplete).toBe(true);
@@ -3266,17 +3277,18 @@ describe('runReview', () => {
     const resolved = [{ title: 'Old thing', file: 'src/old.ts', line: 1, severity: 'warning' as const, status: 'resolved' as const }];
     const sweepDedup = { stage: 'dedup', agent: 'sweep' } as const;
     const cases = [
-      ['judge', 1, 90_000, undefined, notStartedRound({ stage: 'sweep', agent: reviewer }, 'sweep call'), 0],
-      ['sweep', 1, 20_000, undefined, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 0],
-      ['dedup', 2, 20_000, resolved, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 2],
-      ['sweep', 1, 90_000, undefined, notStartedRound({ stage: 'judge', agent: 'sweep' }, 'judge call on the sweep\'s findings'), 1],
+      ['judge', 1, 90_000, undefined, notStartedRound({ stage: 'sweep', agent: reviewer }, 'sweep call'), 0, undefined],
+      ['sweep', 1, 20_000, undefined, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 0, 'answered'],
+      ['dedup', 2, 20_000, resolved, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 2, 'answered'],
+      ['sweep', 1, 90_000, undefined, notStartedRound({ stage: 'judge', agent: 'sweep' }, 'judge call on the sweep\'s findings'), 1, 'answered'],
     ] as const;
-    for (const [call, nth, ms, previousFindings, refused, dedupCalls] of cases) {
+    // A sweep that did not start leaves no sweep record, never a failed one.
+    for (const [call, nth, ms, previousFindings, refused, dedupCalls, sweepStatus] of cases) {
       const late = await lateRound((deadline, leave) => {
         let seen = 0;
         return run('blockers', false, undefined, { deadline, previousFindings, on: c => { if (c === call && ++seen === nth) leave(ms); } });
       });
-      expect([call, nth, late.dedupCalls]).toEqual([call, nth, dedupCalls]);
+      expect([call, nth, late.dedupCalls, late.result.sweeps?.map(s => s.status)]).toEqual([call, nth, dedupCalls, sweepStatus && [sweepStatus]]);
       expect(late.result).toMatchObject(refused);
       expect(late.result.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
     }

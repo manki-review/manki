@@ -22,7 +22,7 @@ import {
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
-import { LLMClient, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
+import { LLMClient, NotStartedError, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { repoToolsPrompt } from './providers/cli-utils';
 import * as mcpServer from './mcp-server';
@@ -1737,6 +1737,13 @@ describe('runJudgeAgent', () => {
       mockSendMessage.mockImplementationOnce(after(900, new TimeoutError('Codex CLI timed out after 900s'))).mockImplementationOnce(after(300, slow));
       await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBe(slow);
       expect(limits()).toEqual([900_000, 300_000]);
+
+      // A call the round has no time to start is not tried again without tools.
+      const late = new NotStartedError('A judge call was not started');
+      mockSendMessage.mockReset();
+      mockSendMessage.mockRejectedValueOnce(late);
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBe(late);
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
 
       // A finding the judge with tools leaves out twice fails that attempt like any other failure. Its second call
       // gets the time the first left, and so does the retry.
@@ -4107,6 +4114,11 @@ describe('runJudgeAgent', () => {
         { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
       ]);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge retry failed'));
+
+      // A retry the round has no time to start ends the judge, since no thread was evaluated in its place.
+      const late = new NotStartedError('A judge call was not started');
+      mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [], threadEvaluations: [{ threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' }] }) }).mockRejectedValueOnce(late);
+      await expect(runJudgeAgent(mockClient, makeConfig(), { findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, openThreads })).rejects.toBe(late);
       warnSpy.mockRestore();
     });
 

@@ -125,6 +125,17 @@ export class TimeoutError extends Error {
   }
 }
 
+/**
+ * Thrown in place of a model call the round has too little time left to start. Its message is the summary of the
+ * incomplete round. A stage that catches errors passes it on, so the call shows only in the round's `notStarted`.
+ */
+export class NotStartedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NotStartedError';
+  }
+}
+
 /** A tool step an LLM call took. */
 export interface ToolStep {
   tool: string;

@@ -9,7 +9,7 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
-import { LLMClient, LLMResponse } from './providers';
+import { LLMClient, LLMResponse, NotStartedError } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
@@ -653,6 +653,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
       return refutation;
     } catch (error) {
+      if (error instanceof NotStartedError) throw error;
       core.warning(`Could not check "${finding.title}" for a ${label}: ${error}`);
       return undefined;
     }

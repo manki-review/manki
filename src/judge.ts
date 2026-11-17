@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 
 import { extractCurrentCodeWindow, holdsLines } from './code-window';
 import { readFileInRoot } from './mcp-server';
-import { LLMClient, LLMResponse, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
+import { LLMClient, LLMResponse, NotStartedError, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
 import { extractJSON } from './json';
 import {
   applySuppressions,
@@ -1690,7 +1690,7 @@ export async function runJudgeAgent(
     const reminder = buildMissingEntriesReminder(missing.findings, missing.threads);
     const retry = await send(`${reminder}\n\nOriginal message:\n${userMessage}`).then(reply => parseReply(reply, missing.findings)).catch((error) => {
       // A finding without a grade fails the judge. A thread without an evaluation only stays open.
-      if (missing.findings.length > 0) throw error;
+      if (missing.findings.length > 0 || error instanceof NotStartedError) throw error;
       core.warning(`Judge retry failed (${error})`);
       return undefined;
     });
@@ -1720,7 +1720,7 @@ export async function runJudgeAgent(
   } catch (error) {
     // A judge with tools can run out of turns or time, so it grades once more the way it does without them. A used-up
     // limit or a refusal was already sent to the fallback model, where the stage has one, and would fail again.
-    if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError) throw error;
+    if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError || error instanceof NotStartedError) throw error;
     core.warning(`The judge with tools failed (${error}), grading once more without tools`);
     // The retry gets the time the attempt with tools left of its limit, and never less than `RETRY_WITHOUT_TOOLS_TIMEOUT_MS`.
     judgeResult = await judge(judgeCall(0, Math.max(RETRY_WITHOUT_TOOLS_TIMEOUT_MS, FINDER_TOOLS_TIMEOUT_MS - (Date.now() - started))));

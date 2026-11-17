@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { LLMClient } from './providers';
+import { LLMClient, NotStartedError } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -1377,6 +1377,7 @@ async function llmDeduplicateFindings(
 
     return { unique, duplicates };
   } catch (error) {
+    if (error instanceof NotStartedError) throw error;
     core.warning(`LLM dedup failed, keeping all findings: ${error}`);
     return { unique: findings, duplicates: [] };
   }
@@ -1398,6 +1399,7 @@ async function llmSameDefects(pairs: Array<[DedupItem, DedupItem]>, client: LLMC
     if (!Array.isArray(answers)) throw new Error('the reply is not a JSON array');
     return pairs.map((_, i) => answers.some(answer => answer?.pair === i + 1 && answer?.sameDefect === true));
   } catch (error) {
+    if (error instanceof NotStartedError) throw error;
     core.warning(`LLM dedup of nearby findings failed, keeping them apart: ${error}`);
     return pairs.map(() => false);
   }

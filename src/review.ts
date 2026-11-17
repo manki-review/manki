@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
 import { formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
@@ -686,9 +686,29 @@ export interface ReviewOptions {
   relatedReposAsOf?: string;
 }
 
-export async function runReview(
+/**
+ * Runs one review round. A model call after the finders that the round has no time left to start ends the round
+ * incomplete at once, with the result `reviewRound` last set for that point.
+ */
+export async function runReview(clients: ReviewClients, options: ReviewOptions): Promise<ReviewResult & { outcome: RoundOutcome }> {
+  const ending: RoundEnding = {};
+  try {
+    return await reviewRound(clients, options, ending);
+  } catch (error) {
+    if (error instanceof NotStartedError && ending.incomplete) return ending.incomplete(error.message);
+    throw error;
+  }
+}
+
+/** The incomplete result of the round so far, for the summary of a call it did not start. */
+interface RoundEnding {
+  incomplete?: (summary: string) => ReviewResult & { outcome: RoundOutcome };
+}
+
+async function reviewRound(
   clients: ReviewClients,
   options: ReviewOptions,
+  ending: RoundEnding,
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
     config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal, deadline,
@@ -753,18 +773,21 @@ export async function runReview(
       if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
     }, movesOnLimit, () => skip({ kind: 'fallback', stage, ...(agent && { agent }), reason: 'the failed call left no time' })), signal, until);
   };
-  // A call of `lateFallback` that `noTimeFor` stops fails like one that ran out of time, which every stage after the finders
-  // survives without confirming anything. The round then ends incomplete once that stage is done.
-  const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient => {
-    const client = withFallback(stageClient, stage, agent);
-    return {
-      ...client,
-      sendMessage: async (...args) => {
-        const late = noTimeFor({ stage, ...(agent && { agent }) });
-        if (late) throw new TimeoutError(late);
-        return client.sendMessage(...args);
-      },
-    };
+  // A call `noTimeFor` stops throws a `NotStartedError` before any wrapper records it, which ends the round.
+  const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>): LLMClient => ({
+    ...client,
+    sendMessage: async (...args) => {
+      const late = noTimeFor(call);
+      if (late) throw new NotStartedError(late);
+      return client.sendMessage(...args);
+    },
+  });
+  const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
+    startsInTime(withFallback(stageClient, stage, agent), { stage, ...(agent && { agent }) });
+  // A refused call adds nothing to the usage totals, so it counts as no attempt.
+  const lateUsage = (stageClient: StageClient, stage: RoundModelFallback['stage']): ReturnType<typeof wrapClientForUsage> => {
+    const wrap = wrapClientForUsage(withFallback(stageClient, stage));
+    return { ...wrap, client: startsInTime(wrap.client, { stage }) };
   };
   // Classified while the review runs, since only the posted note reads it.
   const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
@@ -1214,6 +1237,7 @@ export async function runReview(
   if (carried.length > 0) core.info(`Carrying over ${carried.length} open lead(s) the last round left unsettled`);
   const { findings: checkedFindings, openLeads: listedLeads } = splitOpenLeads([...current, ...carried], settleLeads);
   const openLeads = [...listedLeads];
+  ending.incomplete = summary => incomplete(summary, { ...(openLeads.length > 0 && { openLeads }) });
   const finderFindings: Finding[] = checkedFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
   // Alerts go first, so a reviewer finding that repeats one folds into the alert and keeps its source label.
   const toolAlerts = toolAlertFindings(staticSignals);
@@ -1239,7 +1263,7 @@ export async function runReview(
 
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
-      const dedupWrap = wrapClientForUsage(lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+      const dedupWrap = lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
       const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
@@ -1300,7 +1324,7 @@ export async function runReview(
   let judgeUsage: LLMUsage | undefined;
   let judgeDurationMs: number | undefined;
   let judgeRetryCount = 0;
-  const judgeWrap = wrapClientForUsage(lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
+  const judgeWrap = lateUsage({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge');
   // Its own label keeps the refutation calls out of the judge's retry count.
   const refutation = workspace && clients.judge.repoTools ? {
     client: lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'refute'),
@@ -1370,9 +1394,11 @@ export async function runReview(
       openLeads.push(...unsettled);
       core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored or left unsettled)`);
     } catch (error) {
-      core.warning(`Judge failed: ${error}`);
-      logOutputTokens('Judge', judgeWrap.getTotals().usage);
-      return incomplete(stopped ?? judgeFailureSummary(error), {
+      if (!(error instanceof NotStartedError)) {
+        core.warning(`Judge failed: ${error}`);
+        logOutputTokens('Judge', judgeWrap.getTotals().usage);
+      }
+      return incomplete(error instanceof NotStartedError ? error.message : judgeFailureSummary(error), {
         // The failed attempts count too, since the judge ended on one.
         judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
       });
@@ -1393,7 +1419,7 @@ export async function runReview(
     allJudgedFindings, rawFindings: [...allFindings, ...sweepRaw], rawFindingCount: checkedFindings.length + sweepRaw.length, staticDedupCount, llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(sweeps && { sweeps }), ...(openLeads.length > 0 && { openLeads }),
   });
-  if (stopped) return incompleteAfterJudge(stopped);
+  ending.incomplete = incompleteAfterJudge;
   // Below blocker, a finding on code the PR did not change is posted only once a later check confirms it, so it starts none.
   const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
   if (sweepSources.length > 0) {
@@ -1444,9 +1470,10 @@ export async function runReview(
         openLeads.push(...unsettled);
         finalFindings = [...finalFindings, ...kept.filter(f => !unsettled.includes(f))];
       } catch (error) {
+        if (error instanceof NotStartedError) throw error;
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
-        return incompleteAfterJudge(stopped ?? judgeFailureSummary(error, 'the findings of the sweep'));
+        return incompleteAfterJudge(judgeFailureSummary(error, 'the findings of the sweep'));
       }
     }
   }
@@ -1524,7 +1551,7 @@ export async function runReview(
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
   if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
   const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
-  const earlierWrap = clients.dedup && wrapClientForUsage(lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+  const earlierWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
   threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
@@ -1549,7 +1576,7 @@ export async function runReview(
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
   });
   if (outcome === 'READY') {
-    const verdictWrap = wrapClientForUsage(lateFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
+    const verdictWrap = lateUsage({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict');
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     // The reader reads the slices the finders read, so no slice of the diff is cut.
     const slices = roundSlices;
@@ -1562,9 +1589,10 @@ export async function runReview(
       if (slicing) slicing.reader = reports.map(report => ({ verdict: report.verdict, blockers: report.blockers.length }));
       verdictReport = combineVerdictReports(reports);
     } catch (error) {
+      if (error instanceof NotStartedError) throw error;
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
-      return incompleteAfterJudge(stopped ?? (error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`));
+      return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`);
     }
     verdictUsage = verdictWrap.getTotals().usage;
     logOutputTokens('Verdict reader', verdictUsage);
@@ -1581,7 +1609,7 @@ export async function runReview(
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
-      const foldWrap = clients.dedup && wrapClientForUsage(lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+      const foldWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
@@ -1633,7 +1661,6 @@ export async function runReview(
   }
   core.endGroup();
 
-  if (stopped) return incompleteAfterJudge(stopped);
   const leads = recordLeads([...current, ...carried].filter(f => f.lead), listedLeads, allJudgedFindings ?? [], finalFindings, round);
   const relatedWork = await relatedWorkPromise;
 

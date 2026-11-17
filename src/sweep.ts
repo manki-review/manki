@@ -4,7 +4,7 @@ import { UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { sanitizeForPromptEmbed } from './memory';
-import { LLMClient, SendMessageOptions } from './providers';
+import { LLMClient, NotStartedError, SendMessageOptions } from './providers';
 import { checkStatus } from './refute';
 import { repoTools } from './related-repos';
 import { parseFindings, parseLocation, parseProof, truncateDiff } from './review';
@@ -169,6 +169,7 @@ export async function runSweeps(
       core.info(`${reviewer}: ${elsewhere.length} other place(s)`);
       return { record: { ...record, status: 'answered', class: defectClass, findings: elsewhere.length }, findings: elsewhere };
     } catch (error) {
+      if (error instanceof NotStartedError) throw error;
       core.warning(`${reviewer} failed, so its finding's class goes unswept this round: ${error}`);
       return { record: { ...record, status: 'failed' }, findings: [] };
     }
