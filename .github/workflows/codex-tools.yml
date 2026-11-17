@@ -1,0 +1,34 @@
+name: Codex tools
+
+# Runs the Codex CLI version Manki pins against a stand-in endpoint on localhost, and fails when a model is offered a
+# tool that `scripts/fixtures/codex-tools.json` does not list, or no longer one it lists. Needs no secret.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7  # first-party GitHub action
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7  # first-party GitHub action
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Install the Codex CLI version Manki pins
+        run: |
+          version=$(sed -n "s/^export const CODEX_CLI_VERSION = '\(.*\)';$/\1/p" src/providers/openai.ts)
+          if [ -z "$version" ]; then echo "::error file=src/providers/openai.ts::CODEX_CLI_VERSION not found"; exit 1; fi
+          npm install -g --ignore-scripts "@openai/codex@$version"
+      - name: Compare the tools Codex offers with the list
+        run: npx tsx scripts/codex-tools-check.ts
