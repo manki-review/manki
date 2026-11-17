@@ -9,7 +9,7 @@ instructions: |
 memory:
   enabled: true
 
-# A trial that runs until the v7.6.0 release decides whether the sweep stays.
+# A trial that runs until the v7.7.0 release decides whether the sweep stays.
 review:
   sweep: warnings
 
