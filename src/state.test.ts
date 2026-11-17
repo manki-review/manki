@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, postNoticeOnce, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, retireStaleNotices, BOT_MARKER, ReviewThread, TRACKED_MARKER, unclearedThreads, warningHoldNote } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, namingCommit, paginateSinglePage, reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { APPROVED_LINE, autoApproveHeadMarker, formatFindingComment, postReview, reviewedCommit, titleToSlug } from './github';
@@ -1884,33 +1884,9 @@ describe('checkAndAutoApprove', () => {
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
       expect(createCommentMock).not.toHaveBeenCalled();
-      expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
       expect(warningSpy).toHaveBeenCalledWith(
         expect.stringContaining('manki has not reviewed HEAD'),
       );
-    });
-
-    it('`postNoticeOnce` with `update` edits Manki\'s earlier notice with the marker, and posts one when there is none', async () => {
-      const marker = '<!-- manki-no-round:bead000a -->';
-      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
-      const updateCommentMock = jest.fn().mockResolvedValue({});
-      const post = (existingComments: Array<{ id: number; body: string; user: { login: string } }>) => postNoticeOnce(
-        makeMockOctokit({ threads: [], createCommentFn: createCommentMock, updateCommentFn: updateCommentMock, existingComments }),
-        TEST_BOT, 'owner', 'repo', 1, marker, 'New text', true,
-      );
-
-      // A person's comment that holds the marker is not Manki's notice.
-      expect(await post([{ id: 6, body: `Old text\n\n${marker}`, user: { login: 'someone' } }])).toBe(true);
-      expect(createCommentMock.mock.calls).toEqual([[{ owner: 'owner', repo: 'repo', issue_number: 1, body: `New text\n\n${marker}` }]]);
-      expect(updateCommentMock).not.toHaveBeenCalled();
-
-      createCommentMock.mockClear();
-      expect(await post([
-        { id: 7, body: 'Old text\n\n<!-- manki-no-round:bead000b -->', user: { login: 'manki-review[bot]' } },
-        { id: 8, body: `Old text\n\n${marker}`, user: { login: 'manki-review[bot]' } },
-      ])).toBe(false);
-      expect(updateCommentMock.mock.calls).toEqual([[{ owner: 'owner', repo: 'repo', comment_id: 8, body: `New text\n\n${marker}` }]]);
-      expect(createCommentMock).not.toHaveBeenCalled();
     });
 
     const heldReview = (commit: string) => ({ body: '**Changes requested**\n\n<!-- manki-held-for-person -->\n\n<!-- manki -->\n<!-- manki-bot -->', state: 'CHANGES_REQUESTED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } });

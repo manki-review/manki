@@ -751,24 +751,18 @@ function warningThreadsLine(held: ReviewThread[], bot: BotIdentity, clearRole: A
   return `${count} the approval:\n${list}\n\nApproval follows once each one is ${warningClearedBy(clearRole)}. A reply in a thread lifts its hold only when Manki answers it with Fixed, Withdrawn or Agreed.`;
 }
 
-/**
- * Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. With `update`,
- * that comment gets `text` instead. Returns whether it posted a new comment.
- */
+/** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. Returns whether it posted. */
 async function postNoticeOnce(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, marker: string, text: string, update = false,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, marker: string, text: string,
 ): Promise<boolean> {
-  const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+  const existing = await octokit.paginate(octokit.rest.issues.listComments, {
     owner, repo, issue_number: prNumber, per_page: 100,
   });
-  const existing = comments.find(c => isBotLogin(bot, c.user?.login) && c.body?.includes(marker));
-  const body = withMarkers(text, marker);
-  if (existing) {
-    if (update) await octokit.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-    else core.info(`Notice ${marker} already present, skipping duplicate`);
+  if (existing.some(c => isBotLogin(bot, c.user?.login) && c.body?.includes(marker))) {
+    core.info(`Notice ${marker} already present, skipping duplicate`);
     return false;
   }
-  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, marker) });
   return true;
 }
 
@@ -1112,4 +1106,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorClearLine, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, postNoticeOnce, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorClearLine, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };

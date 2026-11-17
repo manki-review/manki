@@ -967,10 +967,20 @@ describe('runFullReview end to end', () => {
 
       expect(postedReviews()).toHaveLength(1);
       expect(skipNotices()).toEqual([]);
-      // Both commands share one answer. The second command edited it, which drops the marker of the comment the first one answered.
-      expect(mankiComments().slice(comments).map(c => c.body)).toEqual([
-        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.\n\n<!-- manki-no-round:${HEAD_SHA} -->`,
-      ]);
+      // Each command that started no round gets its own answer, marked as the answer to that command.
+      const commands = mockGitHub.comments.filter(c => c.user.login === 'alice');
+      const answers = () => mankiComments().slice(comments).map(c => c.body);
+      const answered = commands.slice(1).map(command =>
+        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.\n\n<!-- manki -->\n<!-- manki-answered:${command.id} -->`);
+      expect(commands).toHaveLength(3);
+      expect(answers()).toEqual(answered);
+
+      // So an edit of either of those commands is seen as answered and starts nothing.
+      for (const command of commands.slice(1)) {
+        await dispatch({ event: 'issue_comment', action: 'edited', pr: String(PR_NUMBER), comment_id: String(command.id) });
+      }
+      expect(answers()).toEqual(answered);
+      expect(postedReviews()).toHaveLength(1);
       const blocks = mockGitHub.comments.map(c => parseSettingsBlock(c.body)).filter(b => b !== undefined);
       expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'again', 'deeper']) })]);
     });

@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, createOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
-import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
+import { COMMENT_MARKER, redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { CONFIG_PATH, fallbackConfig, loadConfig, resolveModel } from './config';
 import { BENCH_COMMAND, runBenchCommand } from './bench';
 import { REVIEW_COMMAND, runReviewCommand } from './cli';
@@ -95,7 +95,7 @@ import {
   skippedFiles,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, authorClearLine, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, postNoticeOnce, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, authorClearLine, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -500,21 +500,15 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
   await reportCheck(octokit, owner, repo, commitSha, outcomeReport(STANDING_OUTCOMES[verdict], ALREADY_REVIEWED_TEXT, held));
 }
 
-/** Marks Manki's answer to a review command that started no round on `headSha`, so the next such command edits it. */
-function noRoundMarker(headSha: string): string {
-  return `<!-- manki-no-round:${headSha} -->`;
-}
-
 /**
  * Answers a review command that started no round because `target.commitSha` already has a review, and says what starts
- * one. While automatic review is paused, the answer adds the text of the pause notice. When the config or the PR's
- * rounds cannot be read, it leaves the pause out.
+ * one. While automatic review is paused, the answer adds the text of the pause notice. It leaves the pause out when the
+ * base branch's config is `held` or the PR's rounds cannot be read.
  */
-async function answerAlreadyReviewed(target: RunTarget, prAuthorLogin: string | undefined): Promise<void> {
-  const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
+async function answerAlreadyReviewed(target: RunTarget, prAuthorLogin: string | undefined, { config, held }: { config: ReviewConfig; held: boolean }): Promise<void> {
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   const parts = [`\`${commitSha.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.`];
   try {
-    const { config, held } = await loadEventConfig(octokit, owner, repo, baseRef);
     // Without the config nothing says how many rounds the round cap allows.
     if (!held) {
       const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
@@ -527,7 +521,7 @@ async function answerAlreadyReviewed(target: RunTarget, prAuthorLogin: string | 
     core.warning(`Could not read whether automatic review is paused, answering without it: ${error instanceof Error ? error.message : error}`);
   }
   try {
-    await postNoticeOnce(octokit, bot, owner, repo, prNumber, noRoundMarker(commitSha), parts.join('\n\n'), true);
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(parts.join('\n\n'), COMMENT_MARKER) });
   } catch (error) {
     core.warning(`Failed to answer the review command: ${error instanceof Error ? error.message : error}`);
   }
@@ -671,8 +665,9 @@ async function handleCommentTrigger(settingsTick = false): Promise<void> {
     core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, pr.head.sha, settings, draft);
     const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha: pr.head.sha, baseRef: pr.base.ref };
-    await answerAlreadyReviewed(target, pr.user?.login);
-    await reportReviewedCheck(target, pr.user?.login);
+    const loaded = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+    await answerAlreadyReviewed(target, pr.user?.login, loaded);
+    await reportReviewedCheck(target, pr.user?.login, loaded);
     return;
   }
 
