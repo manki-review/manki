@@ -260,7 +260,7 @@ function codexEndpointArgs(baseUrl: string): string[] {
 // How often one call resumes its Codex session, and the pause before each resume of a model at capacity or of an
 // endpoint that answers 429 and names no wait. The last pause repeats.
 const MAX_RESUMES = 8;
-const CAPACITY_PAUSES_MS = [15_000, 30_000, 60_000];
+const CAPACITY_PAUSES_MS = [5_000, 30_000, 60_000];
 // The least time a resumed run is started with. Starting Codex again on its session takes about 2 s before the model
 // writes anything, and the model then has to write the whole answer.
 const MIN_RESUMED_RUN_MS = 30_000;
