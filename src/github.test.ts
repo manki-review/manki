@@ -1509,6 +1509,21 @@ describe('postReview with context', () => {
     const readers = ['gemini-3-pro', 'gemini/gemini-3-pro'].map(model => ({ name: 'deep', model, provider: 'gemini' as const }));
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, routing: { ...ctx.routing!, reviewers: readers } }, 60000);
     expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('- Found by `gemini-3-pro`, judged by ');
+    // A finder or judge model that reached its limit is named with the model that answered for it, once. A refusal and any other stage are not.
+    const fallbacks: NonNullable<RoundContext['models']['fallbacks']> = [
+      { stage: 'reviewer', agent: 'deep', fallbackModel: 'claude-sonnet-5-5', reason: 'Gemini quota exhausted', limit: true },
+      { stage: 'judge', fallbackModel: 'gpt-5.5', reason: 'Claude is overloaded', limit: true },
+      { stage: 'verdict', fallbackModel: 'gpt-5.5', reason: 'Claude is overloaded', limit: true },
+      { stage: 'dedup', fallbackModel: 'gpt-5.5', reason: 'Claude is overloaded', limit: true },
+      { stage: 'judge', agent: 'refute', fallbackModel: 'gemini-3-pro', reason: 'refusal (cyber)' },
+    ];
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, models: { ...ctx.models, fallbacks }, routing: { ...ctx.routing!, reviewers: readers.slice(0, 1) } }, 60000);
+    expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain([
+      '- Found by `gemini-3-pro`, judged by `claude-opus-4-20250514`',
+      '- `gemini-3-pro` reached its limit, so `claude-sonnet-5-5` read in its place',
+      '- `claude-opus-4-20250514` reached its limit, so `gpt-5.5` judged in its place',
+      '- [How Manki reviews]',
+    ].join('\n'));
     expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\n<details>\n<summary>About this review<\/summary>\n\n- Reviewed \[`abc`\]\([^)]+\), round \d+\n- 200 changed lines read in 1m 0s\n- Found by `claude-sonnet-4-20250514`, judged by `[^`]+`\n- \[How Manki reviews\]\([^)]+\)\n\n<\/details>$/);
     // Code reads the reviewed commit from that footer, never from the commit GitHub reports the review on.
     await postReview(mockOctokit, 'owner', 'repo', 99, SHA_A, result, undefined, ctx, 60000);
@@ -3817,9 +3832,13 @@ describe('updateProgressComment', () => {
     expect(body).toContain('reviewer=claude-sonnet-4-20250514');
     expect(body).toContain('judge=claude-sonnet-4-20250514');
     expect(body).toContain('Triage: trivial=false, subtle=true, paired=true (planner)');
-    expect(body).toContain('Team: Claude Sonnet 4.6 · high, Claude Opus 4.7 · high');
-    expect(body).toContain('enabled (owner/review-memory)');
+    expect(body).toContain('- Team: Claude Sonnet 4.6 · high, Claude Opus 4.7 · high\n- Memory: enabled (owner/review-memory)');
     expect(body).not.toContain('**Account limits:**');
+
+    // A model that reached its limit is named under the team with the model that answered for it.
+    const limitFallbacks = ['`gpt-5.5` reached its limit, so `claude-sonnet-5-5` read in its place'];
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, { ...baseMetadata, config: { ...baseMetadata.config, limitFallbacks } });
+    expect(mockUpdateComment.mock.calls[1][0].body).toContain(`- Team: Claude Sonnet 4.6 · high, Claude Opus 4.7 · high\n- ${limitFallbacks[0]}\n- Memory:`);
   });
 
   it('lists each account\'s limit windows in metadata', async () => {

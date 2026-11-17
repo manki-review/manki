@@ -13,7 +13,7 @@ export function buildLLMClient(model: string, providerInputs: ProviderInputs): L
   return createLLMClient(spec.provider, spec.model, buildAuthForProvider(spec.provider, providerInputs));
 }
 
-/** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
+/** Builds one LLM client per stage, plus each stage's fallback for a refusal or a used-up limit. Throws on a model spec or credentials that do not resolve. */
 export function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
   const finderModels = teamModels(config);
   const models: ReviewModels = {

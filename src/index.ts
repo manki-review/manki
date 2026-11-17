@@ -61,6 +61,7 @@ import {
   dismissPreviousReviews,
   postReview,
   capNotes,
+  limitFallbackLines,
   formatOpenBlockers,
   unreadRecordsLine,
   withheldSummary,
@@ -1832,7 +1833,7 @@ function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: stri
 }
 
 /** Marks the progress comment complete with the judge's decisions and the round's timing. */
-async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult, totalDurationMs: number): Promise<void> {
+async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult, totalDurationMs: number, context: RoundContext): Promise<void> {
   const { octokit, owner, repo, commentId, dashboard, config, models, startTime, parseEndTime } = run;
   const { result, reviewEndTime, judgeEndTime } = stage;
 
@@ -1916,8 +1917,12 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
     : 'none';
   const limits = latestLimits(result.llmCalls ?? []);
+  const limitFallbacks = limitFallbackLines(context);
   const metadata: ReviewMetadata = {
-    config: metadataConfig(config, models, triage, result.agentNames, [...(result.agentModels?.values() ?? [])][0], run.memorySkip),
+    config: {
+      ...metadataConfig(config, models, triage, result.agentNames, [...(result.agentModels?.values() ?? [])][0], run.memorySkip),
+      ...(limitFallbacks.length > 0 && { limitFallbacks }),
+    },
     judgeDecisions,
     ...(limits.length > 0 && { limits }),
     timing,
@@ -2199,7 +2204,7 @@ async function runFullReview(
     await replyFixedThreads(run, resolved);
     await replyPartlyFixedThreads(run, result);
     await replyAnsweredThreads(run, result);
-    await completeProgressComment(run, stage, reviewTimeMs);
+    await completeProgressComment(run, stage, reviewTimeMs, context);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, { pauseLifted: !pauseAfter.paused });
     setReviewOutputs(posted, context, result);
     // The title names the first hold, so warnings that hold behind another one are named in the summary.

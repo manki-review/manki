@@ -93,8 +93,9 @@ export class RefusalError extends Error {
 
 /**
  * Thrown when a provider refuses a request because a quota, rate limit or capacity limit is used up.
- * Sending it again before `resetsAt` fails the same way, so callers neither retry it nor move it to
- * another model. `limit` says which limit, such as "Claude subscription limit reached".
+ * Sending it again to the same model before `resetsAt` fails the same way, so callers never retry it there.
+ * A stage with a fallback model sends it there once (`withModelFallback`).
+ * `limit` says which limit, such as "Claude subscription limit reached".
  * `credential` names what the user can swap to get past it, and is unset when no other one helps.
  */
 export class QuotaError extends Error {
@@ -128,7 +129,7 @@ export interface LLMCall extends LLMUsage {
   model?: string;
   /** Effort tier the provider was sent. */
   effort?: SendMessageOptions['effort'];
-  /** Set when a fallback model answered after a safety filter refused the stage's own model. */
+  /** Set on a call to the stage's fallback model, after a safety filter refused the stage's own model or that model reached a limit. */
   fallback?: boolean;
   /** Set on a refuter's call for a finding a sweep raised. The dedup and judge calls on what the sweeps reported have the agent `sweep`. */
   sweep?: true;

@@ -1765,7 +1765,7 @@ describe('runJudgeAgent', () => {
       clock.mockRestore();
     }
 
-    // A used-up quota fails again, and a refusal already moved to the fallback model.
+    // A used-up limit and a refusal were already sent to the fallback model, and would fail again.
     for (const error of [new QuotaError('rate limited', 'requests'), new RefusalError('refused twice', 'cyber')]) {
       mockSendMessage.mockReset();
       mockSendMessage.mockRejectedValueOnce(error);

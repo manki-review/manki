@@ -376,7 +376,7 @@ export interface ReviewClients {
   refuterPair?: LLMClient;
   planner: LLMClient;
   dedup?: LLMClient;
-  /** Where each stage moves when a safety filter refuses it. The verdict reader uses `judge`'s. */
+  /** Where each stage moves when a safety filter refuses it or its model reaches a limit. The verdict reader uses `judge`'s. */
   fallbacks?: {
     planner?: FallbackClient;
     /** Keyed like `reviewerByModel`. */
@@ -686,14 +686,20 @@ export async function runReview(
   // Searched while the planner runs, since no model call depends on it before the finders.
   const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths, dependencyNames: config.related_repos?.some(r => r.kind === 'dependency') });
   const modelFallbacks: RoundModelFallback[] = [];
+  // Every model that reads for a finder of the round: each finder's own, and each fallback model a finder moved to.
+  const readingModels = new Set<string>();
   const llmCalls: LLMCall[] = [];
-  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient => {
+  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => boolean): LLMClient => {
     const label = { stage, ...(agent && { agent }) };
     const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
     return withSignal(withModelFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
-      core.warning(`A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
-      modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: error.reason });
-    }), signal);
+      const limit = error instanceof QuotaError;
+      core.warning(limit
+        ? `The ${agent ?? stage} call reached a limit (${error.limit}), so ${fallback!.model} answered in its place`
+        : `A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
+      modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: limit ? error.limit : error.reason, ...(limit && { limit: true as const }) });
+      if (stage === 'reviewer') readingModels.add(modelIdentity(fallback!.model));
+    }, movesOnLimit), signal);
   };
   // Classified while the review runs, since only the posted note reads it.
   const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
@@ -745,7 +751,21 @@ export async function runReview(
   }
 
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
-  const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
+  for (const finder of team.finders) readingModels.add(modelIdentity(finder.model));
+  // Two reads by one model are weaker than the group, so a limit moves a finder only to a model that reads for no finder of the round.
+  const finderClients = new Map(team.finders.map(f => {
+    const stage = pickReviewerClient(clients, f.model);
+    const movesOnLimit = (): boolean => {
+      const model = modelIdentity(stage.fallback!.model);
+      if (readingModels.has(model)) {
+        core.info(`${f.name} reached a limit and is not sent to ${stage.fallback!.model}, which already reads for a finder of this round`);
+        return false;
+      }
+      readingModels.add(model);
+      return true;
+    };
+    return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit)];
+  }));
   // The sibling comparisons, claim checks and sweeps run on the model of the group's first reader.
   const comparisonModel = team.finders[0].model;
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
@@ -1179,7 +1199,7 @@ export async function runReview(
   let judgeRetryCount = 0;
   const judgeWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
   // Its own label keeps the refutation calls out of the judge's retry count. A fallback without tools could not read the
-  // code, so without one a refused call fails and the finding keeps its grade.
+  // code, so without one a call that is refused or reaches a limit fails and the finding keeps its grade.
   const refutation = workspace && clients.judge.repoTools ? {
     client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
     workspace,
@@ -2565,7 +2585,7 @@ function confirmFixes(
 
 /**
  * Returns the tool budget the judge gets, and logs why a configured budget goes unused. The judge is told it has tools,
- * so a refused call must not move to a fallback that has none, or that fallback would grade as if it had read code.
+ * so a call that is refused or reaches a limit must not move to a fallback that has none, or that fallback would grade as if it had read code.
  */
 function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHead: boolean): number {
   const steps = config.judge?.tool_steps ?? 0;

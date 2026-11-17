@@ -1719,7 +1719,7 @@ export async function runJudgeAgent(
     judgeResult = await judge(judgeCall(toolSteps));
   } catch (error) {
     // A judge with tools can run out of turns or time, so it grades once more the way it does without them. A used-up
-    // quota or a refusal, which already moved to the fallback, would fail again.
+    // limit or a refusal was already sent to the fallback model, where the stage has one, and would fail again.
     if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError) throw error;
     core.warning(`The judge with tools failed (${error}), grading once more without tools`);
     // The retry gets the time the attempt with tools left of its limit, and never less than `RETRY_WITHOUT_TOOLS_TIMEOUT_MS`.

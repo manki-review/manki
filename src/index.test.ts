@@ -210,6 +210,7 @@ jest.mock('./github', () => ({
   brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
+  limitFallbackLines: jest.requireActual('./github').limitFallbackLines,
   cachedFileLines: jest.requireActual('./github').cachedFileLines,
   fetchRepoContext: jest.fn().mockResolvedValue({ text: '', files: [] }),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
@@ -3708,6 +3709,10 @@ describe('runFullReview orchestration', () => {
     const both = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 9, description: 'd', reviewers: [primaryName, pairName] };
     const reader = { severity: 'blocker' as const, title: 'Leak', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['Verdict reader'] };
     const findings = [pairOnly, primaryOnly, both, reader];
+    const modelFallbacks: NonNullable<RoundContext['models']['fallbacks']> = [
+      { stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' },
+      { stage: 'reviewer', agent: primaryName, fallbackModel: 'gpt-5.5', reason: 'Claude subscription limit reached', limit: true },
+    ];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings, highlights: [], reviewComplete: true,
@@ -3716,7 +3721,7 @@ describe('runFullReview orchestration', () => {
       agentModels: new Map([[primaryName, 'claude-sonnet-5-5'], [pairName, 'claude-opus-5-5']]),
       agentEffortMap: new Map([[primaryName, 'high'], [pairName, 'high']]),
       routing: { class: 'behavior', rank: 50, matched: ['behavior'], classSource: 'triage', group: 'full', groupSource: 'routing' },
-      modelFallbacks: [{ stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' }],
+      modelFallbacks,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -3740,7 +3745,9 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.findings.entries.find(e => e.title === 'Race')?.reviewers).toEqual([primaryName, pairName]);
     // The record names the model of the group's first reader.
     expect(ctx!.models.reviewer).toBe('claude-sonnet-5-5');
-    expect(ctx!.models.fallbacks).toEqual([{ stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' }]);
+    expect(ctx!.models.fallbacks).toEqual(modelFallbacks);
+    // The progress comment names the finder model that reached its limit and the model that read for it.
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[5]?.config.limitFallbacks).toEqual(['`claude-sonnet-5-5` reached its limit, so `gpt-5.5` read in its place']);
   });
 
   it('counts kept findings per finder in a group of three', async () => {

@@ -622,7 +622,7 @@ export function resolveModel(config: ReviewConfig, stage: 'planner' | 'judge' | 
 }
 
 /**
- * Returns the model a stage on `stageModel` moves to when a safety filter refuses it: `models.fallback`. Without it,
+ * Returns the model a stage on `stageModel` moves to when a safety filter refuses it or its model reaches a limit: `models.fallback`. Without it,
  * or for a stage already on it, the first model of the `full` group other than the stage's own.
  * Returns undefined when no other model is left.
  */

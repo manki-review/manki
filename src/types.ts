@@ -1157,7 +1157,7 @@ export interface ReviewResult {
   plannerSource?: RoundPlannerSource;
   /** Short tag describing the planner fallback path, when one fired. */
   plannerFallbackReason?: string;
-  /** Stages a safety filter refused that ran again on a fallback model. */
+  /** Stages that moved to a fallback model, after a safety filter refused them or their model reached a limit. */
   modelFallbacks?: RoundModelFallback[];
   /** Triage the team was built from, after the pin and the sensitive-path rule. */
   triage?: Triage;
@@ -1731,6 +1731,8 @@ export interface ReviewMetadata {
     /** Triage answers and where they came from, as one readable line. */
     triage: string;
     teamAgents: string[];
+    /** The lines of `limitFallbackLines`: each model that reached a limit and the model that answered in its place. */
+    limitFallbacks?: string[];
     memoryEnabled: boolean;
     memoryRepo: string;
   };
@@ -2064,18 +2066,20 @@ export interface RoundModels {
   /** Model of the second refuter, on rounds where it checked a finding or an earlier round's answer of it was reused. */
   refuterPair?: string;
   dedup?: string;
-  /** Stages a safety filter refused that ran again on a fallback model, in the order they ran. */
+  /** Stages that moved to a fallback model, after a safety filter refused them or their model reached a limit, in the order they moved. */
   fallbacks?: RoundModelFallback[];
 }
 
-/** A stage call that a safety filter refused and that ran again on `fallbackModel`. */
+/** A stage call that a safety filter refused and that ran again on `fallbackModel`, or one whose model reached a limit and that `fallbackModel` answered. */
 export interface RoundModelFallback {
   stage: keyof NonNullable<RoundUsage['perStage']>;
-  /** Finder the filter refused, on the `reviewer` stage. */
+  /** Finder that moved, on the `reviewer` stage. */
   agent?: string;
   fallbackModel: string;
-  /** The provider's refusal signal, such as `refusal (cyber)` or `content_filter`. */
+  /** The provider's refusal signal, such as `refusal (cyber)` or `content_filter`. With `limit`, the limit reached, such as `OpenAI endpoint limit reached`. */
   reason: string;
+  /** Set when the stage's model reached a limit. Unset after a safety refusal. */
+  limit?: true;
 }
 
 /**
