@@ -171,7 +171,11 @@ async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, 
 
 /** Whether the process whose PID the lock holds still runs. A lock whose PID is not written yet counts as held. */
 function isHolderAlive(lock: string): boolean {
-  const pid = Number(readFileSync(lock, 'utf-8'));
+  return isRunning(Number(readFileSync(lock, 'utf-8')));
+}
+
+/** Whether the process `pid` still runs. A `pid` that is no number counts as running. */
+function isRunning(pid: number): boolean {
   if (!pid) return true;
   try {
     process.kill(pid, 0);
