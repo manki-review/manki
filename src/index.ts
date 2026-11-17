@@ -95,7 +95,7 @@ import {
   skippedFiles,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -463,10 +463,11 @@ async function showAlreadyReviewed(
 /**
  * Answers the waiting `Manki` check of a run that ends because `target.commitSha` already has a review. It reports the
  * verdict of that review and never a better one. An approval counts only while it is Manki's newest review, and it is
- * reported as held while a draft, a conflict or a warning thread holds it. It posts nothing on the PR. It reports nothing
- * when the run has no waiting check on the commit, when the review is a comment, or when the PR, the config or the
- * warning threads cannot be read. `loaded` is the base branch's config when the run has read it, and `held` says that it
- * did not load.
+ * reported as held while a draft, a conflict or a warning thread holds it. For a review that held its approval,
+ * `approveOrSayWhy` decides. The hold it names is reported, and it approves the PR itself once nothing holds the
+ * approval. Nothing else here posts on the PR. It reports nothing when the run has no waiting check on the commit, when
+ * `approveOrSayWhy` names no hold or may not run because `auto_approve` is off, or when the PR, the config or the threads
+ * cannot be read. `loaded` is the base branch's config when the run has read it, and `held` says that it did not load.
  */
 async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | undefined, loaded?: { config: ReviewConfig; held: boolean }): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
@@ -474,7 +475,9 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
   if (!hasQueuedCheck(octokit, commitSha)) return;
   const shortSha = commitSha.slice(0, 7);
   const review = await findBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha);
-  const verdict = review && REVIEW_STATE_VERDICTS[review.state];
+  // A comment that gives a verdict is an approval that Manki held.
+  const heldReview = review?.state === 'COMMENTED';
+  const verdict = heldReview ? 'APPROVE' : review && REVIEW_STATE_VERDICTS[review.state];
   if (!verdict) {
     core.info(`No review of ${shortSha} gives a verdict a check can report, leaving its check as it is`);
     return;
@@ -482,15 +485,27 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
   let held: ApprovalHeld = false;
   if (verdict === 'APPROVE') {
     try {
-      // A newer review of another commit overrides this approval, and without the config nothing says what holds it.
-      const base = await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha) ? loaded ?? await loadEventConfig(octokit, owner, repo, baseRef) : undefined;
+      // A newer review of another commit overrides an approval, and without the config nothing says what holds it.
+      const base = heldReview || await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha) ? loaded ?? await loadEventConfig(octokit, owner, repo, baseRef) : undefined;
       if (!base || base.held) {
         core.info(`Cannot tell whether the approval of ${shortSha} stands, leaving its check as it is`);
         return;
       }
-      // The strict lookup throws on a PR whose draft or conflict state is unknown, so an unknown state is never taken for no hold.
-      const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, false, true);
-      held = hold ? hold.reason : (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, base.config.author_clear_role)).length > 0 && 'warnings';
+      if (heldReview) {
+        // `approveOrSayWhy` approves a PR that nothing holds, so it runs only where `auto_approve` lets Manki approve.
+        const check = base.config.auto_approve ? await approveOrSayWhy(octokit, bot, owner, repo, prNumber, base.config) : undefined;
+        // An approval, and a hold whose notice `approveOrSayWhy` posted, have completed the waiting check already.
+        if (!hasQueuedCheck(octokit, commitSha)) return;
+        if (!check || check.approved || !check.held) {
+          core.info(`Cannot tell what holds the approval of ${shortSha}, leaving its check as it is`);
+          return;
+        }
+        held = check.held;
+      } else {
+        // The strict lookup throws on a PR whose draft or conflict state is unknown, so an unknown state is never taken for no hold.
+        const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, false, true);
+        held = hold ? hold.reason : (await fetchHeldWarnings(octokit, bot, owner, repo, prNumber, prAuthorLogin, base.config.author_clear_role)).length > 0 && 'warnings';
+      }
     } catch (error) {
       core.warning(`Could not read what holds the approval of ${shortSha}, leaving its check as it is: ${error instanceof Error ? error.message : error}`);
       return;
