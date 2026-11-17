@@ -1715,27 +1715,56 @@ describe('runJudgeAgent', () => {
       findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace: '/work/pr-head' }, toolSteps: 30,
     };
 
-    mockSendMessage.mockRejectedValueOnce(new Error('Claude CLI stopped: error_max_turns')).mockResolvedValueOnce(reply);
-    const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings[0].severity).toBe('warning');
-    const [, again] = mockSendMessage.mock.calls;
-    expect(again[0]).not.toContain('## Your Tools');
-    expect(again[2]).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const after = (seconds: number, outcome: { content: string } | Error) => async () => {
+      now += seconds * 1000;
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    };
+    const limits = () => mockSendMessage.mock.calls.map(call => (call[2] as SendMessageOptions).timeoutMs);
+    try {
+      // The retry after a quick failure gets what is left of the 900 seconds.
+      mockSendMessage.mockImplementationOnce(after(2, new Error('Claude CLI stopped: error_max_turns'))).mockImplementationOnce(after(60, reply));
+      const result = await runJudgeAgent(mockClient, makeConfig(), input);
+      expect(result.findings[0].severity).toBe('warning');
+      const [, again] = mockSendMessage.mock.calls;
+      expect(again[0]).not.toContain('## Your Tools');
+      expect(again[2]).toEqual({ effort: 'high', timeoutMs: 898_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
 
-    // A judge that runs out of time with tools and again without them has had 900 and 300 seconds, and fails on the second timeout.
-    const slow = new TimeoutError('Codex CLI timed out after 300s');
-    mockSendMessage.mockReset();
-    mockSendMessage.mockRejectedValueOnce(new TimeoutError('Codex CLI timed out after 900s')).mockRejectedValueOnce(slow);
-    await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBe(slow);
-    expect(mockSendMessage.mock.calls.map(call => (call[2] as SendMessageOptions).timeoutMs)).toEqual([900_000, 300_000]);
+      // A judge that runs out of time with tools gets 300 seconds without them, and fails on the second timeout.
+      const slow = new TimeoutError('Codex CLI timed out after 300s');
+      mockSendMessage.mockReset();
+      mockSendMessage.mockImplementationOnce(after(900, new TimeoutError('Codex CLI timed out after 900s'))).mockImplementationOnce(after(300, slow));
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBe(slow);
+      expect(limits()).toEqual([900_000, 300_000]);
 
-    // A finding the judge with tools leaves out twice fails that attempt like any other failure.
-    const empty = { content: JSON.stringify({ summary: 'ok', findings: [] }) };
-    mockSendMessage.mockReset();
-    mockSendMessage.mockResolvedValueOnce(empty).mockResolvedValueOnce(empty).mockResolvedValueOnce(reply);
-    expect((await runJudgeAgent(mockClient, makeConfig(), input)).findings[0].severity).toBe('warning');
-    expect(mockSendMessage.mock.calls[2][0]).not.toContain('## Your Tools');
-    expect(mockSendMessage.mock.calls.map(call => (call[2] as SendMessageOptions).timeoutMs)).toEqual([900_000, 900_000, 300_000]);
+      // A finding the judge with tools leaves out twice fails that attempt like any other failure. Its second call
+      // gets the time the first left, and so does the retry.
+      const empty = { content: JSON.stringify({ summary: 'ok', findings: [] }) };
+      mockSendMessage.mockReset();
+      mockSendMessage.mockImplementationOnce(after(400, empty)).mockImplementationOnce(after(100, empty)).mockImplementationOnce(after(60, reply));
+      expect((await runJudgeAgent(mockClient, makeConfig(), input)).findings[0].severity).toBe('warning');
+      expect(mockSendMessage.mock.calls[2][0]).not.toContain('## Your Tools');
+      expect(limits()).toEqual([900_000, 500_000, 400_000]);
+
+      // The three calls of one attempt share its 900 seconds: the first, one after a reply that does not parse, and one for a left-out finding.
+      const withoutTools = { ...input, refutation: undefined, toolSteps: undefined };
+      mockSendMessage.mockReset();
+      mockSendMessage.mockImplementationOnce(after(400, { content: 'not json' })).mockImplementationOnce(after(300, empty)).mockImplementationOnce(after(150, reply));
+      expect((await runJudgeAgent(mockClient, makeConfig(), withoutTools)).findings[0].severity).toBe('warning');
+      expect(limits()).toEqual([900_000, 500_000, 200_000]);
+
+      // An attempt whose time is used up makes no further call and fails as out of time.
+      mockSendMessage.mockReset();
+      mockSendMessage.mockImplementationOnce(after(900, { content: 'not json' }));
+      const usedUp = await runJudgeAgent(mockClient, makeConfig(), withoutTools).then(() => null, (e: Error) => e);
+      expect(usedUp).toBeInstanceOf(TimeoutError);
+      expect(usedUp?.message).toBe('The judge used up its 900s before this call');
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
 
     // A used-up quota fails again, and a refusal already moved to the fallback model.
     for (const error of [new QuotaError('rate limited', 'requests'), new RefusalError('refused twice', 'cyber')]) {
