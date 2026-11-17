@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, buildLineLink, findingLocation, linked, reviewedCommit, sanitizeMarkdown } from './github';
+import { BotIdentity, buildLineLink, findingLocation, inline, linked, reviewedCommit, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutDetachedNote } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread, TRACKED_MARKER } from './state';
@@ -61,9 +61,15 @@ function postedText(posted: string, id: string): string {
   return (anchor >= 0 ? text.slice(0, anchor) : text).replace(/^<!-- manki[^\n]*-->\r?\n?/gm, '').trim();
 }
 
-/** Files `source` as an issue with a permalink to its line and a link to where it was posted, or links the open one. */
+/** Matches a login made of GitHub's login characters. A bot's `name[bot]` does not match, since a mention of it would notify the account `name`. */
+const LOGIN_RE = /^[A-Za-z\d]+(?:[_-][A-Za-z\d]+)*$/;
+
+/**
+ * Files `source` as an issue with a permalink to its line, a mention of `editor` and a link to where it was posted, or
+ * links the open one without editing it. An `editor` that `LOGIN_RE` does not match is named as code, which notifies nobody.
+ */
 async function fileOrLink(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, id: string, source: IssueSource,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, id: string, source: IssueSource, editor: string,
 ): Promise<{ number: number; existing: boolean }> {
   const existing = await findFiledIssue(octokit, bot, owner, repo, id);
   if (existing !== undefined) return { number: existing, existing: true };
@@ -71,7 +77,7 @@ async function fileOrLink(
   const where = source.file ? ` at ${linked(`\`${findingLocation(source)}\``, permalink)}` : '';
   const body = [
     postedText(source.text, id),
-    `Found by Manki in #${prNumber}${where}. See the [${source.postedIn}](${source.postedAt}).`,
+    `Found by Manki in #${prNumber}${where}. Requested by ${LOGIN_RE.test(editor) ? `@${editor}` : inline(editor)}. See the [${source.postedIn}](${source.postedAt}).`,
     filedIssueMarker(id),
   ].join('\n\n');
   const { data } = await octokit.rest.issues.create({ owner, repo, title: source.title, body });
@@ -112,7 +118,7 @@ export async function handleIssueBoxTick(
   for (const id of ids) {
     let filed: { number: number; existing: boolean } | undefined;
     try {
-      filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, source);
+      filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, source, editor);
       core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
     } catch (error) {
       core.warning(`Failed to file an issue for finding ${id}: ${error}`);
@@ -212,7 +218,7 @@ export async function handleReviewBoxTick(
       try {
         filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, {
           title: finding.title, text: finding.text, file, line: Number(line), commit: reviewedCommit(review), postedAt: review.html_url, postedIn: 'review',
-        });
+        }, editor);
         core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
       } catch (error) {
         core.warning(`Failed to file an issue for finding ${id}: ${error}`);

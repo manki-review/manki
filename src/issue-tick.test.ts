@@ -35,7 +35,7 @@ function makeOctokit(filed: Array<{ number: number; body: string; pull_request?:
     },
     paginate: jest.fn().mockResolvedValue(filed),
     rest: {
-      issues: { listForRepo: jest.fn(), create: jest.fn().mockResolvedValue({ data: { number: 12 } }), createComment: jest.fn().mockResolvedValue({}) },
+      issues: { listForRepo: jest.fn(), create: jest.fn().mockResolvedValue({ data: { number: 12 } }), update: jest.fn(), createComment: jest.fn().mockResolvedValue({}) },
       pulls: {
         getReviewComment: jest.fn(async () => ({ data: { body: held.body } })),
         updateReviewComment: write,
@@ -48,10 +48,10 @@ function makeOctokit(filed: Array<{ number: number; body: string; pull_request?:
 
 type TestOctokit = ReturnType<typeof makeOctokit>;
 
-/** Runs a tick of Manki's `ticked` comment. */
-async function tick(octokit: TestOctokit, ticked: ReturnType<typeof comment>): Promise<boolean> {
+/** Runs a tick of Manki's `ticked` comment by `editor`. */
+async function tick(octokit: TestOctokit, ticked: ReturnType<typeof comment>, editor = 'bob'): Promise<boolean> {
   octokit.seed(ticked.body);
-  return handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, ticked, 'bob');
+  return handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, ticked, editor);
 }
 
 /** Runs a tick of Manki's `ticked` review. */
@@ -84,7 +84,7 @@ describe('handleIssueBoxTick', () => {
     // The issue holds the finding as posted, without the box or Manki's hidden markers.
     expect(octokit.rest.issues.create).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r', title: 'Retry has no limit' }));
     const issue: string = jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body;
-    expect(issue).toMatch(/^⚠️ \*\*Warning\*\*[\s\S]*\*\*What goes wrong:\*\* It retries forever\.[\s\S]*\n\nFound by Manki in #5 at \[`src\/net\.ts:7`\]\(https:\/\/github\.com\/o\/r\/blob\/abc123\/src\/net\.ts#L7\)\. See the \[review thread\]\(https:\/\/github\.com\/o\/r\/pull\/5#discussion_r501\)\.\n\n<!-- manki-issue:src\/net\.ts:7:[0-9a-f]{12} -->$/);
+    expect(issue).toMatch(/^⚠️ \*\*Warning\*\*[\s\S]*\*\*What goes wrong:\*\* It retries forever\.[\s\S]*\n\nFound by Manki in #5 at \[`src\/net\.ts:7`\]\(https:\/\/github\.com\/o\/r\/blob\/abc123\/src\/net\.ts#L7\)\. Requested by @bob\. See the \[review thread\]\(https:\/\/github\.com\/o\/r\/pull\/5#discussion_r501\)\.\n\n<!-- manki-issue:src\/net\.ts:7:[0-9a-f]{12} -->$/);
     expect(issue).not.toMatch(/manki-checks|manki-box|manki-finding|Create an issue/);
     // Only the box line changes. The finding and its hidden data stay as they were.
     const expected = body.replace(/- \[x\] Create an issue for this <!-- manki-box:issue:[^\n]* -->/, 'Issue #12 created by `@bob`');
@@ -119,18 +119,24 @@ describe('handleIssueBoxTick', () => {
     await tick(octokit, { ...comment(hostile), original_line: 1 });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[2][0].body).toContain(
-      'Found by Manki in #5 at [`src/a\'b) @octocat (x.ts:30`](https://github.com/o/r/blob/abc123/src/a%60b%29%20%40octocat%20%28x.ts#L30). See',
+      'Found by Manki in #5 at [`src/a\'b) @octocat (x.ts:30`](https://github.com/o/r/blob/abc123/src/a%60b%29%20%40octocat%20%28x.ts#L30). Requested by @bob. See',
     );
 
     // A browser resolves `..`, so such a name gets no link.
     const outside = formatFindingComment(finding({ severity: 'blocker', file: '../../../../evil/x', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(outside), original_line: 1 });
-    expect(jest.mocked(octokit.rest.issues.create).mock.calls[3][0].body).toContain('Found by Manki in #5 at `../../../../evil/x:30`. See');
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[3][0].body).toContain('Found by Manki in #5 at `../../../../evil/x:30`. Requested by @bob. See');
 
     // A finding on a whole file names no line, so the issue takes none from the line its thread sits on.
     const whole = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 0 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(whole), original_line: 1 });
-    expect(jest.mocked(octokit.rest.issues.create).mock.calls[4][0].body).toContain('Found by Manki in #5 at [`src/store.ts`](https://github.com/o/r/blob/abc123/src/store.ts). See');
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[4][0].body).toContain('Found by Manki in #5 at [`src/store.ts`](https://github.com/o/r/blob/abc123/src/store.ts). Requested by @bob. See');
+
+    // A mention of a bot's `name[bot]` would notify the account `name`, so any name that is no plain login is shown as code.
+    for (const [editor, shown] of [['mona-cat_corp', '@mona-cat_corp'], ['dependabot[bot]', '`dependabot[bot]`'], ['a` [x](https://evil.example) @octocat', '`a\' x @\u200Boctocat`']]) {
+      await tick(octokit, comment(ticked(finding())), editor);
+      expect(jest.mocked(octokit.rest.issues.create).mock.calls.at(-1)?.[0].body).toContain(`src/net.ts#L7). Requested by ${shown}. See the [review thread]`);
+    }
   });
 
   it('clears the box, says why in the thread and leaves the thread open when filing fails', async () => {
@@ -194,7 +200,9 @@ describe('handleIssueBoxTick', () => {
 
     await tick(octokit, comment(ticked(finding())));
 
+    // The linked issue stays as it was filed, so it names only who asked for it first.
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.update).not.toHaveBeenCalled();
     expect(jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls[0][0].body).toContain('\nIssue #9 already tracks this, linked by `@bob`\n');
     expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Agreed. Filed as #9 for later work.', '<!-- manki-tracked -->']]);
   });
@@ -254,7 +262,7 @@ describe('handleReviewBoxTick', () => {
 
     const created = jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => [args.title, args.body]);
     expect(created).toEqual([
-      ['Pool leaks a connection', expect.stringMatching(/^\*\*Blocker\*\* · Correctness\n\*\*Pool leaks a connection\*\*\n[\s\S]*The pool never closes it\.\n\nFound by Manki in #5 at \[`src\/pool\.ts:12`\]\(https:\/\/github\.com\/o\/r\/blob\/abc1230{34}\/src\/pool\.ts#L12\)\. See the \[review\]\(https:\/\/github\.com\/o\/r\/pull\/5#pullrequestreview-900\)\.\n\n<!-- manki-issue:src\/pool\.ts:12:Pool-leaks-a-connection -->$/)],
+      ['Pool leaks a connection', expect.stringMatching(/^\*\*Blocker\*\* · Correctness\n\*\*Pool leaks a connection\*\*\n[\s\S]*The pool never closes it\.\n\nFound by Manki in #5 at \[`src\/pool\.ts:12`\]\(https:\/\/github\.com\/o\/r\/blob\/abc1230{34}\/src\/pool\.ts#L12\)\. Requested by @bob\. See the \[review\]\(https:\/\/github\.com\/o\/r\/pull\/5#pullrequestreview-900\)\.\n\n<!-- manki-issue:src\/pool\.ts:12:Pool-leaks-a-connection -->$/)],
       ['Use Map<K, V> here', expect.stringMatching(/^\*\*Why:\*\* A map reads clearer\.\n\nFound by Manki in #5 at \[`src\/a\.ts:4`\]/)],
       ['Retry has no limit', expect.stringMatching(/^\*\*What goes wrong:\*\* It retries forever\.\n\n<details>\n<summary>How this was checked: 2 places read<\/summary>\n\n- read src\/net\.ts:7\n\n<\/details>\n\nFound by Manki in #5 at \[`src\/net\.ts:7`\]/)],
       // A title with bold text of its own is read whole.
@@ -272,7 +280,7 @@ describe('handleReviewBoxTick', () => {
     const unnamed = makeOctokit();
     unnamed.rest.issues.create.mockResolvedValue({ data: { number: 30 } });
     await tickReview(unnamed, { ...review, body: body.replace(reviewedLine(testSha('abc123')), '') });
-    expect(jest.mocked(unnamed.rest.issues.create).mock.calls[0][0].body).toContain('Found by Manki in #5 at `src/pool.ts:12`. See the [review]');
+    expect(jest.mocked(unnamed.rest.issues.create).mock.calls[0][0].body).toContain('Found by Manki in #5 at `src/pool.ts:12`. Requested by @bob. See the [review]');
   });
 
   it('files one issue per tick for two findings on one line whose titles differ only in punctuation', async () => {
