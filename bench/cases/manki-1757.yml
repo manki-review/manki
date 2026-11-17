@@ -1,0 +1,68 @@
+# This case measures how many defects of a small change one round finds. The change adds several conditions to release
+# checks. Manki found their gaps over five rounds, most of them on lines the first round had already read.
+id: manki-1757
+repo: manki-review/manki
+source: manki PR 1757, round 1
+base: 81e7d4ebfc318bd121400ef7d7eba08e7e820092
+head: 5cc474a28a71ea2e76a87403bc73db9b4d692ceb
+title: "ci: let an unpublished release take a later release commit"
+body: |
+  ## Summary
+
+  A release whose PR is merged but not published can now take more changes and still go out under the same version.
+
+  Until now the `Release` workflow and `scripts/publish-release.sh` accepted only the commit that bumps the version, and CI rejected a `CHANGELOG.md` edit in a PR that does not change the version. So a change merged after the release PR could only ship by taking the version back first or by skipping to the next version, although nobody could install the release yet.
+
+  ## What changes
+
+  - **The release commit** is a commit on `main` that edits `CHANGELOG.md`. A commit that bumps the version always does, so every release cut the usual way passes as before. The `Release` workflow and `scripts/publish-release.sh` both use this rule in place of the version comparison.
+  - **The newest one wins.** The `Release` workflow refuses a commit when `main` has a later commit that edits `CHANGELOG.md`, and names it. That keeps an outdated release commit from being built once its notes were rewritten.
+  - **CI** lets a PR edit `CHANGELOG.md` when it changes the version, as before, or when the version it is on has no tag `vX.Y.Z` on the remote yet. Only exit status 2 of `git ls-remote --exit-code`, which means no such ref, counts as "no tag". Any other failure keeps the PR rejected.
+  - **`RELEASE.md`** gets the section "Changing a release that is not published" with the steps.
+
+  Nothing changes once a tag exists: the `Release` workflow still refuses an existing tag, and the publish script still refuses to move one.
+
+  ## Why now
+
+  v7.6.0 is merged and built but was never published, and three more PRs for it were merged after its release PR. This lets v7.6.0 go out with them.
+
+  ## Testing
+
+  `scripts/publish-release.test.ts`: the test of a later commit on `main` at the same version now covers both sides. A commit that leaves `CHANGELOG.md` alone is refused, and a commit that rewrites the notes is taken and its notes are the ones published. All 12 tests of the file pass locally. The two workflow rules are shell in the workflow files and have no test harness.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "Only the `Release` workflow refuses a release commit that a later `CHANGELOG.md` commit on `main` replaced (`release.yml` lines 81 to 85). `publish-release.sh` checks only that the release commit is on `main` and edits `CHANGELOG.md` (lines 119 to 122), and never looks for a later one. When a notes rewrite merges after the build commit was pushed to `release/vX.Y.Z` and before the tag exists, the publish workflow or a manual run still tags that old build and publishes the outdated notes. A published tag and release cannot be taken back."
+    locations: ["scripts/publish-release.sh", "RELEASE_COMMIT", ".github/workflows/release.yml", "LATER"]
+    fix: "2b0b6019eb7775680652ae8f1ca3b6b1252f4369"
+  - id: K2
+    severity: warning
+    mechanism: "The new exception in the CI step lets any PR edit `CHANGELOG.md` while the version on the branch has no tag (`ci.yml` lines 29 to 31). It never checks that the PR only rewrites release notes, so a feature or fix PR that adds a changelog entry passes between the merge of a release PR and its publication. The `Release` workflow and `publish-release.sh` take any commit that edits `CHANGELOG.md` as a release commit (`release.yml` lines 76 to 80, `publish-release.sh` lines 121 and 122), and the workflow refuses all but the newest such commit. So that feature commit becomes the only commit the release can be built from."
+    locations: [".github/workflows/ci.yml", "tag_status", ".github/workflows/release.yml", "scripts/publish-release.sh"]
+    fix: "2b0b6019eb7775680652ae8f1ca3b6b1252f4369"
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "The later-commit check in the `Release` workflow, `git log HEAD..origin/main -- CHANGELOG.md` (`release.yml` line 81), counts every later commit that edits `CHANGELOG.md`, not only those at the same version. Every release PR edits `CHANGELOG.md`, so once the next release PR is merged, the workflow refuses to build an older release that has no build yet and points at the next release's commit."
+    locations: [".github/workflows/release.yml", "LATER"]
+    fix: "fdb17571e3c7295c28f0b1db120509b24d8f247f"
+  - id: N2
+    severity: warning
+    mechanism: "The CI exception reads only whether the version has a tag (`ci.yml` lines 29 to 31). It does not check which part of `CHANGELOG.md` the PR changes. While a release is unpublished, a PR can rewrite the notes of a release that is already published, or add entries under `[Unreleased]`, and pass. `CHANGELOG.md` on `main` then no longer matches the notes of a published release, which cannot change."
+    locations: [".github/workflows/ci.yml", "tag_status"]
+    fix: "cfbdb327eb11a46aa2154b380253982d11e25169"
+  - id: N3
+    severity: warning
+    mechanism: "The CI step that looks up the tag runs only on the `pull_request` event (`ci.yml` line 20), so the tag is checked once, when CI runs on the PR. A PR that edits `CHANGELOG.md` and passed while `vX.Y.Z` had no tag stays green after the tag is pushed and the release published. It can still be merged, and `CHANGELOG.md` on `main` then differs from the published notes of that version."
+    locations: [".github/workflows/ci.yml", "tag_status"]
+  - id: N4
+    severity: note
+    mechanism: "The docs still say CI rejects every `CHANGELOG.md` edit that does not bump the version. `CONTRIBUTING.md` line 75 says CI fails any such PR unless it bumps the `package.json` version. `RELEASE.md` step 2 (line 36) and `AGENTS.md` line 26 say CI rejects a feature or fix PR that edits it. With the new exception in `ci.yml`, a PR at an untagged version passes."
+    locations: ["CONTRIBUTING.md", "AGENTS.md", "RELEASE.md"]
+    fix: "2b0b6019eb7775680652ae8f1ca3b6b1252f4369"
+  - id: N5
+    severity: note
+    mechanism: "The new `RELEASE.md` section says that once the tag exists the release is published for good (line 51). `publish-release.sh` treats a tag whose release is absent or a draft as not final, and tells the operator to delete the tag and rerun (lines 165 to 169). So the docs say a tag can never change in a state where the script expects it to be deleted."
+    locations: ["RELEASE.md", "scripts/publish-release.sh"]
+    fix: "cfbdb327eb11a46aa2154b380253982d11e25169"
