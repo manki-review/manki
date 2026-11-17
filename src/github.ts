@@ -2573,11 +2573,6 @@ const RELATION_ACTION: Record<Extract<RelatedRelation, 'duplicate' | 'fixes_issu
   fixes_issue: (link, number) => `This PR may fix ${link}. Add \`Closes #${number}\` to the description if it does.`,
 };
 
-/**
- * Returns the note listing the open PRs this PR may duplicate and the open issues it may fix, each with what to do, or
- * null when there is none. Overlapping and unrelated candidates stay in the round record only. The model's reason
- * stays out too, since the other PRs' and issues' text can steer it.
- */
 /** Files a list of files shows by name before it counts the rest. */
 const MAX_LISTED_FILES = 10;
 
@@ -2604,6 +2599,11 @@ function formatScope(scope: RoundScope | undefined, linkTo: LineLink): string | 
   return `**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.\n\n${parts.join('\n\n')}`;
 }
 
+/**
+ * Returns the note listing the open PRs this PR may duplicate and the open issues it may fix, each with what to do, or
+ * null when there is none. Overlapping and unrelated candidates stay in the round record only. The model's reason
+ * stays out too, since the other PRs' and issues' text can steer it.
+ */
 function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: string): string | null {
   const relations = Object.keys(RELATION_ACTION);
   const actionable = (work?.items ?? [])
