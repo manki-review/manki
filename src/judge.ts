@@ -259,6 +259,9 @@ export function cutFilesNote({ cut, omitted }: { cut?: string; omitted: readonly
   ];
 }
 
+/** The limit of each call the judge makes without tools after its attempt with tools failed. */
+const RETRY_WITHOUT_TOOLS_TIMEOUT_MS = 300_000;
+
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
 const MAX_CITED_WINDOWS = 40;
@@ -1637,10 +1640,10 @@ export async function runJudgeAgent(
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles, carried);
 
   const effort = input.effort ?? 'high';
-  const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({
+  const judgeCall = (steps: number, timeoutMs = FINDER_TOOLS_TIMEOUT_MS): { systemPrompt: string; options: SendMessageOptions } => ({
     systemPrompt: judgePrompt(steps),
     options: {
-      effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps),
+      effort, timeoutMs, promptTemplate: judgeTemplate(steps),
       ...(steps > 0 && { repoTools: repoTools(refutation!.workspace, steps, refutation!.related, 'check') }),
     },
   });
@@ -1712,7 +1715,7 @@ export async function runJudgeAgent(
     // quota or a refusal, which already moved to the fallback, would fail again.
     if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError) throw error;
     core.warning(`The judge with tools failed (${error}), grading once more without tools`);
-    judgeResult = await judge(judgeCall(0));
+    judgeResult = await judge(judgeCall(0, RETRY_WITHOUT_TOOLS_TIMEOUT_MS));
   }
 
   const threadEvaluations = overrideApplied

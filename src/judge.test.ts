@@ -22,7 +22,7 @@ import {
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
-import { LLMClient, QuotaError, RefusalError, SendMessageOptions } from './providers';
+import { LLMClient, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { repoToolsPrompt } from './providers/cli-utils';
 import * as mcpServer from './mcp-server';
@@ -1720,7 +1720,14 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].severity).toBe('warning');
     const [, again] = mockSendMessage.mock.calls;
     expect(again[0]).not.toContain('## Your Tools');
-    expect(again[2]).toEqual({ effort: 'high', timeoutMs: 900_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
+    expect(again[2]).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
+
+    // A judge that runs out of time with tools and again without them has had 900 and 300 seconds, and fails on the second timeout.
+    const slow = new TimeoutError('Codex CLI timed out after 300s');
+    mockSendMessage.mockReset();
+    mockSendMessage.mockRejectedValueOnce(new TimeoutError('Codex CLI timed out after 900s')).mockRejectedValueOnce(slow);
+    await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBe(slow);
+    expect(mockSendMessage.mock.calls.map(call => (call[2] as SendMessageOptions).timeoutMs)).toEqual([900_000, 300_000]);
 
     // A finding the judge with tools leaves out twice fails that attempt like any other failure.
     const empty = { content: JSON.stringify({ summary: 'ok', findings: [] }) };
@@ -1728,6 +1735,7 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValueOnce(empty).mockResolvedValueOnce(empty).mockResolvedValueOnce(reply);
     expect((await runJudgeAgent(mockClient, makeConfig(), input)).findings[0].severity).toBe('warning');
     expect(mockSendMessage.mock.calls[2][0]).not.toContain('## Your Tools');
+    expect(mockSendMessage.mock.calls.map(call => (call[2] as SendMessageOptions).timeoutMs)).toEqual([900_000, 900_000, 300_000]);
 
     // A used-up quota fails again, and a refusal already moved to the fallback model.
     for (const error of [new QuotaError('rate limited', 'requests'), new RefusalError('refused twice', 'cyber')]) {
