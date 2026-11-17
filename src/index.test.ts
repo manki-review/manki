@@ -278,6 +278,8 @@ jest.mock('./state', () => ({
   holdApproval: jest.fn().mockResolvedValue(false),
   isNewChange: jest.requireActual('./state').isNewChange,
   pauseState: jest.requireActual('./state').pauseState,
+  authorClearLine: jest.requireActual('./state').authorClearLine,
+  postNoticeOnce: jest.fn().mockResolvedValue(true),
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   reopenThread: jest.requireActual('./state').reopenThread,
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
@@ -1322,21 +1324,67 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     );
     expect(ghUtils.showSettings).toHaveBeenCalledWith(...upToDate('abc1234567890'));
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(stateModule.postNoticeOnce).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 
-  it('handleCommentTrigger bails and shows the head as up to date when bot already reviewed head SHA', async () => {
-    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
-    mockOctokitInstance.rest.pulls.get.mockResolvedValueOnce({
-      data: { head: { sha: 'def4567890123' }, base: { ref: 'main' }, title: 't', body: '', user: { login: 'a' } },
-    });
+  it('handleCommentTrigger bails, shows the head as up to date and answers the command when bot already reviewed head SHA', async () => {
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(true);
+    const postNoticeOnce = jest.mocked(stateModule.postNoticeOnce);
+    /** Runs the review command on the reviewed head, or a box tick with `tick`, and returns the answers it posted. */
+    const command = async (tick = false) => {
+      // A tick that queued no review ends before it reads the PR.
+      if (!tick) mockPullsGet.mockResolvedValueOnce({ data: { head: { sha: 'def4567890123' }, base: { ref: 'main' }, title: 't', body: '', user: { login: 'a' } } });
+      postNoticeOnce.mockClear();
+      setContext({ eventName: 'issue_comment', payload: commentPayload });
+      await handleCommentTrigger(tick);
+      return postNoticeOnce.mock.calls;
+    };
+    const noRound = '`def4567` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.';
+    // The marker names the head, and the last argument makes a repeated command edit the answer.
+    const answer = (...parts: string[]) => [[expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, '<!-- manki-no-round:def4567890123 -->', [noRound, ...parts].join('\n\n'), true]];
 
-    setContext({ eventName: 'issue_comment', payload: commentPayload });
-    await handleCommentTrigger();
-
+    expect(await command()).toEqual(answer());
     expect(ghUtils.showSettings).toHaveBeenCalledWith(...upToDate('def4567890123'));
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+
+    // While automatic review is paused, the answer adds the text of the pause notice and who clears the threads it lists.
+    const paused = { ...configModule.loadConfig(undefined), author_clear_role: 'maintain' as const, convergence: { max_auto_rounds: 5, rounds_after_restart: 3 } };
+    const rounds = [1, 2].map(round => roundContextFromLegacy({ round, commitSha: `sha${round}`, timestamp: '2025-01-01T00:00:00Z', findings: [] }));
+    rounds[1].meta.outcome = 'NOT_CONVERGING';
+    const thread = (title: string, severity: 'blocker' | 'warning', n: number) => ({
+      title, file: 'src/app.ts', line: n, severity, status: 'open' as const, threadId: `T_${n}`, threadUrl: `https://github.com/test-owner/test-repo/pull/1#discussion_r${n}`,
+    });
+    const pauseLine = 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. A review you start by hand also turns automatic review back on for the next 3 rounds.';
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [thread('Null check missing', 'blocker', 1), thread('Retry never stops', 'warning', 2)], priorRounds: rounds });
+    expect(await command()).toEqual(answer(
+      pauseLine,
+      '**Still open from earlier reviews:**\n- `src/app.ts:1`: Null check missing ([view thread](https://github.com/test-owner/test-repo/pull/1#discussion_r1))',
+      'The PR author may not clear a blocking thread without the `maintain` role or a higher one.',
+    ));
+    expect(recapModule.fetchRecapState).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'a', 'maintain');
+
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [thread('Retry never stops', 'warning', 2)], priorRounds: rounds });
+    expect(await command()).toEqual(answer(pauseLine));
+
+    // A pause that cannot be read is left out, and so is one counted without the base branch's config.
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
+    jest.mocked(recapModule.fetchRecapState).mockRejectedValue(new Error('rate limited'));
+    expect(await command()).toEqual(answer());
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+    jest.mocked(recapModule.fetchRecapState).mockClear();
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('rate limited'));
+    expect(await command()).toEqual(answer());
+    expect(recapModule.fetchRecapState).not.toHaveBeenCalled();
+
+    // A box tick that queued no review answers nothing.
+    expect(await command(true)).toEqual([]);
+
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(false);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
   });
 
   it('handleCommentTrigger on a box tick with a mode bypasses the dedupe gate', async () => {

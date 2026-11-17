@@ -957,7 +957,7 @@ describe('runFullReview end to end', () => {
   });
 
   describe('review command', () => {
-    it('reviews a commit only once, and shows a command on a reviewed commit as up to date in the settings block', async () => {
+    it('reviews a commit only once, and answers a command on a reviewed commit and shows it as up to date in the settings block', async () => {
       await reviewCommand();
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA]]);
       const comments = mankiComments().length;
@@ -967,7 +967,10 @@ describe('runFullReview end to end', () => {
 
       expect(postedReviews()).toHaveLength(1);
       expect(skipNotices()).toEqual([]);
-      expect(mankiComments()).toHaveLength(comments);
+      // Both commands share one answer. The second command edited it, which drops the marker of the comment the first one answered.
+      expect(mankiComments().slice(comments).map(c => c.body)).toEqual([
+        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.\n\n<!-- manki-no-round:${HEAD_SHA} -->`,
+      ]);
       const blocks = mockGitHub.comments.map(c => parseSettingsBlock(c.body)).filter(b => b !== undefined);
       expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'again', 'deeper']) })]);
     });

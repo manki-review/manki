@@ -95,7 +95,7 @@ import {
   skippedFiles,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, authorClearLine, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, postNoticeOnce, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -500,6 +500,39 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
   await reportCheck(octokit, owner, repo, commitSha, outcomeReport(STANDING_OUTCOMES[verdict], ALREADY_REVIEWED_TEXT, held));
 }
 
+/** Marks Manki's answer to a review command that started no round on `headSha`, so the next such command edits it. */
+function noRoundMarker(headSha: string): string {
+  return `<!-- manki-no-round:${headSha} -->`;
+}
+
+/**
+ * Answers a review command that started no round because `target.commitSha` already has a review, and says what starts
+ * one. While automatic review is paused, the answer adds the text of the pause notice. When the config or the PR's
+ * rounds cannot be read, it leaves the pause out.
+ */
+async function answerAlreadyReviewed(target: RunTarget, prAuthorLogin: string | undefined): Promise<void> {
+  const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
+  const parts = [`\`${commitSha.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.`];
+  try {
+    const { config, held } = await loadEventConfig(octokit, owner, repo, baseRef);
+    // Without the config nothing says how many rounds the round cap allows.
+    if (!held) {
+      const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
+      const pause = pauseState(recap, config);
+      const blockers = formatOpenBlockers(recap.previousFindings);
+      // Every thread the list names blocks, so the PR author alone clears none of them.
+      if (pause.paused) parts.push(pauseText(pause, blockers && `${blockers}\n\n${authorClearLine(config.author_clear_role)}`));
+    }
+  } catch (error) {
+    core.warning(`Could not read whether automatic review is paused, answering without it: ${error instanceof Error ? error.message : error}`);
+  }
+  try {
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, noRoundMarker(commitSha), parts.join('\n\n'), true);
+  } catch (error) {
+    core.warning(`Failed to answer the review command: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 /** Returns the branch the event names as `what`. Throws when it names none, so a config is never read from a guessed branch. */
 function eventBranch(ref: unknown, what: string): string {
   if (typeof ref !== 'string' || !ref) throw new Error(`The event names no ${what}, so Manki cannot read its config`);
@@ -637,7 +670,9 @@ async function handleCommentTrigger(settingsTick = false): Promise<void> {
   if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
     core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, pr.head.sha, settings, draft);
-    await reportReviewedCheck({ octokit, bot, owner, repo, prNumber, commitSha: pr.head.sha, baseRef: pr.base.ref }, pr.user?.login);
+    const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha: pr.head.sha, baseRef: pr.base.ref };
+    await answerAlreadyReviewed(target, pr.user?.login);
+    await reportReviewedCheck(target, pr.user?.login);
     return;
   }
 
