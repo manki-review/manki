@@ -857,7 +857,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     );
   });
 
-  it('throws a `QuotaError` on a ChatGPT usage limit, reading only the `ERROR:` line', async () => {
+  it('throws a `QuotaError` on a usage limit or a model at capacity, reading only the `ERROR:` line', async () => {
     const stderr = "user\nreview this: rate limit reached\nERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.\n";
     setupSpawnMock('', { exitCode: 1, stderr });
     jest.spyOn(core, 'warning').mockImplementation(() => {});
@@ -898,6 +898,21 @@ describe('sendViaCLI (Codex CLI path)', () => {
       limit: 'OpenAI endpoint limit reached',
       credential: 'key',
     });
+
+    // Codex prints the capacity message twice. No other credential helps, so the error names none.
+    const capacity = 'ERROR: Selected model is at capacity. Please try a different model.';
+    for (const busy of [client, endpoint]) {
+      setupSpawnMock('', { exitCode: 1, stderr: `user\nreview this\n${capacity}\n${capacity}\n` });
+      const full = await busy.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(full).toBeInstanceOf(QuotaError);
+      expect(full).toMatchObject({ message: `OpenAI model at capacity: ${capacity}`, limit: 'OpenAI model at capacity', resetsAt: undefined, credential: undefined });
+    }
+
+    // Only Codex's own capacity sentence counts, so "overloaded" in other text stays a plain error.
+    setupSpawnMock('', { exitCode: 1, stderr: 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded\n' });
+    const unrelated = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(unrelated).not.toBeInstanceOf(QuotaError);
+    expect(unrelated?.message).toContain('Codex CLI invocation failed (exit 1: ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded');
   });
 
   it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {

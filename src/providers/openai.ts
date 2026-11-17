@@ -195,6 +195,9 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
   return new QuotaError(`${limit}: ${text}`, limit, matchQuotaText(text)?.resetsAt, 'key');
 }
 
+// How Codex words an overload the provider reports: "Selected model is at capacity. Please try a different model."
+const CAPACITY_TEXT = /\bmodel is at capacity\b/i;
+
 // The variable Codex reads an endpoint's key from, and the id of the model provider Manki defines for the endpoint.
 const ENDPOINT_KEY_ENV = 'OPENAI_API_KEY';
 const ENDPOINT_PROVIDER = 'manki';
@@ -403,12 +406,16 @@ export class OpenAIClient implements LLMClient {
     if (code !== 0) {
       // Codex echoes the prompt to stderr, so only its `ERROR:` line is read for a limit.
       const errorLine = extractCliErrorSnippet(stderr);
+      const atCapacity = CAPACITY_TEXT.test(errorLine);
       const quota = matchQuotaText(errorLine);
-      if (quota && !quota.overloaded) {
-        const limit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
+      if (atCapacity || (quota && !quota.overloaded)) {
+        const ownLimit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
+        const limit = atCapacity ? 'OpenAI model at capacity' : ownLimit;
         const message = `${limit}: ${errorLine}`;
         core.warning(message);
-        throw carryReadings(new QuotaError(message, limit, quota.resetsAt, endpoint ? 'key' : 'token'), { relatedReads, ...limits });
+        // No other credential gets past a model at capacity.
+        const credential = atCapacity ? undefined : endpoint ? 'key' : 'token';
+        throw carryReadings(new QuotaError(message, limit, quota?.resetsAt, credential), { relatedReads, ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
