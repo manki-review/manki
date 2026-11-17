@@ -361,46 +361,6 @@ export function teamModels(config: ReviewConfig): string[] {
   return distinctModels([...Object.values(routing.routing), FULL_GROUP].flatMap(name => routing.groups[name].reviewers.map(r => r.model)));
 }
 
-export function shuffleDiffFiles(diff: ParsedDiff): ParsedDiff {
-  const shuffled = [...diff.files];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return { ...diff, files: shuffled };
-}
-
-export function findingsMatch(a: Finding, b: Finding): boolean {
-  if (a.file !== b.file) return false;
-  if (Math.abs(a.line - b.line) > 3) return false;
-  return titlesMatch(a.title, b.title);
-}
-
-export function intersectFindings(passes: Finding[][], threshold: number): Finding[] {
-  // Collect all unique findings across all passes (using fuzzy match for dedup)
-  const allCandidates: Finding[] = [];
-
-  for (const pass of passes) {
-    for (const f of pass) {
-      const seen = allCandidates.findIndex(c => findingsMatch(c, f));
-      if (seen < 0) allCandidates.push(f);
-      // The rule a later pass quotes stays, as it does for a duplicate the judge folds.
-      else if (f.rule && !allCandidates[seen].rule) allCandidates[seen] = { ...allCandidates[seen], rule: f.rule };
-    }
-  }
-
-  // Keep candidates that appear in >= threshold passes
-  return allCandidates.filter(candidate => {
-    let count = 0;
-    for (const pass of passes) {
-      if (pass.some(f => findingsMatch(candidate, f))) {
-        count++;
-      }
-    }
-    return count >= threshold;
-  });
-}
-
 interface FallbackClient {
   model: string;
   client: LLMClient;
@@ -646,8 +606,7 @@ export function buildProvenanceFields(
   plannerSource: RoundPlannerSource,
   plannerFallbackReason: string | undefined,
   team: TeamRoster,
-  agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
-): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'routing'> {
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentEffortMap' | 'agentModels' | 'routing'> {
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
@@ -655,7 +614,6 @@ export function buildProvenanceFields(
     sensitivePaths: team.sensitivePaths,
     ciOrDependencyPaths: team.ciOrDependencyPaths,
     ...(team.trivialOverridden && { trivialOverridden: true }),
-    ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
     agentEffortMap: new Map(team.finders.map(f => [f.name, f.sentEffort])),
     agentModels: new Map(team.finders.map(f => [f.name, f.model])),
     routing: team.routing,
@@ -824,7 +782,6 @@ export async function runReview(
     : undefined;
   const uses = await usesPromise;
   const agentFailureReasons = new Map<string, string>();
-  const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
   let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims'> = {};
   // Related work is left out: the posted incomplete review would render it.
   const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
@@ -832,7 +789,7 @@ export async function runReview(
     agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
     ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext, ...relatedRecord(),
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
   });
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
@@ -902,9 +859,6 @@ export async function runReview(
     ...(retryNote && { retryNote }),
   });
 
-  const passes = config.review_passes ?? 1;
-  const multiPass = passes > 1;
-
   const allFindings: Finding[] = [];
   const failedAgents: string[] = [];
   const agentResponseLengths = new Map<string, number>();
@@ -962,46 +916,20 @@ export async function runReview(
   let completedCount = 0;
   let progressFindingCount = 0;
 
-  if (multiPass) {
-    core.info(`Running ${team.finders.length} reviewer agents with ${passes} passes each (multi-pass mode)...`);
-    for (const agent of team.finders) {
-      const startTime = Date.now();
-      const passResults = await Promise.allSettled(
-        Array.from({ length: passes }, () => {
-          const shuffledDiff = shuffleDiffFiles(diff);
-          const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
-        })
-      );
-
-      const passFindings: Finding[][] = [];
-      let totalResponseLength = 0;
-      let lastPassError: unknown;
-      for (const result of passResults) {
-        if (result.status === 'fulfilled') {
-          passFindings.push(result.value.findings);
-          totalResponseLength += result.value.responseLength;
-          accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
-          accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
-        } else {
-          if (!(lastPassError instanceof QuotaError)) lastPassError = result.reason;
-          core.warning(`${agent.name} pass failed: ${result.reason}`);
-        }
-      }
-
-      agentResponseLengths.set(agent.name, totalResponseLength);
-      completedCount++;
-
-      if (passFindings.length > 0) {
-        const threshold = Math.ceil(passFindings.length / 2);
-        const consistent = intersectFindings(passFindings, threshold);
-        const totalRaw = passFindings.reduce((sum, p) => sum + p.length, 0);
-        core.info(`Multi-pass: ${agent.name} — ${passFindings.length} passes, ${consistent.length} consistent findings (from ${totalRaw} raw)`);
-        agentMultiPassConsistency.set(agent.name, { consistent: consistent.length, totalRaw });
-        allFindings.push(...consistent);
-
+  core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
+  const agentPromises = team.finders.map(agent => {
+    const startTime = Date.now();
+    return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
+      .then(first => askAgain(agent, first))
+      .then(agentResult => {
+        completedCount++;
+        agentResponseLengths.set(agent.name, agentResult.responseLength);
+        accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
+        accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
+        progressFindingCount += agentResult.findings.length;
         const durationMs = Date.now() - startTime;
-        if (consistent.length === 0 && durationMs < SUSPICIOUS_FAST_THRESHOLD_MS) {
+
+        if (agentResult.findings.length === 0 && durationMs < SUSPICIOUS_FAST_THRESHOLD_MS) {
           core.warning(`${agent.name}: 0 findings in ${(durationMs / 1000).toFixed(1)}s — suspiciously fast`);
         }
 
@@ -1009,19 +937,18 @@ export async function runReview(
           onProgress({
             phase: 'agent-complete',
             agentName: agent.name,
-            agentFindingCount: consistent.length,
+            agentFindingCount: agentResult.findings.length,
             agentDurationMs: durationMs,
             agentStatus: 'success',
-            rawFindingCount: allFindings.length,
+            rawFindingCount: progressFindingCount,
             completedAgents: completedCount,
             totalAgents: team.finders.length,
           });
         }
-      } else {
-        failedAgents.push(agent.name);
-        recordFailure(agent.name, lastPassError);
-        core.warning(`${agent.name}: all passes failed`);
-
+        return agentResult.findings;
+      })
+      .catch(error => {
+        completedCount++;
         if (onProgress) {
           onProgress({
             phase: 'agent-complete',
@@ -1029,189 +956,99 @@ export async function runReview(
             agentFindingCount: 0,
             agentDurationMs: Date.now() - startTime,
             agentStatus: 'failure',
-            rawFindingCount: allFindings.length,
+            rawFindingCount: progressFindingCount,
             completedAgents: completedCount,
             totalAgents: team.finders.length,
           });
         }
-      }
+        throw error;
+      });
+  });
+
+  const agentResults = await Promise.allSettled(agentPromises);
+
+  for (let i = 0; i < agentResults.length; i++) {
+    const result = agentResults[i];
+    if (result.status === 'fulfilled') {
+      allFindings.push(...result.value);
+      core.info(`${team.finders[i].name}: ${result.value.length} findings`);
+    } else {
+      failedAgents.push(team.finders[i].name);
+      recordFailure(team.finders[i].name, result.reason);
+      core.warning(`${team.finders[i].name} failed: ${result.reason}`);
     }
+  }
 
-    // Retry failed agents up to MAX_AGENT_RETRIES times (multi-pass)
-    const retryCountMap: Record<string, number> = {};
-    for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.some(retryable); retry++) {
-      const agentsToRetry = failedAgents.filter(retryable).map(name => team.finders.find(a => a.name === name)!);
-      const skipped = failedAgents.filter(name => !retryable(name));
-      core.info(`Retry ${retry}/${MAX_AGENT_RETRIES} (multi-pass): retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
+  // Retry failed agents up to MAX_AGENT_RETRIES times
+  const retryCount: Record<string, number> = {};
+  for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.some(retryable); retry++) {
+    const agentsToRetry = failedAgents.filter(retryable).map(name => team.finders.find(a => a.name === name)!);
+    const skipped = failedAgents.filter(name => !retryable(name));
+    core.info(`Retry ${retry}/${MAX_AGENT_RETRIES}: retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
 
-      const stillFailed: string[] = [];
-      for (const agent of agentsToRetry) {
-        retryCountMap[agent.name] = (retryCountMap[agent.name] ?? 0) + 1;
-        agentRetryCount.set(agent.name, retryCountMap[agent.name]);
-
-        if (onProgress) {
-          onProgress({
-            phase: 'agent-complete',
-            agentName: agent.name,
-            agentFindingCount: 0,
-            agentStatus: 'retrying',
-            rawFindingCount: allFindings.length,
-            completedAgents: completedCount,
-            totalAgents: team.finders.length,
-            retryCount: retryCountMap[agent.name],
-          });
-        }
-
-        const retryStartTime = Date.now();
-        const retryNote = takeRetryNote(agent.name);
-        const retryPassResults = await Promise.allSettled(
-          Array.from({ length: passes }, () => {
-            const shuffledDiff = shuffleDiffFiles(diff);
-            const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-            return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, retryNote));
-          })
-        );
-
-        const retryPassFindings: Finding[][] = [];
-        let retryTotalResponseLength = 0;
-        let retryLastError: unknown;
-        for (const result of retryPassResults) {
-          if (result.status === 'fulfilled') {
-            retryPassFindings.push(result.value.findings);
-            retryTotalResponseLength += result.value.responseLength;
-            accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
-            accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
-          } else {
-            if (!(retryLastError instanceof QuotaError)) retryLastError = result.reason;
-            core.warning(`${agent.name} retry pass failed: ${result.reason}`);
-          }
-        }
-
-        if (retryPassFindings.length > 0) {
-          const threshold = Math.ceil(passes / 2);
-          const consistent = intersectFindings(retryPassFindings, threshold);
-          const retryTotalRaw = retryPassFindings.reduce((sum, p) => sum + p.length, 0);
-          core.info(`Multi-pass retry: ${agent.name} — ${retryPassFindings.length} passes, ${consistent.length} consistent findings`);
-          agentMultiPassConsistency.set(agent.name, { consistent: consistent.length, totalRaw: retryTotalRaw });
-          allFindings.push(...consistent);
-          agentResponseLengths.set(agent.name, retryTotalResponseLength);
-          agentFailureReasons.delete(agent.name);
-          completedCount++;
-
-          if (onProgress) {
-            onProgress({
-              phase: 'agent-complete',
-              agentName: agent.name,
-              agentFindingCount: consistent.length,
-              agentDurationMs: Date.now() - retryStartTime,
-              agentStatus: 'success',
-              rawFindingCount: allFindings.length,
-              completedAgents: completedCount,
-              totalAgents: team.finders.length,
-            });
-          }
-        } else {
-          stillFailed.push(agent.name);
-          recordFailure(agent.name, retryLastError);
-          core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
-          if (onProgress) {
-            onProgress({
-              phase: 'agent-complete',
-              agentName: agent.name,
-              agentFindingCount: 0,
-              agentDurationMs: Date.now() - retryStartTime,
-              agentStatus: 'failure',
-              rawFindingCount: allFindings.length,
-              completedAgents: completedCount,
-              totalAgents: team.finders.length,
-              retryCount: retryCountMap[agent.name],
-            });
-          }
-        }
-      }
-
-      failedAgents.splice(0, failedAgents.length, ...skipped, ...stillFailed);
-    }
-  } else {
-    core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
-    const agentPromises = team.finders.map(agent => {
-      const startTime = Date.now();
-      return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
-        .then(first => askAgain(agent, first))
-        .then(agentResult => {
-          completedCount++;
-          agentResponseLengths.set(agent.name, agentResult.responseLength);
-          accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
-          accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
-          progressFindingCount += agentResult.findings.length;
-          const durationMs = Date.now() - startTime;
-
-          if (agentResult.findings.length === 0 && durationMs < SUSPICIOUS_FAST_THRESHOLD_MS) {
-            core.warning(`${agent.name}: 0 findings in ${(durationMs / 1000).toFixed(1)}s — suspiciously fast`);
-          }
-
-          if (onProgress) {
-            onProgress({
-              phase: 'agent-complete',
-              agentName: agent.name,
-              agentFindingCount: agentResult.findings.length,
-              agentDurationMs: durationMs,
-              agentStatus: 'success',
-              rawFindingCount: progressFindingCount,
-              completedAgents: completedCount,
-              totalAgents: team.finders.length,
-            });
-          }
-          return agentResult.findings;
-        })
-        .catch(error => {
-          completedCount++;
-          if (onProgress) {
-            onProgress({
-              phase: 'agent-complete',
-              agentName: agent.name,
-              agentFindingCount: 0,
-              agentDurationMs: Date.now() - startTime,
-              agentStatus: 'failure',
-              rawFindingCount: progressFindingCount,
-              completedAgents: completedCount,
-              totalAgents: team.finders.length,
-            });
-          }
-          throw error;
+    for (const agent of agentsToRetry) {
+      retryCount[agent.name] = (retryCount[agent.name] ?? 0) + 1;
+      agentRetryCount.set(agent.name, retryCount[agent.name]);
+      if (onProgress) {
+        onProgress({
+          phase: 'agent-complete',
+          agentName: agent.name,
+          agentFindingCount: 0,
+          agentStatus: 'retrying',
+          rawFindingCount: progressFindingCount,
+          completedAgents: completedCount,
+          totalAgents: team.finders.length,
+          retryCount: retryCount[agent.name],
         });
+      }
+    }
+
+    const retryPromises = agentsToRetry.map(agent => {
+      const startTime = Date.now();
+      return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, takeRetryNote(agent.name)))
+        .then(first => askAgain(agent, first))
+        .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
+        .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
     });
 
-    const agentResults = await Promise.allSettled(agentPromises);
+    const retryResults = await Promise.allSettled(retryPromises);
 
-    for (let i = 0; i < agentResults.length; i++) {
-      const result = agentResults[i];
-      if (result.status === 'fulfilled') {
-        allFindings.push(...result.value);
-        core.info(`${team.finders[i].name}: ${result.value.length} findings`);
+    const stillFailed: string[] = [];
+    for (const settled of retryResults) {
+      const { agent, agentResult, durationMs, error } = (settled as PromiseFulfilledResult<{ agent: Finder; agentResult: AgentResult | null; durationMs: number; error: unknown }>).value;
+      if (agentResult !== null) {
+        // Remove from failed list, add findings
+        allFindings.push(...agentResult.findings);
+        agentResponseLengths.set(agent.name, agentResult.responseLength);
+        accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
+        accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
+        agentFailureReasons.delete(agent.name);
+        progressFindingCount += agentResult.findings.length;
+        completedCount++;
+        core.info(`${agent.name}: retry ${retryCount[agent.name]} succeeded — ${agentResult.findings.length} findings`);
+        if (onProgress) {
+          onProgress({
+            phase: 'agent-complete',
+            agentName: agent.name,
+            agentFindingCount: agentResult.findings.length,
+            agentDurationMs: durationMs,
+            agentStatus: 'success',
+            rawFindingCount: progressFindingCount,
+            completedAgents: completedCount,
+            totalAgents: team.finders.length,
+          });
+        }
       } else {
-        failedAgents.push(team.finders[i].name);
-        recordFailure(team.finders[i].name, result.reason);
-        core.warning(`${team.finders[i].name} failed: ${result.reason}`);
-      }
-    }
-
-    // Retry failed agents up to MAX_AGENT_RETRIES times
-    const retryCount: Record<string, number> = {};
-    for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.some(retryable); retry++) {
-      const agentsToRetry = failedAgents.filter(retryable).map(name => team.finders.find(a => a.name === name)!);
-      const skipped = failedAgents.filter(name => !retryable(name));
-      core.info(`Retry ${retry}/${MAX_AGENT_RETRIES}: retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
-
-      for (const agent of agentsToRetry) {
-        retryCount[agent.name] = (retryCount[agent.name] ?? 0) + 1;
-        agentRetryCount.set(agent.name, retryCount[agent.name]);
+        stillFailed.push(agent.name);
+        recordFailure(agent.name, error);
+        core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
         if (onProgress) {
           onProgress({
             phase: 'agent-complete',
             agentName: agent.name,
             agentFindingCount: 0,
-            agentStatus: 'retrying',
+            agentDurationMs: durationMs,
+            agentStatus: 'failure',
             rawFindingCount: progressFindingCount,
             completedAgents: completedCount,
             totalAgents: team.finders.length,
@@ -1219,64 +1056,9 @@ export async function runReview(
           });
         }
       }
-
-      const retryPromises = agentsToRetry.map(agent => {
-        const startTime = Date.now();
-        return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, takeRetryNote(agent.name)))
-          .then(first => askAgain(agent, first))
-          .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
-          .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
-      });
-
-      const retryResults = await Promise.allSettled(retryPromises);
-
-      const stillFailed: string[] = [];
-      for (const settled of retryResults) {
-        const { agent, agentResult, durationMs, error } = (settled as PromiseFulfilledResult<{ agent: Finder; agentResult: AgentResult | null; durationMs: number; error: unknown }>).value;
-        if (agentResult !== null) {
-          // Remove from failed list, add findings
-          allFindings.push(...agentResult.findings);
-          agentResponseLengths.set(agent.name, agentResult.responseLength);
-          accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
-          accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
-          agentFailureReasons.delete(agent.name);
-          progressFindingCount += agentResult.findings.length;
-          completedCount++;
-          core.info(`${agent.name}: retry ${retryCount[agent.name]} succeeded — ${agentResult.findings.length} findings`);
-          if (onProgress) {
-            onProgress({
-              phase: 'agent-complete',
-              agentName: agent.name,
-              agentFindingCount: agentResult.findings.length,
-              agentDurationMs: durationMs,
-              agentStatus: 'success',
-              rawFindingCount: progressFindingCount,
-              completedAgents: completedCount,
-              totalAgents: team.finders.length,
-            });
-          }
-        } else {
-          stillFailed.push(agent.name);
-          recordFailure(agent.name, error);
-          core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
-          if (onProgress) {
-            onProgress({
-              phase: 'agent-complete',
-              agentName: agent.name,
-              agentFindingCount: 0,
-              agentDurationMs: durationMs,
-              agentStatus: 'failure',
-              rawFindingCount: progressFindingCount,
-              completedAgents: completedCount,
-              totalAgents: team.finders.length,
-              retryCount: retryCount[agent.name],
-            });
-          }
-        }
-      }
-
-      failedAgents.splice(0, failedAgents.length, ...skipped, ...stillFailed);
     }
+
+    failedAgents.splice(0, failedAgents.length, ...skipped, ...stillFailed);
   }
 
   // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
@@ -1798,7 +1580,7 @@ export async function runReview(
     ...relatedRecord(),
     ...(sweeps && { sweeps }),
     ...(relatedWork && { relatedWork }),
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
   };
 }
 

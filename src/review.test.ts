@@ -15,9 +15,6 @@ import {
   teamModels,
   titlesMatch,
   truncateDiff,
-  shuffleDiffFiles,
-  findingsMatch,
-  intersectFindings,
   carryBodyWarnings,
   earlierFindings,
   restatesEarlier,
@@ -1849,152 +1846,6 @@ describe('buildReviewerUserMessage with linked issues', () => {
   });
 });
 
-describe('shuffleDiffFiles', () => {
-  const makeFiles = (count: number): DiffFile[] =>
-    Array.from({ length: count }, (_, i) => ({
-      path: `file${i}.ts`,
-      changeType: 'modified' as const,
-      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 5, content: `+line ${i}` }],
-    }));
-
-  it('returns a new ParsedDiff with the same files', () => {
-    const diff: ParsedDiff = { files: makeFiles(5), totalAdditions: 10, totalDeletions: 5 };
-    const shuffled = shuffleDiffFiles(diff);
-    expect(shuffled.files).toHaveLength(5);
-    expect(shuffled.totalAdditions).toBe(10);
-    expect(shuffled.totalDeletions).toBe(5);
-    const sortedOriginal = [...diff.files].sort((a, b) => a.path.localeCompare(b.path));
-    const sortedShuffled = [...shuffled.files].sort((a, b) => a.path.localeCompare(b.path));
-    expect(sortedShuffled).toEqual(sortedOriginal);
-  });
-
-  it('does not mutate the original diff', () => {
-    const diff: ParsedDiff = { files: makeFiles(5), totalAdditions: 10, totalDeletions: 5 };
-    const originalPaths = diff.files.map(f => f.path);
-    shuffleDiffFiles(diff);
-    expect(diff.files.map(f => f.path)).toEqual(originalPaths);
-  });
-
-  it('produces different orderings across multiple calls (probabilistic)', () => {
-    const diff: ParsedDiff = { files: makeFiles(10), totalAdditions: 20, totalDeletions: 10 };
-    const orderings = new Set<string>();
-    for (let i = 0; i < 20; i++) {
-      const shuffled = shuffleDiffFiles(diff);
-      orderings.add(shuffled.files.map(f => f.path).join(','));
-    }
-    expect(orderings.size).toBeGreaterThan(1);
-  });
-
-  it('handles single-file diff without error', () => {
-    const diff: ParsedDiff = { files: makeFiles(1), totalAdditions: 1, totalDeletions: 0 };
-    const shuffled = shuffleDiffFiles(diff);
-    expect(shuffled.files).toHaveLength(1);
-    expect(shuffled.files[0].path).toBe('file0.ts');
-  });
-
-  it('handles empty diff without error', () => {
-    const diff: ParsedDiff = { files: [], totalAdditions: 0, totalDeletions: 0 };
-    const shuffled = shuffleDiffFiles(diff);
-    expect(shuffled.files).toHaveLength(0);
-  });
-});
-
-describe('findingsMatch', () => {
-  it('matches findings with same file, close line, and similar title', () => {
-    const a = makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler' });
-    const b = makeFinding({ file: 'src/a.ts', line: 12, title: 'Null check missing in handler' });
-    expect(findingsMatch(a, b)).toBe(true);
-  });
-
-  it('does not match findings with different files', () => {
-    const a = makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler' });
-    const b = makeFinding({ file: 'src/b.ts', line: 10, title: 'Null check missing in handler' });
-    expect(findingsMatch(a, b)).toBe(false);
-  });
-
-  it('does not match findings with lines more than 3 apart', () => {
-    const a = makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler' });
-    const b = makeFinding({ file: 'src/a.ts', line: 14, title: 'Null check missing in handler' });
-    expect(findingsMatch(a, b)).toBe(false);
-  });
-
-  it('matches findings with lines exactly 3 apart', () => {
-    const a = makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler' });
-    const b = makeFinding({ file: 'src/a.ts', line: 13, title: 'Null check missing in handler' });
-    expect(findingsMatch(a, b)).toBe(true);
-  });
-
-  it('does not match findings with completely different titles', () => {
-    const a = makeFinding({ file: 'src/a.ts', line: 10, title: 'Memory leak in connection pool' });
-    const b = makeFinding({ file: 'src/a.ts', line: 10, title: 'SQL injection in query builder' });
-    expect(findingsMatch(a, b)).toBe(false);
-  });
-});
-
-describe('intersectFindings', () => {
-  it('keeps findings that appear in at least threshold passes, with the first rule a pass quotes', () => {
-    const consistent = makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler' });
-    const inconsistent = makeFinding({ file: 'src/b.ts', line: 20, title: 'Unused import detected here' });
-    const rule = { file: 'AGENTS.md', quote: 'A handler must check its input.' };
-
-    const passes: Finding[][] = [
-      [consistent, inconsistent],
-      [makeFinding({ file: 'src/a.ts', line: 11, title: 'Null check missing in handler', rule })],
-      [makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler', rule: { file: 'CONTRIBUTING.md', quote: 'Never trust a handler input.' } })],
-    ];
-
-    const result = intersectFindings(passes, 2);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({ ...consistent, rule });
-    expect(consistent.rule).toBeUndefined();
-  });
-
-  it('returns all findings from any pass when threshold is 1', () => {
-    const f1 = makeFinding({ title: 'Finding one is important' });
-    const f2 = makeFinding({ title: 'Finding two is also notable' });
-    const passes: Finding[][] = [[f1, f2], []];
-    const result = intersectFindings(passes, 1);
-    expect(result).toHaveLength(2);
-  });
-
-  it('keeps findings unique to non-first passes if they meet threshold', () => {
-    const passes: Finding[][] = [
-      [makeFinding({ file: 'src/a.ts', line: 10, title: 'First pass only finding' })],
-      [makeFinding({ file: 'src/c.ts', line: 30, title: 'Late discovery finding here' })],
-      [makeFinding({ file: 'src/c.ts', line: 31, title: 'Late discovery finding here' })],
-    ];
-    const result = intersectFindings(passes, 2);
-    expect(result).toHaveLength(1);
-    expect(result[0].title).toBe('Late discovery finding here');
-  });
-
-  it('returns empty array when passes is empty', () => {
-    expect(intersectFindings([], 1)).toEqual([]);
-  });
-
-  it('filters out findings that only appear in one pass when threshold is 2', () => {
-    const f = makeFinding({ file: 'src/a.ts', line: 10, title: 'Some unique ordering artifact' });
-    const passes: Finding[][] = [
-      [f],
-      [makeFinding({ file: 'src/b.ts', line: 50, title: 'Completely different finding' })],
-    ];
-    const result = intersectFindings(passes, 2);
-    expect(result).toHaveLength(0);
-  });
-
-  it('uses ceil(N/2) threshold correctly for 3 passes', () => {
-    const f = makeFinding({ file: 'src/a.ts', line: 10, title: 'Consistent finding across passes' });
-    const passes: Finding[][] = [
-      [f],
-      [makeFinding({ file: 'src/a.ts', line: 11, title: 'Consistent finding across passes' })],
-      [],
-    ];
-    // threshold = ceil(3/2) = 2, finding appears in 2/3 passes
-    const result = intersectFindings(passes, Math.ceil(3 / 2));
-    expect(result).toHaveLength(1);
-  });
-});
-
 jest.mock('./judge', () => ({
   runJudgeAgent: jest.fn(),
   JudgeInput: {},
@@ -2434,10 +2285,9 @@ describe('runReview', () => {
       // Nothing is listed, so there is nothing to ask for.
       const empty = await run({ first: { toolSteps: [] }, workspace: unlisted });
       expect([empty.result.usesOutsideDiff?.symbols, empty.result.usesOutsideDiff?.reference, empty.again, empty.result.agentsAskedAgain]).toEqual([undefined, undefined, [], []]);
-      // A finder without tools, one whose client does not report what it read, one that reads the diff in slices and one
-      // that runs several passes are never asked again.
+      // A finder without tools, one whose client does not report what it read and one that reads the diff in slices are never asked again.
       const reads: { toolSteps: [] } = { toolSteps: [] };
-      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: reads, config: { slice_lines: 1 } }, { first: reads, config: { review_passes: 2 } }]) {
+      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: reads, config: { slice_lines: 1 } }]) {
         const result = await run(unknown);
         expect(result.result.usesOutsideDiff?.symbols).toHaveLength(3);
         expect([result.again, result.result.agentsAskedAgain]).toEqual([[], []]);
@@ -5045,30 +4895,6 @@ describe('runReview', () => {
     expect(retryingCalls[0][0].retryCount).toBe(1);
   });
 
-  it('fires onProgress per agent in multi-pass mode', async () => {
-    const findingJson = JSON.stringify([
-      { severity: 'blocker', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.' },
-    ]);
-    const clients = makeClients(findingJson);
-    const config = makeConfig({ review_passes: 2 });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const onProgress = jest.fn();
-
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
-
-    const agentCalls = onProgress.mock.calls.filter(
-      (call: [import('./review').ReviewProgress]) => call[0].phase === 'agent-complete',
-    );
-    expect(agentCalls.length).toBe(2);
-    for (const [progress] of agentCalls) {
-      expect(progress.agentName).toBeDefined();
-      expect(progress.agentStatus).toBe('success');
-      expect(progress.agentDurationMs).toBeGreaterThanOrEqual(0);
-    }
-  });
-
   it('fires onProgress with failure status when all agents fail including retries', async () => {
     const clients: ReviewClients = {
       reviewer: {
@@ -5107,67 +4933,6 @@ describe('runReview', () => {
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'reviewed',
     );
     expect(reviewedCalls.length).toBe(0);
-  });
-
-  it('fires onProgress with failure status when all passes fail in multi-pass mode including retries', async () => {
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-      } as unknown as import('./providers').LLMClient,
-      judge: {
-        sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_passes: 2 });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const onProgress = jest.fn();
-
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
-
-    expect(result.verdict).toBe('COMMENT');
-    expect(result.reviewComplete).toBe(false);
-
-    const agentCalls = onProgress.mock.calls.filter(
-      (call: [import('./review').ReviewProgress]) => call[0].phase === 'agent-complete',
-    );
-
-    // Both finders run (no break) + 1 retry round * (2 retrying + 2 failure) = 2 + 4 = 6
-    expect(agentCalls.length).toBe(6);
-
-    const failureCalls = agentCalls.filter(
-      (call: [import('./review').ReviewProgress]) => call[0].agentStatus === 'failure',
-    );
-    // 2 initial + 2*1 retries = 4
-    expect(failureCalls.length).toBe(4);
-    for (const [progress] of failureCalls) {
-      expect(progress.agentFindingCount).toBe(0);
-    }
-  });
-
-  it('ends INCOMPLETE when one finder fails every pass and retry in multi-pass mode', async () => {
-    const findingJson = JSON.stringify([
-      { severity: 'blocker', title: 'Found a bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
-    ]);
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: findingJson }),
-      } as unknown as import('./providers').LLMClient,
-      reviewerByModel: new Map([['anthropic/claude-opus-5-5', {
-        sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-      } as unknown as import('./providers').LLMClient]]),
-      judge: {
-        sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_passes: 2 });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
-
-    expect(result.outcome).toBe('INCOMPLETE');
-    expect(result.reviewComplete).toBe(false);
-    expect(result.failedAgents).toEqual(['Claude Opus 5.5 · high']);
-    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
   it('applies memory suppressions after the judge, and never to blockers, security findings or tool alerts', async () => {
@@ -5550,27 +5315,6 @@ describe('runReview', () => {
     expect(timedOut.reviewComplete).toBe(false);
     expect(judgeCalls.mock.calls.length).toBeGreaterThan(1);
     expect(timedOut.judgeRetryCount).toBe(judgeCalls.mock.calls.length - 1);
-  });
-
-  it('runs multi-pass review with review_passes > 1', async () => {
-    const findingJson = JSON.stringify([
-      { severity: 'blocker', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.' },
-    ]);
-    const clients = makeClients(findingJson);
-    const config = makeConfig({ review_passes: 2 });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-
-    mockedRunJudgeAgent.mockResolvedValue({
-      findings: [
-        { severity: 'blocker', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.', reviewers: ['Security & Safety'] },
-      ],
-      summary: 'One finding.',
-    });
-
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
-    expect(result.reviewComplete).toBe(true);
-    // Each agent runs 2 passes, so reviewer sendMessage should be called more than once per agent
-    expect((clients.reviewer.sendMessage as jest.Mock).mock.calls.length).toBeGreaterThan(1);
   });
 
   it('filters out ignored findings from judge result', async () => {
@@ -6413,46 +6157,25 @@ describe('runReview', () => {
     if (clients.planner) expect(result).toMatchObject({ plannerResult: expect.objectContaining({ prType: 'docs' }), plannerDurationMs: expect.any(Number) });
   });
 
-  it.each([1, 2])('ends INCOMPLETE without retrying a finder whose subscription limit is used up, with %i passes', async passes => {
+  it('ends INCOMPLETE without retrying a finder whose subscription limit is used up', async () => {
     const limit = new QuotaError("You've hit your weekly limit", 'Claude subscription limit reached', 'Nov 6, 8pm (UTC)', 'token');
     const primary = jest.fn().mockRejectedValue(limit);
-    const pair = jest.fn().mockResolvedValue({ content: '[]' });
-    for (let i = 0; i < passes; i++) pair.mockRejectedValueOnce(new Error('Timeout'));
+    const pair = jest.fn().mockResolvedValue({ content: '[]' }).mockRejectedValueOnce(new Error('Timeout'));
     const onProgress = jest.fn();
 
-    const result = await runReview(pairedClients(primary, pair), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
+    const result = await runReview(pairedClients(primary, pair), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
     expect([result.outcome, result.reviewComplete]).toEqual(['INCOMPLETE', false]);
     expect(result.summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token.');
     expect(result.failedAgents).toEqual(['Claude Sonnet 5.5 · high']);
-    expect(primary).toHaveBeenCalledTimes(passes);
-    expect(pair).toHaveBeenCalledTimes(2 * passes);
+    expect(primary).toHaveBeenCalledTimes(1);
+    expect(pair).toHaveBeenCalledTimes(2);
     const retried = onProgress.mock.calls.map(([p]: [ReviewProgress]) => p).filter(p => p.agentStatus === 'retrying').map(p => p.agentName);
     expect(retried).not.toContain('Claude Sonnet 5.5 · high');
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
 
-    const run = (pairFailure: Error) => runReview(pairedClients(jest.fn().mockRejectedValue(limit), jest.fn().mockRejectedValue(pairFailure)), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
+    const run = (pairFailure: Error) => runReview(pairedClients(jest.fn().mockRejectedValue(limit), jest.fn().mockRejectedValue(pairFailure)), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token.');
     expect((await run(new Error('Timeout'))).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token. Claude Opus 5.5 · high also failed after retries.');
-  });
-
-  it('retries a failed finder in multi-pass mode and recovers on the retry passes', async () => {
-    const securityFinding = { severity: 'blocker' as const, title: 'SQL injection', file: 'src/db.ts', line: 42, description: 'Unsanitized input.' };
-    // The pair finder fails both initial passes, then returns the finding on the retry passes
-    const pair = jest.fn()
-      .mockRejectedValueOnce(new Error('Timeout'))
-      .mockRejectedValueOnce(new Error('Timeout'))
-      .mockResolvedValue({ content: JSON.stringify([securityFinding]) });
-    const clients = pairedClients(jest.fn().mockResolvedValue({ content: '[]' }), pair);
-    mockedRunJudgeAgent.mockResolvedValue({
-      findings: [{ ...securityFinding, reviewers: ['Claude Opus 5.5 · high'] }],
-      summary: 'One required finding from retry.',
-    });
-
-    const result = await runReview(clients, { config: makeConfig({ review_passes: 2 }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
-    expect(result.reviewComplete).toBe(true);
-    expect(pair.mock.calls.length).toBeGreaterThanOrEqual(3);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].title).toBe('SQL injection');
   });
 
   it('threads a non-empty provenance map to the judge but not into reviewer prompts', async () => {
@@ -7797,34 +7520,6 @@ describe('runReview triage', () => {
     } finally {
       jest.useRealTimers();
     }
-  });
-
-  it('records `multiPassConsistency` per agent on multi-pass rounds', async () => {
-    const findings = [
-      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Claude Sonnet 5.5 · high'] },
-      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Claude Sonnet 5.5 · high'] },
-    ];
-    // Two passes per agent; both return the same two findings, so all consistent.
-    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify(findings) });
-    const clients: ReviewClients = {
-      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
-      judge: { sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }) } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_passes: 2 });
-    const diff = makeDiff({
-      totalAdditions: 10,
-      totalDeletions: 5,
-      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [] }],
-    });
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo' });
-    expect(result.agentMultiPassConsistency).toBeDefined();
-    const sec = result.agentMultiPassConsistency!.get('Claude Sonnet 5.5 · high');
-    expect(sec).toEqual({ consistent: 2, totalRaw: 4 });
-  });
-
-  it('omits `agentMultiPassConsistency` on single-pass rounds', async () => {
-    const result = await runReview(makeClients(), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
-    expect(result.agentMultiPassConsistency).toBeUndefined();
   });
 });
 

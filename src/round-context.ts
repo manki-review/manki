@@ -123,7 +123,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         const warnings = result.agentWarnings?.get(name);
         const model = agentModels.get(name);
         const effort = result.agentEffortMap?.get(name);
-        const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
         return {
           name,
           findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
@@ -141,7 +140,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
           ...(failureReason && { failureReason }),
           model,
           ...(effort && { effort }),
-          ...(multiPassConsistency && { multiPassConsistency }),
         };
       })
     : undefined;
@@ -295,7 +293,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     },
     config: {
       memoryEnabled: config.memory?.enabled ?? false,
-      ...(config.review_passes != null && { reviewPasses: config.review_passes }),
     },
     diff: {
       changeDigest: input.changeDigest,

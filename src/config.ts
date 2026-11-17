@@ -62,7 +62,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     repo: '',
   },
   drafts: 'skip',
-  review_passes: 1,
   convergence: {
     max_auto_rounds: 10,
     rounds_after_restart: 3,
@@ -100,7 +99,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'static_analysis',
   'related_repos',
   'drafts',
-  'review_passes',
   'convergence',
   'metrics',
 ]);
@@ -319,15 +317,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
 
   if ('drafts' in config && config.drafts !== 'skip' && config.drafts !== 'review') {
     errors.push('`drafts` must be one of: skip, review');
-  }
-
-  if ('review_passes' in config) {
-    if (typeof config.review_passes !== 'number' ||
-        !Number.isInteger(config.review_passes) ||
-        config.review_passes < 1 ||
-        config.review_passes > 5) {
-      errors.push('`review_passes` must be an integer between 1 and 5');
-    }
   }
 
   if ('convergence' in config) {

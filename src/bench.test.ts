@@ -216,7 +216,7 @@ describe('parseCase', () => {
   it('reads a clean case without key items, and a case with its own config', () => {
     const clean = parseCase(CASE_YAML.slice(0, CASE_YAML.indexOf('must_catch:')), 'clean.yml');
     expect([clean.mustCatch, clean.niceToHave]).toEqual([[], []]);
-    expect(parseCase(`${CASE_YAML}config:\n  review_passes: 2\n  models: { judge: claude-sonnet-5-5 }\n`, 'own.yml').config).toEqual({ review_passes: 2, models: { judge: 'claude-sonnet-5-5' } });
+    expect(parseCase(`${CASE_YAML}config:\n  max_diff_lines: 2000\n  models: { judge: claude-sonnet-5-5 }\n`, 'own.yml').config).toEqual({ max_diff_lines: 2000, models: { judge: 'claude-sonnet-5-5' } });
     expect(parseCase(`${CASE_YAML}config: {}\n`, 'own.yml').config).toEqual({});
   });
 
@@ -224,7 +224,7 @@ describe('parseCase', () => {
     ['repo: owner/demo', 'repo: demo', '`repo` must be `owner/name`'],
     [`base: ${SHA_A}`, 'base: abc', '`base` must be a full commit SHA'],
     ['key_version: 2', 'key_version: two', '`key_version` must be a number'],
-    ['key_version: 2', 'key_version: 2\nconfig: [review_passes]', '`config` must be a mapping of config keys'],
+    ['key_version: 2', 'key_version: 2\nconfig: [max_diff_lines]', '`config` must be a mapping of config keys'],
     ['key_version: 2', 'key_version: 2\nconfig:', '`config` must be a mapping of config keys'],
     ['title: "fix: bound the reader"', 'title: ""', '`title` must be a non-empty string'],
     ['severity: warning', 'severity: major', 'must_catch[1].severity must be one of blocker, warning, note'],
@@ -716,8 +716,8 @@ describe('runBench and buildReport', () => {
     })]);
     expect(variant).toEqual({ name: 'opus', overrides });
     const ownReview = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
-    await runBench([{ ...benchCase, config: { review_passes: 2 } }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: ownReview, variants: [{ name: 'opus', overrides }] });
-    expect(ownReview.mock.calls[0][0].config).toMatchObject({ review_passes: 2, models: { judge: 'claude-sonnet-5-5' } });
+    await runBench([{ ...benchCase, config: { max_diff_lines: 2000 } }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: ownReview, variants: [{ name: 'opus', overrides }] });
+    expect(ownReview.mock.calls[0][0].config).toMatchObject({ max_diff_lines: 2000, models: { judge: 'claude-sonnet-5-5' } });
     expect(ownReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
     expect(onCase).toHaveBeenCalledWith([{ variant, results }]);
     expect(results[0].runs[1]).toMatchObject({ outcome: 'FAILED', complete: false, error: 'provider down', mustCatchRecall: null, verdictCorrect: null });
@@ -1009,8 +1009,8 @@ describe('runBench and buildReport', () => {
     const review = jest.fn();
     const options = { runs: 1, providerInputs: inputs, matcher: jest.fn(), review };
     const checkouts = new Map([['owner/demo', checkout]]);
-    const good = { name: 'good', overrides: { review_passes: 2 } };
-    await expect(runBench([benchCase], { ...options, checkouts, variants: [good, { name: 'bad', overrides: { review_passes: 9 } }] }))
+    const good = { name: 'good', overrides: { max_diff_lines: 2000 } };
+    await expect(runBench([benchCase], { ...options, checkouts, variants: [good, { name: 'bad', overrides: { max_diff_lines: 0 } }] }))
       .rejects.toThrow('Variant bad does not load on case demo-1: Invalid config in .manki.yml with the overrides');
     await expect(runBench([benchCase], { ...options, checkouts, variants: [good, { name: 'typo', overrides: { models: { reviwer: 'claude-opus-5-5' } } }] }))
       .rejects.toThrow('Variant typo does not load on case demo-1: The config overrides name keys the config does not know: Unknown config key: "models.reviwer"');
@@ -1028,11 +1028,11 @@ describe('runBench and buildReport', () => {
     const held = { ...benchCase, id: 'held', base: git('rev-parse', 'HEAD') };
     git('commit', '-q', '--allow-empty', '-m', 'head on the old config');
     held.head = git('rev-parse', 'HEAD');
-    const own = { ...benchCase, id: 'own', config: { review_passes: 9 } };
+    const own = { ...benchCase, id: 'own', config: { max_diff_lines: 0 } };
     const typo = { ...benchCase, id: 'typo', config: { review: { critcal_paths: ['wallet/**'] } } };
     const translated = { ...held, id: 'translated', config: { review: { critical_paths: ['wallet/**'] } } };
     const review = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
-    const variants = [{ name: 'base', overrides: {} }, { name: 'passes', overrides: { review_passes: 2 } }];
+    const variants = [{ name: 'base', overrides: {} }, { name: 'lines', overrides: { max_diff_lines: 2000 } }];
 
     const results = await runBench([held, own, translated, benchCase, typo], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: async () => ({ verdict: 'NONE', findings: [], reason: 'none' }), review, variants });
 
@@ -1280,12 +1280,12 @@ describe('parseBenchArgs', () => {
     expect(parseBenchArgs([])).toMatchObject({ cases: 'bench/cases', holdout: false, only: [], runs: 3, matcherModel: 'claude-sonnet-5-5', cache: 'bench/.matcher-cache.json', help: false });
     const args = parseBenchArgs([
       '--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--matcher-model', 'm', '--cache', 'c.json',
-      '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.judge=claude-sonnet-5-5', '--set', 'review_passes=2', '--set', 'exclude_paths=[a, b]',
+      '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.judge=claude-sonnet-5-5', '--set', 'max_diff_lines=2000', '--set', 'exclude_paths=[a, b]',
     ]);
     expect(args).toMatchObject({
       holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json',
       variants: [{ name: 'base' }, { name: 'opus', file: 'bench/opus.yml' }],
-      sets: [{ models: { judge: 'claude-sonnet-5-5' } }, { review_passes: 2 }, { exclude_paths: ['a', 'b'] }],
+      sets: [{ models: { judge: 'claude-sonnet-5-5' } }, { max_diff_lines: 2000 }, { exclude_paths: ['a', 'b'] }],
     });
     expect([...args.checkouts]).toEqual([['owner/demo', '/src/a=b']]);
   });

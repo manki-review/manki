@@ -1171,8 +1171,6 @@ export interface ReviewResult {
   agentModels?: Map<string, string>;
   /** How the round's review group was picked. */
   routing?: TeamRouting;
-  /** Per-agent multi-pass intersection stats. Keyed by agent name. */
-  agentMultiPassConsistency?: Map<string, { consistent: number; totalRaw: number }>;
   /** Per-agent effort level actually used at run time. Keyed by agent name. */
   agentEffortMap?: Map<string, EffortLevel>;
 }
@@ -1392,7 +1390,6 @@ export interface ReviewConfig {
   related_repos?: RelatedRepo[];
   /** `skip` reviews a draft PR only on request, `review` reviews it automatically. A draft review never approves. */
   drafts?: 'skip' | 'review';
-  review_passes?: number;
   convergence?: {
     /**
      * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
@@ -2039,12 +2036,11 @@ export interface RoundTrigger {
 /** Per stage, the distinct `LLMCall.promptDigest`s of its calls in the round, sorted. Finders can differ by focus. */
 export type PromptVersions = Record<string, string[]>;
 
-/** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, pass configuration, memory). Convergence/post-processing rules are not included. */
+/** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, memory). Convergence/post-processing rules are not included. */
 export interface RoundConfig {
   /** Written by releases that sized the team by `review_level`. */
   reviewLevel?: ReviewLevel;
   memoryEnabled: boolean;
-  reviewPasses?: number;
 }
 
 export interface RoundDiffExcludedFile {
@@ -2230,13 +2226,6 @@ export interface RoundAgentMetric {
   keptShared?: number;
   /** Effort level the agent ran with. */
   effort?: EffortLevel;
-  /**
-   * Multi-pass intersection stats for this agent on `review_passes > 1` rounds.
-   * `consistent` is the count of findings retained by `intersectFindings`,
-   * `totalRaw` is the pre-intersection sum across passes. Absent on single-pass
-   * rounds and on agents that failed every pass.
-   */
-  multiPassConsistency?: { consistent: number; totalRaw: number };
 }
 
 export interface RoundJudge {

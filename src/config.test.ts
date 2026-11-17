@@ -32,7 +32,6 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
       expect(DEFAULT_CONFIG.planner).toEqual({ enabled: true });
-      expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
     it('defaults models.judge to Opus and the planner and dedup to Haiku, and names no finder', () => {
@@ -608,34 +607,6 @@ models:
       expect(config.models?.dedup).toBe('claude-haiku-4-5');
       expect(config.models?.judge).toBe('claude-opus-5-5');
     });
-
-    it('accepts valid review_passes values', () => {
-      expect(loadConfigFromContent('review_passes: 1').review_passes).toBe(1);
-      expect(loadConfigFromContent('review_passes: 3').review_passes).toBe(3);
-      expect(loadConfigFromContent('review_passes: 5').review_passes).toBe(5);
-    });
-
-    it('defaults review_passes to 1', () => {
-      const config = loadConfigFromContent('auto_review: true');
-      expect(config.review_passes).toBe(1);
-    });
-
-    it('throws on review_passes less than 1', () => {
-      expect(() => loadConfigFromContent('review_passes: 0')).toThrow('Invalid config');
-      expect(core.error).toHaveBeenCalledWith('`review_passes` must be an integer between 1 and 5');
-    });
-
-    it('throws on review_passes greater than 5', () => {
-      expect(() => loadConfigFromContent('review_passes: 6')).toThrow('Invalid config');
-    });
-
-    it('throws on non-integer review_passes', () => {
-      expect(() => loadConfigFromContent('review_passes: 2.5')).toThrow('Invalid config');
-    });
-
-    it('throws on non-number review_passes', () => {
-      expect(() => loadConfigFromContent('review_passes: "three"')).toThrow('Invalid config');
-    });
   });
 
   describe('resolveModel', () => {
@@ -786,9 +757,9 @@ models:
 
   describe('changedKeys', () => {
     it('names the keys whose values differ, whatever their order in the file', () => {
-      const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  second_refuter: gpt-5.5\nreview_passes: 2\n');
-      expect(changedKeys(loadConfigFromContent('models:\n  second_refuter: gpt-5.5\n  judge: claude-opus-5-5\nreview_passes: 2\n'), base)).toEqual([]);
-      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nreview_passes: 2\nplanner:\n  enabled: false\n');
+      const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  second_refuter: gpt-5.5\nmax_diff_lines: 2000\n');
+      expect(changedKeys(loadConfigFromContent('models:\n  second_refuter: gpt-5.5\n  judge: claude-opus-5-5\nmax_diff_lines: 2000\n'), base)).toEqual([]);
+      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nmax_diff_lines: 2000\nplanner:\n  enabled: false\n');
       expect(changedKeys(head, base)).toEqual(['exclude_paths', 'models', 'planner']);
     });
   });

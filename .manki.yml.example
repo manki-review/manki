@@ -215,11 +215,6 @@
 #   - { repo: dashpay/platform, kind: consumer, ref: master, paths: ["packages/rs-*"] }
 #   - { repo: tokio-rs/tokio, kind: dependency, ref: tokio-1.38.0, paths: [tokio/src/] }
 
-# Multi-pass verification: run each reviewer N times with shuffled file ordering.
-# Only findings that appear consistently across passes are kept, reducing false positives.
-# Must be an integer between 1 and 5. Default: 1 (no multi-pass).
-# review_passes: 1
-
 # How rounds end. After `max_auto_rounds` automatic rounds since Manki's last
 # approval, automatic review pauses until a review is started by hand, which
 # turns it back on for `rounds_after_restart` rounds. 0 turns the cap off.

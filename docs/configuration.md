@@ -109,10 +109,6 @@ static_analysis:
 #   - { repo: dashpay/platform, kind: consumer, paths: ["packages/rs-*"] }
 #   - { repo: tokio-rs/tokio, kind: dependency, ref: tokio-1.38.0, paths: [tokio/src/] }
 
-# Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
-# times with shuffled file ordering; only consistent findings are kept.
-# review_passes: 1
-
 # On merge, count per severity and reviewer how many posted findings were
 # fixed, dismissed or left untouched. Written to the job summary, and appended
 # to `metrics/fix-rate.jsonl` in the repo's memory when memory is enabled.
@@ -202,7 +198,6 @@ memory:
 | `related_repos[].kind` | `reference`, `consumer` or `dependency` | required | `reference` for a repository this one implements, `consumer` for one that depends on it, `dependency` for one it depends on. |
 | `related_repos[].ref` | branch, tag or full commit hash | the default branch | What to read. For a `dependency`, the version this repository pins. Write a name that looks like a short commit hash as `refs/heads/<name>` or `refs/tags/<name>`. |
 | `related_repos[].paths` | list of up to 20 paths or globs | the whole repository | The only paths fetched, along with a root `AGENTS.md` and `CLAUDE.md`. |
-| `review_passes` | integer from 1 to 5 | `1` | Runs each finder this many times with the files in shuffled order, and keeps only the findings the passes agree on. |
 | `instructions` | string | none | Extra context for the finders. They also read the root `AGENTS.md`, `CLAUDE.md` and `.claude/CLAUDE.md`, the first `CONTRIBUTING.md` found in `.github/`, the root or `docs/`, the nearest `AGENTS.md` and `CLAUDE.md` above each changed file, and the `.md` files these link to. |
 | `project` | string | none | A short phrase naming what the project is, such as `blockchain consensus library`. The finders read it as "This PR is in a blockchain consensus library project". Without it they go by the repository description and the `AGENTS.md` and `CLAUDE.md` files. |
 | `reviewers` | list | none | Extra checks, each added as a focus line to the finder prompt. |
