@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.1] - 2026-11-18
+
+Manki 7.6.1 fixes reviews with a GPT model through an OpenAI-compatible endpoint on a fresh runner. Nothing else changes, and nothing breaks on the upgrade.
+
+### Reliability
+
+- With `openai_base_url` and `openai_api_key`, every Codex call failed at once on a runner whose home has no `.codex` folder, and the round ended as "Review incomplete" with the GPT finder failed after its retry. Codex exits when that folder does not exist, and only the ChatGPT login path created it. Manki now creates it before an endpoint call. A workflow that pins `@v7.6.0` and sets `openai_base_url` should move to `@v7.6.1` ([#1762](https://github.com/manki-review/manki/pull/1762)).
+
 ## [7.6.0] - 2026-11-17
 
 Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long Codex calls hold up: a silent call is no longer ended after 90 seconds, a model at capacity is named and its session resumed, and the judge gets 15 minutes. It also tidies `.manki.yml`: review groups are the only place that names the finders, and nine rarely used settings are gone. Manki writes its commands as `/manki`. Some settings change with no transition, so read Breaking changes and migration first.
