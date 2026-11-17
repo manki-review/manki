@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [7.6.0] - 2026-11-17
-
 Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long Codex calls hold up: a silent call is no longer ended after 90 seconds, a model at capacity is named and its session resumed, and the judge gets 15 minutes. A review command that starts no round now gets an answer, and a held approval reports its `Manki` check. Nothing breaks on the upgrade.
 
 ### OpenAI-compatible endpoints
