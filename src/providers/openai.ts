@@ -195,6 +195,15 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
   return new QuotaError(`${limit}: ${text}`, limit, matchQuotaText(text)?.resetsAt, 'key');
 }
 
+/** The SDK ends one API request after this long, whatever limit the call has, and then tries the request again. */
+const API_REQUEST_TIMEOUT_MS = 300_000;
+
+/** Maps the error the SDK throws once its last try of a request ran past `API_REQUEST_TIMEOUT_MS` to a `TimeoutError`. */
+function openAITimeoutError(error: unknown): TimeoutError | undefined {
+  if (!(error instanceof OpenAI.APIConnectionTimeoutError)) return undefined;
+  return new TimeoutError(`OpenAI API timed out after ${API_REQUEST_TIMEOUT_MS / 1000}s per request`, { cause: error });
+}
+
 // The line Codex ends its stderr with when the provider reports an overload.
 const CAPACITY_ERROR = 'ERROR: Selected model is at capacity. Please try a different model.';
 
@@ -321,7 +330,7 @@ export class OpenAIClient implements LLMClient {
     if (this.auth.kind === 'apiKey') {
       // Explicit timeout makes the bound visible and consistent with the OAuth/CLI path's
       // 1200s hard deadline. The SDK default (600s) leaves the action hanging on slow calls.
-      this.openai = new OpenAI({ apiKey: this.auth.key, timeout: 300_000 });
+      this.openai = new OpenAI({ apiKey: this.auth.key, timeout: API_REQUEST_TIMEOUT_MS });
     } else if (this.auth.kind === 'endpoint') {
       registerSecret(this.auth.key);
     }
@@ -550,7 +559,7 @@ export class OpenAIClient implements LLMClient {
     const openai = this.openai;
     const response = await callWithTimeout('OpenAI API', options, (signal) =>
       openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, signal ? { signal } : undefined))
-      .catch((error: unknown) => { throw openAIQuotaError(error) ?? error; });
+      .catch((error: unknown) => { throw openAIQuotaError(error) ?? openAITimeoutError(error) ?? error; });
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));

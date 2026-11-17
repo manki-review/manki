@@ -14,7 +14,7 @@ import {
   resolveReasoningEffort,
   STALE_TIMEOUT_MS,
 } from './openai';
-import { QuotaError, RefusalError } from './types';
+import { QuotaError, RefusalError, TimeoutError } from './types';
 
 // Seeding `$CODEX_HOME/auth.json` is exercised separately in `cli-utils.test.ts`.
 // Stub it out here so the provider tests don't touch the filesystem.
@@ -425,6 +425,13 @@ describe('sendMessage (API path)', () => {
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
 
     await expect(client.sendMessage('sys', 'user')).rejects.toThrow('rate limited');
+
+    // The SDK ends each try of a request after its own 300 seconds, and its error for the last try is a timeout like any other.
+    const sdkTimeout = new OpenAI.APIConnectionTimeoutError();
+    mockCreate.mockRejectedValueOnce(sdkTimeout);
+    const error = await client.sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ name: 'TimeoutError', message: 'OpenAI API timed out after 300s per request', cause: sdkTimeout });
   });
 });
 
