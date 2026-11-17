@@ -194,7 +194,6 @@ memory:
 | `reviewers[].focus` | string | required | What the finders check for. |
 | `convergence` | map | see below | How rounds end. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `convergence.max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, with `/manki review` or a settings box, and the notice asks the author to reconsider the approach. Such a review also turns automatic review back on for 3 rounds, or for the rounds the cap still allows if that is more. `0` turns the cap off. |
-| `convergence.test_path_patterns` | list of globs | `["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]` | Test files. From the second round, notes on them are dropped, except security findings and tool alerts. |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |
 | `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo's memory lives in the central memory repository, which holds only public repos' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. |
 | `memory.repo` | `owner/name` | none | Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning. For a private repo, it must be private and have the same owner. |

@@ -57,7 +57,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   drafts: 'skip',
   convergence: {
     max_auto_rounds: 10,
-    test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
   },
   related_repos: [],
 };
@@ -105,7 +104,7 @@ const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'analyzers']);
-const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'test_path_patterns']);
+const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds']);
 const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
 const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
 
@@ -295,14 +294,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       const maxAutoRounds = convergence.max_auto_rounds;
       if ('max_auto_rounds' in convergence && (typeof maxAutoRounds !== 'number' || !Number.isInteger(maxAutoRounds) || maxAutoRounds < 0)) {
         errors.push('`convergence.max_auto_rounds` must be a non-negative integer');
-      }
-      if ('test_path_patterns' in convergence) {
-        if (
-          !Array.isArray(convergence.test_path_patterns) ||
-          !convergence.test_path_patterns.every(p => typeof p === 'string')
-        ) {
-          errors.push('`convergence.test_path_patterns` must be an array of strings');
-        }
       }
     }
   }

@@ -215,7 +215,6 @@
 # turns it back on for 3 rounds. 0 turns the cap off.
 # convergence:
 #   max_auto_rounds: 10
-#   test_path_patterns: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]   # test files, where later rounds drop the notes
 
 # On merge, count per severity and finder how many posted findings were fixed,
 # dismissed or left untouched. Written to the job summary, and appended to

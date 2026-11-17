@@ -6889,7 +6889,6 @@ describe('runFullReview orchestration', () => {
         memory: { enabled: true, repo: 'owner/memory' },
         convergence: {
           max_auto_rounds: maxAutoRounds,
-          test_path_patterns: ['**/*.test.*'],
         },
       };
     }
@@ -7577,7 +7576,7 @@ describe('runFullReview orchestration', () => {
         auto_review: true, auto_approve: false, max_diff_lines: 5000,
         exclude_paths: [], reviewers: [], instructions: '',
         memory: { enabled: false, repo: '' },
-        convergence: { max_auto_rounds: 2, test_path_patterns: [] },
+        convergence: { max_auto_rounds: 2 },
       });
       seedPriorRounds([{ round: 1, commitSha: 'old9999999', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
       seedPush('APPROVE', REBASED_DIFF);

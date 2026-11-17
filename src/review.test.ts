@@ -69,7 +69,6 @@ const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   memory: { enabled: false, repo: '' },
   convergence: {
     max_auto_rounds: 5,
-    test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
   },
   ...overrides,
 });
@@ -6346,7 +6345,8 @@ describe('runReview post-judge suppression', () => {
   it('drops a note on a test file in round 2, never a security finding or a tool alert', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Could simplify' }),
+        ...['src/foo.test.ts', 'web/cart.spec.js', 'crate/tests/sync.rs', 'src/__tests__/parse.ts'].map(file => makeFinding({ severity: 'note', file, title: 'Could simplify' })),
+        makeFinding({ severity: 'note', file: 'src/contest.ts', title: 'Rename the helper' }),
         makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Token logged in a fixture', tags: ['security'] }),
         makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Unused import', toolSource: 'eslint' }),
       ],
@@ -6361,8 +6361,8 @@ describe('runReview post-judge suppression', () => {
         priorRounds: [buildPriorRound(1)],
       },
     );
-    expect(result.findings.map(f => f.title)).toEqual(['Token logged in a fixture', 'Unused import']);
-    expect(result.testNitSuppressedCount).toBe(1);
+    expect(result.findings.map(f => f.title)).toEqual(['Rename the helper', 'Token logged in a fixture', 'Unused import']);
+    expect(result.testNitSuppressedCount).toBe(4);
   });
 
   it('keeps a note on a test file in round 1', async () => {
@@ -6408,43 +6408,6 @@ describe('runReview post-judge suppression', () => {
     const result = await runReview(
       makeClients(), {
         config: makeConfig(),
-        diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
-        rawDiff: 'raw',
-        repoContext: 'ctx',
-        priorRounds: [buildPriorRound(1)],
-      },
-    );
-    expect(result.findings).toHaveLength(1);
-  });
-
-  it('honours configurable test_path_patterns', async () => {
-    mockedRunJudgeAgent.mockResolvedValue({
-      findings: [makeFinding({ severity: 'note', file: 'spec/integration.rb', title: 'Style nit' })],
-      summary: 'ok',
-    });
-    const result = await runReview(
-      makeClients(),
-      {
-        config: makeConfig({ convergence: { test_path_patterns: ['spec/**'] } }),
-        diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
-        rawDiff: 'raw',
-        repoContext: 'ctx',
-        priorRounds: [buildPriorRound(1)],
-      },
-    );
-    expect(result.findings).toHaveLength(0);
-    expect(result.testNitSuppressedCount).toBe(1);
-  });
-
-  it('does not suppress when test_path_patterns is empty', async () => {
-    mockedRunJudgeAgent.mockResolvedValue({
-      findings: [makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Could simplify' })],
-      summary: 'ok',
-    });
-    const result = await runReview(
-      makeClients(),
-      {
-        config: makeConfig({ convergence: { test_path_patterns: [] } }),
         diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
         rawDiff: 'raw',
         repoContext: 'ctx',

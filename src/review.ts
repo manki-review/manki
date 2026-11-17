@@ -195,6 +195,9 @@ class PlannerTimeoutError extends Error {
 
 const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
 
+/** Test files. From the second round, notes on them are dropped. */
+const TEST_PATH_PATTERNS = ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'];
+
 const FOCUS_LABEL_LENGTH = 40;
 
 function accumulateAgentUsage(map: Map<string, LLMUsage>, name: string, usage: LLMUsage): void {
@@ -1358,19 +1361,16 @@ export async function runReview(
   let testNitSuppressedCount = 0;
   const roundNumber = (priorRounds?.length ?? 0) + 1;
   if (roundNumber >= 2) {
-    const patterns = config.convergence?.test_path_patterns ?? [];
-    if (patterns.length > 0) {
-      const before = finalFindings.length;
-      finalFindings = finalFindings.filter(f => {
-        if (!canLeaveOut(f)) return true;
-        const onTestFile = patterns.some(p => minimatch(f.file, p));
-        if (onTestFile) {
-          core.info(`Dropping the note "${f.title}" on the test file ${f.file}:${f.line}`);
-        }
-        return !onTestFile;
-      });
-      testNitSuppressedCount = before - finalFindings.length;
-    }
+    const before = finalFindings.length;
+    finalFindings = finalFindings.filter(f => {
+      if (!canLeaveOut(f)) return true;
+      const onTestFile = TEST_PATH_PATTERNS.some(p => minimatch(f.file, p));
+      if (onTestFile) {
+        core.info(`Dropping the note "${f.title}" on the test file ${f.file}:${f.line}`);
+      }
+      return !onTestFile;
+    });
+    testNitSuppressedCount = before - finalFindings.length;
   }
   const staticSignalMatches: RoundStaticSignalMatch[] = [];
   if (staticSignals.length > 0) {

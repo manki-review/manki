@@ -1391,8 +1391,6 @@ export interface ReviewConfig {
      * automatic review is paused until a review is started by hand. `0` disables the cap.
      */
     max_auto_rounds?: number;
-    /** Glob patterns for test files. Notes on these paths are dropped on round 2+. */
-    test_path_patterns?: string[];
   };
   metrics?: {
     /**
