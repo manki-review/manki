@@ -2,8 +2,13 @@
  * Checks which tools the Codex CLI offers a model when Manki runs it. Runs the installed CLI with the arguments Manki
  * gives a reviewer on an OpenAI-compatible endpoint, against a stand-in endpoint on localhost that records each
  * request. The first answer asks Codex's script host for every tool it holds, or `tool_search` for the tools it
- * defers. The check fails when a model is offered a tool that `scripts/fixtures/codex-tools.json` does not list, or no
- * longer offered one it lists. Every other address goes to a proxy that refuses it, so no request leaves the machine.
+ * holds back. The check fails when a model is offered a tool that `scripts/fixtures/codex-tools.json` does not list, or
+ * no longer offered one it lists. Every other address goes to a proxy that refuses it, so no request leaves the machine.
+ *
+ * On the `tool_search` path the list is not complete. No request names the held-back tools, and `tool_search` returns
+ * only tools whose description shares a word with `SEARCH_QUERY`. An empty, `*` or stop-word query returns none. So a
+ * new held-back tool with none of those words is not seen. The check also compares the sources the `tool_search`
+ * description names, so a held-back tool from a new source, such as a new MCP server or Codex's subagent tools, is seen.
  *
  * Usage (needs `npm run build` and the Codex CLI version in `CODEX_CLI_VERSION` on the PATH):
  *   npx tsx scripts/codex-tools-check.ts [--write]
@@ -22,15 +27,19 @@ import { join, resolve } from 'path';
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, STEPS_FLAG } from '../src/mcp-server';
 import { CODEX_CLI_VERSION, codexExecArgs, codexToolServerArgs } from '../src/providers/openai';
 
-/** The tools Codex offers one model: those named in its request, and those its script host or `tool_search` holds. */
+/** What Codex offers one model. */
 export interface OfferedTools {
+  /** The tools named in its request. */
   offered: string[];
+  /** The tools its script host holds, or those `tool_search` returns for `SEARCH_QUERY`. */
   held: string[];
+  /** The sources of held-back tools that the `tool_search` description names. */
+  sources: string[];
 }
 
 type Json = Record<string, unknown>;
 
-// A query that matches the description of every tool `tool_search` may hold, since it returns only matches.
+// `tool_search` returns only the tools whose description shares a word with the query.
 const SEARCH_QUERY = 'agent spawn send wait close resume input goal file read write edit grep glob history repo search web image shell command exec patch resource mcp time clock sleep plugin app install user message list task skill memory';
 const ALL_TOOLS_SCRIPT = 'text(JSON.stringify(ALL_TOOLS.map(t => t.name)));';
 
@@ -48,6 +57,19 @@ export function offeredTools(body: Json): string[] {
   const input = Array.isArray(body.input) ? body.input as Json[] : [];
   const added = input.filter(item => item.type === 'additional_tools').flatMap(item => names(item.tools));
   return [...names(body.tools), ...added].sort();
+}
+
+const SOURCES_HEADING = 'You have access to tools from the following sources:\n';
+
+/** Returns the sources of held-back tools that the description of the `tool_search` tool in a request names. */
+export function searchSources(body: Json): string[] {
+  const tool = (Array.isArray(body.tools) ? body.tools as Json[] : []).find(t => t.type === 'tool_search');
+  const description = typeof tool?.description === 'string' ? tool.description : '';
+  const start = description.indexOf(SOURCES_HEADING);
+  if (start < 0) return [];
+  const lines = description.slice(start + SOURCES_HEADING.length).split('\n');
+  const end = lines.findIndex(line => !line.startsWith('- '));
+  return lines.slice(0, end < 0 ? lines.length : end).map(line => line.slice(2).split(': ')[0]).sort();
 }
 
 /** Returns the tools the output of the first tool call in a request lists: the script host's or `tool_search`'s. */
@@ -83,9 +105,9 @@ export function compareTools(expected: Record<string, OfferedTools>, actual: Rec
       problems.push(`${model}: not checked`);
       continue;
     }
-    for (const kind of ['offered', 'held'] as const) {
-      for (const name of got[kind].filter(n => !want[kind].includes(n))) problems.push(`${model}: a new ${kind} tool ${name}`);
-      for (const name of want[kind].filter(n => !got[kind].includes(n))) problems.push(`${model}: no longer ${kind} ${name}`);
+    for (const kind of ['offered', 'held', 'sources'] as const) {
+      for (const name of got[kind].filter(n => !want[kind].includes(n))) problems.push(`${model}: new in ${kind}: ${name}`);
+      for (const name of want[kind].filter(n => !got[kind].includes(n))) problems.push(`${model}: gone from ${kind}: ${name}`);
     }
   }
   return problems;
@@ -154,7 +176,7 @@ async function checkModel(model: string, repo: string, scratch: string): Promise
     const { code, stderr } = await runCodex(args, env, cwd);
     if (code !== 0 || bodies.length === 0) throw new Error(`Codex exited with ${code} on ${model}:\n${stderr.slice(-2000)}`);
     const offered = offeredTools(bodies[0]);
-    return { offered, held: heldToolsCall(offered) && bodies[1] ? heldTools(bodies[1]) : [] };
+    return { offered, held: heldToolsCall(offered) && bodies[1] ? heldTools(bodies[1]) : [], sources: searchSources(bodies[0]) };
   } finally {
     standIn.close();
   }
@@ -185,7 +207,7 @@ async function main(): Promise<number> {
     const actual: Record<string, OfferedTools> = {};
     for (const model of Object.keys(expected)) {
       actual[model] = await checkModel(model, repo, scratch);
-      console.log(`${model}: offered ${actual[model].offered.join(', ')}; held ${actual[model].held.join(', ') || 'none'}`);
+      console.log(`${model}: offered ${actual[model].offered.join(', ')}; held ${actual[model].held.join(', ') || 'none'}; sources ${actual[model].sources.join(', ') || 'none'}`);
     }
     if (process.argv.includes('--write')) {
       writeFileSync(fixture, `${JSON.stringify(actual, null, 2)}\n`);

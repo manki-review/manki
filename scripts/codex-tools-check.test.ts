@@ -1,4 +1,4 @@
-import { compareTools, heldTools, heldToolsCall, offeredTools } from './codex-tools-check';
+import { compareTools, heldTools, heldToolsCall, offeredTools, searchSources } from './codex-tools-check';
 
 describe('offeredTools', () => {
   it('names the tools of the request and of an `additional_tools` item, a namespace\'s as `namespace.name`', () => {
@@ -36,19 +36,37 @@ describe('heldTools and heldToolsCall', () => {
   });
 });
 
+describe('searchSources', () => {
+  it('names each source of held-back tools in the `tool_search` description, whatever its tools are called', () => {
+    const description = '# Tool discovery\n\nSearches over deferred tool metadata.\n\nYou have access to tools from the following sources:\n'
+      + '- Multi-agent tools: Spawn and manage sub-agents.\n- manki\nSome of the tools may not have been provided to you upfront.';
+    expect(searchSources({ tools: [{ type: 'function', name: 'apply_patch' }, { type: 'tool_search', description }] })).toEqual(['Multi-agent tools', 'manki']);
+    expect(searchSources({ tools: [{ type: 'tool_search', description: 'Searches tools.' }] })).toEqual([]);
+    expect(searchSources({})).toEqual([]);
+  });
+});
+
 describe('compareTools', () => {
-  const expected = { 'gpt-a': { offered: ['functions.exec'], held: ['apply_patch', 'mcp__manki__grep'] }, 'gpt-b': { offered: ['tool_search'], held: [] } };
+  const expected = {
+    'gpt-a': { offered: ['functions.exec'], held: ['apply_patch', 'mcp__manki__grep'], sources: [] },
+    'gpt-b': { offered: ['tool_search'], held: ['mcp__manki.grep'], sources: ['manki'] },
+  };
 
   it('passes when every model is offered exactly the listed tools', () => {
     expect(compareTools(expected, expected)).toEqual([]);
   });
 
   it('reports a new tool, a tool no longer offered and a model not checked', () => {
-    const actual = { 'gpt-a': { offered: ['functions.exec', 'collaboration.spawn_agent'], held: ['apply_patch'] } };
+    const actual = { 'gpt-a': { offered: ['functions.exec', 'collaboration.spawn_agent'], held: ['apply_patch'], sources: [] } };
     expect(compareTools(expected, actual)).toEqual([
-      'gpt-a: a new offered tool collaboration.spawn_agent',
-      'gpt-a: no longer held mcp__manki__grep',
+      'gpt-a: new in offered: collaboration.spawn_agent',
+      'gpt-a: gone from held: mcp__manki__grep',
       'gpt-b: not checked',
     ]);
+  });
+
+  it('reports a new source of held-back tools that the search did not return', () => {
+    const actual = { ...expected, 'gpt-b': { offered: ['tool_search'], held: ['mcp__manki.grep'], sources: ['Calendar', 'manki'] } };
+    expect(compareTools(expected, actual)).toEqual(['gpt-b: new in sources: Calendar']);
   });
 });

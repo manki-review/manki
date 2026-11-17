@@ -125,8 +125,8 @@ const OPENAI_OAUTH_BOOTSTRAP_HINT =
 
 // Pin Codex CLI to a known-good version and disable lifecycle scripts on install
 // to mitigate supply-chain risk if a compromised release is published. Keep this
-// in sync with the explicit install step in `.github/workflows/manki.yml`. The `Codex tools` workflow fails
-// when this version offers a model a tool `scripts/fixtures/codex-tools.json` does not list.
+// in sync with the explicit install step in `.github/workflows/manki.yml`. The `Codex tools` workflow checks the
+// tools this version offers a model against `scripts/fixtures/codex-tools.json`.
 export const CODEX_CLI_VERSION = '0.166.0';
 
 function isHttpUrl(value: string): boolean {

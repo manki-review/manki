@@ -16,7 +16,8 @@
       "mcp__manki__read_file",
       "mcp__manki__repo_info",
       "read_mcp_resource"
-    ]
+    ],
+    "sources": []
   },
   "gpt-5.6-sol": {
     "offered": [
@@ -34,7 +35,8 @@
       "mcp__manki__read_file",
       "mcp__manki__repo_info",
       "read_mcp_resource"
-    ]
+    ],
+    "sources": []
   },
   "gpt-5.6-luna": {
     "offered": [
@@ -52,7 +54,8 @@
       "mcp__manki__read_file",
       "mcp__manki__repo_info",
       "read_mcp_resource"
-    ]
+    ],
+    "sources": []
   },
   "gpt-5.5": {
     "offered": [
@@ -69,6 +72,9 @@
       "mcp__manki.grep",
       "mcp__manki.read_file",
       "mcp__manki.repo_info"
+    ],
+    "sources": [
+      "manki"
     ]
   },
   "gpt-5.4": {
@@ -83,6 +89,7 @@
       "mcp__manki.repo_info",
       "read_mcp_resource"
     ],
-    "held": []
+    "held": [],
+    "sources": []
   }
 }
