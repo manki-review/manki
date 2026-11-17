@@ -4472,7 +4472,7 @@ describe('runFullReview orchestration', () => {
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
-    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons, the claims of the PR text and the token service calls', async () => {
+    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons, the claims of the PR text, the scope answer and the token service calls', async () => {
       const blocker = { file: 'src/app.ts', line: 5, title: 'Bug', fingerprint: 'k' };
       const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
@@ -4490,6 +4490,7 @@ describe('runFullReview orchestration', () => {
           { quote: 'the index already rejects duplicates', source: 'description', reviewer: 'Claim check 2', status: 'unchecked' as const, call: 'timed_out' as const },
         ],
       };
+      const scope = { topics: [{ name: 'Fix', files: ['src/app.ts'] }, { name: 'Rename', files: ['src/b.ts'] }], split: [{ name: 'Fix', files: ['src/app.ts'] }, { name: 'Rename', files: ['src/b.ts'] }], warned: true as const };
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING' as const, summary: 'Paused',
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -4503,6 +4504,7 @@ describe('runFullReview orchestration', () => {
         ],
         comparisons,
         prClaims,
+        scope,
         sweeps: [{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker' as const, status: 'answered' as const, class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note' as const, status: 'cut' as const }],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
@@ -4541,6 +4543,10 @@ describe('runFullReview orchestration', () => {
       expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'], compare: ['dddddddddddd'] });
       expect(rc.comparisons).toEqual(comparisons);
       expect(rc.prClaims).toEqual(prClaims);
+      expect(rc.scope).toEqual(scope);
+      // The scope reader asks again only when the change differs from the last round it ran on.
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].changeDigest).toEqual(expect.stringMatching(/^[0-9a-f]{64}$/));
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].changeDigest).toBe(rc.diff.changeDigest);
       expect(rc.sweeps).toEqual([{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note', status: 'cut' }]);
       expect(rc.usage.perStage?.compare).toMatchObject({ calls: 1 });
       expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });

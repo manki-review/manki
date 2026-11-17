@@ -25,6 +25,7 @@ import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions,
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
+import { runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -711,6 +712,8 @@ export interface ReviewOptions {
   lockfiles?: LockfileDiff[];
   /** Reads the related repos as they were at this ISO 8601 time. A pull request round sets none and reads their newest commit. */
   relatedReposAsOf?: string;
+  /** The `changeDigest` of the PR's diff, which tells whether the scope reader runs again. */
+  changeDigest?: string;
 }
 
 export async function runReview(
@@ -919,6 +922,10 @@ export async function runReview(
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
   if (related && unread) return incomplete(unread);
+  // Asked beside the finders on the judge's client. Only the round's end reads the answer, so nothing waits for it before then.
+  const scopePromise = runScopeReader(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'scope'), {
+    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds,
+  });
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;
   const comparisonDeadline = new AbortController();
@@ -1579,6 +1586,18 @@ export async function runReview(
       return false;
     });
   }
+  // A judgment of the PR as a whole skips the judge's grading, since `runScopeReader` checked its answer in code. With
+  // `review.scope_blocks` it is posted as a warning, never a blocker. Dedup drops a repeat of one whose thread was resolved.
+  let scope = await scopePromise;
+  if (config.review?.scope_blocks && (scope.doubt || scope.split)) {
+    const warnings = scopeWarnings(scope);
+    const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
+    const { unique, duplicates } = previousFindings?.length ? deduplicateFindings(warnings, previousFindings, changed) : { unique: warnings, duplicates: [] };
+    for (const d of duplicates) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
+    staticDedupCount += duplicates.length;
+    finalFindings = [...finalFindings, ...unique];
+    scope = { ...scope, warned: true };
+  }
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
@@ -1774,6 +1793,7 @@ export async function runReview(
     ...relatedRecord(),
     ...(sweeps && { sweeps }),
     ...(relatedWork && { relatedWork }),
+    scope,
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
   };
 }

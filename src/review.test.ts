@@ -46,6 +46,7 @@ import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
+import { runScopeReader } from './scope';
 import { repoToolsPrompt } from './providers/cli-utils';
 
 /** A planner whose call fails, so the round takes the fail-safe triage. */
@@ -1857,6 +1858,9 @@ jest.mock('./judge', () => ({
   MAX_INTER_ROUND_DIFF_CHARS: jest.requireActual('./judge').MAX_INTER_ROUND_DIFF_CHARS,
 }));
 
+// The scope reader asks the judge's client, so a test of that client's calls sees it only where the test asks for it.
+jest.mock('./scope', () => ({ ...jest.requireActual('./scope'), runScopeReader: jest.fn().mockResolvedValue({}) }));
+
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
 jest.mock('./ast-grep', () => ({ ...jest.requireActual('./ast-grep'), loadAstGrep: async () => jest.requireActual('@ast-grep/napi') }));
 
@@ -2560,6 +2564,83 @@ describe('runReview', () => {
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer, at: ['src/queue.ts:6'], status: 'answered', findings: 1 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'compare').map(c => c.agent)).toEqual([reviewer]);
     expect(result.agentNames).not.toContain(reviewer);
+  });
+
+  describe('scope reader', () => {
+    const scope = {
+      doubt: 'Nothing calls the new `parseDate`.', proof: ['src/x.ts:1'],
+      topics: [{ name: 'Date parsing', files: ['src/x.ts'] }, { name: 'Flag rename', files: ['src/y.ts'] }],
+      split: [{ name: 'Date parsing', files: ['src/x.ts'] }, { name: 'Flag rename', files: ['src/y.ts'] }],
+    };
+    const diff = makeDiff({ files: [{ path: 'src/x.ts', changeType: 'modified', hunks: [] }, { path: 'src/y.ts', changeType: 'modified', hunks: [] }] });
+    const options = { diff, rawDiff: 'raw diff', repoContext: '', changeDigest: 'digest-2', openThreads: [] };
+    const fromScope = (r: ReviewResult) => r.findings.filter(f => f.reviewers.includes('Scope reader'));
+
+    it('asks the reader beside the finders, lists its answer by default, and with `review.scope_blocks` posts it as warnings that skip the judge and never block', async () => {
+      jest.mocked(runScopeReader).mockResolvedValue(scope);
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+      const priorRounds = [makeRoundContext(1)];
+      const prContext = { title: 'Parse dates', body: 'Also renames a flag.', baseBranch: 'main' };
+      const linkedIssues = [{ number: 7, title: 'Dates', body: 'Parse them.' }];
+
+      const advisory = await runReview(makeClients(RAISED), { ...options, config: makeConfig(), prContext, linkedIssues, priorRounds });
+      const blocking = await runReview(makeClients(RAISED), { ...options, config: makeConfig({ review: { scope_blocks: true } }), prContext, linkedIssues, priorRounds });
+
+      expect(jest.mocked(runScopeReader).mock.calls[0][1]).toEqual({
+        diff, rawDiff: 'raw diff', prContext, linkedIssues, workspace: undefined, trivial: false, changeDigest: 'digest-2', priorRounds,
+      });
+      expect(advisory.scope).toEqual(scope);
+      expect(fromScope(advisory)).toEqual([]);
+      expect(blocking.scope).toEqual({ ...scope, warned: true });
+      // The judge never sees them, and each stays a warning beside what the judge kept, so the round is still ready.
+      for (const call of mockedRunJudgeAgent.mock.calls) expect(call[2].findings.flatMap(f => f.reviewers)).not.toContain('Scope reader');
+      expect(blocking.outcome).toBe('READY');
+      expect(fromScope(blocking)).toEqual([
+        expect.objectContaining({
+          severity: 'warning', title: 'This change may not be useful as it stands', file: 'src/x.ts', line: 1, description: scope.doubt,
+          evidence: { checks: [], proof: ['src/x.ts:1'] }, tags: ['follow-up'], checkStatus: 'proven',
+        }),
+        expect.objectContaining({ severity: 'warning', title: 'This PR mixes topics that belong in separate PRs', file: '', line: 0, tags: ['follow-up'], checkStatus: 'unconfirmed' }),
+      ]);
+      expect(fromScope(blocking)[1].description).toContain('1. Date parsing: `src/x.ts`\n2. Flag rename: `src/y.ts`');
+
+      // An answer with nothing to say, or one the checks left nothing of, adds no warning and leaves the record as it is.
+      const dropped = { topics: scope.topics, dropped: [{ part: 'split' as const, reason: 'a split needs at least two PRs' }] };
+      jest.mocked(runScopeReader).mockResolvedValue(dropped);
+      const nothing = await runReview(makeClients(RAISED), { ...options, config: makeConfig({ review: { scope_blocks: true } }) });
+      expect(nothing.scope).toEqual(dropped);
+      expect(fromScope(nothing)).toEqual([]);
+    });
+
+    it('tells the reader when the quick check alone reads the change', async () => {
+      const clients = makeClients();
+      clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as LLMClient;
+      const docs = makeDiff({ files: [{ path: 'README.md', changeType: 'modified', hunks: [] }] });
+      await runReview(clients, { config: makeConfig(), diff: docs, rawDiff: 'raw diff', repoContext: '' });
+      expect(jest.mocked(runScopeReader).mock.calls[0][1]).toMatchObject({ trivial: true });
+    });
+
+    it('posts a repeat into the open thread of the same warning, and drops one whose thread was resolved without a fix', async () => {
+      jest.mocked(runScopeReader).mockResolvedValue({ split: scope.split });
+      const split = 'This PR mixes topics that belong in separate PRs';
+      const entry = makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(split) }, severity: 'warning', title: split, threadId: 'T9', reviewers: ['Scope reader'] });
+      const priorRounds = [makeRoundContext(1, { findings: { count: 1, severityCounts: { warning: 1 }, entries: [entry] } })];
+      const config = makeConfig({ review: { scope_blocks: true } });
+
+      const open = await runReview(makeClients(), {
+        ...options, config, priorRounds, interRoundDiff: '',
+        openThreads: [{ threadId: 'T9', title: split, file: '', line: 0, severity: 'warning' }],
+        previousFindings: [{ title: split, file: '', line: 0, severity: 'warning', status: 'open', threadId: 'T9' }],
+      });
+      expect(fromScope(open)).toEqual([expect.objectContaining({ title: split, threadId: 'T9' })]);
+
+      const resolved = await runReview(makeClients(), {
+        ...options, config, priorRounds, interRoundDiff: '',
+        previousFindings: [{ title: split, file: '', line: 0, severity: 'warning', status: 'resolved', threadId: 'T9' }],
+      });
+      expect(fromScope(resolved)).toEqual([]);
+      expect(resolved.duplicateMatches).toEqual([{ droppedTitle: split, matchedTitle: split, matchType: 'exact' }]);
+    });
   });
 
   describe('claims of the PR text', () => {

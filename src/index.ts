@@ -2150,6 +2150,7 @@ async function runFullReview(
       deeper: options.deeper,
       excludedPaths: excludedFiles.map(f => f.path),
       lockfiles,
+      changeDigest: digest,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();

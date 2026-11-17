@@ -7,7 +7,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
@@ -2039,6 +2039,7 @@ export async function postReview(
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
+      formatScope(result.scope, linkTo),
       overrides,
       readyReport?.whatToTest,
       // The fold points at the progress comment's "Judge decisions", which an incomplete round does not have.
@@ -2577,6 +2578,32 @@ const RELATION_ACTION: Record<Extract<RelatedRelation, 'duplicate' | 'fixes_issu
  * null when there is none. Overlapping and unrelated candidates stay in the round record only. The model's reason
  * stays out too, since the other PRs' and issues' text can steer it.
  */
+/** Files a list of files shows by name before it counts the rest. */
+const MAX_LISTED_FILES = 10;
+
+/** Returns `files` as inline code, at most `MAX_LISTED_FILES` of them and a count of the rest. */
+export function fileList(files: readonly string[]): string {
+  const shown = files.slice(0, MAX_LISTED_FILES).map(f => inlineCode(sanitizeFilePath(f))).join(', ');
+  return files.length > MAX_LISTED_FILES ? `${shown} and ${files.length - MAX_LISTED_FILES} more` : shown;
+}
+
+/**
+ * Returns the review body's Scope section: the scope reader's doubt that the change is useful and its proposed split,
+ * or null when it has neither, or when `review.scope_blocks` posted them as warnings.
+ */
+function formatScope(scope: RoundScope | undefined, linkTo: LineLink): string | null {
+  if (!scope || scope.warned || (!scope.doubt && !scope.split)) return null;
+  const cited = (scope.proof ?? []).flatMap(at => {
+    const range = lineRange(at.slice(0, at.lastIndexOf(':')), at.slice(at.lastIndexOf(':') + 1));
+    return range ? [linkedRange(range, linkTo)] : [];
+  });
+  const parts = [
+    scope.doubt && `**Is this change useful?** ${sanitizeMarkdown(scope.doubt)}${cited.length > 0 ? ` See ${cited.join(', ')}.` : ''}`,
+    scope.split && `**Split into ${scope.split.length} PRs?** The change covers topics that each make sense on their own:\n\n${scope.split.map((part, i) => `${i + 1}. ${sanitizeMarkdown(part.name)}: ${fileList(part.files)}`).join('\n')}`,
+  ].filter(Boolean);
+  return `**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.\n\n${parts.join('\n\n')}`;
+}
+
 function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: string): string | null {
   const relations = Object.keys(RELATION_ACTION);
   const actionable = (work?.items ?? [])
