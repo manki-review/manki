@@ -7,6 +7,7 @@ import * as core from '@actions/core';
 import { DEFAULT_CONFIG } from './config';
 import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
 import { REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { relatedReposCacheDir } from './related-repos';
 import { RETRY_HINT } from './review';
 import { parseSettingsBlock } from './settings';
 import { _resetOctokitCache, main, runFullReview } from './index';
@@ -67,6 +68,8 @@ const APP_LOGIN = 'manki-review[bot]';
 const ACTIONS_LOGIN = 'github-actions[bot]';
 const TOKEN_URL = 'https://token.test/token';
 const TOKEN_LOGINS: Record<string, string> = { ghs_app: APP_LOGIN, ghs_workflow: ACTIONS_LOGIN };
+/** What a stage with tools gets when no related repo is configured: the PR's dependencies only. */
+const dependenciesOnly = { repos: [], cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true };
 
 const mockContext = {
   eventName: 'pull_request',
@@ -694,8 +697,8 @@ describe('runFullReview end to end', () => {
 
     // The merge base comes along for reads at the base, which refuse the default `exclude_paths`.
     expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app', [], { sha: MERGE_BASE_SHA, excludePaths: DEFAULT_CONFIG.exclude_paths });
-    // One finder on a PR in no floor class gets the normal budget.
-    expect(mockLLM.tools).toEqual([['scope', { root: '/work/pr-head', steps: 10 }], ['reviewer', { root: '/work/pr-head', steps: 30 }], ['second_read', { root: '/work/pr-head', steps: 30 }]]);
+    // One finder on a PR in no floor class gets the normal budget, and the PR's dependencies without related repos.
+    expect(mockLLM.tools).toEqual([['scope', { root: '/work/pr-head', steps: 10 }], ['reviewer', { root: '/work/pr-head', steps: 30, related: dependenciesOnly }], ['second_read', { root: '/work/pr-head', steps: 30, related: dependenciesOnly }]]);
 
     mockLLM.tools = [];
     jest.mocked(fetchWorkspace).mockRejectedValueOnce(new Error('fetch failed'));
@@ -718,7 +721,7 @@ describe('runFullReview end to end', () => {
 
       await reviewRound();
 
-      expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15, checking: true }]);
+      expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15, checking: true, related: dependenciesOnly }]);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
       expect(postedReviews()[0].body).not.toContain('Checked and left out');
       // A disproof never clears a blocker, so it is posted with the refuter's reason.
