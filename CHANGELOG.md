@@ -9,7 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.6.0] - 2026-11-17
 
-Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long Codex calls hold up: a silent call is no longer ended after 90 seconds, a model at capacity is named and its session resumed, and the judge gets 15 minutes. A review command that starts no round now gets an answer, and a held approval reports its `Manki` check. Nothing breaks on the upgrade.
+Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long Codex calls hold up: a silent call is no longer ended after 90 seconds, a model at capacity is named and its session resumed, and the judge gets 15 minutes. It also tidies `.manki.yml`: review groups are the only place that names the finders, and nine rarely used settings are gone. Manki writes its commands as `/manki`. Some settings change with no transition, so read Breaking changes and migration first.
+
+### Breaking changes and migration
+
+A removed or moved key gets the usual unknown key warning and is otherwise ignored, so the review runs with the default. Two old forms do not load at all, and Manki then reviews with the defaults and holds its approval: `@reviewer` or `@reviewer_pair` as a model, and a group written as `{ reviewers: [...] }`.
+
+1. Review groups are the only place that names the finders. `models.reviewer` and `models.reviewer_pair` are gone, and so are `@reviewer` and `@reviewer_pair`. A group is a plain list, and an entry is a model id or a map with `model`, `effort` and `focus`. The `reviewers:` level and the `role` key are gone. The built-in groups are `trivial` (the quick check) and `solo` on Sonnet, and `full` on Sonnet and Opus. `full` is the new name of `pair`. A repository that set `models.reviewer: gpt-6.1-terra` now writes all three groups, for example `trivial: [gpt-6.1-terra]`, `solo: [gpt-6.1-terra]` and `full: [gpt-6.1-terra, claude-opus-5-5]` under `review.groups`. Without a `review.groups` block a review is what it was ([#1754](https://github.com/manki-review/manki/pull/1754)).
+2. A config that sets `review.groups` must define all three of `trivial`, `solo` and `full`, and may add groups of its own. `full` must hold at least two finders on two distinct models, where `openai/gpt-5.5` and `gpt-5.5` count as one. A config that breaks either rule does not load. An entry of `trivial` without `effort` runs at medium, and a `focus` there gets the unknown key warning, since the quick check takes none ([#1754](https://github.com/manki-review/manki/pull/1754)).
+3. `review.default_group` and `review.allow_weaker` are gone. A class with no route goes to `full`, and a route that puts a security, CI or data contract class below its floor never loads. `review.routing` is always the built-in routes with the config's on top ([#1754](https://github.com/manki-review/manki/pull/1754)).
+4. `models.refuter_pair` is now `models.second_refuter`, with the same behaviour ([#1754](https://github.com/manki-review/manki/pull/1754)).
+5. Without `models.fallback`, a stage that a safety filter refused moves to the first model of the `full` group that is another model than its own. Before, it moved to `models.reviewer`. The sibling comparisons, claim checks and sweeps run on the first reader of the group that reads the PR, where they ran on `models.reviewer` ([#1754](https://github.com/manki-review/manki/pull/1754)).
+6. Nine settings are removed, and each keeps its default as fixed behaviour: `review_passes` (every finder runs once), `planner.enabled` (the planner always runs), `slice_lines` (1500), `static_analysis.wait_timeout_seconds` (300), `convergence.rounds_after_restart` (3), `convergence.suppress_resolved_threads` (on), `convergence.test_path_patterns` (the default list), `metrics.fix_rate` (recorded when `memory.enabled` is true) and the top-level `reviewers` list, whose checks belong in `instructions`. The `focus` of an entry in a review group stays. A repository that turned the planner off to run without Anthropic credentials has to set `models.planner` to a model it has credentials for, or every round fails with `Invalid model config` ([#1755](https://github.com/manki-review/manki/pull/1755)).
+7. `convergence.max_auto_rounds` is now the top-level `max_auto_rounds`, and the `convergence` block is gone. A repository that set the old key gets the default cap of 10 until it moves the setting ([#1755](https://github.com/manki-review/manki/pull/1755)).
 
 ### OpenAI-compatible endpoints
 
@@ -19,7 +31,7 @@ Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long 
 
 ### Review loop and verdicts
 
-- A `@manki review` comment on a commit that already has a complete review gets a reply that says so. Before, it started no round and got no answer. While automatic review is paused, the reply adds the pause notice with the open blockers and who may clear them ([#1728](https://github.com/manki-review/manki/pull/1728)).
+- A `/manki review` comment on a commit that already has a complete review gets a reply that says so. Before, it started no round and got no answer. While automatic review is paused, the reply adds the pause notice with the open blockers and who may clear them ([#1728](https://github.com/manki-review/manki/pull/1728)).
 - A run that ends because its commit already has a review now also completes the waiting `Manki` check when that review held its approval. The check is neutral with the hold as its title while something still holds the approval, and Manki approves once nothing does. Before, the check ended as "Review did not run", which a required status check then read ([#1732](https://github.com/manki-review/manki/pull/1732)).
 
 ### Review format
@@ -27,6 +39,7 @@ Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long 
 - A finding on a line that takes no comment gets a thread on its file, and that thread now opens with a link to the finding's line at the reviewed commit ([#1736](https://github.com/manki-review/manki/pull/1736)).
 - An approval that relies on findings the PR author dismissed lists them, with the author and the role named once in the heading. Before, it was one long sentence that repeated both for each finding ([#1716](https://github.com/manki-review/manki/pull/1716)).
 - An issue filed from a `Create an issue for this` box names the person who ticked it, as a mention, so GitHub notifies them. A tick that finds an open issue for the same finding still only links it ([#1730](https://github.com/manki-review/manki/pull/1730)).
+- Manki names every command as `/manki <command>` in its reviews, notices, answers and docs. `manki` is the login of an unrelated GitHub user, who was notified by every comment that wrote the name with an at sign. A command written that way still works, and Manki's answer to it ends with a line that asks for `/manki` next time. A review command that starts a round gets no such line, because its only comment is the progress comment ([#1756](https://github.com/manki-review/manki/pull/1756)).
 
 ### Reliability
 
@@ -42,6 +55,7 @@ Manki 7.6 runs GPT models through any OpenAI-compatible endpoint and makes long 
 
 - `review-stats` gets a "Sweeps" section: how the sweeps of the merged PRs ended, what they reported, what was posted and what they cost. The dedup and refuter calls that run only for a sweep's findings are marked in the round record, so the cost is complete ([#1719](https://github.com/manki-review/manki/pull/1719)).
 - Manki's own reviews run with `review.sweep: warnings` as a trial. The default stays `off` ([#1720](https://github.com/manki-review/manki/pull/1720)).
+- A release that is merged but not published can take more changes under the same version: a PR that changes `CHANGELOG.md` alone becomes the new release commit, and the `Release` workflow and the publish script refuse the commit it replaces. `RELEASE.md` has the steps ([#1757](https://github.com/manki-review/manki/pull/1757)).
 
 ## [7.5.2] - 2026-11-16
 
