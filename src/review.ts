@@ -1198,10 +1198,9 @@ export async function runReview(
   let judgeDurationMs: number | undefined;
   let judgeRetryCount = 0;
   const judgeWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
-  // Its own label keeps the refutation calls out of the judge's retry count. A fallback without tools could not read the
-  // code, so without one a call that is refused or reaches a limit fails and the finding keeps its grade.
+  // Its own label keeps the refutation calls out of the judge's retry count.
   const refutation = workspace && clients.judge.repoTools ? {
-    client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
+    client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'refute'),
     workspace,
     related: relatedTools,
     ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
@@ -2584,8 +2583,8 @@ function confirmFixes(
 }
 
 /**
- * Returns the tool budget the judge gets, and logs why a configured budget goes unused. The judge is told it has tools,
- * so a call that is refused or reaches a limit must not move to a fallback that has none, or that fallback would grade as if it had read code.
+ * Returns the tool budget the judge gets, and logs why a configured budget goes unused. A call made with tools never moves
+ * to a fallback that has none (`withModelFallback`), so a judge whose fallback has none grades without tools and keeps that fallback.
  */
 function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHead: boolean): number {
   const steps = config.judge?.tool_steps ?? 0;

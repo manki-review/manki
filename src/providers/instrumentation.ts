@@ -1,8 +1,10 @@
 import { createHash } from 'crypto';
 
+import * as core from '@actions/core';
+
 import { wrapUpNoted } from '../tool-steps';
 import { estimateCostUsd } from './model-registry';
-import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, QuotaError, RefusalError, TimeoutError, UsageSummary, ZERO_USAGE } from './types';
+import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, QuotaError, RefusalError, SendMessageOptions, TimeoutError, UsageSummary, ZERO_USAGE } from './types';
 import { readingsOf, sanitizeLogOutput } from './cli-utils';
 
 export interface UsageTotals {
@@ -46,6 +48,9 @@ export function wrapClientForUsage(client: LLMClient): {
  * Later requests go to `fallback` only after it answered one. The `QuotaError` is thrown unchanged when `fallback`
  * fails as well, when no time is left, or when `movesOnLimit` returns false. `movesOnLimit` is asked once, at the first limit.
  *
+ * A request made with repository tools (`repoTools` in its options) never goes to a `fallback` without them. It is sent to
+ * `client` and fails with its own error, also after the stage moved, since such a `fallback` would answer as if it had read the code.
+ *
  * `onFallback` is called once, when the stage moves: at the first refusal, or when `fallback` first answers after a limit.
  */
 export function withModelFallback(
@@ -57,8 +62,10 @@ export function withModelFallback(
   if (!fallback) return client;
   let moved = false;
   let limitMoves: boolean | undefined;
+  const needsMissingTools = (opts: SendMessageOptions | undefined): boolean => !!opts?.repoTools && !fallback.repoTools;
   return {
     sendMessage: async (sys, user, opts) => {
+      if (needsMissingTools(opts)) return client.sendMessage(sys, user, opts);
       if (moved) return fallback.sendMessage(sys, user, opts);
       const start = Date.now();
       try {
@@ -74,7 +81,10 @@ export function withModelFallback(
         if (limit) {
           if (outOfTime) throw error;
           // The limit of the configured model stays the stage's error, whatever stops the fallback.
-          const response = await resend().catch(() => { throw error; });
+          const response = await resend().catch((failure: unknown) => {
+            core.warning(`The fallback model failed too, so the call fails with "${error.limit}": ${sanitizeLogOutput(String((failure as Error)?.message ?? failure)).slice(0, 300)}`);
+            throw error;
+          });
           if (!moved) onFallback(error);
           moved = true;
           return response;

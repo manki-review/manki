@@ -2117,6 +2117,65 @@ describe('runReview', () => {
     }
   });
 
+  it('fails a call made with repository tools that reaches a limit when its fallback model has none, as it does without a fallback', async () => {
+    type Stage = 'reviewer' | 'compare' | 'claim_check' | 'sweep';
+    const limit = new QuotaError('exceeded retry limit, last status: 429', 'OpenAI endpoint limit reached', undefined, 'key');
+    const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
+    const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
+    const blocker = { severity: 'blocker', title: 'A finished id starts again', file: 'src/queue.ts', line: 6, description: 'Only `pending` is checked.', evidence: ['src/queue.ts:6 checks only `pending`'], proof: ['src/queue.ts:6'] };
+    const importerClaim = 'the importer starts each id once';
+    const stageOf = (system: string): Stage => system.startsWith('You compare code') ? 'compare'
+      : system.startsWith('A code review reported the finding') ? 'sweep'
+        : system.startsWith('You check one statement') ? 'claim_check' : 'reviewer';
+    /** Runs a round whose first call of `stage` reaches a limit, with a fallback model for the finders' models that has tools or not. */
+    const run = async (stage: Stage, fallbackTools: boolean) => {
+      const clients = makeClients();
+      let reported = false;
+      const answer = async (system: string, _user: string, _options?: SendMessageOptions) => {
+        const answered = stageOf(system);
+        if (answered === 'compare') return { content: '[]' };
+        if (answered === 'sweep') return { content: JSON.stringify({ class: 'a lookup checks one of two sets', general: true, findings: [] }) };
+        if (answered === 'claim_check') return { content: JSON.stringify({ status: 'unchecked', reason: 'The importer was not read.' }) };
+        const content = reported ? '[]' : JSON.stringify([blocker]);
+        reported = true;
+        return { content };
+      };
+      let limitLeft = 1;
+      Object.assign(clients.reviewer, { repoTools: true });
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string, options?: SendMessageOptions) => {
+        if (stageOf(system) === stage && limitLeft-- > 0) throw limit;
+        return answer(system, user, options);
+      });
+      const fallback = { repoTools: fallbackTools, sendMessage: jest.fn(answer) };
+      const models = ['anthropic/claude-sonnet-5-5', 'anthropic/claude-opus-5-5'];
+      clients.reviewerByModel = new Map(models.map(model => [model, clients.reviewer]));
+      clients.fallbacks = { reviewerByModel: new Map(models.map(model => [model, { model: 'gpt-5.5', client: fallback as unknown as LLMClient }])) };
+      clients.dedup = { sendMessage: jest.fn(async (system: string) => ({ content: system.startsWith('You list the statements') ? JSON.stringify([importerClaim]) : '[]' })) } as unknown as LLMClient;
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+      const result = await runReview(clients, {
+        config: makeConfig({ review: { sweep: 'warnings' } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root,
+        prContext: { title: 'Skip started ids', body: `Safe, since ${importerClaim}.`, baseBranch: 'main' },
+      });
+      return { result, fallback };
+    };
+    try {
+      for (const stage of ['reviewer', 'compare', 'claim_check', 'sweep'] as const) {
+        const { result, fallback } = await run(stage, false);
+        expect([stage, fallback.sendMessage.mock.calls.length, result.modelFallbacks]).toEqual([stage, 0, undefined]);
+        expect(result.llmCalls?.filter(c => c.failed && c.stage !== 'planner').map(c => [c.stage, c.error, c.fallback])).toEqual([[stage, limit.message, undefined]]);
+        if (stage === 'reviewer') expect([result.outcome, result.summary]).toEqual(['INCOMPLETE', 'OpenAI endpoint limit reached for Claude Sonnet 5.5 · high. Retry with /manki review later, or use another key.']);
+      }
+
+      // A fallback model with tools takes the finder's call, with the tools the finder had.
+      const { result, fallback } = await run('reviewer', true);
+      expect(result.modelFallbacks).toEqual([{ stage: 'reviewer', agent: 'Claude Sonnet 5.5 · high', fallbackModel: 'gpt-5.5', reason: 'OpenAI endpoint limit reached', limit: true }]);
+      expect(fallback.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([root]);
+      expect(result.failedAgents).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('hands every finder and the judge the uses outside the diff from the PR head and the related repo lines, and records where they are', async () => {
     const { root, diff } = gitWorkspace(
       { 'cmd/fee.go': 'package main\n\nfunc main() {}\n', 'cmd/use.go': 'package main\n\nvar fee = ComputeFee(2)\n' },
@@ -3676,6 +3735,23 @@ describe('runReview', () => {
       expect(refuterPair.sendMessage).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('No second refuter runs'));
       warnSpy.mockRestore();
+
+      // A refuter that reaches a limit moves only to a fallback model with tools. Without them its check fails and the blocker keeps its grade.
+      const limit = new QuotaError('529 overloaded', 'Anthropic API is overloaded');
+      for (const fallbackTools of [false, true]) {
+        const limited = refutingClients();
+        const reader = jest.mocked(limited.judge.sendMessage).getMockImplementation()!;
+        jest.mocked(limited.judge.sendMessage).mockImplementation(async (system, message, options) => {
+          if (options?.repoTools) throw limit;
+          return reader(system, message, options);
+        });
+        const fallback = { repoTools: fallbackTools, sendMessage: jest.fn(reader) };
+        limited.fallbacks = { judge: { model: 'gpt-5.5', client: fallback as unknown as LLMClient } };
+        const result = await runReview(limited, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
+        expect([fallbackTools, result.outcome, result.findings.map(f => [f.severity, f.refutation?.outcome])]).toEqual([fallbackTools, 'ADDRESS_FIRST', [['blocker', fallbackTools ? 'disproved' : undefined]]]);
+        expect(fallback.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual(fallbackTools ? [workspace] : []);
+        expect(result.modelFallbacks).toEqual(fallbackTools ? [{ stage: 'judge', agent: 'refute', fallbackModel: 'gpt-5.5', reason: 'Anthropic API is overloaded', limit: true }] : undefined);
+      }
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -7077,6 +7153,42 @@ describe('withModelFallback', () => {
     const parallel = withModelFallback(primary, { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) }, onFallback);
     await Promise.all([parallel.sendMessage('sys', 'a'), parallel.sendMessage('sys', 'b')]);
     expect(onFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends a call made with repository tools to a fallback without them, and logs a fallback that fails too', async () => {
+    const tools = { repoTools: { root: '/work', steps: 5, related: undefined } };
+    const answers = (repoTools: boolean) => ({ repoTools, sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) }) as unknown as LLMClient;
+    const onFallback = jest.fn();
+    for (const error of [limit, refusal]) {
+      const primary = { repoTools: true, sendMessage: jest.fn().mockRejectedValue(error) } as unknown as LLMClient;
+      const toolless = answers(false);
+      const client = withModelFallback(primary, toolless, onFallback);
+      // The call fails with its own error, as it does without a fallback.
+      await expect(client.sendMessage('sys', 'with tools', tools)).rejects.toBe(error);
+      expect(toolless.sendMessage).not.toHaveBeenCalled();
+      expect(onFallback).not.toHaveBeenCalled();
+      // A call without tools moves the stage, and a later call with tools still goes to the configured model.
+      await expect(client.sendMessage('sys', 'plain')).resolves.toEqual({ content: 'ok' });
+      await expect(client.sendMessage('sys', 'with tools again', tools)).rejects.toBe(error);
+      expect(jest.mocked(toolless.sendMessage).mock.calls.map(call => call[1])).toEqual(['plain']);
+      expect(jest.mocked(primary.sendMessage).mock.calls.map(call => call[1])).toEqual(['with tools', 'plain', 'with tools again']);
+      // The wrapper says what the configured client has, which is what a prompt is built from.
+      expect([client.repoTools, withModelFallback(answers(false), answers(true), onFallback).repoTools]).toEqual([true, undefined]);
+
+      // A fallback with tools takes the same call.
+      onFallback.mockClear();
+      const equipped = answers(true);
+      await expect(withModelFallback(primary, equipped, onFallback).sendMessage('sys', 'with tools', tools)).resolves.toEqual({ content: 'ok' });
+      expect(jest.mocked(equipped.sendMessage).mock.calls).toEqual([['sys', 'with tools', tools]]);
+      expect(onFallback.mock.calls).toEqual([[error]]);
+      onFallback.mockClear();
+    }
+
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const broken = { sendMessage: jest.fn().mockRejectedValue(new Error('401 invalid x-api-key')) } as unknown as LLMClient;
+    await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(limit) }, broken, onFallback).sendMessage('sys', 'user')).rejects.toBe(limit);
+    expect(warning.mock.calls).toEqual([['The fallback model failed too, so the call fails with "OpenAI endpoint limit reached": 401 invalid x-api-key']]);
+    warning.mockRestore();
   });
 
   it('keeps a limit on the configured model when the stage may not move for one, and still moves it for a refusal', async () => {
