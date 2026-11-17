@@ -1198,7 +1198,7 @@ describe('sendViaCLI — extended coverage', () => {
       jest.advanceTimersByTime(900_000 + 100);
       waiting.procHandlers['close']?.(null, 'SIGTERM');
 
-      await expect(waitingPromise).rejects.toThrow('Codex CLI timed out after 900s. The CLI was waiting on the provider and retrying a failed request (retry 2 of 30)');
+      await expect(waitingPromise).rejects.toThrow('Codex CLI timed out after 900s. The CLI was waiting on the provider and retrying a failed request (retry 2 of 30). stderr: ERROR: Reconnecting... 2/30');
     } finally {
       jest.useRealTimers();
     }

@@ -132,7 +132,7 @@ const RECONNECTING_LINE = /^ERROR:\s+Reconnecting\.\.\. (\d+)\/(\d+)/;
 
 /**
  * Build diagnostic snippets for timeout/stale error messages. When stderr ends on a `RECONNECTING_LINE`, the
- * snippet says the CLI was waiting on the provider.
+ * snippet says the CLI was waiting on the provider, ahead of the line.
  */
 export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
   const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
@@ -141,7 +141,7 @@ export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: str
   const parts: string[] = [];
   if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
   if (reconnecting) parts.push(`The CLI was waiting on the provider and retrying a failed request (retry ${reconnecting[1]} of ${reconnecting[2]})`);
-  else if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
+  if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
   return parts.join('. ');
 }
 

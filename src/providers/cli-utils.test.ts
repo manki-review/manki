@@ -364,8 +364,11 @@ describe('buildTimeoutDiagnostics', () => {
 
   it('says the CLI was waiting on the provider when stderr ends on a reconnect line', () => {
     const waiting = 'The CLI was waiting on the provider and retrying a failed request (retry 2 of 30)';
-    expect(buildTimeoutDiagnostics('', 'user\nthe prompt\nERROR: Reconnecting... 1/30\nERROR: Reconnecting... 2/30\n')).toBe(waiting);
-    expect(buildTimeoutDiagnostics('half', 'ERROR: Reconnecting... 2/30\r\n\n')).toBe(`Last stdout: half. ${waiting}`);
+    expect(buildTimeoutDiagnostics('', 'user\nthe prompt\nERROR: Reconnecting... 1/30\nERROR: Reconnecting... 2/30\n')).toBe(`${waiting}. stderr: ERROR: Reconnecting... 2/30`);
+    expect(buildTimeoutDiagnostics('half', 'ERROR: Reconnecting... 2/30\r\n\n')).toBe(`Last stdout: half. ${waiting}. stderr: ERROR: Reconnecting... 2/30`);
+    // Whatever follows the counts on the line is kept, with workflow commands cut.
+    expect(buildTimeoutDiagnostics('', 'ERROR: Reconnecting... 2/30 (stream disconnected before completion) ##[error]x\n'))
+      .toBe(`${waiting}. stderr: ERROR: Reconnecting... 2/30 (stream disconnected before completion) [redacted-workflow-cmd]`);
     // The request went through again, so the CLI was past the wait.
     expect(buildTimeoutDiagnostics('', 'ERROR: Reconnecting... 2/30\ncodex\nan answer\n')).toBe('stderr: ERROR: Reconnecting... 2/30');
   });
