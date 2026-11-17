@@ -40,6 +40,7 @@ describe('review stats', () => {
         { reviewer: 'Sweep 3', source: 'src/a.ts:30', severity: 'warning', status: 'too_specific', class: 'c' },
         { reviewer: 'Sweep 4', source: 'src/a.ts:40', severity: 'warning', status: 'cut' },
       ],
+      diff: { lines: 1, additions: 1, deletions: 0, filesReviewed: 1, fileTypes: {}, perFile: [{ path: 'src/a.ts', additions: 1, deletions: 0, changeType: 'modified' }] },
       reviewers: {
         agents: ['Sonnet', 'Opus'],
         agentMetrics: [{ name: 'Sonnet', model: 'claude-sonnet', findingsRaw: 3, keptOnly: 1, keptShared: 1 }, { name: 'Opus', model: 'claude-opus', findingsRaw: 1, keptOnly: 0, keptShared: 1 }],
@@ -47,9 +48,9 @@ describe('review stats', () => {
       usage: {
         estimatedCostUsd: 0.5,
         llmCalls: [
-          { ...call('claude-sonnet', 4), stepBudget: 15 }, { ...call('claude-opus', 10), stepBudget: 12, wrapUpNoted: true }, { ...call('j', 3), stage: 'judge' },
-          // A fallback that answered for the Sonnet finder on another model still counts for that finder.
-          { ...call('gpt-5', 2), agent: 'Sonnet', fallback: true },
+          { ...call('claude-sonnet', 4), stepBudget: 15, filesRead: ['src/a.ts', 'src/util.ts'] }, { ...call('claude-opus', 10), stepBudget: 12, wrapUpNoted: true }, { ...call('j', 3), stage: 'judge' },
+          // A fallback that answered for the Sonnet finder on another model still counts for that finder. A file both calls read counts once.
+          { ...call('gpt-5', 2), agent: 'Sonnet', fallback: true, filesRead: ['src/a.ts'], toolSteps: [{ tool: 'mcp__manki__read_file', durationMs: 1 }, { tool: 'Grep', durationMs: 1 }] },
           { ...call('gpt-5', 5), stage: 'judge', agent: 'refute_pair', costUsd: 0.12 },
           { ...call('claude-sonnet', 6), stage: 'sweep', agent: 'Sweep 1', costUsd: 0.1 }, { ...call('j', 0), stage: 'judge', agent: 'sweep', costUsd: 0.05 },
           // The refuter and dedup calls on what a sweep reported count as its cost. A record from before the mark has only the two above.
@@ -110,7 +111,12 @@ describe('review stats', () => {
         verdictReason: 'verdict_reader',
         verdictTrace: { survivingBlockers: [{ file: 'a', line: 1, title: 'x', fingerprint: 'k1' }, { file: 'b', line: 2, title: 'y', fingerprint: 'k2' }], unresolvedPriors: [] },
       },
-      usage: { estimatedCostUsd: 1 },
+      // A record too large to keep `diff.perFile` leaves its files out of the share read in the diff. A client that reports
+      // no steps, as the Codex CLI, counts in no figure of tool use.
+      usage: {
+        estimatedCostUsd: 1,
+        llmCalls: [{ ...call('claude-opus', 1), filesRead: ['src/b.ts'] }, { ...call('gpt-5', 0), toolSteps: undefined, filesRead: ['src/c.ts'] }],
+      },
     });
     // A record that says where each finding went is read as it says: a finding under an earlier thread is left out, and
     // one posted again beside a matching earlier thread counts. A round that tagged origins without the earlier change
@@ -168,8 +174,18 @@ describe('review stats', () => {
     expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1, 'ignore unsettled': 1, 'warning unsettled': 1 });
     expect(Object.fromEntries(stats.pairRefutations)).toEqual({ 'disproved / confirmed': 1, 'unsettled / disproved': 1, 'unsettled / unsettled': 1 });
     expect(Object.fromEntries(stats.finders)).toEqual({
-      'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnly: 1, keptShared: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0 },
-      'claude-opus': { rounds: 1, rawFindings: 1, keptOnly: 0, keptShared: 1, toolSteps: [10], budgetedCalls: 1, wrapUps: 1 },
+      'claude-sonnet': {
+        rounds: 1, rawFindings: 3, keptOnly: 1, keptShared: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0,
+        stepsPerRound: [6], filesPerRound: [2], filesInDiff: 1, filesInListedRounds: 2, readSteps: 4, readFileSteps: 1, otherSteps: 1,
+      },
+      'claude-opus': {
+        rounds: 1, rawFindings: 1, keptOnly: 0, keptShared: 1, toolSteps: [10, 1], budgetedCalls: 1, wrapUps: 1,
+        stepsPerRound: [10, 1], filesPerRound: [0, 1], filesInDiff: 0, filesInListedRounds: 0, readSteps: 11, readFileSteps: 0, otherSteps: 0,
+      },
+      'gpt-5': {
+        rounds: 0, rawFindings: 0, keptOnly: 0, keptShared: 0, toolSteps: [0], budgetedCalls: 0, wrapUps: 0,
+        stepsPerRound: [], filesPerRound: [], filesInDiff: 0, filesInListedRounds: 0, readSteps: 0, readFileSteps: 0, otherSteps: 0,
+      },
     });
 
     const report = renderStats(stats);
@@ -210,7 +226,15 @@ describe('review stats', () => {
       '| a sweep | 1 | 0 | 1 | 0 | 0% | 100% |',
     ].join('\n'));
     expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
-    expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | 1 | mean 10.0, median 10.0, max 10.0 | 100% (1 of 1) |');
+    expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | 1 | mean 5.5, median 5.5, max 10.0 | 100% (1 of 1) |');
+    expect(report).toContain([
+      '| model | rounds | tool steps per round | files read per round | files read that the diff changes | `Read` steps | `read_file` steps | other steps |',
+      '| --- | ---: | --- | --- | ---: | ---: | ---: | ---: |',
+      '| claude-opus | 2 | mean 5.5, median 5.5, max 10.0 | mean 0.5, median 0.5, max 1.0 | - | 11 | 0 | 0 |',
+      '| claude-sonnet | 1 | mean 6.0, median 6.0, max 6.0 | mean 2.0, median 2.0, max 2.0 | 50% (1 of 2) | 4 | 1 | 1 |',
+      '',
+      '## Refutations',
+    ].join('\n'));
     expect(report).toContain('| blocker disproved | 1 |');
     expect(report).toContain('- Follow-up rounds whose inter-round diff was cut or unknown: 40% (2 of 5)');
   });
@@ -375,6 +399,7 @@ describe('review stats', () => {
     expect(report).toContain('No refutations.');
     expect(report).toContain('No second refuter.');
     expect(report).toContain('## Sweeps\n\nNo sweeps.');
+    expect(report).toContain('## Finder tool use\n\nNo finder tool steps recorded.');
     // Calls that gave no answer still show what they cost.
     const failed = makeRoundContext(1, { usage: { llmCalls: [{ ...call('gpt-5', 2), stage: 'judge', agent: 'refute_pair', costUsd: 0.05, failed: true }] } });
     const silent = computeStats([prRecords('o/r', 4, { reviews: [review(300, failed)], threadComments: [] })]);
