@@ -889,9 +889,10 @@ function heldForPerson(bot: BotIdentity, reviews: ReviewEntry[], headSha: string
 
 /**
  * What `approveOrSayWhy` decided. `standing` marks an approval that was already there. `why` tells a person why the PR is
- * not approved and what lifts that. `answered` marks a reason already posted on the PR.
+ * not approved and what lifts that. `answered` marks a reason already posted on the PR. `held` names the hold the check
+ * stopped at: a draft, a warning thread, a conflict or a refusal by GitHub. Any other reason sets none.
  */
-type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true };
+type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string>; answered?: true; held?: Exclude<ApprovalHeld, false> };
 
 /** Post an approval review if all findings are resolved. */
 async function checkAndAutoApprove(
@@ -914,7 +915,8 @@ async function approveOrSayWhy(
   prNumber: number,
   config?: ReviewConfig,
 ): Promise<ApprovalCheck> {
-  const withheld = (why: string | (() => Promise<string>)): ApprovalCheck => ({ approved: false, why: typeof why === 'string' ? async () => why : why });
+  const withheld = (why: string | (() => Promise<string>), held?: Exclude<ApprovalHeld, false>): ApprovalCheck =>
+    ({ approved: false, why: typeof why === 'string' ? async () => why : why, ...(held && { held }) });
   const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
 
   const totalCount = threads.length;
@@ -962,7 +964,7 @@ async function approveOrSayWhy(
   };
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');
-    return withheld(async () => explain(await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole)));
+    return withheld(async () => explain(await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole)), 'draft');
   }
 
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
@@ -1007,7 +1009,7 @@ async function approveOrSayWhy(
   const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, prAuthorRole, clearRole);
   if (warnings.length > 0) {
     core.info('A warning thread holds the approval — skipping auto-approve');
-    return withheld(why);
+    return withheld(why, 'warnings');
   }
 
   if (latestBotReview?.state === 'APPROVED') {
@@ -1044,7 +1046,7 @@ async function approveOrSayWhy(
   const heldBy = async (held: HeldApproval): Promise<ApprovalCheck> => {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
     if (held.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', held.line, held.reason));
-    return { approved: false, why: async () => held.line, ...(held.posted && { answered: true as const }) };
+    return { approved: false, why: async () => held.line, held: held.reason, ...(held.posted && { answered: true as const }) };
   };
   const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor);
   if (hold) return heldBy(hold);
