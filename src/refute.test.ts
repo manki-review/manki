@@ -1295,6 +1295,11 @@ describe('refuteBlockers', () => {
     expect(first.refutation?.files).toEqual(['src/api.ts', 'src/math.ts']);
     const [again] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds, diff });
     expect([client.calls.length, again.severity, again.refutation]).toEqual([1, 'blocker', first.refutation]);
+    // `mayStart` is asked only when a check needs a model call, and its refusal starts none and leaves the finding unchecked.
+    const mayStart = jest.fn(() => false);
+    const [reused] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds, diff, mayStart });
+    const [refused] = await refuteBlockers(client, [finding('Sum overflows')], { workspace, diff, mayStart });
+    expect([client.calls.length, mayStart.mock.calls.length, reused.refutation, refused.refutation, refused.severity]).toEqual([1, 1, first.refutation, undefined, 'blocker']);
 
     // A second refuter reuses its own stored outcome the same way, and is asked when none is stored.
     const pair = fakeClient({ 'Sum overflows': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] } });

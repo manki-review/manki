@@ -619,6 +619,8 @@ export interface RefuteOptions {
   preExisting?: (finding: Finding) => boolean;
   /** The repository's `review.rules`, which decides whether a confirmed rule grades a finding and how. */
   rules?: RulesMode;
+  /** Asked once before the first model call, and only when the call needs one. False starts no check, so every finding stays unconfirmed. */
+  mayStart?: () => boolean;
 }
 
 /**
@@ -629,7 +631,7 @@ export interface RefuteOptions {
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge. With `roundEnd` it makes
  * only the checks `doubtsToCheck` picks.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules, mayStart }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
@@ -671,7 +673,6 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
   const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
   const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, preExisting, roundEnd, rules);
-  if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);
   const overLimit = new Set(picked.over);
   const getsCheck = (finding: Finding): boolean => {
@@ -682,6 +683,8 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (decidesGrade(finding) ? !confirmedGrade(finding) && hiddenLater?.(finding) : noCheck(finding)) return false;
     return checkable(finding);
   };
+  if (mayStart && reopened.some(f => getsCheck(f) && !needsNoCall(f)) && !mayStart()) return reopened;
+  if (doubtBudget) doubtBudget.left -= picked.checked.length;
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
     if (overLimit.has(finding)) return { ...finding, overCheckLimit: true as const };
     if (!getsCheck(finding)) return finding;

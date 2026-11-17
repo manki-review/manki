@@ -162,7 +162,7 @@ export const ROUND_TIME_MS = 25 * 60_000;
 const AFTER_FINDERS_MS = 8 * 60_000;
 /** The least time a finder's retry starts with. */
 const MIN_RETRY_MS = 5 * 60_000;
-/** The least time the judge starts with. */
+/** The least time the judge and each stage after it start with: the judge on the sweep's findings, the refuter and the verdict reader. */
 const MIN_JUDGE_MS = 2 * 60_000;
 /** How long the round still waits for the sibling comparisons once the finders are done. */
 const COMPARISON_GRACE_MS = 60_000;
@@ -717,8 +717,16 @@ export async function runReview(
   const skip = (entry: RoundNotStarted): void => {
     if (notStarted.some(e => e.kind === entry.kind && e.stage === entry.stage && e.agent === entry.agent && e.reason === entry.reason)) return;
     notStarted.push(entry);
-    const what = entry.kind === 'judge' ? 'The judge' : entry.kind === 'retry' ? `The retry of ${entry.agent}` : `The move of ${entry.agent ?? entry.stage} to its fallback model`;
+    const what = entry.kind === 'call' ? `The ${lateCallName(entry)}` : entry.kind === 'retry' ? `The retry of ${entry.agent}` : `The move of ${entry.agent ?? entry.stage} to its fallback model`;
     core.warning(`${what} is not started, since ${entry.reason}`);
+  };
+  // Records `call` as not started and returns the summary of the incomplete round, when the round has less than `MIN_JUDGE_MS` left.
+  const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>): string | undefined => {
+    const leftMs = deadline === undefined ? Infinity : deadline - Date.now();
+    if (leftMs >= MIN_JUDGE_MS) return undefined;
+    const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(MIN_JUDGE_MS)} the ${lateCallName(call)} starts with`;
+    skip({ kind: 'call', ...call, reason });
+    return `The ${lateCallName(call)} was not started, since ${reason}. ${RETRY_HINT}`;
   };
   // Every call ends by `until`, and a fallback gets only what the failed call left of that.
   const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined, until = deadline): LLMClient => {
@@ -1315,12 +1323,8 @@ export async function runReview(
     allJudgedFindings = [];
     finalFindings = [];
   } else {
-    const judgeLeftMs = deadline === undefined ? Infinity : deadline - Date.now();
-    if (judgeLeftMs < MIN_JUDGE_MS) {
-      const reason = `the round has ${formatDuration(Math.max(0, judgeLeftMs))} left, less than the ${formatDuration(MIN_JUDGE_MS)} the judge starts with`;
-      skip({ kind: 'judge', stage: 'judge', reason });
-      return incomplete(`The judge was not started, since ${reason}. ${RETRY_HINT}`, { ...(openLeads.length > 0 && { openLeads }) });
-    }
+    const late = noTimeFor({ stage: 'judge' });
+    if (late) return incomplete(late, { ...(openLeads.length > 0 && { openLeads }) });
     try {
       core.info(`Running judge on ${findingsForJudge.length} findings...`);
       const judgeStart = Date.now();
@@ -1405,6 +1409,8 @@ export async function runReview(
       fresh = llm.unique;
     }
     if (fresh.length > 0) {
+      const late = noTimeFor({ stage: 'judge', agent: 'sweep' });
+      if (late) return incompleteAfterJudge(late);
       try {
         core.info(`Judging ${fresh.length} finding(s) the sweep found`);
         const sweepJudge = withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'sweep');
@@ -1440,11 +1446,14 @@ export async function runReview(
   if (refutation) {
     const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
     const kept = finalFindings;
+    let late: string | undefined;
     const checked = await refuteBlockers(refutation.client, kept, {
       workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
       outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
       preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
+      mayStart: () => !(late = noTimeFor({ stage: 'judge', agent: 'refute' })),
     });
+    if (late) return incompleteAfterJudge(late);
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
     finalFindings = checked.filter(f => f.severity !== 'ignore');
@@ -1524,6 +1533,8 @@ export async function runReview(
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
   });
   if (outcome === 'READY') {
+    const late = noTimeFor({ stage: 'verdict' });
+    if (late) return incompleteAfterJudge(late);
     const verdictWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     // The reader reads the slices the finders read, so no slice of the diff is cut.
@@ -1670,6 +1681,13 @@ export async function runReview(
     ...(relatedWork && { relatedWork }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
   };
+}
+
+/** Names the call of the judge or a stage after it that `call` stands for. */
+function lateCallName({ stage, agent }: Pick<RoundNotStarted, 'stage' | 'agent'>): string {
+  if (stage === 'verdict') return 'verdict reader';
+  if (agent === 'refute') return 'refuter';
+  return agent === 'sweep' ? 'judge call on the sweep\'s findings' : 'judge';
 }
 
 interface InterRoundDiffInput {

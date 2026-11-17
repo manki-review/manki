@@ -2099,12 +2099,15 @@ export interface RoundModelFallback {
   unreachable?: true;
 }
 
-/** A retry of a finder, a move to a fallback model or a judge call that the round did not start, and why. */
+/** A retry of a finder, a move to a fallback model, or a call of the judge or a stage after it that the round did not start, and why. */
 export interface RoundNotStarted {
-  /** `retry` for a finder's retry, `fallback` for a stage's move to its fallback model, `judge` for the judge's call. */
-  kind: 'retry' | 'fallback' | 'judge';
+  /**
+   * `retry` for a finder's retry, `fallback` for a stage's move to its fallback model, `call` for the judge, its call on
+   * the sweep's findings (agent `sweep`), the refuter (agent `refute`) or the verdict reader (stage `verdict`).
+   */
+  kind: 'retry' | 'fallback' | 'call';
   stage: RoundModelFallback['stage'];
-  /** Finder or check whose retry or move was not started. */
+  /** Finder or check whose retry, move or call was not started. */
   agent?: string;
   reason: string;
 }
