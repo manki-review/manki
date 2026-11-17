@@ -1140,11 +1140,11 @@ describe('mergeReports and gateReports', () => {
       reason: "The baseline has 1 run per case, and the gate decides on 2. Run the baseline's ref again and give both runs as the baseline.",
     });
     expect(await gate('blocker', 'blocker', 1)).toMatchObject({
-      verdict: 'RERUN', reason: 'False blockers rose from 0 to 1 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
+      verdict: 'RERUN', reason: 'False blockers rose from 0 to 1 per run, within the margin of 1. Run the candidate once more and decide on both runs.',
     });
     expect(await gate('blocker', 'blocker', 2)).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 2 per run, by more than 1.' });
     expect(await gate('blocker', 'blocker', 0, 1)).toMatchObject({
-      verdict: 'RERUN', reason: 'Unexpected warnings rose from 0 to 1 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
+      verdict: 'RERUN', reason: 'Unexpected warnings rose from 0 to 1 per run, within the margin of 1. Run the candidate once more and decide on both runs.',
     });
     expect(await gate('blocker', 'blocker', 0, 2)).toMatchObject({ verdict: 'FAIL', reason: 'Unexpected warnings rose from 0 to 2 per run, by more than 1.' });
     const warned = report([[first, [await run(first, 'warning', 0, true, 2)]], [second, [await run(second, 'blocker')]]]);
@@ -1185,20 +1185,81 @@ describe('mergeReports and gateReports', () => {
     expect(gateReports([baselineFolds, again(baselineFolds)], [candidateFolds])[0]).toMatchObject({ verdict: 'PASS', baseline: { repeats: 2 }, candidate: { repeats: 2 } });
     expect(gateReports([baselineFolds, again(baselineFolds)], [withoutFolds(await restating(0, 3))])[0]).toMatchObject({ verdict: 'RERUN', baseline: { repeats: 2 }, candidate: { repeats: 3 } });
     expect(gateReports([await followUps({ resolvedRight: 1 }), again(await followUps({ resolvedRight: 1 }))], [await followUps({ resolvedRight: 0 })])[0]).toMatchObject({
-      verdict: 'RERUN', reason: 'Earlier threads resolved as the key says fell from 1 to 0 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
+      verdict: 'RERUN', reason: 'Earlier threads resolved as the key says fell from 1 to 0 per run. Run the candidate once more and decide on both runs.',
     });
     expect(await gate('blocker', 'warning')).toMatchObject({ verdict: 'RERUN', candidate: { found: 1 } });
-    expect(await gate(undefined, undefined, 1)).toMatchObject({ verdict: 'FAIL', reason: "Must-catch items found at the key's grade fell from 2 to 0 per run, by more than 1." });
+    expect(await gate(undefined, undefined, 1)).toMatchObject({
+      verdict: 'RERUN',
+      reason: "False blockers rose from 0 to 1 per run, within the margin of 1. Must-catch items found at the key's grade fell from 2 to 0 per run. "
+        + '2 items are right in every baseline run and in no candidate run: demo-1 K1, demo-2 K1. Run the candidate once more and decide on both runs.',
+    });
 
     const rerun = report([[first, [await run(first, 'blocker')]], [second, [await run(second)]]]);
     const atMargin = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]]]);
     expect(gateReports([baseline, again(baseline)], [rerun, again(atMargin)])[0]).toMatchObject({
       verdict: 'PASS', candidate: { runs: 2, found: 1.5 },
-      reason: "Must-catch items found at the key's grade fell from 2 to 1.5 on the mean of 2 runs, within the margin of 1. No other figure got worse.",
+      reason: "Must-catch items found at the key's grade fell from 2 to 1.5 on the mean of 2 runs, and no item is right in every baseline run and in no candidate run. No other figure got worse.",
+      items: [{ case: 'demo-2', item: 'K1', baseline: { right: 2, runs: 2 }, candidate: { right: 1, runs: 2 } }],
     });
     const noisy = report([[first, [await run(first, 'blocker', 2)]], [second, [await run(second, 'blocker')]]]);
     expect(gateReports([baseline, again(baseline)], [noisy, again(atMargin)])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, falseBlockers: 1 } });
-    expect(gateReports([baseline, again(baseline)], [rerun, again(rerun)])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, found: 1 } });
+    expect(gateReports([baseline, again(baseline)], [rerun, again(rerun)])[0]).toMatchObject({
+      verdict: 'RERUN', candidate: { runs: 2, found: 1 },
+      reason: "1 item is right in every baseline run and in no candidate run: demo-2 K1. Run demo-2 again on the baseline's commit and on the candidate's, and decide on all runs of each side. "
+        + 'An item that some runs of a side get right and others do not is noise.',
+    });
+  });
+
+  it('asks for a rerun of each case with an item that looks lost, pools the runs of partial reports, and fails only an item still lost after them', async () => {
+    const [flips, lost, gained] = ['demo-1', 'demo-2', 'demo-3'].map(id => parseCase(CASE_YAML.replace('id: demo-1', `id: ${id}`), `${id}.yml`, 'holdout'));
+    const thread = parseCase(FOLLOW_UP_YAML.replace('id: demo-1', 'id: demo-4'), 'demo-4.yml', 'holdout');
+    // One run per entry: whether it finds K1 and, on the follow-up case, whether it resolves P1.
+    const runs = (benchCase: BenchCase, hits: number[], falseBlockers = 0) => Promise.all(hits.map(async (hit) => {
+      if (benchCase !== thread) return run(benchCase, hit ? 'blocker' : undefined, falseBlockers);
+      return { ...await run(thread, 'blocker'), followUp: { resolved: hit ? ['P1'] : [], resolvedRight: hit, resolvedWrong: 0, repeats: 0 } };
+    }));
+    const side = async (hits: Array<[BenchCase, number[]]>, startedAt: string, falseBlockers = 0) =>
+      ({ ...report(await Promise.all(hits.map(async ([c, h]): Promise<[BenchCase, Run[]]> => [c, await runs(c, h, c === flips ? falseBlockers : 0)]))), startedAt });
+    const [first, rerun] = ['2026-11-09T00:00:00.000Z', '2026-11-11T00:00:00.000Z'];
+    const baseline = await side([[flips, [1, 0]], [lost, [1, 1]], [gained, [0, 0]], [thread, [1, 1]]], first);
+    const candidate = await side([[flips, [0, 1]], [lost, [0, 0]], [gained, [1, 1]], [thread, [0, 0]]], first);
+
+    const looksLost = gateReports([baseline], [candidate])[0];
+    expect(looksLost).toMatchObject({
+      verdict: 'RERUN', shared: ['demo-1', 'demo-2', 'demo-3', 'demo-4'], baseline: { runs: 2, found: 2.5, resolvedRight: 1 }, candidate: { runs: 2, found: 2.5, resolvedRight: 0 },
+      reason: "2 items are right in every baseline run and in no candidate run: demo-2 K1, demo-4 P1. Run demo-2, demo-4 again on the baseline's commit and on the candidate's, "
+        + 'and decide on all runs of each side. An item that some runs of a side get right and others do not is noise.',
+    });
+    expect(formatGate([looksLost])).toContain([
+      'Key items that changed, with the runs that got each right on each side:', '',
+      '- demo-1 K1: baseline 1 of 2, candidate 1 of 2, differs between the runs of both sides',
+      '- demo-2 K1: baseline 2 of 2, candidate 0 of 2, looks lost',
+      '- demo-3 K1: baseline 0 of 2, candidate 2 of 2',
+      '- demo-4 P1: baseline 2 of 2, candidate 0 of 2, looks lost', '',
+    ].join('\n'));
+
+    // The reruns hold only the named cases, three runs each, and every run of a commit counts for its case.
+    const baselineRerun = await side([[lost, [1, 0, 1]], [thread, [0, 1, 1]]], rerun);
+    const candidateRerun = await side([[lost, [0, 0, 0]], [thread, [1, 0, 0]]], rerun);
+    const noise = gateReports([baseline, baselineRerun], [candidate, candidateRerun])[0];
+    expect(noise).toMatchObject({ verdict: 'PASS', shared: ['demo-1', 'demo-2', 'demo-3', 'demo-4'], baseline: { runs: 2, resolvedRight: 0.8 }, candidate: { runs: 2, resolvedRight: 0.2 } });
+    expect(noise.items).toContainEqual({ case: 'demo-2', item: 'K1', baseline: { right: 4, runs: 5 }, candidate: { right: 0, runs: 5 } });
+    expect(formatGate([noise])).toContain('- demo-4 P1: baseline 4 of 5, candidate 1 of 5, differs between the runs of both sides\n');
+
+    const stillLost = await side([[lost, [1, 1, 1]], [thread, [0, 1, 1]]], rerun);
+    expect(gateReports([baseline, stillLost], [candidate, candidateRerun])[0]).toMatchObject({
+      verdict: 'FAIL', reason: '1 item is right in every baseline run and in no candidate run, over more than 2 runs per side: demo-2 K1.',
+    });
+    // A rerun of one side only decides nothing yet.
+    expect(gateReports([baseline], [candidate, candidateRerun])[0]).toMatchObject({ verdict: 'RERUN', reason: expect.stringContaining('demo-2 K1.') });
+
+    // A figure without item ids keeps the margin on the pooled runs.
+    const blocking = await side([[flips, [0, 1]], [lost, [0, 0]], [gained, [1, 1]], [thread, [0, 0]]], first, 2);
+    expect(gateReports([baseline, baselineRerun], [blocking, candidateRerun])[0]).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 2 per run, by more than 1.' });
+    const warned = await side([[flips, [0, 1]], [lost, [0, 0]], [gained, [1, 1]], [thread, [0, 0]]], first, 1);
+    expect(gateReports([baseline, baselineRerun], [warned, candidateRerun])[0]).toMatchObject({
+      verdict: 'PASS', reason: expect.stringMatching(/^False blockers rose from 0 to 1 on the mean of 2 runs, within the margin of 1\. /),
+    });
   });
 
   it('decides nothing on an incomplete run, a config that does not load or without a shared hold-out case, and leaves a case with another key version out', async () => {
