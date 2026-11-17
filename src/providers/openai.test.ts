@@ -668,25 +668,27 @@ describe('sendViaCLI (Codex CLI path)', () => {
         failed('stream disconnected before completion: Transport error: network error: error decoding response body'),
         failed('stream disconnected before completion: idle timeout waiting for SSE'),
         failed(`${RATE_LIMIT} Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.`, TOKENS),
-        failed(`${RATE_LIMIT} Please try again in 1m0.5s.`), answer,
+        failed(`${RATE_LIMIT} Please try again in 1m0.5s.`),
+        // Codex gave up on a request the endpoint kept answering with 429, and the endpoint named no wait.
+        failed('exceeded retry limit, last status: 429 Too Many Requests', TOKENS), answer,
       ];
       const { stdin, instructions, starts } = setupSpawnMock('', first, ...resumed);
 
       const { value, tookMs } = await settle(endpoint.sendMessage('Review the diff.', 'the diff', { effort: 'high', ...tools }));
 
       expect(value?.content).toBe('[]');
-      const pauses = [15_000, 30_000, 0, 0, 0, 3_000, 60_500];
+      const pauses = [15_000, 30_000, 0, 0, 0, 3_000, 60_500, 60_000];
       expect(starts.slice(1).map((start, i) => start - starts[i] - RUN_MS)).toEqual(pauses);
-      expect(tookMs).toBe(108_500 + 8 * RUN_MS);
+      expect(tookMs).toBe(168_500 + 9 * RUN_MS);
       // A resumed run gets every option of the first one, so the sandbox, the model, the effort and the tool server are the same.
       const [firstArgs, ...resumedArgs] = mockSpawn.mock.calls.map(call => call[1] as string[]);
       expect(firstArgs).toEqual(expect.arrayContaining(['--sandbox', 'read-only', '--model=gpt-5.5', 'model_reasoning_effort=high', 'model_providers.manki.stream_max_retries=0']));
       expect(firstArgs.at(-1)).toBe('-');
       for (const args of resumedArgs) expect(args).toEqual([...firstArgs.slice(0, -1), 'resume', SESSION, '-']);
-      expect(instructions).toHaveLength(8);
+      expect(instructions).toHaveLength(9);
       expect(new Set(instructions).size).toBe(1);
       expect(stdin.mock.calls.map(c => String(c[0]))).toEqual(['the diff', ...resumedArgs.map(() => RESUME)]);
-      const reasons = ['model at capacity', 'model at capacity', 'connection dropped', 'connection dropped', 'connection dropped', 'rate limit', 'rate limit'];
+      const reasons = ['model at capacity', 'model at capacity', 'connection dropped', 'connection dropped', 'connection dropped', 'rate limit', 'rate limit', 'rate limit'];
       expect(info.mock.calls.map(c => String(c[0]))).toEqual(
         reasons.map((reason, i) => `Codex stream failed (${reason}). Resuming the session in ${pauses[i] / 1000}s, resume ${i + 1} of 8.`));
     });
