@@ -674,14 +674,17 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);
   const overLimit = new Set(picked.over);
-  return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
-    if (overLimit.has(finding)) return { ...finding, overCheckLimit: true as const };
+  const getsCheck = (finding: Finding): boolean => {
     // A finding the judge dropped stays dropped, even when it was a lead.
-    if (finding.severity === 'ignore' || !((!roundEnd && alwaysChecked(finding)) || doubtChecks.has(finding))) return finding;
+    if (overLimit.has(finding) || finding.severity === 'ignore' || !((!roundEnd && alwaysChecked(finding)) || doubtChecks.has(finding))) return false;
     // Only a check that can raise a finding changes what happens to one a later step hides. A check no grade hangs on
     // is skipped for a finding `noCheck` accepts, as for any warning.
-    if (decidesGrade(finding) ? !confirmedGrade(finding) && hiddenLater?.(finding) : noCheck(finding)) return finding;
-    if (!checkable(finding)) return finding;
+    if (decidesGrade(finding) ? !confirmedGrade(finding) && hiddenLater?.(finding) : noCheck(finding)) return false;
+    return checkable(finding);
+  };
+  return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
+    if (overLimit.has(finding)) return { ...finding, overCheckLimit: true as const };
+    if (!getsCheck(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
   });
