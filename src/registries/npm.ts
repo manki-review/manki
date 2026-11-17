@@ -78,8 +78,12 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
       // Yarn 2 and later write `npm`, and pnpm writes no URL, for the registry the project is set up with.
       if (source === 'npm' || source === 'registry') return true;
       if (!source || !/^https:\/\//.test(source)) return false;
-      const origin = new URL(source).origin;
-      return origin === NPM_REGISTRY || origin === YARN_REGISTRY;
+      try {
+        const { origin } = new URL(source);
+        return origin === NPM_REGISTRY || origin === YARN_REGISTRY;
+      } catch {
+        return false;
+      }
     },
     namesHost: source => source !== 'npm' && source !== 'registry',
     configFiles: ['.npmrc', '.yarnrc', '.yarnrc.yml'],

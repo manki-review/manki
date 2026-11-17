@@ -434,20 +434,25 @@ export interface FakeRegistry {
   close(): Promise<void>;
 }
 
+/** What a `FakeRegistry` answers for a path: a body, a redirect, headers and then nothing more, or a body after a delay. */
+type FakeAnswer = Buffer | string | { redirect: string } | { hang: true } | { delayMs: number; body: Buffer | string };
+
 /**
- * Starts a `FakeRegistry` that answers each path of `routes` with its body, a redirect, or headers and then nothing
- * more (`hang`), and any other path with 404.
+ * Starts a `FakeRegistry` that answers each path of `routes` with its `FakeAnswer`, and any other path with 404. The
+ * paths are matched as requested, still percent-encoded, so a test sees how a client encodes a name.
  */
-export async function fakeRegistry(routes: Record<string, Buffer | string | { redirect: string } | { hang: true }>): Promise<FakeRegistry> {
+export async function fakeRegistry(routes: Record<string, FakeAnswer>): Promise<FakeRegistry> {
   const requests: string[] = [];
   const server = createServer((request, response) => {
-    const path = decodeURIComponent(request.url ?? '');
+    const path = request.url ?? '';
     requests.push(path);
     const answer = routes[path];
     if (answer === undefined) {
       response.writeHead(404).end();
     } else if (typeof answer === 'object' && 'hang' in answer) {
       response.writeHead(200).write('{');
+    } else if (typeof answer === 'object' && 'delayMs' in answer) {
+      setTimeout(() => response.writeHead(200).end(answer.body), answer.delayMs);
     } else if (typeof answer === 'object' && !Buffer.isBuffer(answer)) {
       response.writeHead(302, { location: answer.redirect }).end();
     } else {

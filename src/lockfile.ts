@@ -111,14 +111,26 @@ export function lockedGitCommits(path: string, text: string): Map<string, Set<st
   return locked;
 }
 
-/** A package a lockfile locks, with the source and checksum the lockfile names for it. */
-export type LockedPackage = Pick<LockEntry, 'name' | 'version' | 'source' | 'checksum'>;
+/**
+ * A package a lockfile locks, with the source and checksum the lockfile names for it. `patched` is set when the lockfile
+ * applies a patch to it, so the code the project runs is not the registry's archive.
+ */
+export type LockedPackage = Pick<LockEntry, 'name' | 'version' | 'source' | 'checksum'> & { patched?: true };
+
+/**
+ * Whether `entry` is locked with a patch applied: a Yarn `patch:` resolution, which the parser keeps as a `patch` field,
+ * or a pnpm patch, which marks the entry `patched` or names a `patch_hash` in its key or a snapshot's.
+ */
+function isPatched({ key, fields }: LockEntry): boolean {
+  return fields.has('patch') || fields.get('patched') === 'true' || [key ?? '', ...fields.keys()].some(k => k.includes('patch_hash='));
+}
 
 /** Returns the packages the lockfile at `path` locks, given its `text`. Throws when Manki does not parse that kind of lockfile, or the text does not parse. */
 export function lockedPackages(path: string, text: string): LockedPackage[] {
   const parse = PARSERS[posix.basename(path)];
   if (!parse) throw new Error(`Manki does not parse ${posix.basename(path)}`);
-  return parseContent(parse, text).filter(e => e.isPackage).map(({ name, version, source, checksum }) => ({ name, version, source, checksum }));
+  return parseContent(parse, text).filter(e => e.isPackage)
+    .map(entry => ({ name: entry.name, version: entry.version, source: entry.source, checksum: entry.checksum, ...(isPatched(entry) && { patched: true as const }) }));
 }
 
 /**

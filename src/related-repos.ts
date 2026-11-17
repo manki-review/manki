@@ -17,7 +17,7 @@ export const RELATED_REPO_HOST = 'https://github.com';
 // A tool call must end before `STALE_TIMEOUT_MS`. It can wait for another's fetch and then fetch in its place, so
 // `sharedCheckout` begins a fetch only while one still fits into the call, and stops waiting before the limit.
 const FETCH_TIMEOUT_MS = 60_000;
-const WAIT_SLACK_MS = 2_000;
+export const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
 /** Commits the first fetch of an older history reaches back. Each further fetch reaches twice as far. */
 const AS_OF_DEPTH = 64;
@@ -237,8 +237,8 @@ export async function sharedCheckout(
   }
 }
 
-/** Writes `text` to `path` through a rename, so a waiting process never reads it half written. */
-function writeMarker(path: string, text: string): void {
+/** Writes `text` to `path` through a rename, so a waiting process never reads it half written. Only the holder of the lock that guards `path` writes it. */
+export function writeMarker(path: string, text: string): void {
   writeFileSync(`${path}.tmp`, text);
   renameSync(`${path}.tmp`, path);
 }

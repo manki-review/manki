@@ -592,8 +592,11 @@ export interface RoundDependencySource {
   file: string;
   /** The manifest's requirement, when the version was resolved from one. */
   requirement?: string;
-  /** `fetched`, `failed` with the `reason`, or `mismatch` when its archive did not match its checksum and was not read. */
-  status: 'fetched' | 'failed' | 'mismatch';
+  /**
+   * `fetched`, `failed` with the `reason`, `mismatch` when its archive did not match its checksum and was not read, or
+   * `refused` with the `reason` when the code the PR uses is not the registry's archive, such as a patched or git package.
+   */
+  status: 'fetched' | 'failed' | 'mismatch' | 'refused';
   reason?: string;
   /** How long the fetch took, when it ended. */
   durationMs?: number;

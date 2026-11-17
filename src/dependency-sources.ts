@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join, posix } from 'path';
 import { rcompare, satisfies, valid } from 'semver';
 
@@ -10,7 +10,7 @@ import { ListOptions, listFiles, resolveInRoot } from './mcp-server';
 import { cratesIo } from './registries/crates';
 import { npmRegistry } from './registries/npm';
 import { PublishedVersion, Registry, RegistryConfig, RegistryFetch } from './registries/types';
-import { fetchOutcome, RelatedRepoPending, sharedCheckout } from './related-repos';
+import { fetchOutcome, RelatedRepoPending, sharedCheckout, WAIT_SLACK_MS, writeMarker } from './related-repos';
 import { claimStep, STALE_TIMEOUT_MS } from './tool-steps';
 import { fetchWhole, matchesIntegrity } from './tool-install';
 import { RoundDependencySource } from './types';
@@ -66,12 +66,18 @@ interface ReadBudget {
 /** What the round record keeps of a package before its fetch starts, in `<marker>.from`. */
 type PackageOrigin = Pick<RoundDependencySource, 'registry' | 'name' | 'version' | 'source' | 'file' | 'requirement'>;
 
-/** A failure to resolve a requirement's version from the registry, recorded like a failed fetch. */
-class UnresolvedPackage extends Error {
-  constructor(message: string, readonly origin: PackageOrigin) {
+/**
+ * A package the PR uses that Manki does not read, recorded in the round record under `key`: `refused` when the code the
+ * PR uses is not the registry's archive, else failed, such as when a requirement's versions could not be fetched.
+ */
+class UnreadPackage extends Error {
+  constructor(message: string, readonly key: string, readonly origin: PackageOrigin, readonly refused: boolean) {
     super(message);
   }
 }
+
+/** The form of a version Manki puts in a package's key, a URL and a note, which a lockfile of the PR may not hold. */
+const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 
 /**
  * Whether `data` matches `checksum`: a hex SHA-256 as `Cargo.lock` and the crates.io index state, a hex SHA-1 as an
@@ -104,8 +110,9 @@ export function pickVersion(versions: readonly PublishedVersion[], range: string
   return preferred ?? (current.length > 0 ? current : matching).sort((a, b) => rcompare(a.version, b.version))[0];
 }
 
-/** Returns a fetch that reaches only the hosts of `registry`, refuses redirects and ends when `deadline` aborts. */
-function registryFetch(registry: Registry, deadline: AbortSignal, timeoutMs: number): RegistryFetch {
+/** Returns a fetch that reaches only the hosts of `registry` and refuses redirects. Its requests end `timeoutMs` after the fetch is made. */
+function registryFetch(registry: Registry, timeoutMs: number): RegistryFetch {
+  const deadline = AbortSignal.timeout(timeoutMs);
   return (url, maxBytes, headers) => {
     if (!registry.origins.includes(new URL(url).origin)) return Promise.reject(new Error(`${url} is not on a host of ${registry.id}`));
     return fetchWhole(url, deadline, { maxBytes, noRedirects: true, deadlineMs: timeoutMs, ...(headers && { headers }) });
@@ -184,14 +191,31 @@ async function resolveDependency(
         return [];
       }
     });
-  const fromRegistry = locked.filter(p => registry.isRegistrySource(p.source) && (registry.namesHost(p.source) || otherRegistry === undefined));
+  // Why Manki does not read a locked entry: the code the PR uses there is not the archive the registry publishes.
+  const refusalOf = (p: typeof locked[number]): string | undefined => {
+    if (!VERSION.test(p.version)) return `${p.file} locks it at a version Manki does not read`;
+    if (!registry.isRegistrySource(p.source)) return `${p.file} locks it from ${(p.source ?? 'this repository').slice(0, 200)}, not from ${registry.id}`;
+    if (p.patched) return `${p.file} locks it with a patch applied, so the PR does not run the code ${registry.id} publishes`;
+    if (!registry.namesHost(p.source) && otherRegistry !== undefined) return `it may come from another registry than ${registry.id}, since ${otherRegistry}`;
+    return undefined;
+  };
+  const refuse = (key: string, reason: string, origin: PackageOrigin): never => {
+    throw new UnreadPackage(`Manki does not read ${key}: ${shown(reason)}.`, key, origin, true);
+  };
+  const refuseLocked = (p: typeof locked[number]): never => {
+    const valid = VERSION.test(p.version);
+    return refuse(valid ? `${registry.id}/${p.name}@${p.version}` : label, refusalOf(p)!, { registry: registry.id, name: p.name, ...(valid && { version: p.version }), source: 'lockfile', file: p.file });
+  };
+  const fromRegistry = locked.filter(p => refusalOf(p) === undefined);
   const usable = otherRegistry === undefined ? requirements : [];
+  const refusedVersion = version !== undefined && !fromRegistry.some(p => p.version === version) ? locked.find(p => p.version === version) : undefined;
+  if (refusedVersion) refuseLocked(refusedVersion);
   if (fromRegistry.length === 0 && usable.length === 0) {
-    if (otherRegistry !== undefined && (requirements.length > 0 || locked.some(p => registry.isRegistrySource(p.source)))) {
-      throw new Error(`${label} may come from another registry than ${registry.id}: ${shown(otherRegistry)}. Manki reads it from ${registry.id} only.`);
+    if (locked.length > 0) refuseLocked(locked[0]);
+    if (requirements.length > 0) {
+      const { file, requirement } = requirements[0];
+      refuse(label, `it may come from another registry than ${registry.id}, since ${otherRegistry}`, { registry: registry.id, name: requirements[0].name, source: 'requirement', file, requirement });
     }
-    const other = locked[0];
-    if (other) throw new Error(`${label} is locked in ${other.file} from ${other.source ?? 'this repository'}, not from ${registry.id}, the only place Manki reads it from.`);
     const notRead = unread.length > 0 ? ` Manki could not read ${unread.slice(0, 3).join(', ')}.` : '';
     const notListed = cut ? ' The checkout has more files than Manki lists, so it may have missed a lockfile or manifest.' : '';
     throw new Error(`${label} is not a dependency in the PR's manifests or lockfiles, so Manki does not read it.${notRead}${notListed}`);
@@ -208,7 +232,7 @@ async function resolveDependency(
       published = await registry.published(first.name, fetch);
     } catch (error) {
       const origin: PackageOrigin = { registry: registry.id, name: first.name, source: 'requirement', file: first.file, requirement: first.requirement };
-      throw new UnresolvedPackage(`Manki could not read the published versions of ${label} to resolve its requirement: ${error instanceof Error ? error.message : String(error)}`, origin);
+      throw new UnreadPackage(`Manki could not read the published versions of ${label} to resolve its requirement: ${error instanceof Error ? error.message : String(error)}`, `${registry.id}/${first.name}`, origin, false);
     }
     own = published.name;
     for (const { file, requirement } of usable) {
@@ -240,29 +264,24 @@ function parseSpec(spec: string, registries: readonly Registry[]): { registry: R
   const at = rest.lastIndexOf('@');
   const [name, version] = at > 0 ? [rest.slice(0, at), rest.slice(at + 1)] : [rest, undefined];
   if (!registry.validName(name)) throw new Error(`${JSON.stringify(name)} is not a package name of ${registry.id}.`);
-  if (version !== undefined && !/^[0-9A-Za-z.+-]{1,64}$/.test(version)) throw new Error(`${JSON.stringify(version)} is not a version.`);
+  if (version !== undefined && !VERSION.test(version)) throw new Error(`${JSON.stringify(version)} is not a version.`);
   return { registry, name, ...(version !== undefined && { version }) };
 }
 
-/** Writes `text` to `path` through a rename, so a reader never sees it half written. */
-function writeWhole(path: string, text: string): void {
-  writeFileSync(`${path}.tmp`, text);
-  renameSync(`${path}.tmp`, path);
-}
-
 /**
- * Records in the round's `stateDir` that `key` could not be read, and why. Leaves the record alone when another call
- * holds the package's lock, since that call records its own outcome.
+ * Records in the round's `stateDir` that the package of `unread` was not read, and why. Leaves the record alone when
+ * another call holds the package's lock, since that call records its own outcome.
  */
-function recordFailure(stateDir: string, key: string, origin: PackageOrigin, reason: string): void {
-  const marker = join(stateDir, encodeURIComponent(key));
+function recordUnread(stateDir: string, unread: UnreadPackage): void {
+  const marker = join(stateDir, encodeURIComponent(unread.key));
   try {
     writeFileSync(`${marker}.lock`, String(process.pid), { flag: 'wx' });
   } catch {
     return;
   }
-  writeWhole(`${marker}.from`, JSON.stringify(origin));
-  writeWhole(`${marker}.failed`, reason);
+  writeMarker(`${marker}.from`, JSON.stringify(unread.origin));
+  if (unread.refused) writeFileSync(`${marker}.refused`, '');
+  writeMarker(`${marker}.failed`, unread.message);
 }
 
 /** A package past the round's cap of packages. */
@@ -279,7 +298,7 @@ function claimPackagePlace(stateDir: string, marker: string, maxPackages: number
     const places = join(stateDir, 'package-places');
     mkdirSync(places, { recursive: true });
     place = claimStep(places);
-    writeWhole(`${marker}.place`, String(place));
+    writeMarker(`${marker}.place`, String(place));
   }
   if (place > maxPackages) throw new PackageCapReached(`the round already read ${maxPackages} packages, the most one round reads`);
 }
@@ -353,25 +372,28 @@ export function dependencyLoader(
   const wanted = new Set(registries.flatMap(r => [...r.manifests, ...r.lockfiles, ...r.configFiles]));
   let listing: Listing | undefined;
   return async spec => {
+    const started = Date.now();
+    const left = () => callLimitMs - (Date.now() - started);
     const { registry, name, version } = parseSpec(spec, registries);
     listing ??= listFiles(realpathSync(root), resolveInRoot(root, '.'), { ...listLimits, skipFolders: SKIPPED_FOLDERS, keep: file => wanted.has(file) });
-    const deadline = AbortSignal.timeout(timeoutMs);
-    const fetch = registryFetch(registry, deadline, timeoutMs);
     let resolved: Resolved;
     try {
-      resolved = await resolveDependency(root, listing, registry, name, version, fetch, { each: maxManifestBytes, left: maxManifestTotalBytes });
+      resolved = await resolveDependency(root, listing, registry, name, version, registryFetch(registry, timeoutMs), { each: maxManifestBytes, left: maxManifestTotalBytes });
     } catch (error) {
-      if (error instanceof UnresolvedPackage) recordFailure(stateDir, `${registry.id}/${error.origin.name}`, error.origin, error.message);
+      if (error instanceof UnreadPackage) recordUnread(stateDir, error);
       throw error;
     }
     const { key, source, file, requirement } = resolved;
     const origin: PackageOrigin = { registry: registry.id, name: resolved.name, version: resolved.version, source, file, ...(requirement && { requirement }) };
     const marker = join(stateDir, encodeURIComponent(key));
-    if (!existsSync(`${marker}.from`)) writeWhole(`${marker}.from`, JSON.stringify(origin));
     let dir: string;
     try {
-      dir = await sharedCheckout(key, marker, { timeoutMs, callLimitMs }, async () => {
+      // The call limit counts from the start of the call, so the time spent resolving the version leaves less to wait.
+      dir = await sharedCheckout(key, marker, { timeoutMs, callLimitMs: left() }, async () => {
+        writeMarker(`${marker}.from`, JSON.stringify(origin));
         claimPackagePlace(stateDir, marker, maxPackages);
+        // A fresh deadline, so a call that takes over a stopped fetch gets the whole time, within what the call has left.
+        const fetch = registryFetch(registry, Math.max(0, Math.min(timeoutMs, left() - WAIT_SLACK_MS)));
         return { dir: await fetchPackage(resolved, stateDir, fetch, marker, maxArchiveBytes, archiveLimits), commit: '' };
       });
     } catch (error) {
@@ -389,8 +411,8 @@ export function dependencyLoader(
 
 /**
  * Returns each package a tool server of the round in `stateDir` tried to read: its version and where that came from,
- * and whether it was fetched, failed with the reason, or its archive did not match its checksum. Warns about each one
- * that could not be read.
+ * and whether it was fetched, failed with the reason, was refused with the reason, or its archive did not match its
+ * checksum. Warns about each one that was not read.
  */
 export function dependencyOutcomes(stateDir: string): RoundDependencySource[] {
   const files = new Set(readdirSync(stateDir));
@@ -398,11 +420,13 @@ export function dependencyOutcomes(stateDir: string): RoundDependencySource[] {
     const key = decodeURIComponent(f.slice(0, -'.from'.length));
     const origin = JSON.parse(readFileSync(join(stateDir, f), 'utf8')) as PackageOrigin;
     const { status, reason, durationMs } = fetchOutcome(stateDir, files, key);
+    // A refused package was never fetched, so it took no time.
+    const refused = files.has(`${encodeURIComponent(key)}.refused`);
     const record: RoundDependencySource = {
       package: key, ...origin,
-      status: files.has(`${encodeURIComponent(key)}.mismatch`) ? 'mismatch' : status === 'unused' ? 'failed' : status,
+      status: files.has(`${encodeURIComponent(key)}.mismatch`) ? 'mismatch' : refused ? 'refused' : status === 'unused' ? 'failed' : status,
       ...(status === 'unused' ? { reason: 'the fetch never started' } : reason && { reason }),
-      ...(durationMs !== undefined && { durationMs }),
+      ...(durationMs !== undefined && !refused && { durationMs }),
     };
     if (record.status !== 'fetched') core.warning(`Could not read the dependency ${key}: ${record.reason ?? record.status}`);
     return record;
