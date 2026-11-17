@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, lastLine, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -197,6 +197,15 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
 
 // How Codex words an overload the provider reports: "Selected model is at capacity. Please try a different model."
 const CAPACITY_TEXT = /\bmodel is at capacity\b/i;
+
+/**
+ * Returns the `ERROR:` line that ends Codex's stderr, or `undefined` when stderr ends on any other line. Codex prints
+ * its own error last. It also writes the prompt and the model's text to stderr, so no earlier line counts as its error.
+ */
+function codexFinalError(stderr: string): string | undefined {
+  const line = lastLine(stderr);
+  return /^ERROR:\s/.test(line) ? extractCliErrorSnippet(line) : undefined;
+}
 
 // The variable Codex reads an endpoint's key from, and the id of the model provider Manki defines for the endpoint.
 const ENDPOINT_KEY_ENV = 'OPENAI_API_KEY';
@@ -404,14 +413,13 @@ export class OpenAIClient implements LLMClient {
 
     const limits = limitReadings();
     if (code !== 0) {
-      // Codex echoes the prompt to stderr, so only its `ERROR:` line is read for a limit.
-      const errorLine = extractCliErrorSnippet(stderr);
-      const atCapacity = CAPACITY_TEXT.test(errorLine);
-      const quota = matchQuotaText(errorLine);
+      const finalError = codexFinalError(stderr);
+      const atCapacity = !!finalError && CAPACITY_TEXT.test(finalError);
+      const quota = finalError ? matchQuotaText(finalError) : undefined;
       if (atCapacity || (quota && !quota.overloaded)) {
         const ownLimit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
         const limit = atCapacity ? 'OpenAI model at capacity' : ownLimit;
-        const message = `${limit}: ${errorLine}`;
+        const message = `${limit}: ${finalError}`;
         core.warning(message);
         // No other credential gets past a model at capacity.
         const credential = atCapacity ? undefined : endpoint ? 'key' : 'token';

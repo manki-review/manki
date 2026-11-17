@@ -857,8 +857,9 @@ describe('sendViaCLI (Codex CLI path)', () => {
     );
   });
 
-  it('throws a `QuotaError` on a usage limit or a model at capacity, reading only the `ERROR:` line', async () => {
-    const stderr = "user\nreview this: rate limit reached\nERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.\n";
+  it('throws a `QuotaError` on a usage limit or a model at capacity, reading only the `ERROR:` line that ends stderr', async () => {
+    const usageLimit = "ERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.";
+    const stderr = `user\nreview this: rate limit reached\n${usageLimit}\n`;
     setupSpawnMock('', { exitCode: 1, stderr });
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
@@ -883,9 +884,18 @@ describe('sendViaCLI (Codex CLI path)', () => {
     expect(error).toMatchObject({ limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' });
     expect(error).toMatchObject({ limits: [{ account: 'ChatGPT subscription', window: 'weekly', usedPercent: 100 }] });
 
-    setupSpawnMock('', { exitCode: 1, stderr: 'user\nreview this: rate limit reached\nERROR: stream disconnected\n' });
-    const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
-    expect(other).not.toBeInstanceOf(QuotaError);
+    // Codex writes the prompt and the model's text to stderr too, so a limit counts only on the `ERROR:` line that ends it.
+    for (const elsewhere of [
+      'user\nreview this: rate limit reached\nERROR: stream disconnected\n',
+      `user\n${usageLimit}\nERROR: stream disconnected before completion\n`,
+      `user\n${usageLimit}\ncodex\nan answer\ntokens used\n2\n`,
+      `user\nreview this\n  ${usageLimit}\n`,
+    ]) {
+      setupSpawnMock('', { exitCode: 1, stderr: elsewhere });
+      const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(other).not.toBeInstanceOf(QuotaError);
+      expect(other?.message).toContain('Codex CLI invocation failed (exit 1: ');
+    }
 
     // An endpoint has no ChatGPT subscription behind it, so the limit is named as the endpoint's.
     jest.spyOn(core, 'setSecret').mockImplementation(() => {});

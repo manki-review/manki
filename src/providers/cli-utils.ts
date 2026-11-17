@@ -121,6 +121,12 @@ export async function callWithTimeout<T>(label: string, { timeoutMs, signal }: S
   }
 }
 
+/** Returns the last non-empty line of `text` as written, without any leading whitespace cut. */
+export function lastLine(text: string): string {
+  const ended = text.trimEnd();
+  return ended.slice(ended.lastIndexOf('\n') + 1);
+}
+
 // The Codex CLI prints this line when the provider failed a request, and then waits before it sends the request again.
 const RECONNECTING_LINE = /^ERROR:\s+Reconnecting\.\.\. (\d+)\/(\d+)/;
 
@@ -131,8 +137,7 @@ const RECONNECTING_LINE = /^ERROR:\s+Reconnecting\.\.\. (\d+)\/(\d+)/;
 export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
   const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
   const stderrSnippet = extractCliErrorSnippet(stderrText);
-  const ended = stderrText.trimEnd();
-  const reconnecting = RECONNECTING_LINE.exec(ended.slice(ended.lastIndexOf('\n') + 1));
+  const reconnecting = RECONNECTING_LINE.exec(lastLine(stderrText));
   const parts: string[] = [];
   if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
   if (reconnecting) parts.push(`The CLI was waiting on the provider and retrying a failed request (retry ${reconnecting[1]} of ${reconnecting[2]})`);

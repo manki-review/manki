@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 
@@ -333,6 +333,19 @@ describe('callWithTimeout', () => {
     expect(call).toHaveBeenCalledWith();
     const overloaded = new Error('overloaded');
     await expect(callWithTimeout('OpenAI API', { timeoutMs: 60_000 }, () => Promise.reject(overloaded))).rejects.toBe(overloaded);
+  });
+});
+
+describe('lastLine', () => {
+  it.each([
+    ['first\nlast', 'last'],
+    ['first\nlast\r\n\n  \n', 'last'],
+    ['first\n  indented\n', '  indented'],
+    ['only', 'only'],
+    ['', ''],
+    ['\n\n', ''],
+  ])('returns the last non-empty line of %j as written', (text, line) => {
+    expect(lastLine(text)).toBe(line);
   });
 });
 
