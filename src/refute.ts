@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, SCOPE_READER_NAME, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -475,11 +475,11 @@ const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.len
 /**
  * Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted
  * either way. So is a finding `gradedByRule` under `rules`: the judge confirmed the quoted rule and the cited line that breaks it.
- * So is a warning of the scope reader, a judgment whose answer the code checked before it became a warning.
+ * So is the scope reader's split, which the code checked against the diff before it became a warning.
  */
 export function needsProof(finding: Finding, rules?: RulesMode): boolean {
   return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !gradedByRule(finding, rules)
-    && !finding.reviewers.includes(SCOPE_READER_NAME);
+    && !(finding.reviewers.includes(SCOPE_READER_NAME) && finding.title === SCOPE_SPLIT_TITLE);
 }
 
 /**

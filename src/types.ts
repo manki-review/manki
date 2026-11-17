@@ -192,6 +192,10 @@ export const FOLLOW_UP_TAG = 'follow-up' as const;
 export const VERDICT_READER_NAME = 'Verdict reader';
 /** Names the scope reader as the reviewer of the warnings `review.scope_blocks` posts. */
 export const SCOPE_READER_NAME = 'Scope reader';
+/** The title of the warning `review.scope_blocks` posts for a usefulness doubt. Fixed, so a repeat folds into its thread. */
+export const SCOPE_DOUBT_TITLE = 'This change may not be useful as it stands';
+/** The title of the warning `review.scope_blocks` posts for a split. Fixed, so a repeat folds into its thread. */
+export const SCOPE_SPLIT_TITLE = 'This PR mixes topics that belong in separate PRs';
 /** Returns the reviewer name of a round's sweep number `n`, which the findings of that sweep carry. */
 export const sweepName = (n: number): string => `Sweep ${n}`;
 /** Whether `reviewer` is the name of a sweep. */
@@ -732,20 +736,23 @@ export interface ScopeTopic {
 
 /** How the scope reader judged the PR as a whole on a round. */
 export interface RoundScope {
-  /** Why the reader did not run: a trivial change, or a diff that did not change since `since`, the last round it ran on. */
+  /**
+   * Why the reader did not run: a trivial change, or a diff that did not change since `since`, the last round it ran on.
+   * An `unchanged` round carries that round's answer.
+   */
   skipped?: 'trivial' | 'unchanged';
   since?: number;
   /** Why the call failed or its reply could not be used. */
   failed?: string;
-  /** The reader's doubt that the change is useful, kept only with `proof`. */
+  /** The reader's doubt that the change is useful, kept only with `proof`. With `review.scope_blocks`, also only once the refuter confirms it. */
   doubt?: string;
   /** The lines that back `doubt`, each checked to exist. */
   proof?: string[];
   /** The distinct topics the reader sees. */
   topics?: ScopeTopic[];
-  /** The proposed PRs of a split, each with its files, kept only when every file is in the diff and in one PR only. */
+  /** The proposed PRs of a split, each with its files, kept only when every file of the diff is in exactly one of them. */
   split?: ScopeTopic[];
-  /** The parts of the answer the code check left out, with why. Neither shows nor holds the approval. */
+  /** The parts of the answer the code check or the refuter left out, with why. Neither shows nor holds the approval. */
   dropped?: Array<{ part: 'doubt' | 'split'; reason: string }>;
   /** Set when `review.scope_blocks` posted the kept parts as warnings instead of listing them in the review body. */
   warned?: true;

@@ -6,7 +6,7 @@ import { LLMClient, SendMessageOptions } from './providers';
 import { isDiffLocation, shownLines } from './refute';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
-import { Finding, ParsedDiff, PrContext, RoundContext, RoundScope, SCOPE_READER_NAME, ScopeTopic } from './types';
+import { confirmsAll, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic } from './types';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 
@@ -17,11 +17,6 @@ const MAX_TOPICS = 8;
 const MAX_NAME_CHARS = 120;
 const MAX_DOUBT_CHARS = 800;
 const MAX_FAILURE_CHARS = 200;
-
-/** The title of the warning `review.scope_blocks` posts for a usefulness doubt. Fixed, so a repeat folds into its thread. */
-export const SCOPE_DOUBT_TITLE = 'This change may not be useful as it stands';
-/** The title of the warning `review.scope_blocks` posts for a split. Fixed, so a repeat folds into its thread. */
-export const SCOPE_SPLIT_TITLE = 'This PR mixes topics that belong in separate PRs';
 
 function systemPrompt(tools: boolean): string {
   return `You judge a pull request as a whole. You answer two questions a reviewer asks before reading the code line by line:
@@ -77,7 +72,7 @@ function parseScope(text: string): ScopeAnswer {
   return { ...(stated && { doubt: safeTruncate(stated, MAX_DOUBT_CHARS) }), proof, topics: parseTopics(topics), split: parseTopics(split) };
 }
 
-/** Returns why `split` cannot be posted, or `undefined` when it can: at least two PRs, each file in the diff and in one PR only. */
+/** Returns why `split` cannot be posted, or `undefined` when it can: at least two PRs, and each file of the diff in exactly one of them. */
 function splitProblem(split: ScopeTopic[], diff: ParsedDiff): string | undefined {
   if (split.length < 2) return 'a split needs at least two PRs';
   if (split.some(part => part.files.length === 0)) return 'a proposed PR has no files';
@@ -86,6 +81,8 @@ function splitProblem(split: ScopeTopic[], diff: ParsedDiff): string | undefined
   const unknown = files.filter(f => !changed.has(f));
   if (unknown.length > 0) return `${unknown.length} named file(s) are not in the diff`;
   if (new Set(files).size < files.length) return 'a file is in more than one proposed PR';
+  const missing = changed.size - files.length;
+  if (missing > 0) return `${missing} changed file(s) are in no proposed PR`;
   return undefined;
 }
 
@@ -132,15 +129,17 @@ export interface ScopeOptions {
 
 /**
  * Asks one call whether the PR is useful and covers one topic, and returns the round's record of it. It is skipped for a
- * trivial change, and when the diff has the `changeDigest` of the last round the reader ran on. The answer is checked by
- * `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`. It never throws.
+ * trivial change, and when the diff has the `changeDigest` of the last round the reader ran on, whose answer it carries
+ * then. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
+ * It never throws.
  */
 export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [] }: ScopeOptions): Promise<RoundScope> {
   if (trivial) return { skipped: 'trivial' };
   const last = lastScopeRound(priorRounds);
   if (changeDigest && last?.diff.changeDigest === changeDigest) {
     core.info(`Scope reader: the diff did not change since round ${last.meta.round}, so it is not asked again`);
-    return { skipped: 'unchanged', since: last.meta.round };
+    const { warned: _warned, ...answer } = last.scope!;
+    return { ...answer, skipped: 'unchanged', since: last.meta.round };
   }
   const tools = !!workspace && !!client.repoTools;
   const options: SendMessageOptions = { effort: 'medium', timeoutMs: SCOPE_TIMEOUT_MS, ...(tools && { repoTools: repoTools(workspace!, SCOPE_STEPS, undefined) }) };
@@ -166,17 +165,17 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
 }
 
 /**
- * Returns the warnings `review.scope_blocks` posts for `scope`: one for a doubt, on its first proof line, and one for a
- * split, tied to no file. Each is a judgment of the PR as a whole, so it is a warning and never a blocker.
+ * Returns the warnings `review.scope_blocks` posts for `scope`: one for a doubt and one for a split. Each is a judgment
+ * of the PR as a whole, so it is a warning and never a blocker. Each is tied to no file, so its fixed title alone
+ * matches it to an earlier one, whatever lines a doubt cites.
  */
 export function scopeWarnings(scope: RoundScope): Finding[] {
   const warnings: Finding[] = [];
-  const at = scope.proof?.length ? parseLocation(scope.proof[0]) : undefined;
-  if (scope.doubt && at) {
+  if (scope.doubt && scope.proof?.length) {
     warnings.push({
-      severity: 'warning', title: SCOPE_DOUBT_TITLE, file: at.file, line: at.start, description: scope.doubt,
+      severity: 'warning', title: SCOPE_DOUBT_TITLE, file: '', line: 0, description: scope.doubt,
       howToFix: 'Change the PR so the problem goes away, or reply with why the change is needed as it is.',
-      reviewers: [SCOPE_READER_NAME], evidence: { checks: [], proof: scope.proof! },
+      reviewers: [SCOPE_READER_NAME], evidence: { checks: [], proof: scope.proof },
     });
   }
   if (scope.split) {
@@ -189,4 +188,17 @@ export function scopeWarnings(scope: RoundScope): Finding[] {
     });
   }
   return warnings;
+}
+
+/**
+ * Returns the doubt `warning` with the checks that confirm it, or why it is dropped. The reader's input is text the PR
+ * author wrote, so a cited line that exists is not enough to hold the approval. `refute` reads the doubt on its first
+ * cited line, since the warning is tied to no file, and every check has to confirm it.
+ */
+export async function confirmDoubt(warning: Finding, refute: ((findings: Finding[]) => Promise<Finding[]>) | undefined): Promise<Finding | string> {
+  const at = warning.evidence?.proof[0] ? parseLocation(warning.evidence.proof[0]) : undefined;
+  if (!refute || !at) return 'no check with repository tools could run';
+  const [checked] = await refute([{ ...warning, file: at.file, line: at.start, doubts: [{ premise: warning.description, decides: 'defect' }] }]);
+  const checks = [checked.refutation, checked.pairRefutation].filter((r): r is Refutation => !!r);
+  return confirmsAll(checks) ? { ...checked, file: '', line: 0 } : 'the refuter did not confirm it';
 }

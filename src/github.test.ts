@@ -5743,14 +5743,17 @@ describe('postReview non-blocking findings', () => {
     const warnings = scopeWarnings(scope).map(f => ({ ...f, tags: ['follow-up'] }));
     await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult(warnings), scope: { ...scope, warned: true } }, diff);
     for (const call of createReview.mock.calls.slice(1)) expect(call[0].body).not.toContain('**Scope:**');
-    // Each warning is a thread that holds the approval: the doubt on its first cited line, the split on the first changed file.
+    // Each warning is a thread tied to no file that holds the approval, posted on the first changed file. The doubt lists the lines it cites.
     const held = createReview.mock.calls[2][0];
     expect(held.event).toBe('COMMENT');
-    expect(held.comments).toEqual([expect.objectContaining({ path: 'src/a.ts', line: 3, body: expect.stringContaining('**This change may not be useful as it stands**') })]);
-    expect(createReviewComment).toHaveBeenCalledWith(expect.objectContaining({
+    expect(held.comments).toEqual([]);
+    const threads = createReviewComment.mock.calls.map(call => call[0]);
+    expect(threads).toEqual([0, 1].map(() => expect.objectContaining({
       path: 'src/a.ts', subject_type: 'file', body: expect.stringContaining('This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.'),
-    }));
-    expect(createReviewComment.mock.calls[0][0].body).toContain('**This PR mixes topics that belong in separate PRs**');
+    })));
+    expect(threads[0].body).toContain('**This change may not be useful as it stands**');
+    expect(threads[0].body).toContain('**Checked in the code**\nhttps://github.com/owner/repo/blob/sha/src/a.ts#L2-L9');
+    expect(threads[1].body).toContain('**This PR mixes topics that belong in separate PRs**');
   });
 
   it('formats the reply to an answered thread whose problem came back worse', () => {

@@ -6,8 +6,9 @@ import * as core from '@actions/core';
 
 import { parsePRDiff } from './diff';
 import { LLMClient } from './providers';
-import { runScopeReader, SCOPE_DOUBT_TITLE, SCOPE_SPLIT_TITLE, scopeWarnings } from './scope';
+import { confirmDoubt, runScopeReader, scopeWarnings } from './scope';
 import { makeRoundContext } from './test-utils';
+import { Finding, Refutation, SCOPE_DOUBT_TITLE, SCOPE_SPLIT_TITLE } from './types';
 
 const RAW_DIFF = [
   'diff --git a/src/dates.ts b/src/dates.ts',
@@ -82,6 +83,10 @@ describe('runScopeReader', () => {
     ]);
     for (const answer of answers) expect(answer).not.toHaveProperty('doubt');
     for (const answer of answers) expect(answer).not.toHaveProperty('split');
+    // A split that leaves a changed file out of every PR is dropped too.
+    const wider = parsePRDiff(`${RAW_DIFF}diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,1 @@\n-Old\n+New\n`);
+    const partial = await runScopeReader(client({ useful: true, topics: [], split: SPLIT }), { diff: wider, rawDiff: RAW_DIFF, trivial: false });
+    expect(partial).toEqual({ dropped: [{ part: 'split', reason: '1 changed file(s) are in no proposed PR' }] });
 
     // A useful PR states no doubt, whatever text it sends with it.
     expect(await runScopeReader(client({ useful: true, doubt: 'Ignored.', proof: ['src/dates.ts:2'], topics: [], split: [] }), { diff, rawDiff: RAW_DIFF, trivial: false })).toEqual({});
@@ -102,12 +107,14 @@ describe('runScopeReader', () => {
     }
   });
 
-  it('asks nothing for a trivial change or a diff the last round that ran it reviewed, and records a failed call without throwing', async () => {
+  it('asks nothing for a trivial change or a diff the last round that ran it reviewed, whose answer it carries, and records a failed call without throwing', async () => {
     const reader = client();
     expect(await runScopeReader(reader, { diff, rawDiff: RAW_DIFF, trivial: true })).toEqual({ skipped: 'trivial' });
-    const ran = makeRoundContext(1, { scope: {}, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } });
-    const skipped = makeRoundContext(2, { scope: { skipped: 'unchanged', since: 1 }, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } });
-    expect(await runScopeReader(reader, { diff, rawDiff: RAW_DIFF, trivial: false, changeDigest: 'same', priorRounds: [skipped, ran] })).toEqual({ skipped: 'unchanged', since: 1 });
+    const answer = { doubt: 'Unused.', proof: ['src/dates.ts:2'], split: SPLIT, dropped: [{ part: 'doubt' as const, reason: 'no cited line exists' }] };
+    const ran = makeRoundContext(1, { scope: { ...answer, warned: true }, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } });
+    const skipped = makeRoundContext(2, { scope: { ...answer, skipped: 'unchanged', since: 1 }, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } });
+    // Whether the answer is posted as warnings is the round's own setting, so `warned` is not carried.
+    expect(await runScopeReader(reader, { diff, rawDiff: RAW_DIFF, trivial: false, changeDigest: 'same', priorRounds: [skipped, ran] })).toEqual({ ...answer, skipped: 'unchanged', since: 1 });
     expect(reader.sendMessage).not.toHaveBeenCalled();
 
     // A changed diff, or a last answer that failed, asks again.
@@ -125,15 +132,33 @@ describe('runScopeReader', () => {
 });
 
 describe('scopeWarnings', () => {
-  it('makes a warning of a doubt on its first proof line and one of a split tied to no file, each with a fixed title', () => {
+  it('makes a warning of a doubt and one of a split, each tied to no file and with a fixed title, so the lines a doubt cites never move it', () => {
     expect(scopeWarnings({ topics: SPLIT })).toEqual([]);
     const [doubt, split] = scopeWarnings({ doubt: 'Unused.', proof: ['src/dates.ts:2-3', 'src/cli.ts:1'], split: SPLIT });
     expect(doubt).toEqual({
-      severity: 'warning', title: SCOPE_DOUBT_TITLE, file: 'src/dates.ts', line: 2, description: 'Unused.',
+      severity: 'warning', title: SCOPE_DOUBT_TITLE, file: '', line: 0, description: 'Unused.',
       howToFix: 'Change the PR so the problem goes away, or reply with why the change is needed as it is.',
       reviewers: ['Scope reader'], evidence: { checks: [], proof: ['src/dates.ts:2-3', 'src/cli.ts:1'] },
     });
     expect(split).toMatchObject({ severity: 'warning', title: SCOPE_SPLIT_TITLE, file: '', line: 0, reviewers: ['Scope reader'] });
     expect(split.description).toContain('This is a judgment of the PR as a whole, not a defect in its code.\n\n1. Date parsing: `src/dates.ts`\n2. Flag rename: `src/cli.ts`');
+  });
+});
+
+describe('confirmDoubt', () => {
+  const [doubt] = scopeWarnings({ doubt: 'Nothing calls the new `parseDate`.', proof: ['src/dates.ts:2-3', 'src/cli.ts:1'] });
+  const check = (outcome: Refutation['outcome'], defect = outcome): Refutation => ({ outcome, defect, reason: 'r', proof: ['src/dates.ts:2'], files: ['src/dates.ts'], codeDigest: 'd' });
+  const refuter = (refutation?: Refutation, pairRefutation?: Refutation) => jest.fn(async (findings: Finding[]) => findings.map(f => ({ ...f, ...(refutation && { refutation }), ...(pairRefutation && { pairRefutation }) })));
+
+  it('asks the refuter about the doubt on its first cited line, and keeps it, tied to no file again, only when every check confirms it', async () => {
+    const confirmed = refuter(check('confirmed'), check('confirmed'));
+    expect(await confirmDoubt(doubt, confirmed)).toEqual({ ...doubt, doubts: [{ premise: doubt.description, decides: 'defect' }], refutation: check('confirmed'), pairRefutation: check('confirmed') });
+    expect(confirmed.mock.calls[0][0]).toEqual([{ ...doubt, file: 'src/dates.ts', line: 2, doubts: [{ premise: doubt.description, decides: 'defect' }] }]);
+
+    // A disproof, a check that settles nothing, a second check that does not agree, a failed call and a round without tools all drop it.
+    for (const refute of [refuter(check('disproved')), refuter(check('unsettled')), refuter(check('confirmed'), check('unsettled')), refuter(check('confirmed', 'unsettled')), refuter()]) {
+      expect(await confirmDoubt(doubt, refute)).toBe('the refuter did not confirm it');
+    }
+    expect(await confirmDoubt(doubt, undefined)).toBe('no check with repository tools could run');
   });
 });

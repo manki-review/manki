@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -25,7 +25,7 @@ import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions,
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
-import { runScopeReader, scopeWarnings } from './scope';
+import { confirmDoubt, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -1586,8 +1586,9 @@ export async function runReview(
       return false;
     });
   }
-  // A judgment of the PR as a whole skips the judge's grading, since `runScopeReader` checked its answer in code. With
-  // `review.scope_blocks` it is posted as a warning, never a blocker. Dedup drops a repeat of one whose thread was resolved.
+  // A judgment of the PR as a whole skips the judge's grading. With `review.scope_blocks` it is posted as a warning, never
+  // a blocker: a split `runScopeReader` checked against the diff, and a doubt only once the refuter confirms it. Dedup
+  // drops a repeat of one whose thread was resolved.
   let scope = await scopePromise;
   if (config.review?.scope_blocks && (scope.doubt || scope.split)) {
     const warnings = scopeWarnings(scope);
@@ -1595,7 +1596,22 @@ export async function runReview(
     const { unique, duplicates } = previousFindings?.length ? deduplicateFindings(warnings, previousFindings, changed) : { unique: warnings, duplicates: [] };
     for (const d of duplicates) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
     staticDedupCount += duplicates.length;
-    finalFindings = [...finalFindings, ...unique];
+    const refute = refutation && ((findings: Finding[]) => refuteBlockers(refutation.client, findings, {
+      workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+      outsideInput: config.review?.outside_input, rules: config.review?.rules,
+    }));
+    const posted: Finding[] = [];
+    for (const warning of unique) {
+      const kept = warning.title === SCOPE_DOUBT_TITLE ? await confirmDoubt(warning, refute) : warning;
+      if (typeof kept !== 'string') {
+        posted.push(kept);
+        continue;
+      }
+      core.info(`Scope reader: the doubt is dropped, since ${kept}`);
+      const { doubt: _doubt, proof: _proof, ...rest } = scope;
+      scope = { ...rest, dropped: [...(scope.dropped ?? []), { part: 'doubt', reason: kept }] };
+    }
+    finalFindings = [...finalFindings, ...posted];
     scope = { ...scope, warned: true };
   }
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);

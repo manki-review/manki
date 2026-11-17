@@ -173,7 +173,8 @@
 #                                    # is not approved until the rule is followed
 #   scope_blocks: false              # a doubt that the PR is useful, or a proposed split of a PR that mixes
 #                                    # topics, is listed in the review body. `true` posts each as a warning,
-#                                    # which holds the approval until its thread is resolved
+#                                    # a doubt only once the refuter confirms it, which holds the approval
+#                                    # until its thread is resolved
 
 # CI results the reviewers read as evidence (default: all on), and the
 # analyzers Manki runs itself.

@@ -2575,16 +2575,34 @@ describe('runReview', () => {
     const diff = makeDiff({ files: [{ path: 'src/x.ts', changeType: 'modified', hunks: [] }, { path: 'src/y.ts', changeType: 'modified', hunks: [] }] });
     const options = { diff, rawDiff: 'raw diff', repoContext: '', changeDigest: 'digest-2', openThreads: [] };
     const fromScope = (r: ReviewResult) => r.findings.filter(f => f.reviewers.includes('Scope reader'));
-
-    it('asks the reader beside the finders, lists its answer by default, and with `review.scope_blocks` posts it as warnings that skip the judge and never block', async () => {
-      jest.mocked(runScopeReader).mockResolvedValue(scope);
+    const doubtTitle = 'This change may not be useful as it stands';
+    const splitTitle = 'This PR mixes topics that belong in separate PRs';
+    const answer = (outcome: string) => JSON.stringify({ outcome, reason: 'The lines decide it.', proof: ['src/x.ts:1'], premises: [{ outcome, reason: 'r', proof: ['src/x.ts:1'] }] });
+    /** Clients whose judge model has repository tools and answers each refuter call with `outcome`. */
+    const refutingClients = (outcome: string): ReviewClients => {
+      const clients = makeClients();
+      Object.assign(clients.judge, { repoTools: true });
+      jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string) => ({ content: system.startsWith('You check one finding') ? answer(outcome) : READY_VERDICT }));
+      return clients;
+    };
+    const refuterCalls = (clients: ReviewClients) => jest.mocked(clients.judge.sendMessage).mock.calls.filter(([system]) => system.startsWith('You check one finding'));
+    let root: string;
+    beforeEach(() => {
+      ({ root } = gitWorkspace({ 'src/x.ts': 'old\n', 'src/y.ts': 'old\n' }, { 'src/x.ts': 'export function parseDate() {}\n', 'src/y.ts': 'const FLAG = 1;\n' }));
       mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    it('asks the reader beside the finders, lists its answer by default, and with `review.scope_blocks` posts it as warnings that skip the judge and never block, a doubt only once the refuter confirms it', async () => {
+      jest.mocked(runScopeReader).mockResolvedValue(scope);
       const priorRounds = [makeRoundContext(1)];
       const prContext = { title: 'Parse dates', body: 'Also renames a flag.', baseBranch: 'main' };
       const linkedIssues = [{ number: 7, title: 'Dates', body: 'Parse them.' }];
+      const blocks = makeConfig({ review: { scope_blocks: true } });
 
       const advisory = await runReview(makeClients(RAISED), { ...options, config: makeConfig(), prContext, linkedIssues, priorRounds });
-      const blocking = await runReview(makeClients(RAISED), { ...options, config: makeConfig({ review: { scope_blocks: true } }), prContext, linkedIssues, priorRounds });
+      const confirming = refutingClients('confirmed');
+      const blocking = await runReview(confirming, { ...options, config: blocks, prContext, linkedIssues, priorRounds, workspace: root });
 
       expect(jest.mocked(runScopeReader).mock.calls[0][1]).toEqual({
         diff, rawDiff: 'raw diff', prContext, linkedIssues, workspace: undefined, trivial: false, changeDigest: 'digest-2', priorRounds,
@@ -2592,25 +2610,37 @@ describe('runReview', () => {
       expect(advisory.scope).toEqual(scope);
       expect(fromScope(advisory)).toEqual([]);
       expect(blocking.scope).toEqual({ ...scope, warned: true });
-      // The judge never sees them, and each stays a warning beside what the judge kept, so the round is still ready.
+      // The judge never sees them, and each stays a warning, so the round is still ready.
       for (const call of mockedRunJudgeAgent.mock.calls) expect(call[2].findings.flatMap(f => f.reviewers)).not.toContain('Scope reader');
       expect(blocking.outcome).toBe('READY');
+      // The refuter reads the doubt on its first cited line, and the warning it confirms is tied to no file again.
+      expect(refuterCalls(confirming)).toHaveLength(1);
+      expect(refuterCalls(confirming)[0][1]).toContain(`## Warning no cited line proves: ${doubtTitle}\n\n- **Location**: src/x.ts:1`);
       expect(fromScope(blocking)).toEqual([
         expect.objectContaining({
-          severity: 'warning', title: 'This change may not be useful as it stands', file: 'src/x.ts', line: 1, description: scope.doubt,
-          evidence: { checks: [], proof: ['src/x.ts:1'] }, tags: ['follow-up'], checkStatus: 'proven',
+          severity: 'warning', title: doubtTitle, file: '', line: 0, description: scope.doubt,
+          evidence: { checks: [], proof: ['src/x.ts:1'] }, tags: ['follow-up'], checkStatus: 'confirmed',
         }),
-        expect.objectContaining({ severity: 'warning', title: 'This PR mixes topics that belong in separate PRs', file: '', line: 0, tags: ['follow-up'], checkStatus: 'unconfirmed' }),
+        expect.objectContaining({ severity: 'warning', title: splitTitle, file: '', line: 0, tags: ['follow-up'], checkStatus: 'unconfirmed' }),
       ]);
       expect(fromScope(blocking)[1].description).toContain('1. Date parsing: `src/x.ts`\n2. Flag rename: `src/y.ts`');
+
+      // A doubt the refuter does not confirm, or one no refuter can check, is dropped into the record. The split needs no refuter.
+      const disproving = refutingClients('disproved');
+      const disproved = await runReview(disproving, { ...options, config: blocks, workspace: root });
+      const unchecked = await runReview(makeClients(), { ...options, config: blocks });
+      const { doubt: _doubt, proof: _proof, ...splitOnly } = scope;
+      expect(disproved.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'the refuter did not confirm it' }], warned: true });
+      expect(unchecked.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'no check with repository tools could run' }], warned: true });
+      for (const result of [disproved, unchecked]) expect(fromScope(result).map(f => f.title)).toEqual([splitTitle]);
 
       // An answer with nothing to say, or one the checks left nothing of, adds no warning and leaves the record as it is.
       const dropped = { topics: scope.topics, dropped: [{ part: 'split' as const, reason: 'a split needs at least two PRs' }] };
       jest.mocked(runScopeReader).mockResolvedValue(dropped);
-      const nothing = await runReview(makeClients(RAISED), { ...options, config: makeConfig({ review: { scope_blocks: true } }) });
+      const nothing = await runReview(makeClients(RAISED), { ...options, config: blocks });
       expect(nothing.scope).toEqual(dropped);
       expect(fromScope(nothing)).toEqual([]);
-    });
+    }, GIT_TEST_TIMEOUT_MS);
 
     it('tells the reader when the quick check alone reads the change', async () => {
       const clients = makeClients();
@@ -2620,27 +2650,28 @@ describe('runReview', () => {
       expect(jest.mocked(runScopeReader).mock.calls[0][1]).toMatchObject({ trivial: true });
     });
 
-    it('posts a repeat into the open thread of the same warning, and drops one whose thread was resolved without a fix', async () => {
-      jest.mocked(runScopeReader).mockResolvedValue({ split: scope.split });
-      const split = 'This PR mixes topics that belong in separate PRs';
-      const entry = makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(split) }, severity: 'warning', title: split, threadId: 'T9', reviewers: ['Scope reader'] });
-      const priorRounds = [makeRoundContext(1, { findings: { count: 1, severityCounts: { warning: 1 }, entries: [entry] } })];
+    it('posts a repeat into the open thread of the same warning, whatever lines a doubt cites, and drops one whose thread was resolved without a fix', async () => {
+      // The earlier doubt cited `src/x.ts:1`. This round's cites another file.
+      jest.mocked(runScopeReader).mockResolvedValue({ doubt: scope.doubt, proof: ['src/y.ts:1'], split: scope.split });
+      const entry = (title: string, threadId: string) => makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(title) }, severity: 'warning', title, threadId, reviewers: ['Scope reader'] });
+      const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: { warning: 2 }, entries: [entry(doubtTitle, 'T8'), entry(splitTitle, 'T9')] } })];
       const config = makeConfig({ review: { scope_blocks: true } });
+      const prior = (status: 'open' | 'resolved') => [doubtTitle, splitTitle].map((title, i) => ({ title, file: '', line: 0, severity: 'warning' as const, status, threadId: `T${8 + i}` }));
 
-      const open = await runReview(makeClients(), {
-        ...options, config, priorRounds, interRoundDiff: '',
-        openThreads: [{ threadId: 'T9', title: split, file: '', line: 0, severity: 'warning' }],
-        previousFindings: [{ title: split, file: '', line: 0, severity: 'warning', status: 'open', threadId: 'T9' }],
+      const open = await runReview(refutingClients('confirmed'), {
+        ...options, config, priorRounds, interRoundDiff: '', workspace: root,
+        openThreads: [doubtTitle, splitTitle].map((title, i) => ({ threadId: `T${8 + i}`, title, file: '', line: 0, severity: 'warning' as const })),
+        previousFindings: prior('open'),
       });
-      expect(fromScope(open)).toEqual([expect.objectContaining({ title: split, threadId: 'T9' })]);
+      expect(fromScope(open)).toEqual([expect.objectContaining({ title: doubtTitle, threadId: 'T8' }), expect.objectContaining({ title: splitTitle, threadId: 'T9' })]);
 
-      const resolved = await runReview(makeClients(), {
-        ...options, config, priorRounds, interRoundDiff: '',
-        previousFindings: [{ title: split, file: '', line: 0, severity: 'warning', status: 'resolved', threadId: 'T9' }],
-      });
+      const clients = refutingClients('confirmed');
+      const resolved = await runReview(clients, { ...options, config, priorRounds, interRoundDiff: '', workspace: root, previousFindings: prior('resolved') });
       expect(fromScope(resolved)).toEqual([]);
-      expect(resolved.duplicateMatches).toEqual([{ droppedTitle: split, matchedTitle: split, matchType: 'exact' }]);
-    });
+      expect(resolved.duplicateMatches).toEqual([doubtTitle, splitTitle].map(title => ({ droppedTitle: title, matchedTitle: title, matchType: 'exact' })));
+      // A doubt dedup drops takes no refuter call.
+      expect(refuterCalls(clients)).toEqual([]);
+    }, GIT_TEST_TIMEOUT_MS);
   });
 
   describe('claims of the PR text', () => {
