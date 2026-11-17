@@ -16,6 +16,10 @@ const COMPARE_STEPS = 12;
 // A safety net. With tools, the step budget is what normally ends the call.
 const COMPARE_TIMEOUT_MS = 600_000;
 
+const SEVERITY_RULES = `- **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
+- **warning**: a real case that fails, but not catastrophically. List its proving lines in \`proof\` too.
+- **note**: an inconsistency that works today.`;
+
 function systemPrompt(tools: boolean): string {
   return `You compare code a pull request changes with the code beside it, to answer one question. Other reviewers read the whole change, so report only defects that answer this question.
 
@@ -23,9 +27,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation), one entry p
 
 [{"severity": "blocker" | "warning" | "note", "title": "The defect in one plain line", "file": "path/to/file.ext", "line": <line number in the NEW file>, "description": "At most three sentences: what goes wrong in practice and the decisive evidence.", "howToFix": "The change that fixes it, in one or two sentences", "evidence": ["file:line, then what you read there and what it showed, quoting the key code in backticks"], "proof": ["file:line of each line that shows the failure"]}]
 
-- **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
-- **warning**: a real case that fails, but not catastrophically. List its proving lines in \`proof\` too.
-- **note**: an inconsistency that works today.
+${SEVERITY_RULES}
 - Put each defect on the line that needs the fix, in the changed code where you can.
 - When the answer is no, or the code already handles the case, respond with [].
 - ${CLAIMS_MISSING_RULE}
@@ -121,21 +123,24 @@ export interface ComparisonOptions {
   signal?: AbortSignal;
 }
 
+/** How a step asks its questions: what its log calls them, its system prompt, and how it reads a reply. */
+interface Asking {
+  what: string;
+  system: (tools: boolean) => string;
+  parse: (content: string, reviewer: string) => Finding[];
+}
+
+type Answers = { findings: Finding[]; comparisons: RoundComparison[] };
+
 /**
- * Asks one call per sibling question, at most `MAX_FIELD_QUESTIONS` field and `MAX_IMPLEMENTATION_QUESTIONS`
- * implementation questions, `MAX_PARALLEL_QUESTIONS` at a time, each on the client `clientFor` returns for its reviewer
- * name. Returns their findings, which carry that name, and a record of every question, the ones past the caps as `cut`.
- * A call that fails is recorded as `failed`, and one `signal` stopped as `timed_out`. It never throws.
+ * Asks one call per question of `asked`, `MAX_PARALLEL_QUESTIONS` at a time, each on the client `clientFor` returns for
+ * its reviewer name, and records each of `cut` as cut. A call that fails is recorded as `failed`, and one `signal`
+ * stopped as `timed_out`. It never throws.
  */
-export async function runComparisons(
-  clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, { effort, workspace, related, signal }: ComparisonOptions = {},
-): Promise<{ findings: Finding[]; comparisons: RoundComparison[] }> {
-  const questions = questionsOf(siblings);
-  const fields = questions.filter(q => q.kind === 'field');
-  const implementations = questions.filter(q => q.kind === 'implementations');
-  const asked = [...fields.slice(0, MAX_FIELD_QUESTIONS), ...implementations.slice(0, MAX_IMPLEMENTATION_QUESTIONS)];
-  const cut = [...fields.slice(MAX_FIELD_QUESTIONS), ...implementations.slice(MAX_IMPLEMENTATION_QUESTIONS)];
-  if (asked.length > 0) core.info(`Asking ${asked.length} sibling comparison question(s)${cut.length > 0 ? `, ${cut.length} cut by the cap` : ''}`);
+async function ask(
+  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal }: ComparisonOptions, { what, system, parse }: Asking,
+): Promise<Answers> {
+  if (asked.length > 0) core.info(`Asking ${asked.length} ${what} question(s)${cut.length > 0 ? `, ${cut.length} cut by the cap` : ''}`);
   const answers = await mapWithConcurrency(asked, MAX_PARALLEL_QUESTIONS, async (q): Promise<{ record: RoundComparison; findings: Finding[] }> => {
     const client = clientFor(q.reviewer);
     const tools = !!workspace && !!client.repoTools;
@@ -150,10 +155,10 @@ export async function runComparisons(
     try {
       const findings = await sendWithParseRetry(
         q.message(tools),
-        message => client.sendMessage(systemPrompt(tools), message, options),
+        message => client.sendMessage(system(tools), message, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);
-          return parseFindings(reply.content, q.reviewer);
+          return parse(reply.content, q.reviewer);
         },
         error => core.warning(`${q.reviewer} reply could not be used (${error}), asking once more`),
         'array',
@@ -173,4 +178,18 @@ export async function runComparisons(
     findings: answers.flatMap(a => a.findings),
     comparisons: [...answers.map(a => a.record), ...cut.map(q => ({ kind: q.kind, reviewer: q.reviewer, at: q.at, status: 'cut' as const }))],
   };
+}
+
+/**
+ * Asks one call per sibling question, at most `MAX_FIELD_QUESTIONS` field and `MAX_IMPLEMENTATION_QUESTIONS`
+ * implementation questions, as `ask` says. Returns their findings, which carry the question's name, and a record of
+ * every question, the ones past the caps as `cut`.
+ */
+export async function runComparisons(clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, options: ComparisonOptions = {}): Promise<Answers> {
+  const questions = questionsOf(siblings);
+  const fields = questions.filter(q => q.kind === 'field');
+  const implementations = questions.filter(q => q.kind === 'implementations');
+  const asked = [...fields.slice(0, MAX_FIELD_QUESTIONS), ...implementations.slice(0, MAX_IMPLEMENTATION_QUESTIONS)];
+  const cut = [...fields.slice(MAX_FIELD_QUESTIONS), ...implementations.slice(MAX_IMPLEMENTATION_QUESTIONS)];
+  return ask(clientFor, asked, cut, options, { what: 'sibling comparison', system: systemPrompt, parse: parseFindings });
 }
