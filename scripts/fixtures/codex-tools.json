@@ -1,0 +1,88 @@
+{
+  "gpt-6.1-sol": {
+    "offered": [
+      "functions.exec",
+      "functions.wait"
+    ],
+    "held": [
+      "apply_patch",
+      "clock__curr_time",
+      "list_mcp_resource_templates",
+      "list_mcp_resources",
+      "mcp__manki__ast_grep",
+      "mcp__manki__git_history",
+      "mcp__manki__glob",
+      "mcp__manki__grep",
+      "mcp__manki__read_file",
+      "mcp__manki__repo_info",
+      "read_mcp_resource"
+    ]
+  },
+  "gpt-5.6-sol": {
+    "offered": [
+      "functions.exec",
+      "functions.wait"
+    ],
+    "held": [
+      "apply_patch",
+      "list_mcp_resource_templates",
+      "list_mcp_resources",
+      "mcp__manki__ast_grep",
+      "mcp__manki__git_history",
+      "mcp__manki__glob",
+      "mcp__manki__grep",
+      "mcp__manki__read_file",
+      "mcp__manki__repo_info",
+      "read_mcp_resource"
+    ]
+  },
+  "gpt-5.6-luna": {
+    "offered": [
+      "functions.exec",
+      "functions.wait"
+    ],
+    "held": [
+      "apply_patch",
+      "list_mcp_resource_templates",
+      "list_mcp_resources",
+      "mcp__manki__ast_grep",
+      "mcp__manki__git_history",
+      "mcp__manki__glob",
+      "mcp__manki__grep",
+      "mcp__manki__read_file",
+      "mcp__manki__repo_info",
+      "read_mcp_resource"
+    ]
+  },
+  "gpt-5.5": {
+    "offered": [
+      "apply_patch",
+      "list_mcp_resource_templates",
+      "list_mcp_resources",
+      "read_mcp_resource",
+      "tool_search"
+    ],
+    "held": [
+      "mcp__manki.ast_grep",
+      "mcp__manki.git_history",
+      "mcp__manki.glob",
+      "mcp__manki.grep",
+      "mcp__manki.read_file",
+      "mcp__manki.repo_info"
+    ]
+  },
+  "gpt-5.4": {
+    "offered": [
+      "list_mcp_resource_templates",
+      "list_mcp_resources",
+      "mcp__manki.ast_grep",
+      "mcp__manki.git_history",
+      "mcp__manki.glob",
+      "mcp__manki.grep",
+      "mcp__manki.read_file",
+      "mcp__manki.repo_info",
+      "read_mcp_resource"
+    ],
+    "held": []
+  }
+}

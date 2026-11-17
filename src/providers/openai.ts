@@ -125,7 +125,8 @@ const OPENAI_OAUTH_BOOTSTRAP_HINT =
 
 // Pin Codex CLI to a known-good version and disable lifecycle scripts on install
 // to mitigate supply-chain risk if a compromised release is published. Keep this
-// in sync with the explicit install step in `.github/workflows/manki.yml`.
+// in sync with the explicit install step in `.github/workflows/manki.yml`. The `Codex tools` workflow fails
+// when this version offers a model a tool `scripts/fixtures/codex-tools.json` does not list.
 export const CODEX_CLI_VERSION = '0.166.0';
 
 function isHttpUrl(value: string): boolean {
@@ -301,12 +302,14 @@ function streamFailure(finalError: string | undefined, resume: number): { reason
  * `runCli` runs it in an empty directory, which is not a git repository.
  */
 export function codexExecArgs(model: string, baseUrl?: string): string[] {
-  // The read-only sandbox still lets tools read every file, such as the auth files, so every built-in tool
-  // that reads files or reaches the network or an account is off, and only Manki's tool server is left.
+  // The read-only sandbox still lets tools read every file, such as the auth files, so every built-in tool Codex can
+  // switch off is off. `docs/security.md` lists the few Codex keeps for some models and what they can reach.
   return [
     'exec', '--skip-git-repo-check', `--model=${model}`, '--sandbox', 'read-only', '-c', 'approval_policy=never',
     '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
     '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+    '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
+    '-c', 'tools.experimental_request_user_input.enabled=false',
     ...(baseUrl ? codexEndpointArgs(baseUrl) : []),
   ];
 }

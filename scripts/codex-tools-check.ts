@@ -1,0 +1,208 @@
+/**
+ * Checks which tools the Codex CLI offers a model when Manki runs it. Runs the installed CLI with the arguments Manki
+ * gives a reviewer on an OpenAI-compatible endpoint, against a stand-in endpoint on localhost that records each
+ * request. The first answer asks Codex's script host for every tool it holds, or `tool_search` for the tools it
+ * defers. The check fails when a model is offered a tool that `scripts/fixtures/codex-tools.json` does not list, or no
+ * longer offered one it lists. Every other address goes to a proxy that refuses it, so no request leaves the machine.
+ *
+ * Usage (needs `npm run build` and the Codex CLI version in `CODEX_CLI_VERSION` on the PATH):
+ *   npx tsx scripts/codex-tools-check.ts [--write]
+ *
+ * `--write` records the tools each model is offered into the fixture instead of comparing them.
+ * Exit codes: 0 every model is offered the listed tools, 1 a list differs or the run failed.
+ */
+
+import { spawn } from 'child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { AddressInfo } from 'net';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+
+import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, STEPS_FLAG } from '../src/mcp-server';
+import { CODEX_CLI_VERSION, codexExecArgs, codexToolServerArgs } from '../src/providers/openai';
+
+/** The tools Codex offers one model: those named in its request, and those its script host or `tool_search` holds. */
+export interface OfferedTools {
+  offered: string[];
+  held: string[];
+}
+
+type Json = Record<string, unknown>;
+
+// A query that matches the description of every tool `tool_search` may hold, since it returns only matches.
+const SEARCH_QUERY = 'agent spawn send wait close resume input goal file read write edit grep glob history repo search web image shell command exec patch resource mcp time clock sleep plugin app install user message list task skill memory';
+const ALL_TOOLS_SCRIPT = 'text(JSON.stringify(ALL_TOOLS.map(t => t.name)));';
+
+function names(tools: unknown, namespace?: string): string[] {
+  if (!Array.isArray(tools)) return [];
+  return (tools as Json[]).flatMap(tool => {
+    const name = typeof tool.name === 'string' ? tool.name : String(tool.type);
+    const full = namespace ? `${namespace}.${name}` : name;
+    return tool.type === 'namespace' ? names(tool.tools, full) : [full];
+  });
+}
+
+/** Returns the tools a Responses API request offers the model, a namespace's tools as `namespace.name`. */
+export function offeredTools(body: Json): string[] {
+  const input = Array.isArray(body.input) ? body.input as Json[] : [];
+  const added = input.filter(item => item.type === 'additional_tools').flatMap(item => names(item.tools));
+  return [...names(body.tools), ...added].sort();
+}
+
+/** Returns the tools the output of the first tool call in a request lists: the script host's or `tool_search`'s. */
+export function heldTools(body: Json): string[] {
+  const input = Array.isArray(body.input) ? body.input as Json[] : [];
+  for (const item of input) {
+    if (item.type === 'tool_search_output') return names(item.tools).sort();
+    if (item.type === 'custom_tool_call_output' && Array.isArray(item.output)) {
+      const list = (item.output as Json[]).map(part => String(part.text ?? '')).find(text => text.startsWith('['));
+      if (list) return (JSON.parse(list) as string[]).sort();
+    }
+  }
+  return [];
+}
+
+/** Returns the step that asks Codex for the tools it holds: its script host when it has one, else `tool_search`. */
+export function heldToolsCall(offered: string[]): Json | undefined {
+  if (offered.includes('functions.exec')) {
+    return { type: 'custom_tool_call', call_id: 'call_held', name: 'exec', namespace: 'functions', input: ALL_TOOLS_SCRIPT, status: 'completed' };
+  }
+  if (offered.includes('tool_search')) {
+    return { type: 'tool_search_call', call_id: 'call_held', execution: 'client', arguments: { query: SEARCH_QUERY, limit: 100 }, status: 'completed' };
+  }
+  return undefined;
+}
+
+/** Returns each difference between the tools `expected` lists per model and the tools `actual` found. */
+export function compareTools(expected: Record<string, OfferedTools>, actual: Record<string, OfferedTools>): string[] {
+  const problems: string[] = [];
+  for (const [model, want] of Object.entries(expected)) {
+    const got = actual[model];
+    if (!got) {
+      problems.push(`${model}: not checked`);
+      continue;
+    }
+    for (const kind of ['offered', 'held'] as const) {
+      for (const name of got[kind].filter(n => !want[kind].includes(n))) problems.push(`${model}: a new ${kind} tool ${name}`);
+      for (const name of want[kind].filter(n => !got[kind].includes(n))) problems.push(`${model}: no longer ${kind} ${name}`);
+    }
+  }
+  return problems;
+}
+
+function sse(type: string, data: Json): string {
+  return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+}
+
+/** Starts the stand-in endpoint. It answers the first request with `heldToolsCall` and every later one with `OK`. */
+function startStandIn(bodies: Json[]): Promise<{ port: number; close: () => void }> {
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    let raw = '';
+    req.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
+    req.on('end', () => {
+      if (req.method !== 'POST' || !req.url?.endsWith('/responses')) {
+        res.writeHead(404).end();
+        return;
+      }
+      const body = JSON.parse(raw) as Json;
+      bodies.push(body);
+      const call = bodies.length === 1 ? heldToolsCall(offeredTools(body)) : undefined;
+      const item = call ?? { type: 'message', role: 'assistant', id: 'msg_ok', content: [{ type: 'output_text', text: 'OK' }] };
+      const id = `resp_${bodies.length}`;
+      const usage = { input_tokens: 1, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 2 };
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(sse('response.created', { response: { id } }) + sse('response.output_item.done', { item }) + sse('response.completed', { response: { id, usage } }));
+    });
+  });
+  // Codex sends every other host through this server as its proxy, and the tunnel is refused.
+  server.on('connect', (_req, socket) => socket.destroy());
+  return new Promise(done => server.listen(0, '127.0.0.1', () => done({ port: (server.address() as AddressInfo).port, close: () => server.close() })));
+}
+
+function runCodex(args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((done, fail) => {
+    const child = spawn('codex', args, { cwd, env, stdio: ['pipe', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+    child.on('error', fail);
+    child.on('close', code => done({ code, stderr }));
+    child.stdin.end('Reply with OK.');
+  });
+}
+
+/** Runs Codex on `model` the way Manki runs a reviewer with repository tools, and returns the tools it offered. */
+async function checkModel(model: string, repo: string, scratch: string): Promise<OfferedTools> {
+  const bodies: Json[] = [];
+  const standIn = await startStandIn(bodies);
+  try {
+    const home = mkdtempSync(join(scratch, 'home-'));
+    const cwd = mkdtempSync(join(scratch, 'cwd-'));
+    const instructions = join(scratch, 'instructions.md');
+    writeFileSync(instructions, 'Reply with OK.');
+    mkdirSync(join(home, '.codex'));
+    const local = `http://127.0.0.1:${standIn.port}`;
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH, HOME: home, CODEX_HOME: join(home, '.codex'), OPENAI_API_KEY: 'stand-in',
+      HTTPS_PROXY: local, HTTP_PROXY: local, ALL_PROXY: local, NO_PROXY: '127.0.0.1',
+    };
+    const server = { command: process.execPath, args: [join(repo, 'dist', 'index.js'), MCP_SERVER_COMMAND, repo, FILE_TOOLS_FLAG, STEPS_FLAG, '30'] };
+    const args = [
+      ...codexExecArgs(model, `${local}/v1`), ...codexToolServerArgs(server, env),
+      '-c', `model_instructions_file=${JSON.stringify(instructions)}`, '-',
+    ];
+    const { code, stderr } = await runCodex(args, env, cwd);
+    if (code !== 0 || bodies.length === 0) throw new Error(`Codex exited with ${code} on ${model}:\n${stderr.slice(-2000)}`);
+    const offered = offeredTools(bodies[0]);
+    return { offered, held: heldToolsCall(offered) && bodies[1] ? heldTools(bodies[1]) : [] };
+  } finally {
+    standIn.close();
+  }
+}
+
+/** Returns the version of the Codex CLI on the PATH, or an empty string when there is none. */
+function codexVersion(): Promise<string> {
+  return new Promise(done => {
+    const child = spawn('codex', ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let stdout = '';
+    child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+    child.on('error', () => done(''));
+    child.on('close', code => done(code === 0 ? stdout.trim().split(' ').pop() ?? '' : ''));
+  });
+}
+
+async function main(): Promise<number> {
+  const version = await codexVersion();
+  if (version !== CODEX_CLI_VERSION) {
+    console.log(`::error::The Codex CLI on the PATH is ${version || 'missing'}, and Manki pins ${CODEX_CLI_VERSION}.`);
+    return 1;
+  }
+  const repo = resolve(__dirname, '..');
+  const fixture = join(__dirname, 'fixtures', 'codex-tools.json');
+  const expected = JSON.parse(readFileSync(fixture, 'utf8')) as Record<string, OfferedTools>;
+  const scratch = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'manki-codex-tools-'));
+  try {
+    const actual: Record<string, OfferedTools> = {};
+    for (const model of Object.keys(expected)) {
+      actual[model] = await checkModel(model, repo, scratch);
+      console.log(`${model}: offered ${actual[model].offered.join(', ')}; held ${actual[model].held.join(', ') || 'none'}`);
+    }
+    if (process.argv.includes('--write')) {
+      writeFileSync(fixture, `${JSON.stringify(actual, null, 2)}\n`);
+      return 0;
+    }
+    const problems = compareTools(expected, actual);
+    for (const problem of problems) console.log(`::error::${problem}`);
+    if (problems.length > 0) console.log('Check what each changed tool can do, update docs/security.md, then record the new lists with --write.');
+    return problems.length === 0 ? 0 : 1;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+if (require.main === module) {
+  main().then(code => process.exit(code), (error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

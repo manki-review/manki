@@ -500,7 +500,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     return { stdin: stdin.write, instructions, starts };
   }
 
-  it('runs `codex exec` read-only with no built-in tool and Manki\'s instructions in a file, in an empty temp directory', async () => {
+  it('runs `codex exec` read-only with every built-in tool it can switch off turned off and Manki\'s instructions in a file, in an empty temp directory', async () => {
     const { stdin, instructions } = setupSpawnMock('hello\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
@@ -511,6 +511,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
       'exec', '--skip-git-repo-check', '--model=o3', '--sandbox', 'read-only', '-c', 'approval_policy=never',
       '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+      '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
+      '-c', 'tools.experimental_request_user_input.enabled=false',
       '-c', expect.stringMatching(/^model_instructions_file=".*\/instructions\.md"$/), '-',
     ]);
     expect(instructions).toEqual(['sys']);
@@ -603,6 +605,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
       'exec', '--skip-git-repo-check', '--model=gpt-5.5', '--sandbox', 'read-only', '-c', 'approval_policy=never',
       '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+      '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
+      '-c', 'tools.experimental_request_user_input.enabled=false',
       '-c', 'model_provider="manki"',
       '-c', 'model_providers.manki.name="OpenAI-compatible endpoint"',
       '-c', 'model_providers.manki.base_url="https://llm.example/v1"',
