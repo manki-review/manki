@@ -95,7 +95,7 @@ import {
   skippedFiles,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, authorClearLine, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -502,22 +502,25 @@ async function reportReviewedCheck(target: RunTarget, prAuthorLogin: string | un
 
 /**
  * Answers a review command that started no round because `target.commitSha` already has a review, and says what starts
- * one. While automatic review is paused, the answer adds the text of the pause notice. It leaves the pause out when the
- * base branch's config is `held` or the PR's rounds and threads cannot all be read.
+ * one. It adds the text of the pause notice only when `autoReviewHalt` names an automatic pause and everything that
+ * decision reads is known: the base branch's config is not `held`, the coordinator has the PR's `settings`, and every
+ * round record and the threads were read.
  */
-async function answerAlreadyReviewed(target: RunTarget, prAuthorLogin: string | undefined, { config, held }: { config: ReviewConfig; held: boolean }): Promise<void> {
+async function answerAlreadyReviewed(
+  target: RunTarget, prAuthorLogin: string | undefined, { config, held }: { config: ReviewConfig; held: boolean }, settings: PrState,
+): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   const parts = [`\`${commitSha.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.`];
   try {
-    // Without the config nothing says how many rounds the round cap allows.
-    if (!held) {
+    // Without the config or the coordinator's state, nothing says how many rounds the cap allows or whether the Pause box is ticked.
+    if (!held && settings !== NO_SETTINGS) {
       const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
       // Rounds or threads read only in part can give a wrong pause or miss a blocking thread.
       const partial = recap.priorRoundsIncomplete || recap.openThreadsState === 'fetch_failed';
-      const pause = partial ? undefined : pauseState(recap, config);
+      const halt = partial ? undefined : await autoReviewHalt(octokit, bot, owner, repo, prNumber, config, recap, settings.settings.paused);
       const blockers = formatOpenBlockers(recap.previousFindings);
       // Every thread the list names blocks, so the PR author alone clears none of them.
-      if (pause?.paused) parts.push(pauseText(pause, blockers && `${blockers}\n\n${authorClearLine(config.author_clear_role)}`));
+      if (halt?.cause === 'automatic_pause') parts.push(pauseText(halt.pause, blockers && `${blockers}\n\n${authorClearLine(config.author_clear_role)}`));
     }
   } catch (error) {
     core.warning(`Could not read whether automatic review is paused, answering without it: ${error instanceof Error ? error.message : error}`);
@@ -668,7 +671,7 @@ async function handleCommentTrigger(settingsTick = false): Promise<void> {
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, pr.head.sha, settings, draft);
     const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha: pr.head.sha, baseRef: pr.base.ref };
     const loaded = await loadEventConfig(octokit, owner, repo, pr.base.ref);
-    await answerAlreadyReviewed(target, pr.user?.login, loaded);
+    await answerAlreadyReviewed(target, pr.user?.login, loaded, settings);
     await reportReviewedCheck(target, pr.user?.login, loaded);
     return;
   }

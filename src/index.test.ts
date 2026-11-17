@@ -279,6 +279,7 @@ jest.mock('./state', () => ({
   isNewChange: jest.requireActual('./state').isNewChange,
   pauseState: jest.requireActual('./state').pauseState,
   authorClearLine: jest.requireActual('./state').authorClearLine,
+  autoReviewHalt: jest.requireActual('./state').autoReviewHalt,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   reopenThread: jest.requireActual('./state').reopenThread,
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
@@ -1354,6 +1355,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       title, file: 'src/app.ts', line: n, severity, status: 'open' as const, threadId: `T_${n}`, threadUrl: `https://github.com/test-owner/test-repo/pull/1#discussion_r${n}`,
     });
     const pauseLine = 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. A review you start by hand also turns automatic review back on for the next 3 rounds.';
+    jest.mocked(authModule.fetchPrState).mockClear().mockResolvedValue(settingsState());
     jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [thread('Null check missing', 'blocker', 1), thread('Retry never stops', 'warning', 2)], priorRounds: rounds });
     expect(await command()).toEqual(answer(
@@ -1362,21 +1364,28 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       'The PR author may not clear a blocking thread without the `maintain` role or a higher one.',
     ));
     expect(recapModule.fetchRecapState).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'a', 'maintain');
+    // The answer takes the Pause box from the state the command already read.
+    expect(authModule.fetchPrState).toHaveBeenCalledTimes(1);
 
     jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [thread('Retry never stops', 'warning', 2)], priorRounds: rounds });
     expect(await command()).toEqual(answer(pauseLine));
 
-    // A pause that cannot be read is left out, also when only a round record or the threads could not be read.
+    // The pause is left out unless it is certain: when it cannot be read in full, and when a push starts no review for another reason.
     const blocked = { previousFindings: [thread('Null check missing', 'blocker', 1)], priorRounds: rounds };
-    for (const unread of [
-      () => jest.mocked(recapModule.fetchRecapState).mockRejectedValue(new Error('rate limited')),
-      () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, priorRoundsIncomplete: true }),
-      () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, openThreadsState: 'fetch_failed' }),
-    ]) {
-      jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
-      unread();
-      expect(await command()).toEqual(answer());
+    const leftOut: Array<[string, { recap?: () => unknown; config?: typeof paused; state?: PrState | null }]> = [
+      ['the rounds and threads cannot be read', { recap: () => jest.mocked(recapModule.fetchRecapState).mockRejectedValue(new Error('rate limited')) }],
+      ['a round record cannot be read', { recap: () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, priorRoundsIncomplete: true }) }],
+      ['the threads cannot be listed', { recap: () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, openThreadsState: 'fetch_failed' }) }],
+      ['`auto_review` is off', { config: { ...paused, auto_review: false } }],
+      ['the Pause box is ticked', { state: settingsState(true) }],
+      ['the coordinator has no state of the PR', { state: null }],
+    ];
+    for (const [label, { recap = () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue(blocked), config = paused, state = settingsState() }] of leftOut) {
+      jest.mocked(configModule.loadConfig).mockReturnValueOnce(config);
+      jest.mocked(authModule.fetchPrState).mockResolvedValueOnce(state);
+      recap();
+      expect([label, await command()]).toEqual([label, answer()]);
     }
     // So is a pause counted without the base branch's config.
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
@@ -1390,6 +1399,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
 
     jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(false);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
+    jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
   });
 
   it('handleCommentTrigger on a box tick with a mode bypasses the dedupe gate', async () => {
