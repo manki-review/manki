@@ -161,6 +161,11 @@ export interface ReviewStats {
   /** Merged PRs without such a record, such as one Manki never reviewed. */
   unreviewed: number;
   roundsPerPr: number[];
+  /**
+   * PRs whose round records all decoded and are rounds 1, 2, 3 in posting order. Only they count in the figures that
+   * read a round number: `passedFirstRound`, `raisedLater`, the follow-up rounds and the rounds a carried warning waited.
+   */
+  numberedPrs: number;
   passedFirstRound: number;
   manyRounds: number;
   rounds: number;
@@ -306,7 +311,7 @@ function finder(stats: ReviewStats, model: string): FinderStats {
  */
 export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): ReviewStats {
   const stats: ReviewStats = {
-    prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, approvedRounds: 0, roundsAfterApproval: [], severities: {}, firstRound: [],
+    prs: 0, unreviewed: 0, roundsPerPr: [], numberedPrs: 0, passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, approvedRounds: 0, roundsAfterApproval: [], severities: {}, firstRound: [],
     fixRate: aggregate(fixRateLines, new Set(prs.map(pr => pr.number))),
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), pairRefutations: new Map(), pairRefutationCalls: [],
@@ -323,7 +328,9 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
     }
     stats.prs++;
     stats.roundsPerPr.push(pr.rounds.length);
-    if (pr.rounds[0]?.meta.outcome === 'READY') stats.passedFirstRound++;
+    const numbered = pr.undecodedRounds === 0 && pr.rounds.every((round, index) => inSequence(round, index > 0 ? pr.rounds[index - 1] : undefined));
+    if (numbered) stats.numberedPrs++;
+    if (numbered && pr.rounds[0].meta.outcome === 'READY') stats.passedFirstRound++;
     if (pr.rounds.length >= MANY_ROUNDS) stats.manyRounds++;
     const firstApproval = pr.rounds.findIndex(round => round.meta.outcome === 'READY');
     if (firstApproval >= 0 && firstApproval < pr.rounds.length - 1) stats.roundsAfterApproval.push(pr.rounds.length - 1 - firstApproval);
@@ -356,7 +363,7 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         if (fromSweep(entry)) increment(stats.sweeps.posted, entry.severity);
         if (approved) severity.inApprovedRounds++;
         // A finding with the origin `earlier` restates one an earlier round listed.
-        if (round.meta.round > 1 && !round.findings?.originsWithoutPrior && entry.origin && entry.origin !== 'earlier') {
+        if (numbered && round.meta.round > 1 && !round.findings?.originsWithoutPrior && entry.origin && entry.origin !== 'earlier') {
           severity.raisedLater++;
           if (entry.origin === 'reviewed') severity.onReviewedCode++;
         }
@@ -424,12 +431,12 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         stat.filesInListedRounds += own.length;
         stat.filesInDiff += own.filter(file => changed.has(file)).length;
       }
-      tallyRound(stats, round);
+      tallyRound(stats, round, numbered);
       if (round.judge?.verdictReason === 'verdict_reader') {
         stats.readerRounds++;
         stats.readerBlockers += round.judge.verdictTrace?.survivingBlockers.length ?? 0;
       }
-      if (round.meta.round > 1) {
+      if (numbered && round.meta.round > 1) {
         stats.followUpRounds++;
         if (round.judge?.interRoundDiffTruncated || (round.judge?.interRoundDiffState ?? 'unknown') === 'unknown') stats.interRoundDiffCutOrUnknown++;
       }
@@ -451,23 +458,28 @@ function tokenCallKey(call: TokenServiceCall): string {
 }
 
 /**
+ * Whether `round` holds the number after `previous`, or 1 when it is the first record in posting order. A round numbers
+ * itself from the earlier records it could read, so a round after a failed read can call itself round 1 again.
+ */
+function inSequence(round: RoundContext, previous: RoundContext | undefined): boolean {
+  return round.meta.round === (previous ? previous.meta.round + 1 : 1);
+}
+
+/**
  * Adds the blockers and warnings `round` posted to `found`. Each counts in the round that first raised it: round 1, or a
  * later round when it sits on code an earlier round reviewed. A pre-existing finding counts in neither. A later round
- * that posted one but cannot prove its origins counts as unproven instead.
- *
- * A round numbers itself from the earlier records it could read, so a round after a failed read can call itself round 1.
- * Only the first record in posting order, `previous` unset, can be round 1, and each later one must follow `previous`.
+ * that posted one but cannot prove its origins counts as unproven instead, and so does a record out of sequence.
  */
 function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: RoundContext | undefined, posted: FindingFingerprintEntry[]): void {
   const graded = posted.filter((entry): entry is FindingFingerprintEntry & { severity: FirstRoundGrade } =>
     (FIRST_ROUND_GRADES as readonly string[]).includes(entry.severity) && !entry.tags?.includes(PRE_EXISTING_TAG));
-  if (!previous) {
-    if (round.meta.round !== 1) found.noFirstRound = true;
-    else for (const entry of graded) found.grades[entry.severity].firstRound++;
+  if (!inSequence(round, previous)) {
+    if (previous) found.unproven++;
+    else found.noFirstRound = true;
     return;
   }
-  if (round.meta.round !== previous.meta.round + 1) {
-    found.unproven++;
+  if (!previous) {
+    for (const entry of graded) found.grades[entry.severity].firstRound++;
     return;
   }
   if (graded.length === 0) return;
@@ -500,8 +512,11 @@ function tallySweeps({ sweeps }: ReviewStats, round: RoundContext): void {
   sweeps.calls.push(...(round.usage?.llmCalls ?? []).filter(c => c.stage === 'sweep' || c.agent === 'sweep' || c.sweep));
 }
 
-/** Adds the decisions one round records to the tallies. Records from before a field existed add nothing for it. */
-function tallyRound(stats: ReviewStats, round: RoundContext): void {
+/**
+ * Adds the decisions one round records to the tallies. Records from before a field existed add nothing for it. Unless
+ * the PR's records are `numbered`, the rounds a carried warning waited are not known.
+ */
+function tallyRound(stats: ReviewStats, round: RoundContext, numbered: boolean): void {
   tallySweeps(stats, round);
   for (const [stage, digests] of Object.entries(round.meta.promptVersions ?? {})) {
     for (const digest of digests) tally(stats, 'Prompt versions (rounds per stage and digest)', `${stage} ${digest}`);
@@ -530,7 +545,7 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
   for (const entry of round.findings?.unposted ?? []) {
     tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.unpostedReason ?? entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
   }
-  for (const entry of round.findings?.carried ?? []) {
+  for (const entry of numbered ? round.findings?.carried ?? [] : []) {
     const rounds = round.meta.round - (entry.raisedIn ?? round.meta.round);
     tally(stats, 'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)', `listed again, ${rounds} ${rounds === 1 ? 'round' : 'rounds'} on`);
   }
@@ -734,9 +749,10 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     '## Rounds',
     '',
     `- Rounds per PR: ${summary(stats.roundsPerPr)}`,
-    `- Passed after one round: ${share(stats.passedFirstRound, stats.prs)}`,
+    `- Passed after one round: ${share(stats.passedFirstRound, stats.numberedPrs)}`,
     `- Needed ${MANY_ROUNDS} or more rounds: ${share(stats.manyRounds, stats.prs)}`,
     `- Rounds that ended incomplete, counted in no other figure: ${stats.incompleteRounds}`,
+    `- PRs left out of the share passed after one round, the findings first raised in a later round, the follow-up rounds and the rounds a carried warning waited, because a round record did not decode or the records are not rounds 1, 2, 3 in posting order: ${stats.prs - stats.numberedPrs}`,
     `- Approved rounds: ${share(stats.approvedRounds, stats.rounds)}`,
     `- PRs with rounds after their first approval: ${share(stats.roundsAfterApproval.length, stats.prs)}, ${stats.roundsAfterApproval.reduce((sum, n) => sum + n, 0)} such rounds`,
     '',
