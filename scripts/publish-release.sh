@@ -122,14 +122,18 @@ prev_version=$(git show "$RELEASE_COMMIT^:package.json" | node -p 'JSON.parse(re
 [ "$prev_version" != "$VERSION" ] || [ "$(git diff --name-only "$RELEASE_COMMIT^" "$RELEASE_COMMIT")" = "CHANGELOG.md" ] ||
   die "release commit $RELEASE_COMMIT neither bumps the version to $VERSION nor changes CHANGELOG.md alone. Point $BRANCH at a commit that does."
 # A later commit that edits CHANGELOG.md at the same version replaced this release commit.
-# One at another version is the next release and changes nothing here.
-# The list is assigned first, so a failing `git log` stops the script.
-later_commits=$(git log --format=%h "$RELEASE_COMMIT..refs/remotes/$REMOTE/main" -- CHANGELOG.md)
-for commit in $later_commits; do
-  later_version=$(git show "$commit:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
-  [ "$later_version" != "$VERSION" ] ||
-    die "$REMOTE/main has a later commit that edits the $VERSION notes in CHANGELOG.md ($commit). Point $BRANCH at the newest one."
-done
+# One at another version is the next release and changes nothing here. A tag that exists
+# settled which commit is released, so a rerun finishes that release whatever main holds.
+tag_commit=$(remote_tag_commit "$TAG")
+if [ -z "$tag_commit" ]; then
+  # The list is assigned first, so a failing `git log` stops the script.
+  later_commits=$(git log --format=%h "$RELEASE_COMMIT..refs/remotes/$REMOTE/main" -- CHANGELOG.md)
+  for commit in $later_commits; do
+    later_version=$(git show "$commit:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+    [ "$later_version" != "$VERSION" ] ||
+      die "$REMOTE/main has a later commit that edits the $VERSION notes in CHANGELOG.md ($commit). Point $BRANCH at the newest one."
+  done
+fi
 if has_dist "$RELEASE_COMMIT"; then
   die "release commit $RELEASE_COMMIT already contains dist/"
 fi
@@ -167,7 +171,6 @@ awk -v heading="## [$VERSION]" '
 ' "$WORK/CHANGELOG.md" >"$NOTES"
 grep -q '[^[:space:]]' "$NOTES" || die "CHANGELOG.md at $RELEASE_COMMIT has no section for $VERSION"
 
-tag_commit=$(remote_tag_commit "$TAG")
 state=$(release_state)
 if [ -z "$tag_commit" ]; then
   run git tag -fa "$TAG" "$BUILD" -m "$TAG"

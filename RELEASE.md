@@ -48,7 +48,7 @@ npm run check-changelog-version
 
 A release whose PR is merged can still take more changes as long as its tag `vX.Y.Z` does not exist. Merge the changes, then open one more PR that rewrites the `## [X.Y.Z]` section of `CHANGELOG.md` and changes no other file. CI lets a PR edit `CHANGELOG.md` when it changes the version, or when the version it is on has no tag yet and `CHANGELOG.md` is the only file it changes. A feature or fix PR still fails. That PR's commit is the new release commit. If `release/vX.Y.Z` already exists, delete it first (`git push origin --delete release/vX.Y.Z`), then push the new commit as in step 6. From then on the `Release` workflow and `scripts/publish-release.sh` refuse the earlier release commit, because `main` has a later commit that edits `CHANGELOG.md` at the same version. The next release's PR is at another version, so it never gets in the way of an older release. The version never goes back, and there is no new version number for a release nobody could install.
 
-Once the tag exists the release is published for good, and a change needs a new version.
+Once the tag exists the release is published for good, and a change needs a new version. From then on the script no longer looks at later commits, so a rerun finishes that release whatever `main` holds. Close a notes PR that is still open at that point: its CI result is from before the tag, so it would still merge.
 
 ## Tag ruleset
 

@@ -167,6 +167,10 @@ describe('publish-release.sh --dry-run', () => {
     fx.git('tag', '-a', 'v1.2.3', fx.build, '-m', 'v1.2.3');
     fx.git('tag', 'v1', fx.build);
     fx.git('push', '-q', 'origin', 'refs/tags/v1.2.3', 'refs/tags/v1');
+    const changelog = path.join(fx.work, 'CHANGELOG.md');
+    fs.writeFileSync(changelog, fs.readFileSync(changelog, 'utf8').replace('Notes for 1.2.3.', 'Notes rewritten after the tag.'));
+    fx.git('commit', '-q', '-a', '-m', 'rewrite the notes after the tag');
+    fx.git('push', '-q', 'origin', 'main');
     const result = publish(fx, 'v1.2.3', 'published');
     expect(result.status).toBe(0);
     expect(result.stdout).not.toContain('dry-run:');
