@@ -140,7 +140,7 @@ export interface LLMCall extends LLMUsage {
   durationMs: number;
   /** Estimate at public API prices, `null` when the model has no known price or the provider reported no usage. */
   costUsd: number | null;
-  /** Tool steps the call took. Unset when it took none. */
+  /** Tool steps the call took. Empty when it had repository tools and called none. Unset when it had no tools or its client reports no steps. */
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
   relatedReads?: Record<string, number>;
