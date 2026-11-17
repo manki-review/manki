@@ -738,6 +738,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
       expect(outcome.error).toBeInstanceOf(QuotaError);
       expect(outcome.error).toMatchObject({ message: `OpenAI model at capacity: ERROR: ${CAPACITY}`, limit: 'OpenAI model at capacity' });
+      expect(outcome.error?.cause).toBeInstanceOf(TimeoutError);
       expect((outcome.error?.cause as Error).message).toContain('Codex CLI timed out after 60s');
       expect(mock.starts).toHaveLength(2);
       expect(outcome.tookMs).toBe(60_000);
@@ -745,7 +746,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       // A dropped connection is no limit, so the timeout stays the error.
       mock = setupSpawnMock('', failed(DROPPED), { hangs: true });
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
-      expect(outcome.error).not.toBeInstanceOf(QuotaError);
+      expect(outcome.error).toBeInstanceOf(TimeoutError);
       expect(outcome.error?.message).toContain('Codex CLI timed out after 60s');
       expect(mock.starts).toHaveLength(2);
       expect(outcome.tookMs).toBe(60_000);
