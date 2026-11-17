@@ -4816,7 +4816,10 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     expect(result.verdictReport?.verdict).toBe('READY');
     expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
-    expect(jest.mocked(judgeFallback.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high', timeoutMs: 900_000 });
+    // The fallback gets what the refused call left of its 900 seconds.
+    const resent = jest.mocked(judgeFallback.sendMessage).mock.calls[0][2];
+    expect(resent).toEqual({ effort: 'high', timeoutMs: expect.any(Number) });
+    expect(resent?.timeoutMs).toBeLessThanOrEqual(900_000);
     expect(result.modelFallbacks).toEqual([
       { stage: 'reviewer', agent: result.agentNames[0], fallbackModel: 'claude-opus-5-5', reason: 'refusal (reasoning_extraction)' },
       { stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' },
@@ -7218,6 +7221,34 @@ describe('withRefusalFallback', () => {
     expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'first', { effort: 'low' }], ['sys', 'second', undefined]]);
     expect(onFallback).toHaveBeenCalledTimes(1);
     expect(onFallback).toHaveBeenCalledWith(refusal);
+  });
+
+  it('gives the fallback the time the refused call left of its limit, and fails as out of time when none is left', async () => {
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const refusedAfter = (seconds: number) => ({ sendMessage: jest.fn(async () => { now += seconds * 1000; throw refusal; }) }) as unknown as LLMClient;
+    const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
+    const onFallback = jest.fn();
+    try {
+      const client = withRefusalFallback(refusedAfter(100), fallback, onFallback);
+      await expect(client.sendMessage('sys', 'first', { effort: 'low', timeoutMs: 900_000 })).resolves.toEqual({ content: 'ok' });
+      // A call after the stage moved has its whole limit, and a call without one gets none.
+      await client.sendMessage('sys', 'second', { timeoutMs: 500_000 });
+      await withRefusalFallback(refusedAfter(100), fallback, onFallback).sendMessage('sys', 'third', { effort: 'low' });
+      expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([
+        ['sys', 'first', { effort: 'low', timeoutMs: 800_000 }], ['sys', 'second', { timeoutMs: 500_000 }], ['sys', 'third', { effort: 'low' }],
+      ]);
+
+      jest.mocked(fallback.sendMessage).mockClear();
+      onFallback.mockClear();
+      const usedUp = await withRefusalFallback(refusedAfter(900), fallback, onFallback).sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      expect(usedUp).toBeInstanceOf(TimeoutError);
+      expect(usedUp).toMatchObject({ message: 'The refused call used up its 900s, so it is not sent to the fallback model', cause: refusal });
+      expect(fallback.sendMessage).not.toHaveBeenCalled();
+      expect(onFallback).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('records one fallback when parallel calls are all refused', async () => {
