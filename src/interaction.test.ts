@@ -16,7 +16,7 @@ import * as state from './state';
 import { RunCancelledError, stopWritesOn } from './abort';
 import * as auth from './auth';
 import { REOPENED_MARKER } from './recap';
-import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
+import { makeRoundContext, TEST_BOT, TEST_LINKS, useOwnRunnerTemp } from './test-utils';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -462,6 +462,8 @@ function setContext(overrides: Record<string, any> = {}) {
   ctx.repo = { owner: 'test-owner', repo: 'test-repo' };
   ctx.actor = 'test-user';
 }
+
+useOwnRunnerTemp();
 
 beforeEach(() => {
   jest.clearAllMocks();

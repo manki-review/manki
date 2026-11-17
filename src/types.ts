@@ -1513,7 +1513,10 @@ export interface RelatedRepo {
 /** The related repos one review round offers its reviewer tools, each fetched on first use. */
 export interface RelatedRepoTools {
   repos: RelatedRepo[];
-  /** Directory the repos are cloned into, one `owner/name` directory each. A workflow can keep it between runs with `actions/cache`. */
+  /**
+   * Directory the repos are cloned into, one `owner/name` directory each. A workflow can keep it between runs with
+   * `actions/cache`. It is a directory in `stateDir` while another process holds the lock of the kept one.
+   */
   cacheDir: string;
   /** The round's own directory, where the tool servers record which repo one of them fetched or failed to fetch. */
   stateDir: string;

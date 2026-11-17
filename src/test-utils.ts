@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -12,6 +12,25 @@ import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 
 /** Time limit for a test that starts real `git` processes. Under parallel load each one can take far longer than alone. */
 export const GIT_TEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Gives the test file a runner temp directory of its own. The clones of the related repos in it have one lock, which
+ * another test file would hold in a shared one.
+ */
+export function useOwnRunnerTemp(): void {
+  let saved: string | undefined;
+  let dir: string;
+  beforeAll(() => {
+    saved = process.env.RUNNER_TEMP;
+    dir = mkdtempSync(join(tmpdir(), 'manki-runner-temp-'));
+    process.env.RUNNER_TEMP = dir;
+  });
+  afterAll(() => {
+    if (saved === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = saved;
+    rmSync(dir, { recursive: true, force: true });
+  });
+}
 
 /** Runs git in `cwd` with a fixed author and returns its trimmed output. */
 export function git(cwd: string, ...args: string[]): string {

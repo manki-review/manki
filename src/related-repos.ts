@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { randomUUID } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { devNull, tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
@@ -49,9 +50,53 @@ export function relatedReposCacheDir(): string {
   return join(process.env.RUNNER_TEMP || tmpdir(), 'manki-related-repos');
 }
 
-/** Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined` without repos. */
+// Names this process in a clone lock. The random part tells it from an earlier process that had the same PID.
+const HOLDER = `${process.pid}-${randomUUID()}`;
+
+/**
+ * Whether this process holds the lock of the clones in `cacheDir`. It takes the lock when no running process holds it,
+ * and keeps it until it exits, since a round reads its clones until its end. The lock is a directory beside `cacheDir`,
+ * where no fetch removes it and no cache saves it. It holds one entry, named after its holder. Only one process can
+ * rename the entry of a holder that stopped, so only one takes that holder's place.
+ */
+function holdsCloneLock(cacheDir: string): boolean {
+  const lock = `${cacheDir}.lock`;
+  const staged = `${lock}.${HOLDER}`;
+  try {
+    const [holder] = isRealDirectory(lock) ? readdirSync(lock) : [];
+    if (holder === HOLDER) return true;
+    if (holder === undefined) {
+      mkdirSync(staged, { recursive: true });
+      writeFileSync(join(staged, HOLDER), '');
+      // A directory with an entry is never replaced, so this fails once another process has taken the lock.
+      renameSync(staged, lock);
+      return true;
+    }
+    if (isRunning(parseInt(holder, 10))) return false;
+    renameSync(join(lock, holder), join(lock, HOLDER));
+    return true;
+  } catch {
+    // A lock this process can neither read nor take counts as held.
+    return false;
+  } finally {
+    rmSync(staged, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined`
+ * without repos. While another running process holds the clones in `relatedReposCacheDir()`, the round clones into its
+ * state directory, so neither replaces a clone the other reads.
+ */
 export function relatedRepoTools(repos: RelatedRepo[] | undefined, asOf?: string): RelatedRepoTools | undefined {
-  return repos?.length ? { repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }) } : undefined;
+  if (!repos?.length) return undefined;
+  const stateDir = makeScratchDir('related');
+  let cacheDir = relatedReposCacheDir();
+  if (!holdsCloneLock(cacheDir)) {
+    core.info(`Another Manki process holds the related repo clones in ${cacheDir}, so this one fetches clones of its own`);
+    cacheDir = join(stateDir, 'clones');
+  }
+  return { repos, cacheDir, stateDir, ...(asOf && { asOf }) };
 }
 
 /**

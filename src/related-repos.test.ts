@@ -10,6 +10,7 @@ import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
 jest.mock('@actions/core', () => ({
+  info: jest.fn(),
   warning: jest.fn(),
 }));
 
@@ -427,25 +428,85 @@ describe('relatedRepoLoader', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('clones into the runner temp directory by default', () => {
+  /** Runs `body` with `dir` as the runner's temp directory. */
+  async function withRunnerTemp(dir: string, body: () => void | Promise<void>): Promise<void> {
     const runnerTemp = process.env.RUNNER_TEMP;
-    process.env.RUNNER_TEMP = '/runner/temp';
+    process.env.RUNNER_TEMP = dir;
     try {
-      expect(relatedReposCacheDir()).toBe(join('/runner/temp', 'manki-related-repos'));
+      await body();
     } finally {
       if (runnerTemp === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = runnerTemp;
     }
-  });
+  }
 
-  it('gives each round a state directory of its own, and states the related repos on the tools of every call', () => {
+  it('clones into the runner temp directory by default', () => withRunnerTemp('/runner/temp', () => {
+    expect(relatedReposCacheDir()).toBe(join('/runner/temp', 'manki-related-repos'));
+  }));
+
+  it('gives each round a state directory of its own and the kept clones to one process at a time, and states the related repos on the tools of every call', () => withRunnerTemp(tempDir, async () => {
+    const kept = relatedReposCacheDir();
+    const lockDir = `${kept}.lock`;
+    const ours = expect.stringMatching(new RegExp(`^${process.pid}-`));
+    /** Leaves the lock as the process `pid` holds it, or as `entry` when it names no process. */
+    const heldBy = (entry: number | string | undefined): void => {
+      rmSync(lockDir, { recursive: true });
+      mkdirSync(lockDir);
+      if (entry !== undefined) writeFileSync(join(lockDir, typeof entry === 'number' ? `${entry}-another-process` : entry), '');
+    };
     const first = relatedRepoTools([DASH, PLATFORM], '2026-01-05T00:00:00Z')!;
     const second = relatedRepoTools([DASH])!;
+    const holder = spawn('sleep', ['30']);
     try {
-      expect(first).toEqual({ repos: [DASH, PLATFORM], cacheDir: relatedReposCacheDir(), stateDir: expect.any(String), asOf: '2026-01-05T00:00:00Z' });
+      expect(first).toEqual({ repos: [DASH, PLATFORM], cacheDir: kept, stateDir: expect.any(String), asOf: '2026-01-05T00:00:00Z' });
       expect(lstatSync(first.stateDir).isDirectory()).toBe(true);
       expect(second.stateDir).not.toBe(first.stateDir);
       expect(second).not.toHaveProperty('asOf');
+      // Two rounds of one process see one lock beside the kept clones and both use them.
+      expect(second.cacheDir).toBe(kept);
+      expect(readdirSync(lockDir)).toEqual([ours]);
+      expect(readdirSync(tempDir).filter(f => f.startsWith('manki-related-repos'))).toEqual(['manki-related-repos.lock']);
+      expect(core.info).not.toHaveBeenCalled();
+
+      // A round that starts while another running process holds the lock clones into its own state directory, so the clone the holder reads stays as it is.
+      heldBy(holder.pid);
+      const keptClone = join(kept, 'dashpay', 'dash');
+      mkdirSync(keptClone, { recursive: true });
+      writeFileSync(join(keptClone, 'README.md'), 'read by the holder');
+      const apart = relatedRepoTools([DASH, PLATFORM])!;
+      const ownClone = join(apart.stateDir, 'clones', 'dashpay', 'dash');
+      expect(apart.cacheDir).toBe(join(apart.stateDir, 'clones'));
+      expect(core.info).toHaveBeenCalledWith(`Another Manki process holds the related repo clones in ${kept}, so this one fetches clones of its own`);
+      expect(await relatedRepoLoader(apart, { run: fakeGit(), log })('dashpay/dash')).toBe(ownClone);
+      expect(calls.map(c => c.cwd)).toEqual(Array(7).fill(ownClone));
+      expect(readFileSync(join(keptClone, 'README.md'), 'utf-8')).toBe('read by the holder');
+      expect(readdirSync(lockDir)).toEqual([`${holder.pid}-another-process`]);
+      expect(fetchedRelatedRepos(apart.stateDir)).toEqual(new Map([['dashpay/dash', ownClone]]));
+      // A fetch of that round that was stopped is still taken over, into a directory of its own.
+      writeFileSync(join(apart.stateDir, 'dashpay%2Fplatform.lock'), String(spawnSync('true').pid));
+      expect(await relatedRepoLoader(apart, { run: fakeGit(), log })('dashpay/platform')).toBe(join(apart.stateDir, 'takeover-1', 'dashpay', 'platform'));
+      // A lock whose entry names no process counts as held, and so does one that is no directory.
+      heldBy('no-process');
+      expect(relatedRepoTools([DASH])!.cacheDir).not.toBe(kept);
+      rmSync(lockDir, { recursive: true });
+      writeFileSync(lockDir, '');
+      expect(relatedRepoTools([DASH])!.cacheDir).not.toBe(kept);
+
+      // Once the holder stopped, the next round takes its lock and the kept clones. So does a round that finds a lock without an entry.
+      heldBy(holder.pid);
+      holder.kill('SIGKILL');
+      await once(holder, 'exit');
+      calls = [];
+      const next = relatedRepoTools([DASH])!;
+      expect(next.cacheDir).toBe(kept);
+      expect(readdirSync(lockDir)).toEqual([ours]);
+      expect(await relatedRepoLoader(next, { run: fakeGit(), log })('dashpay/dash')).toBe(keptClone);
+      expect(calls.map(c => c.cwd)).toEqual(Array(7).fill(keptClone));
+      heldBy(undefined);
+      expect(relatedRepoTools([DASH])!.cacheDir).toBe(kept);
+      expect(readdirSync(lockDir)).toEqual([ours]);
+      expect(readdirSync(tempDir).filter(f => f.startsWith('manki-related-repos'))).toEqual(['manki-related-repos', 'manki-related-repos.lock']);
+
       expect(relatedRepoTools([])).toBeUndefined();
       expect(relatedRepoTools(undefined)).toBeUndefined();
       expect(repoTools('/work/head', 15, first)).toStrictEqual({ root: '/work/head', steps: 15, related: first });
@@ -456,7 +517,7 @@ describe('relatedRepoLoader', () => {
       // A finder whose message lists files to open is marked, so its prompt tells it to open them.
       expect(repoTools('/work/head', 15, first, 'read')).toStrictEqual({ root: '/work/head', steps: 15, related: first, listed: true });
     } finally {
-      for (const { stateDir } of [first, second]) rmSync(stateDir, { recursive: true, force: true });
+      holder.kill('SIGKILL');
     }
-  });
+  }));
 });
