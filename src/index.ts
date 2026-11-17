@@ -138,6 +138,7 @@ function readProviderInputs(): ProviderInputs {
     anthropicApiKey: core.getInput('anthropic_api_key'),
     openaiOauthToken: core.getInput('openai_oauth_token'),
     openaiApiKey: core.getInput('openai_api_key'),
+    openaiBaseUrl: core.getInput('openai_base_url'),
     geminiOauthToken: core.getInput('gemini_oauth_token'),
     geminiApiKey: core.getInput('gemini_api_key'),
   };

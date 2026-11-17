@@ -48,7 +48,7 @@ describe('reviewLocal', () => {
   let base: string;
   let head: string;
   let later: string;
-  const inputs = { anthropicOauthToken: 'token', anthropicApiKey: '', openaiOauthToken: '', openaiApiKey: '', geminiOauthToken: '', geminiApiKey: '' };
+  const inputs = { anthropicOauthToken: 'token', anthropicApiKey: '', openaiOauthToken: '', openaiApiKey: '', openaiBaseUrl: '', geminiOauthToken: '', geminiApiKey: '' };
 
   beforeEach(() => {
     repo = mkdtempSync(join(tmpdir(), 'manki-local-'));

@@ -65,6 +65,8 @@ Manki supports Anthropic, OpenAI, and Gemini. You only need credentials for the 
 
 The table lists action input names (lowercase, passed in `with:`). The corresponding GitHub secret is the uppercase version: `anthropic_api_key` reads from `secrets.ANTHROPIC_API_KEY`, and so on, as shown in the workflow examples below.
 
+OpenAI models can also run on an endpoint of your own instead of OpenAI's servers. Set `openai_base_url` next to `openai_api_key` for that, see [OpenAI-compatible endpoint](#openai-compatible-endpoint).
+
 #### Effort mapping
 
 The `low | medium | high | xhigh | max` knobs map per provider as follows. Manki passes effort tiers per stage based on planner decisions and config.
@@ -77,7 +79,7 @@ The `low | medium | high | xhigh | max` knobs map per provider as follows. Manki
 | xhigh  | adaptive, `effort: xhigh` (4.6 models: `effort: high`, 4.5 models: `budget_tokens: 13000`) | `reasoning_effort: xhigh`, capped at the model's highest value | (ignored, warning) | same as `high` (collapsed) |
 | max    | adaptive, `effort: max` (4.5 models: `budget_tokens: 16000`) | the model's highest value (see below) | (ignored, warning) | same as `high` (collapsed) |
 
-OpenAI reasoning models are the o-series and GPT-5 onwards. For `max`, Manki sends the highest `reasoning_effort` the model accepts: `high` for o-series, `gpt-5` and `gpt-5.1`, `xhigh` for `gpt-5.2` to `gpt-5.5`, and `max` for `gpt-5.6` onwards. GPT-4 models (`gpt-4o`, `gpt-4.1`), `-chat` snapshots and `-pro` models do not accept effort, so Manki logs a warning and sends none. Via the Codex CLI (OAuth path), the CLI then applies its own default effort. Via the API, effort has no effect. A tier above the model's highest value, such as `xhigh` on `gpt-5.1`, gets that value. Claude models before Opus 4.7 have no `xhigh`, so Manki sends `high` there, also through the Claude Code CLI. The `xhigh` and `max` tiers collapse silently to `high` for Gemini. Finder names, progress comments and round records show the tier the provider receives, so a finder on Claude Sonnet 4.6 asked for `xhigh` is listed as `high`. A model that takes no effort keeps the tier it was asked for. A deeper review steps the tier up, which adds no effort when the model receives the same value as before, such as `xhigh` on `gpt-5.5` or `high` on `gpt-5.1`. The run log and the progress comment then name the finders it added no effort for. Gemini 3 onwards takes `thinkingLevel` and rejects `thinkingBudget`, while Gemini 2.5 takes only `thinkingBudget`. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking control on Gemini.
+OpenAI reasoning models are the o-series and GPT-5 onwards. For `max`, Manki sends the highest `reasoning_effort` the model accepts: `high` for o-series, `gpt-5` and `gpt-5.1`, `xhigh` for `gpt-5.2` to `gpt-5.5`, and `max` for `gpt-5.6` onwards. GPT-4 models (`gpt-4o`, `gpt-4.1`), `-chat` snapshots and `-pro` models do not accept effort, so Manki logs a warning and sends none. Via the Codex CLI (the OAuth path and an [endpoint of your own](#openai-compatible-endpoint)), the CLI then applies its own default effort. Via the API, effort has no effect. A tier above the model's highest value, such as `xhigh` on `gpt-5.1`, gets that value. Claude models before Opus 4.7 have no `xhigh`, so Manki sends `high` there, also through the Claude Code CLI. The `xhigh` and `max` tiers collapse silently to `high` for Gemini. Finder names, progress comments and round records show the tier the provider receives, so a finder on Claude Sonnet 4.6 asked for `xhigh` is listed as `high`. A model that takes no effort keeps the tier it was asked for. A deeper review steps the tier up, which adds no effort when the model receives the same value as before, such as `xhigh` on `gpt-5.5` or `high` on `gpt-5.1`. The run log and the progress comment then name the finders it added no effort for. Gemini 3 onwards takes `thinkingLevel` and rejects `thinkingBudget`, while Gemini 2.5 takes only `thinkingBudget`. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking control on Gemini.
 
 ### Anthropic
 
@@ -131,6 +133,24 @@ If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
 3. Manki installs the pinned Codex CLI when the runner has none. An install step in the workflow keeps that out of the review's time (see [Step 3](#step-3-add-the-workflow))
 
 > **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your ChatGPT Plus/Pro subscription. If this secret is ever compromised, revoke the OAuth session immediately at [platform.openai.com/account/sessions](https://platform.openai.com/account/sessions). For production use, prefer the API key path (`OPENAI_API_KEY`), which can be rotated without affecting your account session.
+
+#### OpenAI-compatible endpoint
+
+Use this when your model access runs through an endpoint of your own: a company gateway, Azure OpenAI or a self-hosted OpenAI-compatible endpoint. With `openai_base_url` set, every OpenAI model call runs through the Codex CLI against that endpoint, authenticated with `openai_api_key`. The reviewers get the same repository tools as on the Codex subscription path.
+
+The endpoint has to speak the OpenAI Responses API (`POST <base URL>/responses`), because that is what the Codex CLI sends. An endpoint that only offers Chat Completions does not work.
+
+1. Add the endpoint's key as a repository secret:
+   ```bash
+   gh secret set OPENAI_API_KEY --repo <owner>/<repo>
+   ```
+2. Pass the key and the base URL to the action, as in the workflow example in [Step 3](#step-3-add-the-workflow). The base URL is the part before `/responses`, which usually ends in `/v1`. It must start with `http://` or `https://`, and it is no secret, so put no credential in it.
+3. Name models the endpoint serves in `.manki.yml`. `gpt-*` and o-series IDs go to OpenAI by their name. Any other name needs the `openai/` prefix, such as `openai/my-deployment`.
+4. Manki installs the pinned Codex CLI when the runner has none. An install step in the workflow keeps that out of the review's time.
+
+`openai_base_url` needs `openai_api_key` and cannot be combined with `openai_oauth_token`, since a ChatGPT login works only on OpenAI's own servers. A run that uses an OpenAI model then fails with a message that names the problem. Manki writes no Codex config file and no login file for the endpoint. The key reaches the Codex CLI only (see [Security](security.md)).
+
+The effort tiers follow the model's name as described above, so a model that is not named like an OpenAI reasoning model gets no effort tier, and the Codex CLI applies its own default. When the endpoint answers with a rate limit or a used-up quota, the review ends incomplete with "OpenAI endpoint limit reached".
 
 ### Gemini
 
@@ -238,6 +258,19 @@ OpenAI Codex CLI OAuth (the install step is optional):
         uses: manki-review/manki@v7
         with:
           openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
+```
+
+OpenAI-compatible endpoint (the install step is optional):
+
+```yaml
+      - name: Install Codex CLI
+        # --ignore-scripts is safe: @openai/codex@0.166.0 ships a plain JS bin with no postinstall steps. Re-verify if you bump the version pin.
+        run: npm install -g --ignore-scripts '@openai/codex@0.166.0'
+      - name: Manki Review
+        uses: manki-review/manki@v7
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          openai_base_url: https://llm.example.com/v1
 ```
 
 Gemini API key:
@@ -463,6 +496,8 @@ Provide credentials for the providers you actually use. The model ID in `.manki.
 | Gemini | `GEMINI_API_KEY` | `GEMINI_OAUTH_TOKEN` (base64 of `~/.gemini/oauth_creds.json`) |
 
 When both are set for a provider, OAuth takes precedence (the action checks the OAuth input before the API key for each provider).
+
+`openai_base_url` is no secret. It sends the OpenAI models to an [endpoint of your own](#openai-compatible-endpoint), with `OPENAI_API_KEY` as that endpoint's key, and it cannot be combined with `OPENAI_OAUTH_TOKEN`.
 
 ### Other
 
