@@ -278,6 +278,8 @@ jest.mock('./state', () => ({
   holdApproval: jest.fn().mockResolvedValue(false),
   isNewChange: jest.requireActual('./state').isNewChange,
   pauseState: jest.requireActual('./state').pauseState,
+  authorClearLine: jest.requireActual('./state').authorClearLine,
+  autoReviewHalt: jest.requireActual('./state').autoReviewHalt,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   reopenThread: jest.requireActual('./state').reopenThread,
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
@@ -1325,18 +1327,79 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 
-  it('handleCommentTrigger bails and shows the head as up to date when bot already reviewed head SHA', async () => {
-    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
-    mockOctokitInstance.rest.pulls.get.mockResolvedValueOnce({
-      data: { head: { sha: 'def4567890123' }, base: { ref: 'main' }, title: 't', body: '', user: { login: 'a' } },
-    });
+  it('handleCommentTrigger bails, shows the head as up to date and answers the command when bot already reviewed head SHA', async () => {
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(true);
+    const createComment = mockOctokitInstance.rest.issues.createComment;
+    /** Runs the review command on the reviewed head, or a box tick with `tick`, and returns the comments it posted. */
+    const command = async (tick = false) => {
+      // A tick that queued no review ends before it reads the PR.
+      if (!tick) mockPullsGet.mockResolvedValueOnce({ data: { head: { sha: 'def4567890123' }, base: { ref: 'main' }, title: 't', body: '', user: { login: 'a' } } });
+      createComment.mockClear();
+      setContext({ eventName: 'issue_comment', payload: commentPayload });
+      await handleCommentTrigger(tick);
+      return createComment.mock.calls;
+    };
+    const noRound = '`def4567` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.';
+    // Each command gets a new comment with the marker of Manki's other command answers.
+    const answer = (...parts: string[]) => [[{ owner: 'test-owner', repo: 'test-repo', issue_number: 1, body: `${[noRound, ...parts].join('\n\n')}\n\n<!-- manki -->` }]];
 
-    setContext({ eventName: 'issue_comment', payload: commentPayload });
-    await handleCommentTrigger();
-
+    expect(await command()).toEqual(answer());
     expect(ghUtils.showSettings).toHaveBeenCalledWith(...upToDate('def4567890123'));
-    expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+
+    // While automatic review is paused, the answer adds the text of the pause notice and who clears the threads it lists.
+    const paused = { ...configModule.loadConfig(undefined), author_clear_role: 'maintain' as const, convergence: { max_auto_rounds: 5, rounds_after_restart: 3 } };
+    const rounds = [1, 2].map(round => roundContextFromLegacy({ round, commitSha: `sha${round}`, timestamp: '2025-01-01T00:00:00Z', findings: [] }));
+    rounds[1].meta.outcome = 'NOT_CONVERGING';
+    const thread = (title: string, severity: 'blocker' | 'warning', n: number) => ({
+      title, file: 'src/app.ts', line: n, severity, status: 'open' as const, threadId: `T_${n}`, threadUrl: `https://github.com/test-owner/test-repo/pull/1#discussion_r${n}`,
+    });
+    const pauseLine = 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. A review you start by hand also turns automatic review back on for the next 3 rounds.';
+    jest.mocked(authModule.fetchPrState).mockClear().mockResolvedValue(settingsState());
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [thread('Null check missing', 'blocker', 1), thread('Retry never stops', 'warning', 2)], priorRounds: rounds });
+    expect(await command()).toEqual(answer(
+      pauseLine,
+      '**Still open from earlier reviews:**\n- `src/app.ts:1`: Null check missing ([view thread](https://github.com/test-owner/test-repo/pull/1#discussion_r1))',
+      'The PR author may not clear a blocking thread without the `maintain` role or a higher one.',
+    ));
+    expect(recapModule.fetchRecapState).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'a', 'maintain');
+    // The answer takes the Pause box from the state the command already read.
+    expect(authModule.fetchPrState).toHaveBeenCalledTimes(1);
+
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce(paused);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [thread('Retry never stops', 'warning', 2)], priorRounds: rounds });
+    expect(await command()).toEqual(answer(pauseLine));
+
+    // The pause is left out unless it is certain: when it cannot be read in full, and when a push starts no review for another reason.
+    const blocked = { previousFindings: [thread('Null check missing', 'blocker', 1)], priorRounds: rounds };
+    const leftOut: Array<[string, { recap?: () => unknown; config?: typeof paused; state?: PrState | null }]> = [
+      ['the rounds and threads cannot be read', { recap: () => jest.mocked(recapModule.fetchRecapState).mockRejectedValue(new Error('rate limited')) }],
+      ['a round record cannot be read', { recap: () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, priorRoundsIncomplete: true }) }],
+      ['the threads cannot be listed', { recap: () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ ...blocked, openThreadsState: 'fetch_failed' }) }],
+      ['`auto_review` is off', { config: { ...paused, auto_review: false } }],
+      ['the Pause box is ticked', { state: settingsState(true) }],
+      ['the coordinator has no state of the PR', { state: null }],
+    ];
+    for (const [label, { recap = () => jest.mocked(recapModule.fetchRecapState).mockResolvedValue(blocked), config = paused, state = settingsState() }] of leftOut) {
+      jest.mocked(configModule.loadConfig).mockReturnValueOnce(config);
+      jest.mocked(authModule.fetchPrState).mockResolvedValueOnce(state);
+      recap();
+      expect([label, await command()]).toEqual([label, answer()]);
+    }
+    // So is a pause counted without the base branch's config.
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+    jest.mocked(recapModule.fetchRecapState).mockClear();
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('rate limited'));
+    expect(await command()).toEqual(answer());
+    expect(recapModule.fetchRecapState).not.toHaveBeenCalled();
+
+    // A box tick that queued no review answers nothing.
+    expect(await command(true)).toEqual([]);
+
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(false);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
+    jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
   });
 
   it('handleCommentTrigger on a box tick with a mode bypasses the dedupe gate', async () => {
@@ -1433,6 +1496,8 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       })]]);
       expect(mockChecksCreate).not.toHaveBeenCalled();
       expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+      // The answer to the command and its check share one read of the base branch's config.
+      if (exit === 'a review command') expect(ghUtils.readConfigFile).toHaveBeenCalledTimes(1);
     });
 
     it.each([
@@ -1458,6 +1523,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       ['a newer review of another commit overrides the approval found', 'Bot already reviewed commit', 'APPROVED', false, () => {}],
       ['the base branch config cannot be read', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited'))],
       ['the config of the run did not load', 'a run queued behind the review', 'APPROVED', true, () => jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited'))],
+      ['the config the command read did not load', 'a review command', 'APPROVED', true, () => jest.mocked(ghUtils.readConfigFile).mockRejectedValue(new Error('rate limited'))],
       ['the draft or conflict state of the PR is unknown', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(ghUtils.fetchApprovalHold).mockRejectedValue(new Error('GitHub has not computed whether PR #1 conflicts with its base'))],
       ['the warning threads cannot be read', 'Already approved on this commit', 'APPROVED', true, () => jest.mocked(stateModule.fetchHeldWarnings).mockRejectedValue(new Error('rate limited'))],
     ] as const)('leaves the check as it is when %s', async (_label, exit, state, newest, fail) => {
