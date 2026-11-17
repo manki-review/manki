@@ -1171,8 +1171,6 @@ export interface ReviewResult {
   agentModels?: Map<string, string>;
   /** How the round's review group was picked. */
   routing?: TeamRouting;
-  /** Per-agent multi-pass intersection stats. Keyed by agent name. */
-  agentMultiPassConsistency?: Map<string, { consistent: number; totalRaw: number }>;
   /** Per-agent effort level actually used at run time. Keyed by agent name. */
   agentEffortMap?: Map<string, EffortLevel>;
 }
@@ -1216,7 +1214,7 @@ export interface GroupReviewer {
   model: string;
   /** Unset means `auto`, and `medium` in the `trivial` group. */
   effort?: EffortLevel | 'auto';
-  /** One more line for this finder to check, added to its prompt like a `reviewers` entry. */
+  /** One more line for this finder to check, added to its prompt. */
   focus?: string;
 }
 
@@ -1356,9 +1354,6 @@ export interface ReviewConfig {
   max_diff_lines: number;
   /** Reviewable lines above which a PR gets no automatic review, only a forced one. */
   auto_review_max_lines?: number;
-  /** Changed lines a finder reads in one call. A larger diff is split into slices read in parallel. */
-  slice_lines?: number;
-  reviewers: ReviewerAgent[];
   instructions: string;
   /** A short phrase naming what the project is, such as `blockchain consensus library`. */
   project?: string;
@@ -1375,9 +1370,6 @@ export interface ReviewConfig {
     /** Model a stage moves to when a safety filter refuses it. Unset means the first model of the `full` group other than the stage's own. */
     fallback?: string;
   };
-  planner?: {
-    enabled?: boolean;
-  };
   judge?: {
     /** Read-only repository tool calls the judge may make while it grades. 0 gives it none. */
     tool_steps?: number;
@@ -1392,30 +1384,11 @@ export interface ReviewConfig {
   related_repos?: RelatedRepo[];
   /** `skip` reviews a draft PR only on request, `review` reviews it automatically. A draft review never approves. */
   drafts?: 'skip' | 'review';
-  review_passes?: number;
-  convergence?: {
-    /**
-     * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
-     * automatic review is paused until a review is started by hand. `0` disables the cap.
-     */
-    max_auto_rounds?: number;
-    /**
-     * Automatic rounds a review started by hand turns back on while automatic review is paused, when the cap allows fewer.
-     * `0` grants none, so after a round-cap pause a review started by hand reviews only its own round.
-     */
-    rounds_after_restart?: number;
-    /** Glob patterns for test files. Notes on these paths are dropped on round 2+. */
-    test_path_patterns?: string[];
-    /** When true, a prior-round finding whose thread a human resolved, or Manki resolved as judge-addressed, suppresses matching current findings. */
-    suppress_resolved_threads?: boolean;
-  };
-  metrics?: {
-    /**
-     * Records at merge how many posted findings were fixed, dismissed or left untouched.
-     * Defaults to on when `memory.enabled` is true.
-     */
-    fix_rate?: boolean;
-  };
+  /**
+   * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
+   * automatic review is paused until a review is started by hand. `0` disables the cap.
+   */
+  max_auto_rounds?: number;
 }
 
 export interface DiffFile {
@@ -1524,7 +1497,6 @@ export interface StaticAnalysisConfig {
   dependency_review: boolean;
   /** Check runs to wait for on the PR head before reading the results. */
   wait_for_checks: string[];
-  wait_timeout_seconds: number;
   /** `all` turns on every analyzer that needs no rules from the user. */
   analyzers: 'all' | AnalyzerSettings;
 }
@@ -2039,12 +2011,11 @@ export interface RoundTrigger {
 /** Per stage, the distinct `LLMCall.promptDigest`s of its calls in the round, sorted. Finders can differ by focus. */
 export type PromptVersions = Record<string, string[]>;
 
-/** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, pass configuration, memory). Convergence/post-processing rules are not included. */
+/** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, memory). Convergence/post-processing rules are not included. */
 export interface RoundConfig {
   /** Written by releases that sized the team by `review_level`. */
   reviewLevel?: ReviewLevel;
   memoryEnabled: boolean;
-  reviewPasses?: number;
 }
 
 export interface RoundDiffExcludedFile {
@@ -2114,7 +2085,8 @@ export interface RoundModelFallback {
  * - `heuristic_fallback`: the planner was attempted but failed (timeout,
  *   truncation, parse error), so every answer took the side that adds review.
  * - `heuristic`: written by releases that skipped the planner for a pinned `review_level`.
- * - `disabled`: `planner.enabled` is false, so every answer took the side that adds review.
+ * - `disabled`: no planner was called, as in the record of an earlier round that `reviewLocal` builds, or in a
+ *   round of a release that could turn the planner off. Every answer took the side that adds review.
  */
 export type RoundPlannerSource = 'planner' | 'heuristic' | 'heuristic_fallback' | 'disabled';
 
@@ -2230,13 +2202,6 @@ export interface RoundAgentMetric {
   keptShared?: number;
   /** Effort level the agent ran with. */
   effort?: EffortLevel;
-  /**
-   * Multi-pass intersection stats for this agent on `review_passes > 1` rounds.
-   * `consistent` is the count of findings retained by `intersectFindings`,
-   * `totalRaw` is the pre-intersection sum across passes. Absent on single-pass
-   * rounds and on agents that failed every pass.
-   */
-  multiPassConsistency?: { consistent: number; totalRaw: number };
 }
 
 export interface RoundJudge {

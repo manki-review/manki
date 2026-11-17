@@ -300,7 +300,7 @@ async function followUpInputs(
     ...(threadEvaluations.length > 0 && { threadEvaluations }),
   };
   const record = buildRoundContext({
-    prNumber: 0, commitSha: earlierHead, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: 'base', models, plannerEnabled: false,
+    prNumber: 0, commitSha: earlierHead, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: 'base', models,
     recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 0, diff: priorChange, changeDigest: changeDigest(priorChange), excludedFiles: [],
     openThreads: [], memoryLoadStatus: 'disabled',
   }, result, { judgeDurationMs: 0 });
@@ -390,7 +390,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     }
     const context = buildRoundContext({
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,
-      models, plannerEnabled: !!clients.planner, recap: { previousFindings: followUp?.previousFindings ?? [], priorRounds: followUp?.priorRounds ?? [] },
+      models, recap: { previousFindings: followUp?.previousFindings ?? [], priorRounds: followUp?.priorRounds ?? [] },
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
       openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled', instructions: repoContext,
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });

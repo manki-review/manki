@@ -1489,7 +1489,7 @@ describe('runFullReview end to end', () => {
 
   describe('dispatched by the webhook service', () => {
     it('reviews a push with the base branch\'s config, not the one the PR carries at its head', async () => {
-      mockGitHub.configs = { main: 'planner:\n  enabled: false\n', [HEAD_SHA]: 'auto_review: false\n' };
+      mockGitHub.configs = { main: 'judge:\n  effort: max\n', [HEAD_SHA]: 'auto_review: false\n' };
       // GitHub answers the lookup of the workflow run only once the review is posted, so the review does not wait for it.
       let answerRun!: (run: { run_started_at: string }) => void;
       mockGitHub.workflowRun = new Promise(resolve => { answerRun = resolve; });
@@ -1504,7 +1504,7 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.roundContext(review).runner).toMatchObject({ os: process.platform, peakCliProcesses: expect.any(Number) });
       expect(jest.mocked(core.info).mock.calls.at(-1)?.[0]).toMatch(/^Runner: .* · started after \d+m \d+s · /);
       expect(mockGitHub.roundContext(review).meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
-      expect(mockLLM.calls).not.toContain('planner');
+      expect(mockGitHub.roundContext(review).judge.effort).toBe('max');
       expect(mockGitHub.stateReports).toEqual([
         { owner: OWNER, repo: REPO, pr: PR_NUMBER, reviewed: { commit: HEAD_SHA }, approval: { commit: HEAD_SHA, held: false }, pause: null },
       ]);
@@ -1531,7 +1531,7 @@ describe('runFullReview end to end', () => {
       ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED'])],
       ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record')],
     ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled) => {
-      mockGitHub.configs = { main: 'metrics:\n  fix_rate: true\n' };
+      mockGitHub.configs = { main: 'memory:\n  enabled: true\n' };
       mockGitHub.merged = action === 'closed';
       const failFirstRead = (times: number) => { mockGitHub.failures = [{ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 503, times }]; };
       const inputs = { event: 'pull_request', action, pr: String(PR_NUMBER), head_sha: HEAD_SHA };
@@ -1769,7 +1769,7 @@ describe('runFullReview end to end', () => {
 
     it('answers a reply in a Manki thread as the person who wrote it, and reopens the thread once when she resolved it', async () => {
       // One automatic round is the cap, so automatic review is paused after the first one.
-      mockGitHub.configs = { main: 'convergence:\n  max_auto_rounds: 1\n' };
+      mockGitHub.configs = { main: 'max_auto_rounds: 1\n' };
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
       const [thread] = mockGitHub.threads;

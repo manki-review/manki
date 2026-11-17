@@ -660,7 +660,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
   });
 
   it('waits for the named checks to finish before reading results, and records the ones still running at the timeout', async () => {
-    const octokit = makeOctokit({ main: 'static_analysis:\n  wait_for_checks: [lint, review]\n  wait_timeout_seconds: 60\n' });
+    const octokit = makeOctokit({ main: 'static_analysis:\n  wait_for_checks: [lint, review]\n' });
     const listForRef = octokit.rest.checks.listForRef;
     const completedLint = (await listForRef()).data;
     listForRef.mockClear();
@@ -685,16 +685,16 @@ describe('collectStaticSignals with analyzers and waits', () => {
 
     const timedOut = await collectStaticSignals(octokit, request(), runtime);
 
-    expect(jest.mocked(runtime.sleep).mock.calls).toEqual([[15_000], [15_000], [15_000], [15_000]]);
+    expect(jest.mocked(runtime.sleep).mock.calls).toEqual(Array.from({ length: 20 }, () => [15_000]));
     expect(timedOut.record).toEqual({ sources: [
       { source: 'checks', status: 'ran', results: 0 },
       { source: 'code_scanning', status: 'ran', results: 1 },
       { source: 'dependency_review', status: 'ran', results: 2 },
     ], checksStillPending: ['lint'] });
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('stopped waiting after 60s, still running or not started: lint'));
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('stopped waiting after 300s, still running or not started: lint'));
   });
 
-  const WAIT_FOR_LINT = 'static_analysis:\n  checks: false\n  code_scanning: false\n  dependency_review: false\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n';
+  const WAIT_FOR_LINT = 'static_analysis:\n  checks: false\n  code_scanning: false\n  dependency_review: false\n  wait_for_checks: [lint]\n';
   const json = (status: number, data: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
   const RUNNING = () => json(200, { total_count: 1, check_runs: [{ id: 4, name: 'lint', status: 'in_progress' }] });
 
@@ -718,8 +718,8 @@ describe('collectStaticSignals with analyzers and waits', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^Static analysis: stopped waiting for checks: .*${reason}`)));
     expect(runtime.sleep).not.toHaveBeenCalled();
     expect(record).toBeUndefined();
-    // The last poll starts when the 60 seconds are over, and gets 10 seconds to answer.
-    expect(timeout).toHaveBeenCalledWith(70_000);
+    // The last poll starts when the 300 seconds are over, and gets 10 seconds to answer.
+    expect(timeout).toHaveBeenCalledWith(310_000);
   });
 
   it.each<[string, () => Response, number, string]>([
@@ -742,10 +742,10 @@ describe('collectStaticSignals with analyzers and waits', () => {
   });
 
   it.each<[string, number, boolean, object | undefined, RegExp, number]>([
-    // Four polls answer, and the fifth is tried twice.
-    ['times out with the checks the last answered poll saw running when the deadline cuts the last poll', 60_000, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 60s, still running or not started: lint$/, 6],
-    ['times out with every check when the deadline cuts the only poll', 0, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 60s, no poll was answered, so none of these counts as finished: lint$/, 2],
-    ['stops with no names when the last poll fails without the deadline', 60_000, false, undefined, /^Static analysis: stopped waiting for checks: .*Service Unavailable/, 6],
+    // Twenty polls answer, and the next one is tried twice.
+    ['times out with the checks the last answered poll saw running when the deadline cuts the last poll', 300_000, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 300s, still running or not started: lint$/, 22],
+    ['times out with every check when the deadline cuts the only poll', 0, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 300s, no poll was answered, so none of these counts as finished: lint$/, 2],
+    ['stops with no names when the last poll fails without the deadline', 300_000, false, undefined, /^Static analysis: stopped waiting for checks: .*Service Unavailable/, 22],
   ])('%s', async (_case, failFrom, cut, expected, warning, tries) => {
     const cutOff = new AbortController();
     jest.spyOn(AbortSignal, 'timeout').mockReturnValue(cutOff.signal);

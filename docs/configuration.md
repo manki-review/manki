@@ -40,7 +40,7 @@ exclude_paths:
 
 # Draft PRs (default: skip). `skip` reviews a draft only on request, such as
 # `/manki review`. `review` reviews drafts automatically. Either way a draft
-# review never approves and does not count toward `convergence.max_auto_rounds`.
+# review never approves and does not count toward `max_auto_rounds`.
 # drafts: skip
 
 # Review size limits, in reviewable lines after `exclude_paths`, read from the
@@ -49,12 +49,11 @@ exclude_paths:
 # Review again in its settings block, and no review: a request for changes stays, and Manki's
 # earlier approvals are dismissed. A forced review covers
 # the whole PR up to `max_diff_lines` (default: 15000). Above that Manki never
-# reviews, even when forced. Each finder reads a diff over `slice_lines`
-# (default: 1500, at least 200) in slices of that size, four at a time. A file
-# and its test, and the files of one folder, stay in one slice where they fit.
+# reviews, even when forced. Each finder reads a diff over 1500 changed lines
+# in slices of about that size, four at a time. A file and its test, and the
+# files of one folder, stay in one slice where they fit.
 auto_review_max_lines: 8000
 max_diff_lines: 15000
-slice_lines: 1500
 
 # Per-stage model selection. The finders are in `review.groups`.
 models:
@@ -63,11 +62,6 @@ models:
   second_refuter: gpt-6.1-sol    # a second refuter beside the judge's (default: off)
   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: the first model of `full` other than the stage's own)
-
-# Planner stage (default: enabled). A fast pre-review pass triages the
-# change (trivial, subtle, paired) and picks the judge effort and PR type.
-planner:
-  enabled: true
 
 # Who reviews each class of PR (default: the built-ins). A config that sets
 # `groups` defines `trivial`, `solo` and `full`. Read from the base branch,
@@ -91,8 +85,7 @@ static_analysis:
   checks: true             # check-run annotations, needs `checks: read`
   code_scanning: true      # code scanning alerts, needs `security-events: read`
   dependency_review: true  # vulnerable packages the PR adds
-  wait_for_checks: []      # check runs to wait for, such as [lint, CodeQL]
-  wait_timeout_seconds: 300
+  wait_for_checks: []      # check runs to wait for up to 300 seconds, such as [lint, CodeQL]
   analyzers:               # analyzers Manki runs itself, or `all`
     ast_grep: false        # Manki's ast-grep rules
     secrets: false         # gitleaks on the added lines
@@ -109,32 +102,20 @@ static_analysis:
 #   - { repo: dashpay/platform, kind: consumer, paths: ["packages/rs-*"] }
 #   - { repo: tokio-rs/tokio, kind: dependency, ref: tokio-1.38.0, paths: [tokio/src/] }
 
-# Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
-# times with shuffled file ordering; only consistent findings are kept.
-# review_passes: 1
-
-# On merge, count per severity and reviewer how many posted findings were
-# fixed, dismissed or left untouched. Written to the job summary, and appended
-# to `metrics/fix-rate.jsonl` in the repo's memory when memory is enabled.
-# Default: on when `memory.enabled` is true, off otherwise.
-# metrics:
-#   fix_rate: true
-
 # Additional context for reviewers. Reviewers also read the root `AGENTS.md`,
 # `CLAUDE.md` and `.claude/CLAUDE.md` files, the first `CONTRIBUTING.md` found in
 # `.github/`, the root or `docs/`, the nearest `AGENTS.md` and `CLAUDE.md` above
-# each changed file, and the `.md` files these link to.
+# each changed file, and the `.md` files these link to. Name here what the
+# finders should also check for.
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
-
-# Extra checks, added as focus lines to the finder prompt
-reviewers:
-  - name: "Protocol Compliance"
-    focus: "DIP compliance, consensus rules"
+  Check DIP compliance and consensus rules.
 
 # Review memory, kept in the central memory repository for a public repo. Set
 # `repo` and the `memory_repo_token` input to use a memory repository of your
 # own instead. A private repo needs one, private and of the same owner.
+# With memory on, a merge also records how many posted findings were fixed,
+# dismissed or left untouched, in `metrics/fix-rate.jsonl` in the memory.
 memory:
   enabled: true
 ```
@@ -155,20 +136,17 @@ memory:
 | `skip_labels` | list of strings | none | PRs with any of these labels get no automatic review. Compared case-insensitively, and read from the base branch. See [Skipping PRs](how-reviews-work.md#skipping-prs). |
 | `skip_authors` | list of strings | none | PRs by any of these authors, such as `dependabot[bot]`, get no automatic review. Compared case-insensitively, and read from the base branch. |
 | `skip_branches` | list of globs | none | PRs whose head branch in the repo itself matches, such as `dependabot/**`, get no automatic review. Never matches a fork's branch. Read from the base branch. |
-| `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, `review` reviews it automatically. A draft review never approves and does not count toward `convergence.max_auto_rounds`. |
+| `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, `review` reviews it automatically. A draft review never approves and does not count toward `max_auto_rounds`. |
 | `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with Review again in its settings block. Read from the base branch. |
 | `max_diff_lines` | positive integer | `15000` | Reviewable lines above which Manki never reviews a PR, even when forced. Read from the base branch. |
-| `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder or the verdict reader reads in one call. A larger diff is read in slices of about this size, and of at most 200,000 characters, four at a time. Read from the base branch. |
 | `models` | map | see below | The model of each stage. The finders are not here: `review.groups` says who reviews. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
 | `models.planner` | model id | `claude-haiku-5-5` | The planner, a fast pass that triages the change before the review. |
 | `models.judge` | model id | `claude-opus-5-5` | The judge, which filters the findings and sets their severity, the verdict reader and the refuter. |
 | `models.second_refuter` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons. Two disproofs lower a blocker only when the judge alone raised it above every finder's grade. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `models.dedup` | model id | `claude-haiku-5-5` | The dedup pass against resolved findings from earlier rounds, and the small side calls: same-defect checks, related work and name translation. |
 | `models.fallback` | model id | the first model of the `full` group other than the stage's own | Reruns a stage once when a provider's safety filter refuses it. Without it, or for a stage already on this model, the stage moves to the first model of the `full` group that is another model than its own. When `full` has no other model, the stage is not rerun. |
-| `planner` | map | see below | The planner stage. |
-| `planner.enabled` | boolean | `true` | Run the planner. Without it, every round takes the side that adds review: two finders at high effort. |
 | `judge` | map | see below | The judge stage. |
-| `judge.effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | The judge's effort, which the refuter follows. `auto` takes the level the planner picks for the change, low, medium or high, and high without a planner. A fixed level replaces that pick on every round. Read from the base branch. |
+| `judge.effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | The judge's effort, which the refuter follows. `auto` takes the level the planner picks for the change, low, medium or high, and high when the planner gives no answer. A fixed level replaces that pick on every round. Read from the base branch. |
 | `judge.tool_steps` | integer from 0 to 100 | `0` | Read-only repository tool calls the judge may make while it grades, on a judge that runs on the Claude or Codex CLI. With them the judge reads the code a finding rests on itself, at the cost of a longer judge call. A round whose judge fallback model has no tools runs the judge without them. `0` gives it none. |
 | `review` | map | the built-in groups | Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.groups` | map of groups | `trivial`, `solo` and `full` | Each group is a list of one or more reviewers. An entry is a model id, or a map with `model`, `effort` and `focus`. A config that sets `groups` defines all three of `trivial`, `solo` and `full`, and may add groups under other names. `full` must hold at least two finders on two distinct models, whatever routes to it, or the config does not load. The readers of `trivial` run the quick check of a trivial change. The sibling comparisons, claim checks and sweeps run on the first reviewer of the group that reads the PR. |
@@ -187,8 +165,7 @@ memory:
 | `static_analysis.checks` | boolean | `true` | Read check-run annotations. Needs `checks: read` in the workflow. |
 | `static_analysis.code_scanning` | boolean | `true` | Read open code scanning alerts. Needs `security-events: read` in the workflow. |
 | `static_analysis.dependency_review` | boolean | `true` | Read the vulnerable packages the PR adds, from the dependency review. |
-| `static_analysis.wait_for_checks` | list of check run names | none | Check runs to wait for before reading the results, when CI runs in a separate workflow. |
-| `static_analysis.wait_timeout_seconds` | integer from 1 to 3600 | `300` | How long to wait for `wait_for_checks` before reading what is there. |
+| `static_analysis.wait_for_checks` | list of check run names | none | Check runs to wait for before reading the results, when CI runs in a separate workflow. Manki waits up to 300 seconds, then reads what is there. |
 | `static_analysis.analyzers` | `all` or a map | per analyzer, below | Analyzers Manki runs itself. `all` turns on every one that needs no rules from you. See [Running Manki's analyzers](how-reviews-work.md#running-mankis-analyzers). |
 | `static_analysis.analyzers.ast_grep` | boolean | `false`, but the Rust rules run in a Cargo repository | Manki's ast-grep rules on the changed JavaScript, TypeScript and Python files. `false` also stops the Rust rules. |
 | `static_analysis.analyzers.secrets` | boolean | `false` | gitleaks on the lines the PR adds. |
@@ -202,20 +179,10 @@ memory:
 | `related_repos[].kind` | `reference`, `consumer` or `dependency` | required | `reference` for a repository this one implements, `consumer` for one that depends on it, `dependency` for one it depends on. |
 | `related_repos[].ref` | branch, tag or full commit hash | the default branch | What to read. For a `dependency`, the version this repository pins. Write a name that looks like a short commit hash as `refs/heads/<name>` or `refs/tags/<name>`. |
 | `related_repos[].paths` | list of up to 20 paths or globs | the whole repository | The only paths fetched, along with a root `AGENTS.md` and `CLAUDE.md`. |
-| `review_passes` | integer from 1 to 5 | `1` | Runs each finder this many times with the files in shuffled order, and keeps only the findings the passes agree on. |
 | `instructions` | string | none | Extra context for the finders. They also read the root `AGENTS.md`, `CLAUDE.md` and `.claude/CLAUDE.md`, the first `CONTRIBUTING.md` found in `.github/`, the root or `docs/`, the nearest `AGENTS.md` and `CLAUDE.md` above each changed file, and the `.md` files these link to. |
 | `project` | string | none | A short phrase naming what the project is, such as `blockchain consensus library`. The finders read it as "This PR is in a blockchain consensus library project". Without it they go by the repository description and the `AGENTS.md` and `CLAUDE.md` files. |
-| `reviewers` | list | none | Extra checks, each added as a focus line to the finder prompt. |
-| `reviewers[].name` | string | required | The check's name. |
-| `reviewers[].focus` | string | required | What the finders check for. |
-| `convergence` | map | see below | How rounds end. See [Severity tiers](how-reviews-work.md#severity-tiers). |
-| `convergence.max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, and the notice asks the author to reconsider the approach. `0` turns the cap off. |
-| `convergence.rounds_after_restart` | non-negative integer | `3` | Automatic rounds that a review started by hand, with `/manki review` or a settings box, turns back on while automatic review is paused. A restart never leaves fewer rounds than the cap still allows. When they pass without an approval, automatic review pauses again until the next one. `0` grants none, so after a round-cap pause a restart reviews only the round asked for. |
-| `convergence.test_path_patterns` | list of globs | `["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]` | Test files. From the second round, notes on them are dropped, except security findings and tool alerts. |
-| `convergence.suppress_resolved_threads` | boolean | `true` | A finding whose thread a person resolved, or Manki resolved as addressed, suppresses matching findings in later rounds. |
+| `max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, with `/manki review` or a settings box, and the notice asks the author to reconsider the approach. Such a review also turns automatic review back on for 3 rounds, or for the rounds the cap still allows if that is more. `0` turns the cap off. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |
-| `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo's memory lives in the central memory repository, which holds only public repos' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. |
+| `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo's memory lives in the central memory repository, which holds only public repos' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. With memory on, a merge also counts per severity and finder how many posted findings were fixed, dismissed or left untouched, in the job summary and in the memory. |
 | `memory.repo` | `owner/name` | none | Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning. For a private repo, it must be private and have the same owner. |
-| `metrics` | map | none | Metrics Manki records. |
-| `metrics.fix_rate` | boolean | the value of `memory.enabled` | On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the repo's memory when memory is on. |
 <!-- config-reference:end -->

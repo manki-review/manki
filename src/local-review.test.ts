@@ -361,7 +361,7 @@ describe('reviewLocal', () => {
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, using the defaults'));
     // The defaults that stand in for the broken base config are not what the change edits.
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));
-    await expect(reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', configOverrides: { review_passes: 2 }, providerInputs: inputs }))
+    await expect(reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', configOverrides: { max_diff_lines: 2000 }, providerInputs: inputs }))
       .rejects.toThrow('Invalid YAML in .manki.yml');
 
     jest.mocked(runReview).mockClear();
@@ -428,7 +428,7 @@ describe('reviewLocal', () => {
     expect(replaced.rawDiff).toContain('docs/x.md');
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));
     jest.mocked(runReview).mockClear();
-    await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { review_passes: 9 }, providerInputs: inputs }))
+    await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { max_diff_lines: 0 }, providerInputs: inputs }))
       .rejects.toThrow('Invalid config in .manki.yml with the overrides');
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { model: { reviewer: 'claude-opus-5-5' } }, providerInputs: inputs }))
       .rejects.toThrow('The config overrides name keys the config does not know: Unknown config key: "model"');

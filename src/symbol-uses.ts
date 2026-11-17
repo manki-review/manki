@@ -366,7 +366,7 @@ const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
 const DECLARATION_LINE = /^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|async|final|abstract|open|data|sealed)\s+)*(def|class|func|function|fn|struct|interface|enum|trait|type|const|record|object)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/;
 const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'function', function: 'function', fn: 'function', const: 'constant' };
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
-// A config key. Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
+// A config key. Only keys with an underscore, such as `max_diff_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 // Type expressions that declare fields in place, such as a TypeScript `{ a: number }` or a Go `struct { A int }`.
 const INLINE_TYPES = new Set(['object_type', 'struct_type']);

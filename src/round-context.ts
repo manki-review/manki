@@ -27,7 +27,6 @@ export interface RoundRecordInput {
   /** Where the round's `review` block came from. */
   reviewSource: RoundRouting['configSource'];
   models: ReviewModels;
-  plannerEnabled: boolean;
   recap: RecapState;
   priorRoundCount: number;
   maxAutoRounds: number;
@@ -95,7 +94,7 @@ export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
 /** Builds the `RoundContext` a review posts, which later rounds read back as their history. */
 export function buildRoundContext(input: RoundRecordInput, result: ReviewResult, durations: RoundDurations): RoundContext {
   const {
-    prNumber, commitSha, trigger, options, config, models, plannerEnabled, recap,
+    prNumber, commitSha, trigger, options, config, models, recap,
     priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
     tokenServiceCalls,
   } = input;
@@ -123,7 +122,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         const warnings = result.agentWarnings?.get(name);
         const model = agentModels.get(name);
         const effort = result.agentEffortMap?.get(name);
-        const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
         return {
           name,
           findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
@@ -141,7 +139,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
           ...(failureReason && { failureReason }),
           model,
           ...(effort && { effort }),
-          ...(multiPassConsistency && { multiPassConsistency }),
         };
       })
     : undefined;
@@ -295,7 +292,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     },
     config: {
       memoryEnabled: config.memory?.enabled ?? false,
-      ...(config.review_passes != null && { reviewPasses: config.review_passes }),
     },
     diff: {
       changeDigest: input.changeDigest,
@@ -316,7 +312,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       })),
     },
     models: {
-      ...(plannerEnabled && { planner: models.planner }),
+      planner: models.planner,
       ...(agentModels.size > 0 && { reviewer: [...agentModels.values()][0] }),
       judge: models.judge,
       ...(models.refuterPair && (result.llmCalls?.some(c => c.agent === 'refute_pair') || [...result.findings, ...allJudged].some(f => f.pairRefutation))

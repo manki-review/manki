@@ -25,80 +25,43 @@ describe('config', () => {
       expect(Array.isArray(DEFAULT_CONFIG.exclude_paths)).toBe(true);
       expect(typeof DEFAULT_CONFIG.max_diff_lines).toBe('number');
       expect(DEFAULT_CONFIG.max_diff_lines).toBeGreaterThan(0);
-      expect(Array.isArray(DEFAULT_CONFIG.reviewers)).toBe(true);
-      expect(DEFAULT_CONFIG.reviewers.length).toBe(0);
       expect(typeof DEFAULT_CONFIG.instructions).toBe('string');
       expect(typeof DEFAULT_CONFIG.memory).toBe('object');
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
-      expect(DEFAULT_CONFIG.planner).toEqual({ enabled: true });
-      expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
     it('defaults models.judge to Opus and the planner and dedup to Haiku, and names no finder', () => {
       expect(DEFAULT_CONFIG.models).toEqual({ planner: 'claude-haiku-5-5', judge: 'claude-opus-5-5', dedup: 'claude-haiku-5-5' });
     });
 
-    it('has no default custom reviewers', () => {
-      expect(DEFAULT_CONFIG.reviewers).toEqual([]);
-    });
-
-    it('exposes default convergence settings', () => {
-      expect(DEFAULT_CONFIG.convergence?.max_auto_rounds).toBe(10);
-      expect(DEFAULT_CONFIG.convergence?.rounds_after_restart).toBe(3);
-      expect(DEFAULT_CONFIG.convergence?.suppress_resolved_threads).toBe(true);
-      expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/*.test.*');
-      expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/__tests__/**');
+    it('caps automatic rounds at 10 by default', () => {
+      expect(DEFAULT_CONFIG.max_auto_rounds).toBe(10);
     });
   });
 
-  describe('convergence config', () => {
-    it('merges user-provided convergence overrides with defaults', () => {
-      const config = loadConfigFromContent('convergence:\n  max_auto_rounds: 3\n');
-      expect(config.convergence?.max_auto_rounds).toBe(3);
-      expect(config.convergence?.rounds_after_restart).toBe(3);
-      expect(config.convergence?.suppress_resolved_threads).toBe(true);
-      expect(loadConfigFromContent('convergence:\n  rounds_after_restart: 0\n').convergence?.rounds_after_restart).toBe(0);
+  describe('max_auto_rounds', () => {
+    it('takes the cap the config sets, 0 included', () => {
+      expect(loadConfigFromContent('max_auto_rounds: 3\n').max_auto_rounds).toBe(3);
+      expect(loadConfigFromContent('max_auto_rounds: 0\n').max_auto_rounds).toBe(0);
     });
 
-    it.each(['max_auto_rounds', 'rounds_after_restart'])('rejects a negative, fractional or non-numeric %s', key => {
+    it('rejects a negative, fractional or non-numeric max_auto_rounds', () => {
       for (const value of ['-1', '1.5', 'three']) {
-        expect(() => loadConfigFromContent(`convergence:\n  ${key}: ${value}\n`)).toThrow(`\`convergence.${key}\` must be a non-negative integer`);
+        expect(() => loadConfigFromContent(`max_auto_rounds: ${value}\n`)).toThrow('`max_auto_rounds` must be a non-negative integer');
       }
-    });
-
-    it('rejects non-array test_path_patterns', () => {
-      expect(() => loadConfigFromContent('convergence:\n  test_path_patterns: "not-an-array"\n'))
-        .toThrow(/test_path_patterns/);
-    });
-
-    it('rejects non-boolean suppress_resolved_threads', () => {
-      expect(() => loadConfigFromContent('convergence:\n  suppress_resolved_threads: "yes"\n'))
-        .toThrow(/suppress_resolved_threads/);
-    });
-  });
-
-  describe('metrics config', () => {
-    it('leaves metrics.fix_rate unset by default and accepts a boolean', () => {
-      expect(loadConfigFromContent('').metrics?.fix_rate).toBeUndefined();
-      expect(loadConfigFromContent('metrics:\n  fix_rate: false\n').metrics?.fix_rate).toBe(false);
-    });
-
-    it('rejects non-boolean metrics.fix_rate and non-object metrics', () => {
-      expect(() => loadConfigFromContent('metrics:\n  fix_rate: "no"\n')).toThrow(/metrics\.fix_rate/);
-      expect(() => loadConfigFromContent('metrics: "nope"\n')).toThrow(/`metrics` must be an object/);
     });
   });
 
   describe('static_analysis config', () => {
-    const defaults = { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [], wait_timeout_seconds: 300, analyzers: {} };
+    const defaults = { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [], analyzers: {} };
 
     it('turns every CI source on and every analyzer off by default, and merges a partial block', () => {
       expect(loadConfigFromContent('').static_analysis).toEqual(defaults);
       expect(loadConfigFromContent('static_analysis:\n  code_scanning: false\n').static_analysis)
         .toEqual({ ...defaults, code_scanning: false });
-      expect(loadConfigFromContent('static_analysis:\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n  analyzers: all\n').static_analysis)
-        .toEqual({ ...defaults, wait_for_checks: ['lint'], wait_timeout_seconds: 60, analyzers: 'all' });
+      expect(loadConfigFromContent('static_analysis:\n  wait_for_checks: [lint]\n  analyzers: all\n').static_analysis)
+        .toEqual({ ...defaults, wait_for_checks: ['lint'], analyzers: 'all' });
       expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: true\n    secrets: true\n    dependencies: false\n    semgrep:\n      rules: [.semgrep/manki.yml, rules/extra.yaml]\n    actionlint: false\n    zizmor: true\n    shellcheck: false\n').static_analysis?.analyzers)
         .toEqual({ ast_grep: true, secrets: true, dependencies: false, semgrep: { rules: ['.semgrep/manki.yml', 'rules/extra.yaml'] }, actionlint: false, zizmor: true, shellcheck: false });
       expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    semgrep: false\n').static_analysis?.analyzers).toEqual({ semgrep: false });
@@ -109,9 +72,6 @@ describe('config', () => {
       expect(() => loadConfigFromContent('static_analysis: true\n')).toThrow(/`static_analysis` must be an object/);
       expect(() => loadConfigFromContent('static_analysis:\n  wait_for_checks: lint\n')).toThrow(/wait_for_checks/);
       expect(() => loadConfigFromContent('static_analysis:\n  wait_for_checks: [""]\n')).toThrow(/wait_for_checks/);
-      for (const timeout of ['0', '1.5', '3601', '"300"']) {
-        expect(() => loadConfigFromContent(`static_analysis:\n  wait_timeout_seconds: ${timeout}\n`)).toThrow(/wait_timeout_seconds/);
-      }
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers: some\n')).toThrow(/`static_analysis.analyzers` must be `all` or an object/);
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    astgrep: true\n')).toThrow(/`static_analysis.analyzers.astgrep` is not a known analyzer/);
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: "on"\n')).toThrow(/`static_analysis.analyzers.ast_grep` must be a boolean/);
@@ -325,7 +285,6 @@ max_diff_lines: 5000
       expect(config.max_diff_lines).toBe(5000);
       // Other fields remain default
       expect(config.auto_review).toBe(DEFAULT_CONFIG.auto_review);
-      expect(config.reviewers).toEqual(DEFAULT_CONFIG.reviewers);
       expect(config.exclude_paths).toEqual(DEFAULT_CONFIG.exclude_paths);
     });
 
@@ -334,18 +293,6 @@ max_diff_lines: 5000
       expect(loadConfigFromContent('project: blockchain consensus library\n').project).toBe('blockchain consensus library');
       expect(() => loadConfigFromContent('project: [a, b]\n')).toThrow(/`project` must be a string/);
       expect(() => loadConfigFromContent('instructions: 5\n')).toThrow(/`instructions` must be a string/);
-    });
-
-    it('replaces reviewers array entirely', () => {
-      const yaml = `
-reviewers:
-  - name: "Custom Reviewer"
-    focus: "custom focus area"
-`;
-      const config = loadConfigFromContent(yaml);
-      expect(config.reviewers).toHaveLength(1);
-      expect(config.reviewers[0].name).toBe('Custom Reviewer');
-      expect(config.reviewers[0].focus).toBe('custom focus area');
     });
 
     it('replaces the default exclude_paths with the repository\'s list, so an empty list excludes nothing', () => {
@@ -370,36 +317,39 @@ unknown_key: some_value
 another_unknown: 123
 nit_handling: comments
 review_level: large
-planner:
-  paired: never
+review_passes: 3
+planner: { enabled: false }
+slice_lines: 200
+reviewers: [{ name: Protocol, focus: consensus rules }]
+convergence: { max_auto_rounds: 2, rounds_after_restart: 1, suppress_resolved_threads: false, test_path_patterns: [] }
+metrics: { fix_rate: true }
+static_analysis: { wait_timeout_seconds: 5 }
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.auto_review).toBe(true);
+      expect(config).toEqual({ ...DEFAULT_CONFIG, static_analysis: { ...DEFAULT_CONFIG.static_analysis, wait_timeout_seconds: 5 } });
       expect(jest.mocked(core.warning).mock.calls.map(c => c[0])).toEqual([
         'Unknown config key: "unknown_key"',
         'Unknown config key: "another_unknown"',
         'Unknown config key: "nit_handling"',
         'Unknown config key: "review_level"',
-        'Unknown config key: "planner.paired"',
+        'Unknown config key: "review_passes"',
+        'Unknown config key: "planner"',
+        'Unknown config key: "slice_lines"',
+        'Unknown config key: "reviewers"',
+        'Unknown config key: "convergence"',
+        'Unknown config key: "metrics"',
+        'Unknown config key: "static_analysis.wait_timeout_seconds"',
       ]);
     });
 
     it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
       loadConfigFromContent(`
-reviewers: [{ name: a, focus: b, fokus: c }]
-planner: { enabled: true, enabeld: false }
-static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], wait_timeout_seconds: 60, analyzers: all, check: false }
-convergence: { max_auto_rounds: 3, test_path_patterns: ['**/*.test.ts'], suppress_resolved_threads: true, max_rounds: 2 }
-metrics: { fix_rate: true, fixrate: false }
+static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], analyzers: all, check: false }
 memory: { enabled: false, repo: '', repository: x/y }
 `);
       const unknown = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).filter(m => m.startsWith('Unknown config key'));
       expect(unknown).toEqual([
-        'Unknown config key: "reviewers[0].fokus"',
-        'Unknown config key: "planner.enabeld"',
         'Unknown config key: "static_analysis.check"',
-        'Unknown config key: "convergence.max_rounds"',
-        'Unknown config key: "metrics.fixrate"',
         'Unknown config key: "memory.repository"',
       ]);
     });
@@ -414,38 +364,16 @@ memory: { enabled: false, repo: '', repository: x/y }
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
     });
 
-    it('defaults the review size limits to 15,000, 8,000 and 1,500 lines, and accepts only positive whole numbers', () => {
-      expect([DEFAULT_CONFIG.max_diff_lines, DEFAULT_CONFIG.auto_review_max_lines, DEFAULT_CONFIG.slice_lines]).toEqual([15_000, 8_000, 1_500]);
-      expect(loadConfigFromContent('auto_review_max_lines: 4000\nslice_lines: 900\n')).toEqual(expect.objectContaining({ auto_review_max_lines: 4000, slice_lines: 900 }));
-      for (const yaml of ['auto_review_max_lines: 0', 'slice_lines: 1.5', 'slice_lines: "big"']) {
+    it('defaults the review size limits to 15,000 and 8,000 lines, and accepts only positive whole numbers', () => {
+      expect([DEFAULT_CONFIG.max_diff_lines, DEFAULT_CONFIG.auto_review_max_lines]).toEqual([15_000, 8_000]);
+      expect(loadConfigFromContent('auto_review_max_lines: 4000\n')).toEqual(expect.objectContaining({ auto_review_max_lines: 4000 }));
+      for (const yaml of ['auto_review_max_lines: 0', 'auto_review_max_lines: 1.5', 'auto_review_max_lines: "big"']) {
         expect(() => loadConfigFromContent(yaml)).toThrow('must be a positive whole number');
       }
-      expect(() => loadConfigFromContent('slice_lines: 199')).toThrow('`slice_lines` must be at least 200');
     });
 
     it('throws on invalid auto_review type', () => {
       const yaml = 'auto_review: "yes"';
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws on invalid reviewers structure', () => {
-      const yaml = 'reviewers: "not an array"';
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws on reviewer missing name', () => {
-      const yaml = `
-reviewers:
-  - focus: "some focus"
-`;
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws on reviewer missing focus', () => {
-      const yaml = `
-reviewers:
-  - name: "Some Name"
-`;
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
     });
 
@@ -608,34 +536,6 @@ models:
       expect(config.models?.dedup).toBe('claude-haiku-4-5');
       expect(config.models?.judge).toBe('claude-opus-5-5');
     });
-
-    it('accepts valid review_passes values', () => {
-      expect(loadConfigFromContent('review_passes: 1').review_passes).toBe(1);
-      expect(loadConfigFromContent('review_passes: 3').review_passes).toBe(3);
-      expect(loadConfigFromContent('review_passes: 5').review_passes).toBe(5);
-    });
-
-    it('defaults review_passes to 1', () => {
-      const config = loadConfigFromContent('auto_review: true');
-      expect(config.review_passes).toBe(1);
-    });
-
-    it('throws on review_passes less than 1', () => {
-      expect(() => loadConfigFromContent('review_passes: 0')).toThrow('Invalid config');
-      expect(core.error).toHaveBeenCalledWith('`review_passes` must be an integer between 1 and 5');
-    });
-
-    it('throws on review_passes greater than 5', () => {
-      expect(() => loadConfigFromContent('review_passes: 6')).toThrow('Invalid config');
-    });
-
-    it('throws on non-integer review_passes', () => {
-      expect(() => loadConfigFromContent('review_passes: 2.5')).toThrow('Invalid config');
-    });
-
-    it('throws on non-number review_passes', () => {
-      expect(() => loadConfigFromContent('review_passes: "three"')).toThrow('Invalid config');
-    });
   });
 
   describe('resolveModel', () => {
@@ -737,22 +637,6 @@ models:
     });
   });
 
-  describe('planner config', () => {
-    it('accepts planner key in config validation', () => {
-      const config = loadConfig('planner:\n  enabled: false\n');
-      expect(config.planner?.enabled).toBe(false);
-    });
-
-    it('defaults planner to enabled', () => {
-      const config = loadConfig(undefined);
-      expect(config.planner?.enabled).toBe(true);
-    });
-
-    it('rejects invalid planner.enabled type', () => {
-      expect(() => loadConfig('planner:\n  enabled: "yes"\n')).toThrow();
-    });
-  });
-
   describe('judge config', () => {
     it('gives the judge no tool steps and auto effort by default, and takes tool steps from 0 to 100 and an effort level', () => {
       expect(loadConfig(undefined).judge).toEqual({ tool_steps: 0, effort: 'auto' });
@@ -786,10 +670,10 @@ models:
 
   describe('changedKeys', () => {
     it('names the keys whose values differ, whatever their order in the file', () => {
-      const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  second_refuter: gpt-5.5\nreview_passes: 2\n');
-      expect(changedKeys(loadConfigFromContent('models:\n  second_refuter: gpt-5.5\n  judge: claude-opus-5-5\nreview_passes: 2\n'), base)).toEqual([]);
-      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nreview_passes: 2\nplanner:\n  enabled: false\n');
-      expect(changedKeys(head, base)).toEqual(['exclude_paths', 'models', 'planner']);
+      const base = loadConfigFromContent('models:\n  judge: claude-opus-5-5\n  second_refuter: gpt-5.5\nmax_diff_lines: 2000\n');
+      expect(changedKeys(loadConfigFromContent('models:\n  second_refuter: gpt-5.5\n  judge: claude-opus-5-5\nmax_diff_lines: 2000\n'), base)).toEqual([]);
+      const head = loadConfigFromContent('exclude_paths: ["*"]\nmodels:\n  judge: claude-haiku-5-5\nmax_diff_lines: 2000\ndrafts: review\n');
+      expect(changedKeys(head, base)).toEqual(['exclude_paths', 'models', 'drafts']);
     });
   });
 

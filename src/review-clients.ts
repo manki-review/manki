@@ -29,7 +29,7 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
   const reviewer = reviewerByModel.get(modelIdentity(finderModels[0]))!;
   const judge = buildClient(models.judge);
   const refuterPair = models.refuterPair ? buildClient(models.refuterPair) : undefined;
-  const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
+  const planner = buildClient(models.planner);
   const dedup = buildClient(models.dedup);
   const fallbackClients = new Map<string, LLMClient>([...reviewerByModel, [modelIdentity(models.judge), judge]]);
   const fallbackFor = (stageModel: string) => {
@@ -40,7 +40,7 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
     return { model, client: fallbackClients.get(key)! };
   };
   const fallbacks: NonNullable<ReviewClients['fallbacks']> = {
-    ...(planner && { planner: fallbackFor(models.planner) }),
+    planner: fallbackFor(models.planner),
     reviewerByModel: new Map(finderModels.flatMap((model) => {
       const fallback = fallbackFor(model);
       return fallback ? [[modelIdentity(model), fallback] as const] : [];

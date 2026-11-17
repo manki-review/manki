@@ -96,7 +96,6 @@ function fullyPopulatedContext(): RoundContext {
     config: {
       reviewLevel: 'medium',
       memoryEnabled: true,
-      reviewPasses: 1,
     },
     diff: {
       lines: 120,

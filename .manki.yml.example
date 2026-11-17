@@ -45,19 +45,12 @@
 # base branch only. A PR up to auto_review_max_lines is reviewed automatically.
 # A larger one gets a request to split it, with Review again in its settings block. A forced
 # review covers it up to max_diff_lines. Above that Manki never reviews. A finder
-# reads a diff over slice_lines (at least 200) in slices of that size.
+# reads a diff over 1500 changed lines in slices of about that size.
 # auto_review_max_lines: 8000
 # max_diff_lines: 15000
-# slice_lines: 1500
 
-# Extra checks for the finders. Each entry becomes one more line in the
-# finder prompt, after correctness, security, error paths, tests that cannot
-# fail and contract breaks. Both finders get the same prompt.
-# reviewers:
-#   - name: "Protocol Compliance"
-#     focus: "DIP compliance, consensus rules, protocol-specific invariants"
-
-# Additional instructions injected into all reviewer prompts
+# Additional instructions injected into all reviewer prompts. Name here what
+# the finders should also check for, such as protocol rules.
 # instructions: |
 #   This is a Rust project. Focus on ownership and error handling.
 
@@ -99,17 +92,14 @@
 # Models are auto-detected by prefix: `claude-*` -> Anthropic, `gpt-*` / `o*` -> OpenAI, `gemini-*` -> Gemini.
 # You can also use explicit `provider/model` syntax (e.g. `anthropic/claude-haiku-5-5`).
 
-# Planner stage (default: enabled)
-# A fast pre-review pass answers three questions about the nature of the change:
-# trivial (a single quick check reads it), subtle (finders run at high effort
-# instead of medium) and paired (a second finder on another model reads it
-# too). These are the defaults, and the `review` block below changes who reads
-# what. An unclear answer takes the side that adds review. Disabled, every
-# round gets two finders at high effort by default. A diff that touches a
-# security-sensitive path, CI, a dependency manifest or a data contract
-# (migrations, SQL, protobuf, schemas, OpenAPI) always gets two finders.
-# planner:
-#   enabled: true
+# The planner is a fast pre-review pass on `models.planner`. It answers three
+# questions about the nature of the change: trivial (a single quick check reads
+# it), subtle (finders run at high effort instead of medium) and paired (a
+# second finder on another model reads it too). These are the defaults, and the
+# `review` block below changes who reads what. An unclear answer takes the side
+# that adds review. A diff that touches a security-sensitive path, CI, a
+# dependency manifest or a data contract (migrations, SQL, protobuf, schemas,
+# OpenAPI) always gets two finders.
 
 # Judge stage. `effort` is low, medium, high, xhigh, max or auto (default),
 # which takes the level the planner picks. `tool_steps` is the number of
@@ -194,8 +184,7 @@
 #   checks: true             # check-run annotations, needs `checks: read`
 #   code_scanning: true      # code scanning alerts, needs `security-events: read`
 #   dependency_review: true  # vulnerable packages the PR adds
-#   wait_for_checks: []      # check runs to wait for, such as [lint, CodeQL]
-#   wait_timeout_seconds: 300
+#   wait_for_checks: []      # check runs to wait for up to 300 seconds, such as [lint, CodeQL]
 #   analyzers:               # analyzers Manki runs itself, or `all`
 #     ast_grep: false        # Manki's ast-grep rules for JS, TS and Python. The Rust rules run in a Cargo repository
 #     secrets: false         # gitleaks on the added lines
@@ -215,28 +204,15 @@
 #   - { repo: dashpay/platform, kind: consumer, ref: master, paths: ["packages/rs-*"] }
 #   - { repo: tokio-rs/tokio, kind: dependency, ref: tokio-1.38.0, paths: [tokio/src/] }
 
-# Multi-pass verification: run each reviewer N times with shuffled file ordering.
-# Only findings that appear consistently across passes are kept, reducing false positives.
-# Must be an integer between 1 and 5. Default: 1 (no multi-pass).
-# review_passes: 1
-
 # How rounds end. After `max_auto_rounds` automatic rounds since Manki's last
 # approval, automatic review pauses until a review is started by hand, which
-# turns it back on for `rounds_after_restart` rounds. 0 turns the cap off.
-# convergence:
-#   max_auto_rounds: 10
-#   rounds_after_restart: 3
-#   test_path_patterns: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]   # test files, where later rounds drop the notes
-#   suppress_resolved_threads: true   # a resolved thread suppresses matching findings in later rounds
-
-# On merge, count per severity and finder how many posted findings were fixed,
-# dismissed or left untouched. Written to the job summary, and appended to
-# `metrics/fix-rate.jsonl` in the repo's memory when memory is enabled.
-# Default: on when `memory.enabled` is true.
-# metrics:
-#   fix_rate: true
+# turns it back on for 3 rounds. 0 turns the cap off.
+# max_auto_rounds: 10
 
 # Review memory: stores learnings and suppressions to improve reviews over time.
+# With memory on, a merge also counts per severity and finder how many posted
+# findings were fixed, dismissed or left untouched. The count goes to the job
+# summary and to `metrics/fix-rate.jsonl` in the repo's memory.
 # Without `repo`, a public repo's memory lives in the central memory repository
 # and needs no token. A repo of your own needs the `memory_repo_token` input, and
 # a private repo needs one that is private and has the same owner.

@@ -37,14 +37,13 @@ A PR can hold several defects of different kinds. Look for all of them, not only
 }
 
 /**
- * Returns the finder every non-trivial round runs. Each custom reviewer becomes one more line to check, and each kind
- * of `relatedRepos` adds the check for that kind.
+ * Returns the finder every non-trivial round runs. `groupFocus`, the `focus` of the finder's reader in its review
+ * group, becomes one more line to check, and each kind of `relatedRepos` adds the check for that kind.
  */
-export function buildFinderAgent(customReviewers: readonly ReviewerAgent[], relatedRepos: readonly RelatedRepo[] = []): ReviewerAgent {
+export function buildFinderAgent(groupFocus?: string, relatedRepos: readonly RelatedRepo[] = []): ReviewerAgent {
   const focus = finderFocus(new Set(relatedRepos.map(r => r.kind)));
-  const extra = customReviewers.map(r => `\n- ${r.name}: ${r.focus}`).join('');
   return {
     name: 'Finder',
-    focus: extra ? `${focus}\n\nThis repository also asks you to check:${extra}` : focus,
+    focus: groupFocus ? `${focus}\n\nThis repository also asks you to check:\n- This review group: ${groupFocus}` : focus,
   };
 }
