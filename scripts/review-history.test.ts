@@ -32,12 +32,14 @@ describe('review history', () => {
       { id: 22, body: 'A finding without a record.', user: bot },
     ];
 
-    expect(historyLines('owner/repo', 9, { reviews, comments })).toEqual([
+    const skipped = jest.fn();
+    expect(historyLines('owner/repo', 9, { reviews, comments }, skipped)).toEqual([
       { kind: 'round', repo: 'owner/repo', pr: 9, sourceId: 1, author: 'manki-review[bot]', commitId: 'sha1', postedAt: '2026-11-01T00:00:00Z', record: plain },
       { kind: 'round', repo: 'owner/repo', pr: 9, sourceId: 3, author: 'manki-review[bot]', record: compressed },
       { kind: 'reply', repo: 'owner/repo', pr: 9, sourceId: 20, author: 'manki-review[bot]', postedAt: '2026-11-02T00:00:00Z', record: reply },
     ]);
     expect(errorSpy).toHaveBeenCalledTimes(2);
+    expect(skipped.mock.calls).toEqual([['round'], ['round']]);
     errorSpy.mockRestore();
   });
 

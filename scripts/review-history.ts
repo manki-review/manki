@@ -38,13 +38,14 @@ export interface HistoryLine {
   record: unknown;
 }
 
-/** Parses each record text, reporting the ones that are not JSON on stderr. */
-function parseRecords(texts: string[], where: string): unknown[] {
+/** Parses each record text, reporting the ones that are not JSON on stderr and to `onSkip`. */
+function parseRecords(texts: string[], where: string, onSkip: () => void): unknown[] {
   return texts.flatMap(text => {
     try {
       return [migrateStoredSeverities(JSON.parse(text) as unknown)];
     } catch {
       console.error(`Skipping a record that is not JSON in ${where}`);
+      onSkip();
       return [];
     }
   });
@@ -53,9 +54,11 @@ function parseRecords(texts: string[], where: string): unknown[] {
 /**
  * Returns one line per record in what a bot posted, so text a person pasted is not taken for a
  * record. Reviews give round records, comments give reply records. A record that can't be decoded
- * or parsed is reported on stderr and skipped.
+ * or parsed is reported on stderr and to `onSkip`, and skipped.
  */
-export function historyLines(repo: string, pr: number, posted: { reviews: PostedLike[]; comments: PostedLike[] }): HistoryLine[] {
+export function historyLines(
+  repo: string, pr: number, posted: { reviews: PostedLike[]; comments: PostedLike[] }, onSkip: (kind: HistoryLine['kind']) => void = () => undefined,
+): HistoryLine[] {
   const line = (kind: HistoryLine['kind'], item: PostedLike, record: unknown): HistoryLine => ({
     kind,
     repo,
@@ -71,12 +74,15 @@ export function historyLines(repo: string, pr: number, posted: { reviews: Posted
     if (review.user?.type !== 'Bot' || !review.body || !hasReviewRecord(review.body)) continue;
     const where = `review ${review.id} on ${repo}#${pr}`;
     const { records, errors } = extractReviewRecords(review.body);
-    for (const error of errors) console.error(`Skipping an undecodable record in ${where}: ${error}`);
-    lines.push(...parseRecords(records, where).map(record => line('round', review, record)));
+    for (const error of errors) {
+      console.error(`Skipping an undecodable record in ${where}: ${error}`);
+      onSkip('round');
+    }
+    lines.push(...parseRecords(records, where, () => onSkip('round')).map(record => line('round', review, record)));
   }
   for (const comment of posted.comments) {
     if (comment.user?.type !== 'Bot' || !comment.body) continue;
-    lines.push(...parseRecords(extractReplyRecords(comment.body), `comment ${comment.id} on ${repo}#${pr}`).map(record => line('reply', comment, record)));
+    lines.push(...parseRecords(extractReplyRecords(comment.body), `comment ${comment.id} on ${repo}#${pr}`, () => onSkip('reply')).map(record => line('reply', comment, record)));
   }
   return lines;
 }
