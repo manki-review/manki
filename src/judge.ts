@@ -320,8 +320,6 @@ export interface JudgeInput {
   resolvedThreadIds?: Set<string>;
   /** IDs of the threads the PR author alone cannot clear. Only a prior with such a thread hides a security finding. */
   guardedThreadIds?: Set<string>;
-  /** When true, resolved prior-round threads suppress matching findings. */
-  suppressResolvedThreads?: boolean;
   /** The related repos the round's models could read with their tools. */
   relatedRepos?: RelatedRepo[];
   /**
@@ -1579,7 +1577,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, guardedThreadIds, suppressResolvedThreads, relatedRepos, refutation, usesOutsideDiff, lockfiles = [], repoContext } = input;
+  const { diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, guardedThreadIds, relatedRepos, refutation, usesOutsideDiff, lockfiles = [], repoContext } = input;
   const findings = input.findings.map(f => withoutPreExistingOnAddedLine(f, diff));
   const toolSteps = refutation ? input.toolSteps ?? 0 : 0;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
@@ -1748,7 +1746,7 @@ export async function runJudgeAgent(
     return answers.length > 0 && answers.every(e => e.status === 'addressed') ? [stringifyFindingFingerprint(entry.fingerprint)] : [];
   });
 
-  const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, guardedThreadIds, suppressResolvedThreads, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations };
+  const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, guardedThreadIds, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations };
 
   // A copy the judge merges or drops must pass every pre-existing check itself, since only the kept finding is checked later.
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
@@ -2191,7 +2189,7 @@ export interface CrossRoundSuppressionOptions {
    * IDs of prior-round threads a human resolved or Manki resolved as
    * judge-addressed. Any prior finding whose `threadId` is in this set is
    * treated as accepted. A thread Manki resolved without the judge marking it
-   * `addressed` is left out. Requires `suppressResolvedThreads` to be true.
+   * `addressed` is left out.
    */
   resolvedThreadIds?: Set<string>;
   /**
@@ -2199,8 +2197,6 @@ export interface CrossRoundSuppressionOptions {
    * only by an agreed or resolved prior with such a thread, since the PR author can resolve or agree away any other thread.
    */
   guardedThreadIds?: Set<string>;
-  /** When true, treat resolved prior-round threads as accepted priors. */
-  suppressResolvedThreads?: boolean;
   /**
    * Latest judge `threadEvaluations` keyed by prior `threadId`. When a prior
    * `note` thread has `status: 'addressed'` here, it joins the
@@ -2216,8 +2212,8 @@ export interface CrossRoundSuppressionOptions {
  * Apply cross-round suppression rules using prior-round handover state.
  *
  * Ratchet: if a prior finding with the same slug + file exists and the author
- * agreed (or, when `suppressResolvedThreads` is true, the prior thread is
- * resolved on GitHub), suppress the current finding unless it is `blocker`.
+ * agreed (or the prior thread is resolved on GitHub), suppress the current
+ * finding unless it is `blocker`.
  *
  * Contradiction: if a prior finding with the same slug + file + line proximity
  * exists, the author agreed, and the current finding uses a reversal word,
@@ -2238,8 +2234,8 @@ export function applyCrossRoundSuppression(
     return { findings, suppressedCount: 0, demotedCount: 0 };
   }
 
-  const { resolvedThreadIds, guardedThreadIds, suppressResolvedThreads, threadEvaluations } = options;
-  const useResolved = suppressResolvedThreads === true && resolvedThreadIds !== undefined && resolvedThreadIds.size > 0;
+  const { resolvedThreadIds, guardedThreadIds, threadEvaluations } = options;
+  const useResolved = resolvedThreadIds !== undefined && resolvedThreadIds.size > 0;
   const judgeIndex = indexThreadEvaluations(threadEvaluations);
 
   type Prior = {

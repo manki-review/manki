@@ -216,7 +216,6 @@
 # convergence:
 #   max_auto_rounds: 10
 #   test_path_patterns: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]   # test files, where later rounds drop the notes
-#   suppress_resolved_threads: true   # a resolved thread suppresses matching findings in later rounds
 
 # On merge, count per severity and finder how many posted findings were fixed,
 # dismissed or left untouched. Written to the job summary, and appended to

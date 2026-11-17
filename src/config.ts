@@ -58,7 +58,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   convergence: {
     max_auto_rounds: 10,
     test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
-    suppress_resolved_threads: true,
   },
   related_repos: [],
 };
@@ -106,7 +105,7 @@ const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'analyzers']);
-const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'test_path_patterns', 'suppress_resolved_threads']);
+const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'test_path_patterns']);
 const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
 const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
 
@@ -304,9 +303,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
         ) {
           errors.push('`convergence.test_path_patterns` must be an array of strings');
         }
-      }
-      if ('suppress_resolved_threads' in convergence && typeof convergence.suppress_resolved_threads !== 'boolean') {
-        errors.push('`convergence.suppress_resolved_threads` must be a boolean');
       }
     }
   }

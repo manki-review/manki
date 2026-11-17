@@ -43,7 +43,6 @@ describe('config', () => {
 
     it('exposes default convergence settings', () => {
       expect(DEFAULT_CONFIG.convergence?.max_auto_rounds).toBe(10);
-      expect(DEFAULT_CONFIG.convergence?.suppress_resolved_threads).toBe(true);
       expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/*.test.*');
       expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/__tests__/**');
     });
@@ -53,7 +52,6 @@ describe('config', () => {
     it('merges user-provided convergence overrides with defaults', () => {
       const config = loadConfigFromContent('convergence:\n  max_auto_rounds: 3\n');
       expect(config.convergence?.max_auto_rounds).toBe(3);
-      expect(config.convergence?.suppress_resolved_threads).toBe(true);
     });
 
     it('rejects a negative, fractional or non-numeric max_auto_rounds', () => {
@@ -65,11 +63,6 @@ describe('config', () => {
     it('rejects non-array test_path_patterns', () => {
       expect(() => loadConfigFromContent('convergence:\n  test_path_patterns: "not-an-array"\n'))
         .toThrow(/test_path_patterns/);
-    });
-
-    it('rejects non-boolean suppress_resolved_threads', () => {
-      expect(() => loadConfigFromContent('convergence:\n  suppress_resolved_threads: "yes"\n'))
-        .toThrow(/suppress_resolved_threads/);
     });
   });
 
@@ -380,7 +373,7 @@ planner:
       loadConfigFromContent(`
 reviewers: [{ name: a, focus: b, fokus: c }]
 static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], analyzers: all, check: false }
-convergence: { max_auto_rounds: 3, test_path_patterns: ['**/*.test.ts'], suppress_resolved_threads: true, max_rounds: 2 }
+convergence: { max_auto_rounds: 3, test_path_patterns: ['**/*.test.ts'], max_rounds: 2 }
 metrics: { fix_rate: true, fixrate: false }
 memory: { enabled: false, repo: '', repository: x/y }
 `);

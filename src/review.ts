@@ -1162,7 +1162,6 @@ export async function runReview(
   // matching prior-round threads that have since been resolved.
   const resolvedThreadIds = collectResolvedThreadIds(previousFindings);
   const guardedThreadIds = collectGuardedThreadIds(previousFindings);
-  const suppressResolvedThreads = config.convergence?.suppress_resolved_threads !== false;
 
   let finalFindings: Finding[];
   let allJudgedFindings: Finding[] | undefined;
@@ -1208,7 +1207,6 @@ export async function runReview(
     interRoundDiff,
     resolvedThreadIds,
     guardedThreadIds,
-    suppressResolvedThreads,
     ...(related && { relatedRepos: related.repos }),
     ...(refutation && { refutation }),
     toolSteps: judgeToolSteps(config, clients, !!refutation),

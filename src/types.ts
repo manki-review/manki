@@ -1393,8 +1393,6 @@ export interface ReviewConfig {
     max_auto_rounds?: number;
     /** Glob patterns for test files. Notes on these paths are dropped on round 2+. */
     test_path_patterns?: string[];
-    /** When true, a prior-round finding whose thread a human resolved, or Manki resolved as judge-addressed, suppresses matching current findings. */
-    suppress_resolved_threads?: boolean;
   };
   metrics?: {
     /**

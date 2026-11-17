@@ -1474,7 +1474,7 @@ describe('fetchRecapState', () => {
       expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint.file)).toEqual([files.human]);
       const resolvedThreadIds = collectResolvedThreadIds(state.previousFindings);
       expect(resolvedThreadIds).toEqual(new Set(['T_HUMAN', 'T_JUDGE']));
-      const ratcheted = applyCrossRoundSuppression(newFindings, state.priorRounds, { resolvedThreadIds, suppressResolvedThreads: true });
+      const ratcheted = applyCrossRoundSuppression(newFindings, state.priorRounds, { resolvedThreadIds });
       expect(ratcheted.findings.filter(f => f.severity !== 'ignore').map(f => f.file)).toEqual([files.bot, files.unknown, files.bare]);
 
       const judgePrior = state.priorRounds[0].findings.entries.filter(e => e.threadId === 'T_JUDGE');

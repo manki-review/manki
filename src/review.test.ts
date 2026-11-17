@@ -70,7 +70,6 @@ const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   convergence: {
     max_auto_rounds: 5,
     test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
-    suppress_resolved_threads: true,
   },
   ...overrides,
 });
@@ -6426,7 +6425,7 @@ describe('runReview post-judge suppression', () => {
     const result = await runReview(
       makeClients(),
       {
-        config: makeConfig({ convergence: { test_path_patterns: ['spec/**'], suppress_resolved_threads: false } }),
+        config: makeConfig({ convergence: { test_path_patterns: ['spec/**'] } }),
         diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
         rawDiff: 'raw',
         repoContext: 'ctx',
@@ -6445,7 +6444,7 @@ describe('runReview post-judge suppression', () => {
     const result = await runReview(
       makeClients(),
       {
-        config: makeConfig({ convergence: { test_path_patterns: [], suppress_resolved_threads: false } }),
+        config: makeConfig({ convergence: { test_path_patterns: [] } }),
         diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
         rawDiff: 'raw',
         repoContext: 'ctx',

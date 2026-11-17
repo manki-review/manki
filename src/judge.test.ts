@@ -5807,7 +5807,7 @@ describe('applyCrossRoundSuppression', () => {
     const priorWith = (entry: Partial<LegacyHandoverFindingFixture>) => [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') }, severity: 'warning', title: 'Old issue', authorReply: 'none', ...entry,
     }])];
-    const resolved = { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true };
+    const resolved = { resolvedThreadIds: new Set(['TH1']) };
     const addressed = { threadEvaluations: [{ threadId: 'TH1', status: 'addressed' as const, reason: 'fixed' }] };
     const cases: Array<[string, RoundContext[], CrossRoundSuppressionOptions]> = [
       ['resolved', priorWith({ threadId: 'TH1' }), resolved],
@@ -5845,21 +5845,20 @@ describe('applyCrossRoundSuppression', () => {
 
       const result = applyCrossRoundSuppression(findings, prior, {
         resolvedThreadIds: new Set(['TH1']),
-        suppressResolvedThreads: true,
       });
       expect(result.suppressedCount).toBe(1);
       expect(result.findings[0].severity).toBe('ignore');
       expect(result.findings[0].tags).toContain('suppressed-by-resolved-thread');
 
       // A blocker cell the judge keeps at a warning is hidden like any warning, whatever its check answered.
-      const kept = applyCrossRoundSuppression(keptWarnings({ title: 'Old issue', file: 'src/a.ts', line: 10 }), prior, { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true });
+      const kept = applyCrossRoundSuppression(keptWarnings({ title: 'Old issue', file: 'src/a.ts', line: 10 }), prior, { resolvedThreadIds: new Set(['TH1']) });
       expect([kept.suppressedCount, kept.findings.map(f => [f.severity, f.tags])]).toEqual([3, Array(3).fill(['ignore', ['suppressed-by-resolved-thread']])]);
 
       // A resolved suggestion thread hides a later suggestion on the same spot, never a warning.
       const suggestion = [makePriorRound([{
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') }, severity: 'note', title: 'Old issue', authorReply: 'none', threadId: 'TH1',
       }])];
-      const resolvedSuggestion = { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true };
+      const resolvedSuggestion = { resolvedThreadIds: new Set(['TH1']) };
       expect(applyCrossRoundSuppression(findings, suggestion, resolvedSuggestion).findings[0].severity).toBe('ignore');
       const warning = applyCrossRoundSuppression([{ ...findings[0], severity: 'warning' }], suggestion, resolvedSuggestion);
       expect([warning.suppressedCount, warning.findings[0].severity]).toEqual([0, 'warning']);
@@ -5877,14 +5876,13 @@ describe('applyCrossRoundSuppression', () => {
 
       const result = applyCrossRoundSuppression(findings, prior, {
         resolvedThreadIds: new Set(),
-        suppressResolvedThreads: true,
       });
       expect(result.suppressedCount).toBe(1);
       expect(result.findings[0].severity).toBe('ignore');
       expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
 
       // The author's agreement hides a blocker cell the judge keeps at a warning too, whatever its check answered.
-      const kept = applyCrossRoundSuppression(keptWarnings({ title: 'Old issue', file: 'src/a.ts', line: 10 }), prior, { resolvedThreadIds: new Set(), suppressResolvedThreads: true });
+      const kept = applyCrossRoundSuppression(keptWarnings({ title: 'Old issue', file: 'src/a.ts', line: 10 }), prior, { resolvedThreadIds: new Set() });
       expect([kept.suppressedCount, kept.findings.map(f => [f.severity, f.tags])]).toEqual([3, Array(3).fill(['ignore', ['suppressed-by-ratchet']])]);
     });
 
@@ -5900,7 +5898,6 @@ describe('applyCrossRoundSuppression', () => {
 
       const result = applyCrossRoundSuppression(findings, prior, {
         resolvedThreadIds: new Set(['TH-other']),
-        suppressResolvedThreads: true,
       });
       expect(result.suppressedCount).toBe(0);
       expect(result.findings[0].severity).toBe('note');
@@ -5923,7 +5920,6 @@ describe('applyCrossRoundSuppression', () => {
 
       const result = applyCrossRoundSuppression(findings, prior, {
         resolvedThreadIds: new Set(['TH1']),
-        suppressResolvedThreads: true,
       });
       expect(result.suppressedCount).toBe(1);
       expect(result.findings[0].severity).toBe('ignore');
@@ -5935,7 +5931,7 @@ describe('applyCrossRoundSuppression', () => {
       }])];
       const alert = 'lockfile-change: updated left-pad 1.3.0 -> 1.2.0: downgrade.';
       const nearby = [makeFinding({ title: 'lockfile-change: updated left-pat 1.3.0 -> 1.2.0: downgrade.', file: 'yarn.lock', line: 44, severity: 'note' })];
-      const options = { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true };
+      const options = { resolvedThreadIds: new Set(['TH1']) };
       expect(applyCrossRoundSuppression(nearby, resolvedAlert(alert), options).findings[0].severity).toBe('note');
       expect(applyCrossRoundSuppression(nearby, resolvedAlert('Reworded concern'), options).findings[0].severity).toBe('note');
       const same = [makeFinding({ title: alert, file: 'yarn.lock', line: 44, severity: 'note' })];
@@ -5959,7 +5955,6 @@ describe('applyCrossRoundSuppression', () => {
 
       const result = applyCrossRoundSuppression(findings, prior, {
         resolvedThreadIds: new Set(['TH1']),
-        suppressResolvedThreads: true,
       });
       expect(result.suppressedCount).toBe(0);
       expect(result.findings[0].severity).toBe('note');
@@ -5977,28 +5972,9 @@ describe('applyCrossRoundSuppression', () => {
 
       const result = applyCrossRoundSuppression(findings, prior, {
         resolvedThreadIds: new Set(['TH1']),
-        suppressResolvedThreads: true,
       });
       expect(result.suppressedCount).toBe(0);
       expect(result.findings[0].severity).toBe('blocker');
-    });
-
-    it('does nothing when suppressResolvedThreads is false', () => {
-      const findings = [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity: 'note' })];
-      const prior = [makePriorRound([{
-        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') },
-        severity: 'note',
-        title: 'Old issue',
-        authorReply: 'none',
-        threadId: 'TH1',
-      }])];
-
-      const result = applyCrossRoundSuppression(findings, prior, {
-        resolvedThreadIds: new Set(['TH1']),
-        suppressResolvedThreads: false,
-      });
-      expect(result.suppressedCount).toBe(0);
-      expect(result.findings[0].severity).toBe('note');
     });
   });
 
