@@ -467,17 +467,22 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   };
 }
 
-/** Adds to `repo` the tool calls of `calls` that read it, in all and by stage, when any did. */
-export function withReads(repo: RoundRelatedRepo, calls: LLMCall[]): RoundRelatedRepo {
+/** Returns the tool calls of `calls` that read the repo or package `name`, in all and by stage, or nothing when none did. */
+export function readsOf(name: string, calls: LLMCall[]): { reads?: number; readsByStage?: Record<string, number> } {
   const readsByStage: Record<string, number> = {};
   for (const call of calls) {
-    const reads = call.relatedReads?.[repo.repo] ?? 0;
+    const reads = call.relatedReads?.[name] ?? 0;
     // A refuter is recorded as a judge call with its own agent name.
     const stage = call.stage === 'judge' && call.agent?.startsWith('refute') ? call.agent : call.stage;
     if (reads > 0) readsByStage[stage] = (readsByStage[stage] ?? 0) + reads;
   }
   const reads = Object.values(readsByStage).reduce((sum, n) => sum + n, 0);
-  return reads > 0 ? { ...repo, reads, readsByStage } : repo;
+  return reads > 0 ? { reads, readsByStage } : {};
+}
+
+/** Adds to `repo` the tool calls of `calls` that read it, in all and by stage, when any did. */
+export function withReads(repo: RoundRelatedRepo, calls: LLMCall[]): RoundRelatedRepo {
+  return { ...repo, ...readsOf(repo.repo, calls) };
 }
 
 /** Returns, per stage, the distinct prompt digests of `calls`, sorted. */
