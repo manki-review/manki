@@ -617,7 +617,7 @@ export async function handleReviewCommentReply(
 }
 
 /**
- * Handle @manki commands in PR comments. `configHeld` says that the base branch's config could not be read or loaded,
+ * Handle `/manki` commands in PR comments. `configHeld` says that the base branch's config could not be read or loaded,
  * so `config` holds the defaults and `check` approves nothing.
  */
 export async function handlePRComment(
@@ -876,7 +876,7 @@ async function handleHelp(
     owner,
     repo,
     issue_number: prNumber,
-    body: withMarkers(`| Command | What it does |\n|---|---|\n| \`/manki review\` | Reviews the head commit unless Manki's newest review of it is complete. Tick Review again in the settings block to review it again |\n| \`/manki explain [topic]\` | Explains something about this PR |\n| \`/manki check\` | Checks for open blocking threads and approves when there are none |\n| \`/manki dismiss [finding]\` | Dismisses a finding |\n| \`/manki remember <instruction>\` | Stores an instruction for future reviews |\n| \`/manki forget <text>\` | Removes a learning or suppression |\n| \`/manki help\` | Shows this message |\n\n\`@manki\` and \`@manki-review\` work as the prefix too. A reply to a Manki review comment gets an answer in its thread.`, BOT_MARKER),
+    body: withMarkers(`| Command | What it does |\n|---|---|\n| \`/manki review\` | Reviews the head commit unless Manki's newest review of it is complete. Tick Review again in the settings block to review it again |\n| \`/manki explain [topic]\` | Explains something about this PR |\n| \`/manki check\` | Checks for open blocking threads and approves when there are none |\n| \`/manki dismiss [finding]\` | Dismisses a finding |\n| \`/manki remember <instruction>\` | Stores an instruction for future reviews |\n| \`/manki forget <text>\` | Removes a learning or suppression |\n| \`/manki help\` | Shows this message |\n\n\`@manki-review\` works as the prefix too. A reply to a Manki review comment gets an answer in its thread.`, BOT_MARKER),
   });
 }
 
@@ -1183,6 +1183,11 @@ function hasBotMention(body: string): boolean {
   return BOT_MENTION_PATTERN.test(body.toLowerCase());
 }
 
+/** Whether `body` mentions `@manki`, the login of an unrelated GitHub user, whom GitHub then notifies. Code mentions nobody. */
+function mentionsMankiUser(body: string): boolean {
+  return /@manki(?![\w-])/i.test(withoutCode(body));
+}
+
 function isReviewRequest(body: string): boolean {
   const lower = body.toLowerCase();
   if (!BOT_MENTION_PATTERN.test(lower)) return false;
@@ -1259,4 +1264,4 @@ export async function handleReviewCommentCommand(
   }
 }
 
-export { parseCommand, buildReplyContext, ParsedCommand, replyOutcome, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };
+export { parseCommand, buildReplyContext, ParsedCommand, replyOutcome, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview };

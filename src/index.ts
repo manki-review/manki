@@ -15,7 +15,7 @@ import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
-import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
+import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, mentionsMankiUser, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
@@ -126,7 +126,7 @@ function buildRoundTrigger(modes: ReadonlySet<string> = new Set()): RoundTrigger
     if (action === 'edited' && body.includes(SETTINGS_MARKER)) {
       event = [`${event}:settings`, ...(modes.size > 0 ? [[...modes].sort().join(',')] : [])].join(':');
     } else if (action === 'created' && isReviewRequest(body)) {
-      event = `${event}:@manki review`;
+      event = `${event}:/manki review`;
     }
   }
   return { event, sender };
@@ -173,7 +173,10 @@ function buildLLMClientFromInputs(opts: {
 let authCache: AuthResult | null = null;
 
 async function getAuth(): Promise<AuthResult> {
-  authCache ??= await createAuthenticatedOctokit();
+  if (!authCache) {
+    authCache = await createAuthenticatedOctokit();
+    hintSlashForm(authCache.octokit);
+  }
   return authCache;
 }
 
@@ -199,6 +202,36 @@ function answeredMarker(commentId: number): string {
 
 const CREATE_COMMENT = 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments';
 const EDIT_COMMENT = 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}';
+const CREATE_THREAD_REPLY = 'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies';
+
+const SLASH_HINT = 'Next time, write `/manki` instead of `@manki`. `@manki` is the login of an unrelated GitHub user, who gets a notification each time.';
+
+/** Whether this run answers a person's command that mentions `@manki`. A reply in a review thread that is no command does not count. */
+function answersMankiMention(): boolean {
+  const { eventName, payload } = github.context;
+  const body: string = payload.comment?.body ?? '';
+  if (body.includes('<!-- manki') || !mentionsMankiUser(body)) return false;
+  return eventName === 'issue_comment' || (eventName === 'pull_request_review_comment' && parseCommand(body).type !== 'generic');
+}
+
+/** The clients that `hintSlashForm` has hooked. */
+const hinting = new WeakSet<Octokit>();
+
+/**
+ * Adds `SLASH_HINT` to every PR, issue or thread comment `octokit` creates in a run that `answersMankiMention`, above
+ * the comment's hidden markers. A comment with the settings block stays as it is, since the block has to end it.
+ */
+function hintSlashForm(octokit: Octokit): void {
+  if (hinting.has(octokit)) return;
+  hinting.add(octokit);
+  octokit.hook.wrap('request', async (request, options) => {
+    const route = `${options.method} ${options.url}`;
+    if ((route === CREATE_COMMENT || route === CREATE_THREAD_REPLY) && typeof options.body === 'string' && !options.body.includes(SETTINGS_MARKER) && answersMankiMention()) {
+      options.body = options.body.replace(/(?:\n+<!--[^\n]*-->)*\s*$/, markers => `\n\n${SLASH_HINT}${markers}`);
+    }
+    return request(options);
+  });
+}
 
 /** The marker a client adds while it answers a comment, and the ids of the comments it created for that answer. */
 const answering = new WeakMap<Octokit, { marker: string; created: Set<number> }>();
@@ -726,7 +759,7 @@ function failureReason(error: unknown, retryHint = FAILED_RUN_HINT): string {
 /** How to retry a run that failed. The review command starts nothing on a commit whose newest review gave a verdict, as after a failed box run, so the hint names the box too. */
 const FAILED_RUN_HINT = `${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
 /** How to retry a failed run that only checks the approval. The check command does the same without a review round. */
-const CHECK_HINT = 'Retry with @manki check.';
+const CHECK_HINT = 'Retry with /manki check.';
 /** How to retry a failed run that a comment, a reply or a tick of a box started. */
 const REPEAT_HINT = 'Repeat the comment or the tick that started this run.';
 
@@ -2340,13 +2373,13 @@ async function handleReviewCommentInteraction(): Promise<void> {
     return;
   }
 
-  // Only respond if this is a reply to a bot comment or mentions @manki
+  // Only respond if this is a reply to a bot comment or names Manki
   const body = comment.body ?? '';
   const isReplyToBot = !!comment.in_reply_to_id; // handleReviewCommentReply will verify it's actually our comment
   const mentionsBot = hasBotMention(body);
 
   if (!isReplyToBot && !mentionsBot) {
-    core.info('Review comment is not a reply to bot or @manki mention — skipping');
+    core.info('Review comment is not a reply to bot and does not name Manki — skipping');
     return;
   }
 

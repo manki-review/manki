@@ -132,7 +132,7 @@ const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   NOT_CONVERGING: 'REQUEST_CHANGES',
 };
 
-export const RETRY_HINT = 'Retry with @manki review.';
+export const RETRY_HINT = 'Retry with /manki review.';
 
 /** The round's summary when it had nothing to judge, in place of the one the judge writes. */
 const SKIPPED_JUDGE_SUMMARY = 'No new problems found.';
@@ -218,7 +218,7 @@ function quotaSummary(error: QuotaError, readers: readonly string[] = []): strin
   const who = readers.length > 0 ? ` for ${readers.join(', ')}` : '';
   const resets = error.resetsAt ? ` It resets ${error.resetsAt}.` : '';
   const other = error.credential ? `, or use another ${error.credential}` : '';
-  return `${error.limit}${who}.${resets} Retry with @manki review ${error.resetsAt ? 'after that' : 'later'}${other}.`;
+  return `${error.limit}${who}.${resets} Retry with /manki review ${error.resetsAt ? 'after that' : 'later'}${other}.`;
 }
 
 /** The round's summary for a judge call that failed. `what` names what the call graded when that is not the finders' findings. */

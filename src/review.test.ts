@@ -3208,7 +3208,7 @@ describe('runReview', () => {
 
     // A judge that fails on the sweep's findings ends the round incomplete, so no blocker the sweep found is lost
     // behind an approval. The record keeps what the first judge call graded, and nothing is posted.
-    for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with @manki review.'], [new TimeoutError('Codex CLI timed out after 900s'), 'The judge ran out of time on the findings of the sweep. Retry with @manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
+    for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with /manki review.'], [new TimeoutError('Codex CLI timed out after 900s'), 'The judge ran out of time on the findings of the sweep. Retry with /manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
       const failed = (await run('blockers', false, error)).result;
       expect([failed.outcome, failed.verdict, failed.reviewComplete, failed.findings]).toEqual(['INCOMPLETE', 'COMMENT', false, []]);
       expect(failed.summary).toEqual(summary);
@@ -5504,7 +5504,7 @@ describe('runReview', () => {
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
-    expect(result.summary).toBe('The judge failed. Retry with @manki review.');
+    expect(result.summary).toBe('The judge failed. Retry with /manki review.');
     expect(result).not.toHaveProperty('relatedWork');
     expect(result).toMatchObject({
       judgeEffort: 'high', rawFindingCount: 2, staticDedupCount: 0, llmDedupCount: 0, judgeRetryCount: 0, agentDurationMs: expect.any(Map),
@@ -5513,11 +5513,11 @@ describe('runReview', () => {
 
     mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', undefined, 'key'));
     const limited = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
-    expect([limited.outcome, limited.summary]).toEqual(['INCOMPLETE', 'Anthropic API rate limit reached. Retry with @manki review later, or use another key.']);
+    expect([limited.outcome, limited.summary]).toEqual(['INCOMPLETE', 'Anthropic API rate limit reached. Retry with /manki review later, or use another key.']);
 
     mockedRunJudgeAgent.mockRejectedValueOnce(new TimeoutError('Codex CLI timed out after 900s'));
     const slow = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
-    expect([slow.outcome, slow.summary]).toEqual(['INCOMPLETE', 'The judge ran out of time. Retry with @manki review.']);
+    expect([slow.outcome, slow.summary]).toEqual(['INCOMPLETE', 'The judge ran out of time. Retry with /manki review.']);
 
     const actualJudge = jest.requireActual<typeof import('./judge')>('./judge');
     mockedRunJudgeAgent.mockImplementation(actualJudge.runJudgeAgent);
@@ -6235,7 +6235,7 @@ describe('runReview', () => {
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.reviewComplete).toBe(false);
     expect(result.summary).toContain('`src/blob.ts:2` (60016 characters)');
-    expect(result.summary).toMatch(/and push again\. If the push starts no review, .+ comment `@manki review`\.$/);
+    expect(result.summary).toMatch(/and push again\. If the push starts no review, .+ comment `\/manki review`\.$/);
     expect(clients.reviewer.sendMessage).not.toHaveBeenCalled();
     expect(clients.judge.sendMessage).not.toHaveBeenCalled();
 
@@ -6408,7 +6408,7 @@ describe('runReview', () => {
 
     const result = await runReview(pairedClients(primary, pair), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
     expect([result.outcome, result.reviewComplete]).toEqual(['INCOMPLETE', false]);
-    expect(result.summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
+    expect(result.summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token.');
     expect(result.failedAgents).toEqual(['Claude Sonnet 5.5 · high']);
     expect(primary).toHaveBeenCalledTimes(passes);
     expect(pair).toHaveBeenCalledTimes(2 * passes);
@@ -6417,8 +6417,8 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
 
     const run = (pairFailure: Error) => runReview(pairedClients(jest.fn().mockRejectedValue(limit), jest.fn().mockRejectedValue(pairFailure)), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
-    expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
-    expect((await run(new Error('Timeout'))).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token. Claude Opus 5.5 · high also failed after retries.');
+    expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token.');
+    expect((await run(new Error('Timeout'))).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token. Claude Opus 5.5 · high also failed after retries.');
   });
 
   it('retries a failed finder in multi-pass mode and recovers on the retry passes', async () => {
