@@ -154,6 +154,8 @@ The endpoint has to speak the OpenAI Responses API (`POST <base URL>/responses`)
 
 The effort tiers follow the model's name as described above, so a model that is not named like an OpenAI reasoning model gets no effort tier, and the Codex CLI applies its own default. When the endpoint answers with a rate limit or a used-up quota, the review ends incomplete with "OpenAI endpoint limit reached".
 
+When the endpoint reports the model at capacity and the Codex CLI gives up, the stage fails with "OpenAI model at capacity". A finder, the judge or the verdict reader that fails this way ends the review incomplete, and `@manki review` starts it again later. While the endpoint asks the Codex CLI to wait, the CLI waits, which can run a call into its time limit. The timeout message then says that the CLI was waiting on the provider. All of this holds for a ChatGPT login too.
+
 ### Gemini
 
 #### Gemini API Key
