@@ -26,7 +26,8 @@ describe('extractTarGz', () => {
       { name: 'package/short.js', data: 'x' },
       { name: 'top-level-file', data: 'no folder' },
     ]), out);
-    expect(result).toEqual({ files: 3, bytes: 31, skippedLinks: 0 });
+    // The top folder is dropped, and `lib` and `bin` are implied by the paths of their files.
+    expect(result).toEqual({ files: 3, folders: 2, bytes: 31, skippedLinks: 0 });
     expect(readFileSync(join(out, 'lib', 'index.js'), 'utf8')).toBe('module.exports = 1;\n');
     expect(readFileSync(join(out, 'a-very-long.js'), 'utf8')).toBe('x');
     expect(statSync(join(out, 'bin', 'run.sh')).mode & 0o111).toBe(0);
@@ -56,13 +57,51 @@ describe('extractTarGz', () => {
     expect(existsSync(join(base, 'outside'))).toBe(false);
   });
 
-  it('refuses an archive that unpacks past its size cap or holds too many files', () => {
+  it('refuses an archive that unpacks past its size cap', () => {
     const big = tarGz([{ name: 'package/zeros', data: Buffer.alloc(4 * 1024 * 1024) }]);
     // Zeros compress to almost nothing, so only the unpacked size shows the archive is too large.
     expect(big.length).toBeLessThan(64 * 1024);
     expect(() => extractTarGz(big, dest(), { maxBytes: 1024 * 1024 })).toThrow('unpacks to more than 1 MB');
-    const many = tarGz(Array.from({ length: 4 }, (_, i) => ({ name: `package/f${i}`, data: 'x' })));
-    expect(() => extractTarGz(many, dest(), { maxFiles: 3 })).toThrow('more than 3 files');
+    expect(() => extractTarGz(big, dest(), { maxBytes: 8 * 1024 * 1024 })).not.toThrow();
+  });
+
+  it('counts every file and folder it creates against one cap, a folder a file implies as well as one the archive lists', () => {
+    const cap = 'creates more than 3 files and folders';
+    const files = tarGz(Array.from({ length: 4 }, (_, i) => ({ name: `package/f${i}`, data: 'x' })));
+    expect(() => extractTarGz(files, dest(), { maxEntries: 3 })).toThrow(cap);
+    const listed = tarGz(Array.from({ length: 4 }, (_, i) => ({ name: `package/d${i}/`, type: '5' as const })));
+    expect(() => extractTarGz(listed, dest(), { maxEntries: 3 })).toThrow(cap);
+    const out = dest();
+    expect(() => extractTarGz(tarGz([{ name: 'package/a/b/c/file', data: 'x' }]), out, { maxEntries: 3 })).toThrow(cap);
+    expect(existsSync(join(out, 'a'))).toBe(false);
+    // A folder listed again, or implied by several files, counts once.
+    const shared = tarGz([{ name: 'package/a/', type: '5' }, { name: 'package/a/', type: '5' }, { name: 'package/a/x', data: '1' }, { name: 'package/a/y', data: '2' }]);
+    expect(extractTarGz(shared, dest(), { maxEntries: 3 })).toEqual({ files: 2, folders: 1, bytes: 2, skippedLinks: 0 });
+  });
+
+  it('counts headers of every kind against a cap, also those that create nothing', () => {
+    const kinds = tarGz([
+      { name: 'pax', type: 'g', data: '12 comment=\n' },
+      { name: 'package/link', type: '2', linkname: 'x' },
+      { name: 'package/dev', type: '3' },
+      { name: '././@LongLink', type: 'L', data: 'package/long.js\0' },
+      { name: 'package/short', data: 'x' },
+    ]);
+    expect(() => extractTarGz(kinds, dest(), { maxHeaders: 4 })).toThrow('holds more than 4 entries');
+    expect(extractTarGz(kinds, dest(), { maxHeaders: 5 })).toEqual({ files: 1, folders: 0, bytes: 1, skippedLinks: 1 });
+  });
+
+  it('refuses a path deeper or longer than its caps, and a long-name or pax header with more data than a path needs', () => {
+    const deep = `package/${'d/'.repeat(5)}file`;
+    expect(() => extractTarGz(tarGz([{ name: deep, data: 'x' }]), dest(), { maxDepth: 5 })).toThrow('more than 5 levels deep');
+    expect(() => extractTarGz(tarGz([{ name: deep, data: 'x' }]), dest(), { maxDepth: 6 })).not.toThrow();
+    const long = `package/${'n'.repeat(60)}/${'m'.repeat(60)}`;
+    expect(() => extractTarGz(tarGz([{ name: '././@LongLink', type: 'L', data: `${long}\0` }, { name: 'short', data: 'x' }]), dest(), { maxPathBytes: 100 })).toThrow('longer than 100 bytes');
+    const wide = `package/${'w'.repeat(256)}`;
+    expect(() => extractTarGz(tarGz([{ name: 'p', type: 'x', data: `${wide.length + 10} path=${wide}\n` }, { name: 'short', data: 'x' }]), dest())).toThrow('with a name longer than 255');
+    const padding = Buffer.alloc(2048, 'a');
+    expect(() => extractTarGz(tarGz([{ name: 'p', type: 'x', data: Buffer.concat([Buffer.from('2061 comment='), padding.subarray(0, 2047), Buffer.from('\n')]) }, { name: 'package/x', data: 'x' }]), dest(), { maxHeaderData: 1024 }))
+      .toThrow('long-name or pax header of more than 1024 bytes');
   });
 
   it('refuses data that is no tar archive', () => {

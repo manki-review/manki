@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
@@ -39,11 +40,18 @@ describe('dependencyLoader', () => {
       '1.3.0': { dist: { integrity: sha512Integrity(PAD) }, deprecated: 'use 1.2.0' },
       '1.4.0-rc.1': { dist: { integrity: sha512Integrity(PAD) } },
     };
+    // `next` holds a higher version than `latest`, which npm installs first whenever it matches.
+    const tagged = { 'dist-tags': { latest: '2.0.0', next: '2.1.0' }, versions: { '2.0.0': { dist: { integrity: sha512Integrity(PAD) } }, '2.1.0': { dist: { integrity: sha512Integrity(PAD) } } } };
     server = await fakeRegistry({
       '/index/de/mo/demo': index,
       ...Object.fromEntries(Object.entries(CRATES).map(([version, data]) => [`/dl/crates/demo/demo-${version}.crate`, data])),
+      '/index/de/mo/demo_rs': JSON.stringify({ name: 'demo_rs', vers: '1.0.0', cksum: sha256Hex(CRATES['1.2.0']) }),
+      '/dl/crates/demo_rs/demo_rs-1.0.0.crate': CRATES['1.2.0'],
+      '/index/sl/ow/slow': { hang: true },
       '/npm/left-pad': JSON.stringify({ name: 'left-pad', versions }),
       '/npm/left-pad/-/left-pad-1.2.0.tgz': PAD,
+      '/npm/tagged': JSON.stringify({ name: 'tagged', ...tagged }),
+      '/npm/tagged/-/tagged-2.0.0.tgz': PAD,
       '/npm/moved/-/moved-1.0.0.tgz': { redirect: '/npm/left-pad/-/left-pad-1.2.0.tgz' },
     });
     registries = [cratesIo({ index: `${server.origin}/index`, download: `${server.origin}/dl` }), npmRegistry(`${server.origin}/npm`)];
@@ -121,12 +129,37 @@ describe('dependencyLoader', () => {
     });
     const demo = await load('crates.io/demo');
     expect(demo.key).toBe('crates.io/demo@1.2.5');
-    expect(demo.note).toContain('the highest version that the requirement `1.2` in `crates/a/Cargo.toml` allows');
-    expect((await load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    expect(demo.note).toBe('Manki read `crates.io/demo@1.2.5`, the version a fresh install picks for the requirement `1.2` in `crates/a/Cargo.toml`, since no lockfile covers that manifest. Cite its lines as `crates.io/demo@1.2.5:path:line`.');
+    const pad = await load('npm/left-pad');
+    expect(pad.key).toBe('npm/left-pad@1.2.0');
+    expect(pad.note).toContain('No file of the PR sets another registry for it, so Manki read it from npm.');
     expect(dependencyOutcomes(stateDir).map(({ package: name, source, file, requirement, status }) => ({ name, source, file, requirement, status }))).toEqual([
       { name: 'crates.io/demo@1.2.5', source: 'requirement', file: 'crates/a/Cargo.toml', requirement: '1.2', status: 'fetched' },
       { name: 'npm/left-pad@1.2.0', source: 'requirement', file: 'web/package.json', requirement: '^1.0.0', status: 'fetched' },
     ]);
+  });
+
+  it('looks a requirement up under the name the manifest spells, and prefers the version npm marks as `latest`', async () => {
+    const { load } = round({ 'Cargo.toml': '[dependencies]\ndemo_rs = "1"\n', 'package.json': JSON.stringify({ dependencies: { tagged: '^2.0.0' } }) });
+    expect((await load('crates.io/demo-rs')).key).toBe('crates.io/demo_rs@1.0.0');
+    expect((await load('npm/tagged')).key).toBe('npm/tagged@2.0.0');
+    expect(server.requests).toEqual(['/index/de/mo/demo_rs', '/dl/crates/demo_rs/demo_rs-1.0.0.crate', '/npm/tagged', '/npm/tagged/-/tagged-2.0.0.tgz']);
+  });
+
+  it('refuses a package that a registry setting of the PR may take from another registry', async () => {
+    const berryLock = '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"left-pad@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "left-pad@npm:1.2.0"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n';
+    const another = 'npm/left-pad may come from another registry than npm';
+    const berry = round({ 'yarn.lock': berryLock, '.yarnrc.yml': 'npmRegistryServer: "https://npm.corp.example"\n' });
+    await expect(berry.load('npm/left-pad')).rejects.toThrow(`${another}: .yarnrc.yml sets the registry https://npm.corp.example. Manki reads it from npm only.`);
+    const required = { 'web/package.json': JSON.stringify({ dependencies: { 'left-pad': '^1.0.0' } }) };
+    await expect(round({ ...required, '.npmrc': 'registry=https://npm.corp.example/\n' }).load('npm/left-pad')).rejects.toThrow(`${another}: .npmrc sets the registry`);
+    await expect(round({ ...required, 'web/.yarnrc': '"@corp:registry" "https://npm.corp.example"\nregistry "https://npm.corp.example"\n' }).load('npm/left-pad')).rejects.toThrow(`${another}: web/.yarnrc sets`);
+    await expect(round({ ...required, '.npmrc': 'x'.repeat(200) }, { maxManifestBytes: 100 }).load('npm/left-pad')).rejects.toThrow(`${another}: Manki could not read .npmrc, which can set it.`);
+    expect(server.requests).toEqual([]);
+
+    // Without such a setting, or with one for another scope only, the package is read from npm, checked against npm's checksum.
+    expect((await round({ 'yarn.lock': berryLock }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    expect((await round({ ...required, '.npmrc': '@corp:registry=https://npm.corp.example/\nregistry=https://registry.npmjs.org/\n' }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
   });
 
   it('records a checksum that does not match, and never fetches that package again in the round', async () => {
@@ -159,6 +192,35 @@ describe('dependencyLoader', () => {
     await load('crates.io/demo@1.2.0');
     await expect(load('crates.io/demo@2.0.0')).rejects.toThrow('Manki did not read crates.io/demo@2.0.0: the round already read 1 packages');
     expect(dependencyOutcomes(stateDir).map(d => [d.package, d.status])).toEqual([['crates.io/demo@1.2.0', 'fetched'], ['crates.io/demo@2.0.0', 'failed']]);
+
+    // A call that takes over the fetch of a tool server that stopped counts that package against the cap too.
+    const other = round({ 'Cargo.lock': cargoLock([{ version: '1.2.0' }, { version: '2.0.0' }]) }, { maxPackages: 1 });
+    await other.load('crates.io/demo@1.2.0');
+    writeFileSync(join(other.stateDir, `${encodeURIComponent('crates.io/demo@2.0.0')}.lock`), String(spawnSync('true').pid));
+    await expect(other.load('crates.io/demo@2.0.0')).rejects.toThrow('the round already read 1 packages');
+  });
+
+  it('holds each read of a registry and of the checkout to its cap', async () => {
+    const slow = round({ 'Cargo.toml': '[dependencies]\nslow = "1"\n' }, { timeoutMs: 300 });
+    await expect(slow.load('crates.io/slow')).rejects.toThrow('did not finish within 0.3 seconds');
+    expect(dependencyOutcomes(slow.stateDir)).toEqual([expect.objectContaining({ package: 'crates.io/slow', status: 'failed', reason: expect.stringContaining('did not finish') })]);
+
+    const small = [cratesIo({ index: `${server.origin}/index`, download: `${server.origin}/dl`, maxIndexBytes: 100 }), npmRegistry(`${server.origin}/npm`, 100)];
+    await expect(round({ 'Cargo.toml': '[dependencies]\ndemo = "1"\n' }, { registries: small }).load('crates.io/demo')).rejects.toThrow('is larger than');
+    await expect(round({ 'package.json': JSON.stringify({ dependencies: { 'left-pad': '1' } }) }, { registries: small }).load('npm/left-pad')).rejects.toThrow('is larger than');
+
+    const lock = cargoLock([{ version: '1.2.0' }]);
+    await expect(round({ 'Cargo.lock': lock }, { maxManifestBytes: 100 }).load('crates.io/demo')).rejects.toThrow('Manki could not read Cargo.lock.');
+    const total = round({ 'a/Cargo.lock': '[[package]]\nname = "other"\nversion = "1.0.0"\n'.repeat(4), 'b/Cargo.lock': lock }, { maxManifestTotalBytes: lock.length + 50 });
+    await expect(total.load('crates.io/demo')).rejects.toThrow('Manki could not read b/Cargo.lock.');
+
+    // Installed packages are never entered, and files that are no lockfile or manifest take no place in the listing.
+    const installed = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`node_modules/x/f${i}.js`, '']));
+    const apps = Object.fromEntries(Array.from({ length: 3 }, (_, i) => [`apps/f${i}.txt`, '']));
+    const listed = round({ ...installed, ...apps, 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/left-pad': { version: '1.2.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz', integrity: sha512Integrity(PAD) } } }) }, { listLimits: { maxFiles: 1, maxWalked: 8 } });
+    expect((await listed.load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    const cut = round({ ...apps, 'package-lock.json': '{}' }, { listLimits: { maxWalked: 3 } });
+    await expect(cut.load('npm/left-pad')).rejects.toThrow('The checkout has more files than Manki lists, so it may have missed a lockfile or manifest.');
   });
 });
 
@@ -169,6 +231,11 @@ describe('pickVersion', () => {
     expect(pickVersion(versions.slice(1), '^1.0.0')?.version).toBe('1.1.0');
     expect(pickVersion(versions, '^1.2.0-rc.0')?.version).toBe('1.2.0-rc.1');
     expect(pickVersion([{ version: '1.0.0', checksum: 'a', yanked: true }], '^1.0.0')).toBeUndefined();
+    // The version marked `latest` wins when it matches and is not deprecated.
+    const tagged = [...versions, { version: '1.3.0', checksum: 'd' }];
+    expect(pickVersion(tagged, '^1.0.0', '1.0.0')?.version).toBe('1.0.0');
+    expect(pickVersion(tagged, '^1.0.0', '1.1.0')?.version).toBe('1.3.0');
+    expect(pickVersion(tagged, '^1.0.0', '2.0.0')?.version).toBe('1.3.0');
   });
 });
 

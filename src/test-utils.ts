@@ -381,11 +381,14 @@ export const TEST_LINKS: CodeLinks = {
   related: new Map(),
 };
 
-/** One entry of a test tar archive: a file by default, or a folder (`5`), hard link (`1`), symlink (`2`) or pax header (`x`). */
+/**
+ * One entry of a test tar archive: a file by default, or a hard link (`1`), symlink (`2`), device (`3`), folder (`5`),
+ * pax header (`x`), global pax header (`g`) or GNU long name (`L`).
+ */
 export interface TarEntry {
   name: string;
   data?: string | Buffer;
-  type?: '0' | '1' | '2' | '5' | 'x';
+  type?: '0' | '1' | '2' | '3' | '5' | 'x' | 'g' | 'L';
   linkname?: string;
 }
 
@@ -431,8 +434,11 @@ export interface FakeRegistry {
   close(): Promise<void>;
 }
 
-/** Starts a `FakeRegistry` that answers each path of `routes` with its body, a redirect, or 404 for any other path. */
-export async function fakeRegistry(routes: Record<string, Buffer | string | { redirect: string }>): Promise<FakeRegistry> {
+/**
+ * Starts a `FakeRegistry` that answers each path of `routes` with its body, a redirect, or headers and then nothing
+ * more (`hang`), and any other path with 404.
+ */
+export async function fakeRegistry(routes: Record<string, Buffer | string | { redirect: string } | { hang: true }>): Promise<FakeRegistry> {
   const requests: string[] = [];
   const server = createServer((request, response) => {
     const path = decodeURIComponent(request.url ?? '');
@@ -440,6 +446,8 @@ export async function fakeRegistry(routes: Record<string, Buffer | string | { re
     const answer = routes[path];
     if (answer === undefined) {
       response.writeHead(404).end();
+    } else if (typeof answer === 'object' && 'hang' in answer) {
+      response.writeHead(200).write('{');
     } else if (typeof answer === 'object' && !Buffer.isBuffer(answer)) {
       response.writeHead(302, { location: answer.redirect }).end();
     } else {
@@ -448,5 +456,11 @@ export async function fakeRegistry(routes: Record<string, Buffer | string | { re
   });
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const { port } = server.address() as AddressInfo;
-  return { origin: `http://127.0.0.1:${port}`, requests, close: () => new Promise(done => server.close(() => done())) };
+  return {
+    origin: `http://127.0.0.1:${port}`, requests,
+    close: () => new Promise(done => {
+      server.close(() => done());
+      server.closeAllConnections();
+    }),
+  };
 }

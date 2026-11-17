@@ -8,6 +8,7 @@ const CRATES_IO = { index: 'https://index.crates.io', download: 'https://static.
 /** The sources a `Cargo.lock` names crates.io by, through its git index or its sparse index. */
 const CRATES_IO_SOURCES = ['registry+https://github.com/rust-lang/crates.io-index', 'sparse+https://index.crates.io/'];
 
+/** The most bytes of a crate's index file. The largest list thousands of versions in a few MB. */
 const MAX_INDEX_BYTES = 20 * 1024 * 1024;
 
 /** The tables of a `Cargo.toml` that list dependencies, such as `[dependencies]` or `[target.'cfg(unix)'.dev-dependencies]`. */
@@ -95,8 +96,12 @@ function cargoRange(requirement: string): string | undefined {
   return validRange(range) ? range : undefined;
 }
 
-/** crates.io, the registry of Rust crates. */
-export function cratesIo({ index, download } = CRATES_IO): Registry {
+/**
+ * crates.io, the registry of Rust crates. A `.cargo/config.toml` can replace its source with a mirror or a vendored
+ * copy, but those hold the same crates, and `Cargo.lock` binds each to its crates.io checksum. A crate of another
+ * registry names it in `Cargo.toml` and is left out by `cargoRequirements`.
+ */
+export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.download, maxIndexBytes = MAX_INDEX_BYTES } = {}): Registry {
   return {
     id: 'crates.io',
     origins: [new URL(index).origin, new URL(download).origin],
@@ -105,10 +110,13 @@ export function cratesIo({ index, download } = CRATES_IO): Registry {
     validName: name => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name),
     sameName: (a, b) => normalize(a) === normalize(b),
     isRegistrySource: source => source !== undefined && CRATES_IO_SOURCES.includes(source),
-    requirements: (text, name) => cargoRequirements(text).filter(d => normalize(d.name) === normalize(name)).map(d => d.requirement),
+    namesHost: () => true,
+    configFiles: [],
+    otherRegistry: () => undefined,
+    requirements: (text, name) => cargoRequirements(text).filter(d => normalize(d.name) === normalize(name)),
     range: cargoRange,
     async published(name, fetch) {
-      const lines = (await fetch(`${index}/${indexPath(name)}`, MAX_INDEX_BYTES)).toString('utf8').split('\n').filter(Boolean);
+      const lines = (await fetch(`${index}/${indexPath(name)}`, maxIndexBytes)).toString('utf8').split('\n').filter(Boolean);
       let own = name;
       const versions = lines.flatMap((line): PublishedVersion[] => {
         const entry = JSON.parse(line) as { name?: unknown; vers?: unknown; cksum?: unknown; yanked?: unknown };

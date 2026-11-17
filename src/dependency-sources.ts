@@ -4,12 +4,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { join, posix } from 'path';
 import { rcompare, satisfies, valid } from 'semver';
 
-import { extractTarGz } from './archive';
+import { ArchiveLimits, extractTarGz } from './archive';
 import { lockedPackages } from './lockfile';
-import { listFiles, resolveInRoot } from './mcp-server';
+import { ListOptions, listFiles, resolveInRoot } from './mcp-server';
 import { cratesIo } from './registries/crates';
 import { npmRegistry } from './registries/npm';
-import { PublishedVersion, Registry, RegistryFetch } from './registries/types';
+import { PublishedVersion, Registry, RegistryConfig, RegistryFetch } from './registries/types';
 import { fetchOutcome, RelatedRepoPending, sharedCheckout } from './related-repos';
 import { claimStep, STALE_TIMEOUT_MS } from './tool-steps';
 import { fetchWhole, matchesIntegrity } from './tool-install';
@@ -25,6 +25,8 @@ export const REGISTRIES: readonly Registry[] = [cratesIo(), npmRegistry()];
 const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
 /** The most bytes of a lockfile or manifest Manki reads for a package's version. A lockfile can run to several MB. */
 const MAX_MANIFEST_BYTES = 20 * 1024 * 1024;
+/** The most bytes of lockfiles, manifests and registry settings one call reads in all. */
+const MAX_MANIFEST_TOTAL_BYTES = 100 * 1024 * 1024;
 /** How long resolving and fetching one package may take. A tool call must end before `STALE_TIMEOUT_MS`. */
 const FETCH_TIMEOUT_MS = 60_000;
 /** Folders of installed packages or build output, whose lockfiles and manifests are not the PR's own. */
@@ -45,6 +47,20 @@ interface Resolved {
   requirement?: string;
   /** The checksum the lockfile or the registry states for the archive. */
   checksum?: string;
+  /** Set when the version names no registry host, so the registry is the one no file of the PR replaces. */
+  hostAssumed?: true;
+}
+
+/** The lockfiles, manifests and registry settings of the checkout, and whether the walk that listed them stopped early. */
+interface Listing {
+  files: readonly string[];
+  cut: boolean;
+}
+
+/** How many bytes one file of the checkout may hold, and how many a call has left to read. */
+interface ReadBudget {
+  each: number;
+  left: number;
 }
 
 /** What the round record keeps of a package before its fetch starts, in `<marker>.from`. */
@@ -76,13 +92,16 @@ function readableChecksum(checksum: string | undefined): checksum is string {
 }
 
 /**
- * Returns the version a fresh install picks for `range` among `versions`: the highest that matches and was not yanked.
- * A prerelease matches only a range that names one. A deprecated version is picked only when no other one matches.
+ * Returns the version a fresh install picks for `range` among `versions`. That is `latest`, the version the registry
+ * marks as the default, when it matches and is neither yanked nor deprecated. Otherwise it is the highest that matches
+ * and was not yanked. A prerelease matches only a range that names one. A deprecated version is picked only when no
+ * other one matches.
  */
-export function pickVersion(versions: readonly PublishedVersion[], range: string): PublishedVersion | undefined {
+export function pickVersion(versions: readonly PublishedVersion[], range: string, latest?: string): PublishedVersion | undefined {
   const matching = versions.filter(v => !v.yanked && valid(v.version) && satisfies(v.version, range));
   const current = matching.filter(v => !v.deprecated);
-  return (current.length > 0 ? current : matching).sort((a, b) => rcompare(a.version, b.version))[0];
+  const preferred = latest === undefined ? undefined : current.find(v => v.version === latest);
+  return preferred ?? (current.length > 0 ? current : matching).sort((a, b) => rcompare(a.version, b.version))[0];
 }
 
 /** Returns a fetch that reaches only the hosts of `registry`, refuses redirects and ends when `deadline` aborts. */
@@ -98,11 +117,17 @@ function shown(text: string): string {
   return text.replace(/[`\r\n\u2028\u2029]+/g, ' ');
 }
 
-/** Reads a lockfile or manifest of the checkout at `root`, or returns `undefined` when it is too large or cannot be read. */
-function readManifest(root: string, path: string): string | undefined {
+/**
+ * Reads a lockfile, manifest or registry setting of the checkout at `root` and takes its size from `budget`. Returns
+ * `undefined` when it is larger than one file or the rest of the budget may be, or cannot be read.
+ */
+function readManifest(root: string, path: string, budget: ReadBudget): string | undefined {
   try {
     const { absolute } = resolveInRoot(root, path);
-    return statSync(absolute).size > MAX_MANIFEST_BYTES ? undefined : readFileSync(absolute, 'utf8');
+    const { size } = statSync(absolute);
+    if (size > budget.each || size > budget.left) return undefined;
+    budget.left -= size;
+    return readFileSync(absolute, 'utf8');
   } catch {
     return undefined;
   }
@@ -114,23 +139,35 @@ function within(dir: string, ancestor: string): boolean {
 }
 
 /**
- * Returns the version of `name` that the PR at `root`, with the files `files`, uses. A version some lockfile of the
- * registry locks counts, from the registry's own source only. So does the version a fresh install picks for a manifest's
- * requirement, when no lockfile of the registry sits in the manifest's folder or above it. With `version` set it must be
- * one of those. Without it there must be only one. Throws, naming why, when the PR does not use the package from the
- * registry, uses another version, or uses several and `version` names none.
+ * Returns the version of `name` that the PR at `root`, with the files `listing` holds, uses. A version some lockfile of
+ * the registry locks counts, from the registry's own source only. So does the version a fresh install picks for a
+ * manifest's requirement, when no lockfile of the registry sits in the manifest's folder or above it. A version that
+ * names no registry host, and a requirement, count only when no registry setting of the PR names another registry for
+ * the package. With `version` set it must be one of those. Without it there must be only one. Throws, naming why, when
+ * the PR does not use the package from the registry, uses another version, or uses several and `version` names none.
  */
-export async function resolveDependency(
-  root: string, files: readonly string[], registry: Registry, name: string, version: string | undefined, fetch: RegistryFetch,
+async function resolveDependency(
+  root: string, { files, cut }: Listing, registry: Registry, name: string, version: string | undefined, fetch: RegistryFetch, budget: ReadBudget,
 ): Promise<Resolved> {
   const label = `${registry.id}/${name}`;
+  const unread: string[] = [];
+  const read = (file: string): string | undefined => {
+    const text = readManifest(root, file, budget);
+    if (text === undefined) unread.push(file);
+    return text;
+  };
+  const configs = files.filter(f => registry.configFiles.includes(posix.basename(f))).flatMap((file): RegistryConfig[] => {
+    const text = read(file);
+    return text === undefined ? [] : [{ file, text }];
+  });
+  const unreadConfig = unread[0];
+  const otherRegistry = unreadConfig !== undefined ? `Manki could not read ${unreadConfig}, which can set it` : registry.otherRegistry(name, configs);
   const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)));
   const lockDirs = lockfiles.map(f => posix.dirname(f));
-  const unread: string[] = [];
   const locked = lockfiles.flatMap(file => {
-    const text = readManifest(root, file);
+    const text = read(file);
+    if (text === undefined) return [];
     try {
-      if (text === undefined) throw new Error('unread');
       return lockedPackages(file, text).filter(p => registry.sameName(p.name, name)).map(p => ({ ...p, file }));
     } catch {
       unread.push(file);
@@ -140,42 +177,49 @@ export async function resolveDependency(
   const requirements = files
     .filter(f => registry.manifests.includes(posix.basename(f)) && !lockDirs.some(dir => within(posix.dirname(f), dir)))
     .flatMap(file => {
-      const text = readManifest(root, file);
+      const text = read(file);
       try {
-        return text === undefined ? [] : registry.requirements(text, name).map(requirement => ({ file, requirement }));
+        return text === undefined ? [] : registry.requirements(text, name).map(r => ({ ...r, file }));
       } catch {
         return [];
       }
     });
-  const fromRegistry = locked.filter(p => registry.isRegistrySource(p.source));
-  if (fromRegistry.length === 0 && requirements.length === 0) {
+  const fromRegistry = locked.filter(p => registry.isRegistrySource(p.source) && (registry.namesHost(p.source) || otherRegistry === undefined));
+  const usable = otherRegistry === undefined ? requirements : [];
+  if (fromRegistry.length === 0 && usable.length === 0) {
+    if (otherRegistry !== undefined && (requirements.length > 0 || locked.some(p => registry.isRegistrySource(p.source)))) {
+      throw new Error(`${label} may come from another registry than ${registry.id}: ${shown(otherRegistry)}. Manki reads it from ${registry.id} only.`);
+    }
     const other = locked[0];
     if (other) throw new Error(`${label} is locked in ${other.file} from ${other.source ?? 'this repository'}, not from ${registry.id}, the only place Manki reads it from.`);
     const notRead = unread.length > 0 ? ` Manki could not read ${unread.slice(0, 3).join(', ')}.` : '';
-    throw new Error(`${label} is not a dependency in the PR's manifests or lockfiles, so Manki does not read it.${notRead}`);
+    const notListed = cut ? ' The checkout has more files than Manki lists, so it may have missed a lockfile or manifest.' : '';
+    throw new Error(`${label} is not a dependency in the PR's manifests or lockfiles, so Manki does not read it.${notRead}${notListed}`);
   }
-  const candidates: Array<Omit<Resolved, 'registry' | 'key' | 'name'>> = fromRegistry
-    .map(p => ({ version: p.version, source: 'lockfile' as const, file: p.file, ...(p.checksum && { checksum: p.checksum }) }));
+  const candidates: Array<Omit<Resolved, 'registry' | 'key' | 'name'>> = fromRegistry.map(p => ({
+    version: p.version, source: 'lockfile' as const, file: p.file, ...(p.checksum && { checksum: p.checksum }), ...(!registry.namesHost(p.source) && { hostAssumed: true as const }),
+  }));
   let own = fromRegistry[0]?.name ?? name;
-  if (requirements.length > 0 && !(version && candidates.some(c => c.version === version))) {
-    const first = requirements[0];
+  if (usable.length > 0 && !(version && candidates.some(c => c.version === version))) {
+    const first = usable[0];
     let published: Awaited<ReturnType<Registry['published']>>;
     try {
-      published = await registry.published(name, fetch);
+      // The registry files a package under its own spelling, which the manifest holds and the call may not.
+      published = await registry.published(first.name, fetch);
     } catch (error) {
-      const origin: PackageOrigin = { registry: registry.id, name, source: 'requirement', file: first.file, requirement: first.requirement };
+      const origin: PackageOrigin = { registry: registry.id, name: first.name, source: 'requirement', file: first.file, requirement: first.requirement };
       throw new UnresolvedPackage(`Manki could not read the published versions of ${label} to resolve its requirement: ${error instanceof Error ? error.message : String(error)}`, origin);
     }
     own = published.name;
-    for (const { file, requirement } of requirements) {
+    for (const { file, requirement } of usable) {
       const range = registry.range(requirement);
-      const picked = range === undefined ? undefined : pickVersion(published.versions, range);
-      if (picked) candidates.push({ version: picked.version, source: 'requirement', file, requirement, checksum: picked.checksum });
+      const picked = range === undefined ? undefined : pickVersion(published.versions, range, published.latest);
+      if (picked) candidates.push({ version: picked.version, source: 'requirement', file, requirement, checksum: picked.checksum, ...(registry.configFiles.length > 0 && { hostAssumed: true as const }) });
     }
   }
   const where = (c: typeof candidates[number]) => c.source === 'lockfile' ? `locked in ${c.file}` : `resolved from \`${shown(c.requirement!)}\` in ${c.file}`;
   if (candidates.length === 0) {
-    throw new Error(`No published version of ${label} matches what the PR requires: ${requirements.map(r => `\`${shown(r.requirement)}\` in ${r.file}`).join(', ')}.`);
+    throw new Error(`No published version of ${label} matches what the PR requires: ${usable.map(r => `\`${shown(r.requirement)}\` in ${r.file}`).join(', ')}.`);
   }
   const versions = [...new Set(candidates.map(c => c.version))];
   const chosen = version !== undefined ? candidates.find(c => c.version === version) : versions.length === 1 ? candidates[0] : undefined;
@@ -206,19 +250,42 @@ function writeWhole(path: string, text: string): void {
   renameSync(`${path}.tmp`, path);
 }
 
-/** Records in the round's `stateDir` that `key` could not be read, and why, unless an outcome is already recorded. */
+/**
+ * Records in the round's `stateDir` that `key` could not be read, and why. Leaves the record alone when another call
+ * holds the package's lock, since that call records its own outcome.
+ */
 function recordFailure(stateDir: string, key: string, origin: PackageOrigin, reason: string): void {
   const marker = join(stateDir, encodeURIComponent(key));
-  if (existsSync(`${marker}.done`) || existsSync(`${marker}.failed`)) return;
-  writeWhole(`${marker}.from`, JSON.stringify(origin));
   try {
     writeFileSync(`${marker}.lock`, String(process.pid), { flag: 'wx' });
-  } catch { /* another call holds it, and its outcome is kept below */ }
+  } catch {
+    return;
+  }
+  writeWhole(`${marker}.from`, JSON.stringify(origin));
   writeWhole(`${marker}.failed`, reason);
 }
 
+/** A package past the round's cap of packages. */
+class PackageCapReached extends Error {}
+
+/**
+ * Takes one of the round's `maxPackages` places for the package at `marker`. Runs only in the call that holds the
+ * package's lock, so a package takes one place however many calls ask for it, and a call that takes over a stopped
+ * fetch reuses the place that fetch took. Throws `PackageCapReached` past the cap.
+ */
+function claimPackagePlace(stateDir: string, marker: string, maxPackages: number): void {
+  let place = existsSync(`${marker}.place`) ? Number(readFileSync(`${marker}.place`, 'utf8')) : undefined;
+  if (place === undefined) {
+    const places = join(stateDir, 'package-places');
+    mkdirSync(places, { recursive: true });
+    place = claimStep(places);
+    writeWhole(`${marker}.place`, String(place));
+  }
+  if (place > maxPackages) throw new PackageCapReached(`the round already read ${maxPackages} packages, the most one round reads`);
+}
+
 /** Downloads the archive of `resolved`, checks it against its checksum and unpacks it into a new folder under `stateDir`. */
-async function fetchPackage(resolved: Resolved, stateDir: string, fetch: RegistryFetch, marker: string, maxArchiveBytes: number): Promise<string> {
+async function fetchPackage(resolved: Resolved, stateDir: string, fetch: RegistryFetch, marker: string, maxArchiveBytes: number, archiveLimits: ArchiveLimits): Promise<string> {
   const { registry, name, version, key } = resolved;
   let checksum = readableChecksum(resolved.checksum) ? resolved.checksum : undefined;
   let stated = resolved.source === 'lockfile' ? resolved.file : registry.id;
@@ -236,7 +303,7 @@ async function fetchPackage(resolved: Resolved, stateDir: string, fetch: Registr
   mkdirSync(packages, { recursive: true });
   const folder = mkdtempSync(join(packages, 'package-'));
   try {
-    extractTarGz(archive, join(folder, 'source'));
+    extractTarGz(archive, join(folder, 'source'), archiveLimits);
   } catch (error) {
     rmSync(folder, { recursive: true, force: true });
     throw new Error(`the archive of ${key} could not be unpacked: ${error instanceof Error ? error.message : String(error)}`);
@@ -253,6 +320,13 @@ export interface DependencyLoaderOptions {
   maxPackages?: number;
   /** The most bytes of an archive as downloaded. */
   maxArchiveBytes?: number;
+  /** The caps `extractTarGz` holds an archive to. */
+  archiveLimits?: ArchiveLimits;
+  /** The most bytes of one lockfile, manifest or registry setting, and of all those one call reads. */
+  maxManifestBytes?: number;
+  maxManifestTotalBytes?: number;
+  /** What the walk of the checkout for lockfiles and manifests may keep and visit. */
+  listLimits?: Pick<ListOptions, 'maxFiles' | 'maxWalked'>;
 }
 
 /** A package a tool call reads, with the note that tells the model which version it is and where that comes from. */
@@ -273,45 +347,43 @@ export function dependencyLoader(
   root: string, stateDir: string,
   {
     registries = REGISTRIES, timeoutMs = FETCH_TIMEOUT_MS, callLimitMs = STALE_TIMEOUT_MS, maxPackages = MAX_PACKAGES_PER_ROUND, maxArchiveBytes = MAX_ARCHIVE_BYTES,
+    archiveLimits = {}, maxManifestBytes = MAX_MANIFEST_BYTES, maxManifestTotalBytes = MAX_MANIFEST_TOTAL_BYTES, listLimits = {},
   }: DependencyLoaderOptions = {},
 ): (spec: string) => Promise<DependencyCheckout> {
-  let files: string[] | undefined;
+  const wanted = new Set(registries.flatMap(r => [...r.manifests, ...r.lockfiles, ...r.configFiles]));
+  let listing: Listing | undefined;
   return async spec => {
     const { registry, name, version } = parseSpec(spec, registries);
-    files ??= listFiles(realpathSync(root), resolveInRoot(root, '.')).files.filter(f => !f.split('/').some(segment => SKIPPED_FOLDERS.has(segment)));
+    listing ??= listFiles(realpathSync(root), resolveInRoot(root, '.'), { ...listLimits, skipFolders: SKIPPED_FOLDERS, keep: file => wanted.has(file) });
     const deadline = AbortSignal.timeout(timeoutMs);
     const fetch = registryFetch(registry, deadline, timeoutMs);
     let resolved: Resolved;
     try {
-      resolved = await resolveDependency(root, files, registry, name, version, fetch);
+      resolved = await resolveDependency(root, listing, registry, name, version, fetch, { each: maxManifestBytes, left: maxManifestTotalBytes });
     } catch (error) {
-      if (error instanceof UnresolvedPackage) recordFailure(stateDir, `${registry.id}/${name}`, error.origin, error.message);
+      if (error instanceof UnresolvedPackage) recordFailure(stateDir, `${registry.id}/${error.origin.name}`, error.origin, error.message);
       throw error;
     }
     const { key, source, file, requirement } = resolved;
     const origin: PackageOrigin = { registry: registry.id, name: resolved.name, version: resolved.version, source, file, ...(requirement && { requirement }) };
     const marker = join(stateDir, encodeURIComponent(key));
-    if (!existsSync(`${marker}.lock`)) {
-      const slots = join(stateDir, 'package-slots');
-      mkdirSync(slots, { recursive: true });
-      if (claimStep(slots) > maxPackages) {
-        const reason = `the round already read ${maxPackages} packages, the most one round reads`;
-        recordFailure(stateDir, key, origin, reason);
-        throw new Error(`Manki did not read ${key}: ${reason}.`);
-      }
-      if (!existsSync(`${marker}.from`)) writeWhole(`${marker}.from`, JSON.stringify(origin));
-    }
+    if (!existsSync(`${marker}.from`)) writeWhole(`${marker}.from`, JSON.stringify(origin));
     let dir: string;
     try {
-      dir = await sharedCheckout(key, marker, { timeoutMs, callLimitMs }, async () => ({ dir: await fetchPackage(resolved, stateDir, fetch, marker, maxArchiveBytes), commit: '' }));
+      dir = await sharedCheckout(key, marker, { timeoutMs, callLimitMs }, async () => {
+        claimPackagePlace(stateDir, marker, maxPackages);
+        return { dir: await fetchPackage(resolved, stateDir, fetch, marker, maxArchiveBytes, archiveLimits), commit: '' };
+      });
     } catch (error) {
       if (error instanceof RelatedRepoPending) throw new Error(`${key} ${error.message}`);
+      if (error instanceof PackageCapReached) throw new Error(`Manki did not read ${key}: ${error.message}.`);
       throw new Error(`${key} could not be fetched, so it cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     }
     const from = source === 'lockfile'
       ? `the version \`${shown(file)}\` locks`
-      : `the highest version that the requirement \`${shown(requirement!)}\` in \`${shown(file)}\` allows, since no lockfile covers that manifest`;
-    return { key, dir, note: `Manki read \`${key}\`, ${from}. Cite its lines as \`${key}:path:line\`.` };
+      : `the version a fresh install picks for the requirement \`${shown(requirement!)}\` in \`${shown(file)}\`, since no lockfile covers that manifest`;
+    const host = resolved.hostAssumed ? ` No file of the PR sets another registry for it, so Manki read it from ${registry.id}.` : '';
+    return { key, dir, note: `Manki read \`${key}\`, ${from}.${host} Cite its lines as \`${key}:path:line\`.` };
   };
 }
 

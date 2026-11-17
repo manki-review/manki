@@ -48,6 +48,8 @@ const GIT_MAX_BUFFER = 1024 * 1024;
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20_000;
+/** The most files and folders a walk of the repository visits, whether it keeps them or not. */
+const MAX_WALKED = 200_000;
 const MAX_COMMITS = 50;
 const MAX_MATCHES = 200;
 
@@ -99,25 +101,38 @@ export function readFileInRoot(root: string, path: string): FileText | 'too larg
   }
 }
 
+/** What `listFiles` leaves out, and how far it walks. */
+export interface ListOptions {
+  /** Names of folders not entered at any depth. */
+  skipFolders?: ReadonlySet<string>;
+  /** Keeps only the files whose name passes. */
+  keep?: (name: string) => boolean;
+  maxFiles?: number;
+  maxWalked?: number;
+}
+
 /**
- * Returns the files under `dir`, as paths relative to `root`, and whether the walk stopped at `MAX_FILES`.
- * Skips `.git` and symlinks.
+ * Returns the files under `dir`, as paths relative to `root` in sorted order, without the root `.git` and without
+ * following a symlink. Stops, and sets `cut`, once it keeps `maxFiles` files or visits `maxWalked` files and folders.
  */
-export function listFiles(root: string, dir: RepoPath): { files: string[]; cut: boolean } {
+export function listFiles(root: string, dir: RepoPath, { skipFolders, keep, maxFiles = MAX_FILES, maxWalked = MAX_WALKED }: ListOptions = {}): { files: string[]; cut: boolean } {
   if (statSync(dir.absolute).isFile()) return { files: [dir.relative], cut: false };
   const files: string[] = [];
   let cut = false;
+  let walked = 0;
   const walk = (absolute: string): void => {
     for (const name of readdirSync(absolute).sort()) {
-      if (files.length >= MAX_FILES) {
+      if (files.length >= maxFiles || walked >= maxWalked) {
         cut = true;
         return;
       }
+      walked++;
       const child = join(absolute, name);
       const stat = lstatSync(child);
       if (stat.isSymbolicLink() || (name === '.git' && absolute === root)) continue;
-      if (stat.isDirectory()) walk(child);
-      else if (stat.isFile()) files.push(relative(root, child).split(sep).join('/'));
+      if (stat.isDirectory()) {
+        if (!skipFolders?.has(name)) walk(child);
+      } else if (stat.isFile() && (!keep || keep(name))) files.push(relative(root, child).split(sep).join('/'));
     }
   };
   walk(dir.absolute);
