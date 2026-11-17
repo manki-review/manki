@@ -131,8 +131,8 @@ const UNPROVEN_KEPT = 'I could not point to lines that show the problem still ha
 
 // Tool steps a reply may take to check the developer's statements.
 const REPLY_STEPS = 15;
-// A safety net for a reply with tools. The step budget is what normally ends the call.
-const REPLY_TOOLS_TIMEOUT_MS = 300_000;
+// A safety net for a reply. With tools, the step budget is what normally ends the call.
+const REPLY_TIMEOUT_MS = 300_000;
 
 const REPLY_RESOLUTION_REASONS: Record<string, ResolutionReason> = { Fixed: 'ADDRESSED', Agreed: 'WONT_FIX', Withdrawn: 'INVALID' };
 
@@ -283,7 +283,7 @@ async function askWithRecord(
   related?: RelatedRepoTools,
 ): Promise<{ content: string; record: (decision?: ReplyDecision, checks?: StatementChecks) => string }> {
   const calls: LLMCall[] = [];
-  const response = await recordCalls(client, { stage: 'reply' }, calls).sendMessage(systemPrompt, userMessage, options);
+  const response = await recordCalls(client, { stage: 'reply' }, calls).sendMessage(systemPrompt, userMessage, { timeoutMs: REPLY_TIMEOUT_MS, ...options });
   const tokenService = tokenServiceCalls();
   const relatedRepos = related && relatedRepoOutcomes(related.repos, related.stateDir).map(repo => withReads(repo, calls));
   const record = (decision?: ReplyDecision, checks?: StatementChecks) => formatReplyRecord({
@@ -506,7 +506,7 @@ export async function handleReviewCommentReply(
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
     // No repo is fetched up front: the tool server fetches one the first time the model names it.
     const related = workspace ? relatedRepoTools(config?.related_repos) : undefined;
-    const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, related, 'check'), timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
+    const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, related, 'check') } : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools, related);
     const findingBody = root.comment.body ?? '';
     const relatedNames = config?.related_repos?.map(r => r.repo) ?? [];

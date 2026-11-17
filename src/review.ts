@@ -152,7 +152,7 @@ export const PLANNER_TIMEOUT_MS = 60_000;
 const QUICK_CHECK_STEPS = 8;
 const FINDER_STEPS = 30;
 const RISKY_FINDER_STEPS = 40;
-// A safety net for a finder with tools. The step budget is what normally ends its call.
+// A safety net for a finder. With tools, the step budget is what normally ends its call.
 export const FINDER_TOOLS_TIMEOUT_MS = 900_000;
 /** How long the round still waits for the sibling comparisons once the finders are done. */
 const COMPARISON_GRACE_MS = 60_000;
@@ -1965,7 +1965,8 @@ async function runReviewerOnSlice(
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
-    ...(tools && { repoTools: repoTools(workspace!, finder.steps, related, openListed ? 'read' : 'find'), timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
+    timeoutMs: FINDER_TOOLS_TIMEOUT_MS,
+    ...(tools && { repoTools: repoTools(workspace!, finder.steps, related, openListed ? 'read' : 'find') }),
   };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {

@@ -418,6 +418,8 @@ export class AnthropicClient implements LLMClient {
       }, 'CLAUDE_CODE_OAUTH_TOKEN'),
       input: userMessage,
       hardTimeoutMs: options?.timeoutMs,
+      // The event stream reports every few seconds while the model works, so silence shows a hang.
+      staleTimeoutMs: STALE_TIMEOUT_MS,
       signal: options?.signal,
       onStdout: (chunk) => {
         jsonBuffer += chunk;

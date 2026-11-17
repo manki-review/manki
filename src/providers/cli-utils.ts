@@ -574,8 +574,11 @@ export interface RunCliOptions {
   input: string;
   /** Receives decoded stdout text as it arrives, including the decoder's final flush. */
   onStdout: (chunk: string) => void;
-  /** Whether stderr output also resets the stale timer. */
-  stderrResetsStale?: boolean;
+  /**
+   * Kills the CLI once it has printed nothing to stdout for this long. Set it only for a CLI that reports while the
+   * model works. A CLI that prints its answer at the end is silent for as long as the model thinks.
+   */
+  staleTimeoutMs?: number;
   /** Kills the CLI after this long whatever its output. Defaults to `HARD_TIMEOUT_MS`. */
   hardTimeoutMs?: number;
   /** Kills the CLI once it aborts. The run then rejects with the signal's reason. */
@@ -591,13 +594,14 @@ export interface CliExit {
 
 /**
  * Spawn a provider CLI in an empty directory, feed it `input` on stdin and resolve once it exits. Rejects when
- * the CLI fails to spawn, stalls for `STALE_TIMEOUT_MS`, runs past the hard timeout,
+ * the CLI fails to spawn, prints nothing for `staleTimeoutMs`, runs past the hard timeout,
  * exceeds the output cap or stdin cannot be written. A non-zero exit still resolves, so
  * the caller can build its own diagnostics.
  */
 export function runCli(opts: RunCliOptions): Promise<CliExit> {
   const { label } = opts;
   const hardTimeoutMs = opts.hardTimeoutMs ?? HARD_TIMEOUT_MS;
+  const { staleTimeoutMs } = opts;
   if (opts.signal?.aborted) return Promise.reject(opts.signal.reason);
   return new Promise((resolve, reject) => {
     const child = spawn(opts.cliPath, opts.args, {
@@ -644,13 +648,14 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       clearTimeout(timer);
       terminate();
     };
-    let staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
-    staleTimer.unref();
+    let staleTimer: NodeJS.Timeout | undefined;
     const resetStaleTimer = (): void => {
+      if (staleTimeoutMs === undefined) return;
       clearTimeout(staleTimer);
-      staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+      staleTimer = setTimeout(handleStale, staleTimeoutMs);
       staleTimer.unref();
     };
+    resetStaleTimer();
 
     const onAbort = (): void => {
       aborted = true;
@@ -688,7 +693,6 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     });
     child.stderr.on('data', (data: Buffer) => {
       if (outputExceeded || settled) return;
-      if (opts.stderrResetsStale && !stale && !timedOut) resetStaleTimer();
       stderr += stderrDecoder.write(data);
       countBytes(data.length);
     });
@@ -704,9 +708,9 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
         reject(opts.signal?.reason);
         return;
       }
-      if (stale) {
+      if (stale && staleTimeoutMs !== undefined) {
         const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-        const msg = `${label} CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
+        const msg = `${label} CLI stale — no output for ${staleTimeoutMs / 1000}s${details ? `. ${details}` : ''}`;
         core.warning(msg);
         reject(new Error(msg));
         return;

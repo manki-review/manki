@@ -118,33 +118,20 @@ async function main(): Promise<number> {
   }
 
   const client = createLLMClient(spec.provider, spec.model, auth);
-  const opts: SendMessageOptions = args.effort ? { effort: args.effort } : {};
+  // The client ends the call at the limit, which also ends the CLI it started.
+  const opts: SendMessageOptions = { ...(args.effort && { effort: args.effort }), timeoutMs: 60_000 };
 
   console.log(`provider=${spec.provider} model=${spec.model} effort=${args.effort ?? 'default'}`);
   console.log(`prompt=${JSON.stringify(args.prompt)}`);
 
-  const TIMEOUT_MS = 60_000;
-  let timeoutHandle: ReturnType<typeof setTimeout>;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(
-      () => reject(new Error(`timed out after ${TIMEOUT_MS}ms`)),
-      TIMEOUT_MS,
-    );
-  });
-
   const t0 = Date.now();
   let response;
   try {
-    response = await Promise.race([
-      client.sendMessage(SYSTEM_PROMPT, args.prompt, opts),
-      timeoutPromise,
-    ]);
+    response = await client.sendMessage(SYSTEM_PROMPT, args.prompt, opts);
   } catch (err) {
     const ms = Date.now() - t0;
     console.error(`transport error after ${ms}ms: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
-  } finally {
-    clearTimeout(timeoutHandle!);
   }
   const ms = Date.now() - t0;
 

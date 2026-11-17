@@ -13,7 +13,7 @@ const MAX_FIELD_QUESTIONS = 6;
 const MAX_IMPLEMENTATION_QUESTIONS = 6;
 const MAX_PARALLEL_QUESTIONS = 4;
 const COMPARE_STEPS = 12;
-// A safety net. The step budget is what normally ends the call.
+// A safety net. With tools, the step budget is what normally ends the call.
 const COMPARE_TIMEOUT_MS = 600_000;
 
 function systemPrompt(tools: boolean): string {
@@ -144,7 +144,8 @@ export async function runComparisons(
     const options: SendMessageOptions = {
       ...(effort && { effort }),
       ...(signal && { signal }),
-      ...(tools && { repoTools: repoTools(workspace!, COMPARE_STEPS, related), timeoutMs: COMPARE_TIMEOUT_MS }),
+      timeoutMs: COMPARE_TIMEOUT_MS,
+      ...(tools && { repoTools: repoTools(workspace!, COMPARE_STEPS, related) }),
     };
     try {
       const findings = await sendWithParseRetry(

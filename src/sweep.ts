@@ -14,7 +14,7 @@ import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_
 
 const MAX_SWEEPS = 3;
 const SWEEP_STEPS = 15;
-// A safety net. The step budget is what normally ends the call.
+// A safety net. With tools, the step budget is what normally ends the call.
 const SWEEP_TIMEOUT_MS = 600_000;
 const MAX_CLASS_CHARS = 300;
 // A finding this close to a line the source finding cites restates that finding.
@@ -148,7 +148,8 @@ export async function runSweeps(
     const record = { reviewer, ...from(source) };
     const options: SendMessageOptions = {
       ...(effort && { effort }),
-      ...(tools && { repoTools: repoTools(workspace!, SWEEP_STEPS, related), timeoutMs: SWEEP_TIMEOUT_MS }),
+      timeoutMs: SWEEP_TIMEOUT_MS,
+      ...(tools && { repoTools: repoTools(workspace!, SWEEP_STEPS, related) }),
     };
     try {
       const { general, defectClass, findings } = await sendWithParseRetry(
