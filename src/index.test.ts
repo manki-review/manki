@@ -152,6 +152,7 @@ jest.mock('./interaction', () => ({
   isReviewRequest: jest.fn().mockReturnValue(false),
   isBotMentionNonReview: jest.fn().mockReturnValue(false),
   hasBotMention: jest.fn().mockReturnValue(false),
+  mentionsMankiUser: jest.fn().mockReturnValue(false),
   parseCommand: jest.fn().mockReturnValue({ type: 'generic', args: '' }),
   isLLMAccessAllowed: jest.requireActual('./interaction').isLLMAccessAllowed,
 }));
@@ -683,7 +684,7 @@ describe('run', () => {
       expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalled();
     });
 
-    it('marks the comments Manki writes while it answers a comment, with one hook per client', async () => {
+    it('marks the comments Manki writes while it answers a comment, and asks for the slash form there, with one hook each per client', async () => {
       jest.mocked(interaction.hasBotMention).mockReturnValue(true);
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
 
@@ -709,10 +710,12 @@ describe('run', () => {
       });
       await run();
 
-      expect(requestHooks).toHaveLength(1);
+      expect(requestHooks).toHaveLength(2);
+      const [hint, mark] = requestHooks;
+      let hook = mark;
       const write = async (method: string, url: string, body: string, commentId?: number) => {
         const options = { method, url, body, comment_id: commentId };
-        await requestHooks[0](async () => ({ data: { id: 500 } }), options);
+        await hook(async () => ({ data: { id: 500 } }), options);
         return options.body;
       };
       const comments = '/repos/{owner}/{repo}/issues/{issue_number}/comments';
@@ -723,6 +726,32 @@ describe('run', () => {
       expect(await write('PATCH', comment, 'Quoted <!-- manki-answered:42 --> text', 500)).toBe('Quoted <!-- manki-answered:42 --> text\n<!-- manki-answered:42 -->');
       expect(await write('PATCH', comment, 'Superseded\n<!-- manki-answered:41 -->', 7)).toBe('Superseded\n<!-- manki-answered:41 -->');
       expect(await write('POST', '/repos/{owner}/{repo}/pulls/{pull_number}/reviews', 'Review')).toBe('Review');
+
+      hook = hint;
+      const replies = '/repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies';
+      const slashHint = 'Next time, write `/manki` instead of `@manki`. `@manki` is the login of an unrelated GitHub user, who gets a notification each time.';
+      const answer = 'Hi\n\n<!-- manki -->\n<!-- manki-answered:42 -->';
+      const hinted = `Hi\n\n${slashHint}\n\n<!-- manki -->\n<!-- manki-answered:42 -->`;
+      // A command that names Manki as `/manki` or `@manki-review` gets no hint.
+      expect(await write('POST', comments, answer)).toBe(answer);
+
+      jest.mocked(interaction.mentionsMankiUser).mockReturnValue(true);
+      expect(await write('POST', comments, answer)).toBe(hinted);
+      expect(await write('POST', comments, 'Hi')).toBe(`Hi\n\n${slashHint}`);
+      expect(await write('POST', replies, answer)).toBe(hinted);
+      const progress = '**Review started**\n\n<!-- manki -->\n\n---\nNot reviewed yet · head `abc1234` · review running\n- [ ] Cancel this review\n<!-- manki-settings -->';
+      expect(await write('POST', comments, progress)).toBe(progress);
+      expect(await write('PATCH', comment, answer, 500)).toBe(answer);
+      expect(await write('POST', '/repos/{owner}/{repo}/pulls/{pull_number}/reviews', 'Review')).toBe('Review');
+
+      // In a review thread only a command gets the hint, and a tick in Manki's own comment never does.
+      setContext({ eventName: 'pull_request_review_comment', payload: { action: 'created', comment: { body: '@manki why?', id: 43 } } });
+      expect(await write('POST', replies, answer)).toBe(answer);
+      jest.mocked(interaction.parseCommand).mockReturnValueOnce({ type: 'dismiss', args: '' });
+      expect(await write('POST', replies, answer)).toBe(hinted);
+      setContext({ eventName: 'issue_comment', payload: { action: 'edited', comment: { body: 'Quoted @manki review\n\n<!-- manki -->', id: 44 } } });
+      expect(await write('POST', comments, answer)).toBe(answer);
+      jest.mocked(interaction.mentionsMankiUser).mockReturnValue(false);
     });
 
     it('routes bot mention on issue (not PR) to handleIssueInteraction', async () => {
@@ -1732,7 +1761,7 @@ describe('handleReviewCommentInteraction', () => {
     await handleReviewCommentInteraction();
 
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-      'Review comment is not a reply to bot or @manki mention — skipping',
+      'Review comment is not a reply to bot and does not name Manki — skipping',
     );
   });
 
@@ -4179,7 +4208,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReviewWith(false, true, 'manual_review_command');
 
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-      expect(rc!.meta.trigger?.event).toBe('issue_comment:created:@manki review');
+      expect(rc!.meta.trigger?.event).toBe('issue_comment:created:/manki review');
       expect(rc!.meta.trigger?.sender).toBe('bob');
     });
 
@@ -7532,7 +7561,7 @@ describe('runFullReview orchestration', () => {
     });
 
     it.each([
-      ['@manki review', 'issue_comment:created:@manki review', 'manual_review_command' as const],
+      ['@manki review', 'issue_comment:created:/manki review', 'manual_review_command' as const],
       ['a settings box', 'issue_comment:edited:settings:again', 'force_review' as const],
     ])('never skips on %s', async (_label, event, bypassHint) => {
       seedPush('APPROVE', REBASED_DIFF);

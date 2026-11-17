@@ -588,22 +588,22 @@ async function autoReviewHalt(
   rounds?: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>, pauseBox?: boolean,
 ): Promise<AutoReviewHalt | undefined> {
   if (!config.auto_review) {
-    return { cause: 'auto_review_off', text: 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.' };
+    return { cause: 'auto_review_off', text: 'Automatic review is off for this repository (`auto_review: false`). Comment `/manki review` to review it.' };
   }
   const boxTicked = pauseBox ?? await fetchPrState(owner, repo, prNumber, github.context.runId).then(state => !!state?.settings.paused, (error: unknown) => {
     core.warning(`Could not read whether #${prNumber} is paused, so not counting on a push review: ${error instanceof Error ? error.message : error}`);
     return undefined;
   });
   if (boxTicked) {
-    return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.' };
+    return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Tick **Review again** there, or comment `/manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.' };
   }
   const pause = pauseState(rounds ?? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
   const { reason, restart } = pause;
   if (reason) {
-    return { cause: 'automatic_pause', pause, text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`@manki review\`, to review it.${restart ? ` ${restart}` : ''}` };
+    return { cause: 'automatic_pause', pause, text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`/manki review\`, to review it.${restart ? ` ${restart}` : ''}` };
   }
   return boxTicked === undefined
-    ? { cause: 'pause_unknown', text: 'Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `@manki review`.' }
+    ? { cause: 'pause_unknown', text: 'Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `/manki review`.' }
     : undefined;
 }
 
@@ -715,7 +715,7 @@ function unreviewedLine(headSha: string, halt?: { text: string }): string {
   const head = `\`${headSha.slice(0, 7)}\``;
   return halt
     ? `Manki has not reviewed ${head}. ${halt.text}`
-    : `Manki has not reviewed ${head} yet, and approval follows from the verdict of that review. If no review of it starts, as for a PR from a fork or one that matches a skip rule, comment \`@manki review\`.`;
+    : `Manki has not reviewed ${head} yet, and approval follows from the verdict of that review. If no review of it starts, as for a PR from a fork or one that matches a skip rule, comment \`/manki review\`.`;
 }
 
 /** Names `role` in a note. With `orHigher`, `role` is the repo's `author_clear_role` and the phrase covers every role that setting allows. */

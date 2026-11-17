@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
+import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
 import { Finding, ReplyRecord, ReviewConfig } from './types';
 import { extractReplyRecords, formatReviewRecord } from './review-record';
 import { RELATED_REPO_TRUST_RULE, WRITING_RULES } from './writing-rules';
@@ -333,6 +333,21 @@ describe('hasBotMention', () => {
   });
 });
 
+describe('mentionsMankiUser', () => {
+  it.each<[string, boolean]>([
+    ['@manki review', true],
+    ['Please @MANKI, explain this.', true],
+    ['/manki review, as @manki said', true],
+    ['/manki review', false],
+    ['@manki-review review', false],
+    ['@mankind review', false],
+    ['Write `@manki review` to start one.', false],
+    ['```\n@manki review\n```', false],
+  ])('reads %j as %s', (body, mentions) => {
+    expect(mentionsMankiUser(body)).toBe(mentions);
+  });
+});
+
 describe('isReviewRequest', () => {
   it('detects @manki review', () => {
     expect(isReviewRequest('@manki review')).toBe(true);
@@ -509,6 +524,8 @@ describe('handlePRComment', () => {
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, '+1');
     const { body } = octokit.rest.issues.createComment.mock.calls[0][0] as { body: string };
     expect(body).toContain('| Command | What it does |\n|---|---|');
+    expect(body).toContain('`@manki-review` works as the prefix too.');
+    expect(body).not.toMatch(/@manki(?!-review)/);
     expect(body).not.toMatch(/\|[ \t]*\|/);
     expect(body).not.toMatch(/[\u2014\u2013]|\*\*Manki\*\*|\p{Extended_Pictographic}/u);
   });

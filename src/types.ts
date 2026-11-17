@@ -2037,7 +2037,7 @@ export interface RoundTrigger {
   /**
    * `github.context.eventName` plus the action and (when applicable) the
    * marker comment that fired. Examples: `pull_request:synchronize`,
-   * `issue_comment:created:@manki review`,
+   * `issue_comment:created:/manki review`,
    * `issue_comment:edited:settings:again`.
    */
   event: string;
@@ -2444,7 +2444,7 @@ export interface SecurityOverride {
   login: string;
   /** The author's repository role that allowed it. A record from before the role was stored has none. */
   role?: AuthorClearRole;
-  /** `resolve`: resolved in the GitHub UI. `dismiss`: through `@manki dismiss` in the thread. */
+  /** `resolve`: resolved in the GitHub UI. `dismiss`: through `/manki dismiss` in the thread. */
   via: 'resolve' | 'dismiss';
 }
 

@@ -1822,7 +1822,7 @@ describe('postReview body lead', () => {
     const { body, event, approvalHeld } = await postedBody(ready);
     expect(event).toBe('COMMENT');
     expect(approvalHeld).toBe('conflict');
-    expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment \`@manki review\`.\n\n${approved.body}`);
+    expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment \`/manki review\`.\n\n${approved.body}`);
     // A branch name is text from the repository, so it is shown without a marker or a tag of its own.
     mockGet.mockResolvedValueOnce({ data: { ...state, base: { ref: 'rel/<!--x-->`<b>y' } } });
     expect((await postedBody(ready)).body).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `rel\/'y`\. Rebase it/);
@@ -1872,7 +1872,7 @@ describe('postReview body lead', () => {
     const unread = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread' });
     expect(unread.approvalHeld).toBe('warnings');
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string }).event).toBe('COMMENT');
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Comment `@manki check`, and Manki approves or says what holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Comment `/manki check`, and Manki approves or says what holds the approval.');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread', autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
@@ -1928,7 +1928,7 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
     const { body, event, approvalHeld } = await postedBody(ready);
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
-    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`@manki check\`, and Manki approves or says what holds the approval.\n\n${approved.body}`);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.\n\n${approved.body}`);
 
     // With `auto_approve` off, marking the PR ready approves nothing, so the line names the Review again box and no check command.
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
@@ -1942,7 +1942,7 @@ describe('postReview body lead', () => {
     mockGet.mockClear();
     for (const [configHold, line] of [
       ['base', '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'],
-      ['head', '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.'],
+      ['head', '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.'],
     ] as const) {
       const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configHold });
       const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
@@ -1957,7 +1957,7 @@ describe('postReview body lead', () => {
     expect(drafted.approvalHeld).toBe('config');
     expect(draftBody.split('\n\n').slice(0, 3)).toEqual([
       '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.',
-      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.',
+      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.',
       approved.body.split('\n\n')[0],
     ]);
 
@@ -1973,7 +1973,7 @@ describe('postReview body lead', () => {
     const changes = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', withheld, diff, undefined, undefined, { configHold: 'head' });
     const named = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([named.event, changes.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
-    expect(named.body.startsWith('**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.\n\n')).toBe(true);
+    expect(named.body.startsWith('**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.\n\n')).toBe(true);
     expect(named.body).toContain('<!-- manki-held-for-person -->');
 
     const records = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', withheld, diff, undefined, undefined, { unreadRecords: [url] });
@@ -2051,7 +2051,7 @@ describe('postReview body lead', () => {
     const conflictBody = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
     expect(conflicting.approvalHeld).toBe('unread');
     expect(conflictBody.split('\n\n').slice(0, 2)).toEqual([
-      '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.',
+      '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.',
       '\u2705 **Approved, but a person must approve:** no model read 3 of the changed files.',
     ]);
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { skipped });
@@ -2145,7 +2145,7 @@ describe('postReview body lead', () => {
     expect(lead(stuck.body)).toMatch(new RegExp([
       '^\u{1F6D1} \\*\\*Needs a human:\\*\\* 2 blockers came back after a fix\\.',
       '---',
-      'Automatic review is paused\\. To get the next round, tick \\*\\*Review again\\*\\* in the settings block, or push and then comment `@manki review`\\.',
+      'Automatic review is paused\\. To get the next round, tick \\*\\*Review again\\*\\* in the settings block, or push and then comment `/manki review`\\.',
       '- `src/a\\.ts:10`: Cache never invalidated \\(\\[view thread\\]\\(https://github\\.com/o/r/pull/1#t1\\)\\)\\n- No migration',
     ].join('\n\n'), 'u'));
 
@@ -2156,7 +2156,7 @@ describe('postReview body lead', () => {
       needsHuman: { cause: 'budget', blockers: [prior] },
     }, [], undefined, 'A review you start by hand also turns automatic review back on for the next 3 rounds.');
     expect(lead(budgetStuck.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker still open after the last automatic round\./u);
-    expect(budgetStuck.body).toContain('Automatic review is paused. To get the next round, tick **Review again** in the settings block, or push and then comment `@manki review`. A review you start by hand also turns automatic review back on for the next 3 rounds.\n\n- `src/a.ts:10`: Still open prior');
+    expect(budgetStuck.body).toContain('Automatic review is paused. To get the next round, tick **Review again** in the settings block, or push and then comment `/manki review`. A review you start by hand also turns automatic review back on for the next 3 rounds.\n\n- `src/a.ts:10`: Still open prior');
     expect(budgetStuck.body.split('Still open prior')).toHaveLength(2);
     expect(budgetStuck.body).not.toContain('Still open from earlier reviews');
     expect(stuck.body).not.toContain('What this does');

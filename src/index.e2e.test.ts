@@ -513,17 +513,18 @@ function dispatch(inputs: Record<string, string>): Promise<void> {
 }
 
 /** Runs Manki on a review command that alice comments on the PR. */
-function reviewCommand(): Promise<void> {
-  const comment = mockGitHub.addComment('@manki review', 'alice');
+function reviewCommand(command = '/manki review'): Promise<void> {
+  const comment = mockGitHub.addComment(command, 'alice');
   return dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(comment.id) });
 }
 
-const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `@manki check`, and Manki approves or says what holds the approval.';
+const SLASH_HINT = 'Next time, write `/manki` instead of `@manki`. `@manki` is the login of an unrelated GitHub user, who gets a notification each time.';
+const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
 const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 /** What a "Fixed." on the blocker thread says about the push a review needs to confirm the fix. */
 const FIX_NEEDS_PUSH = 'A review confirms the fix only after a push changes the thread\'s file `src/math.ts`.';
-const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
+const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.';
 
 /** Resolves `thread` as `login` and runs Manki on the event GitHub sends for that. */
 async function resolveThread(thread: FakeThread, login: string): Promise<void> {
@@ -963,15 +964,16 @@ describe('runFullReview end to end', () => {
       const comments = mankiComments().length;
 
       await reviewCommand();
-      await reviewCommand();
+      await reviewCommand('@manki review');
 
       expect(postedReviews()).toHaveLength(1);
       expect(skipNotices()).toEqual([]);
-      // Each command that started no round gets its own answer, marked as the answer to that command.
+      // Each command that started no round gets its own answer, marked as the answer to that command. Only the answer
+      // to the command that mentions `@manki` asks for the slash form.
       const commands = mockGitHub.comments.filter(c => c.user.login === 'alice');
       const answers = () => mankiComments().slice(comments).map(c => c.body);
       const answered = commands.slice(1).map(command =>
-        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.\n\n<!-- manki -->\n<!-- manki-answered:${command.id} -->`);
+        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.${command.body.startsWith('@manki') ? `\n\n${SLASH_HINT}` : ''}\n\n<!-- manki -->\n<!-- manki-answered:${command.id} -->`);
       expect(commands).toHaveLength(3);
       expect(answers()).toEqual(answered);
 
@@ -999,7 +1001,7 @@ describe('runFullReview end to end', () => {
       // A Review again run that ends incomplete says to retry with the command, so the command reviews the commit again.
       mockLLM.replies.reviewer = 'I could not finish the review.';
       await forcedRound();
-      expect(postedReviews().at(-1)?.body).toMatch(/^⏸️ \*\*Review incomplete:\*\* All reviewers failed\. Retry with @\u200bmanki review\./);
+      expect(postedReviews().at(-1)?.body).toMatch(/^⏸️ \*\*Review incomplete:\*\* All reviewers failed\. Retry with \/manki review\./);
       expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED', 'COMMENTED']);
 
       mockLLM.replies.reviewer = READY_REPLIES.reviewer;
@@ -1554,7 +1556,7 @@ describe('runFullReview end to end', () => {
 
     // What a failed run is repeated with decides the hint, so no hint sends the reader to a review round for less.
     const REVIEW_HINT = ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
-    const CHECK_HINT = ' Retry with @manki check.';
+    const CHECK_HINT = ' Retry with /manki check.';
     const REPEAT_HINT = ' Repeat the comment or the tick that started this run.';
     it.each<[string, Record<string, string>, string]>([
       ['a new PR', { event: 'pull_request', action: 'opened', head_sha: HEAD_SHA }, REVIEW_HINT],
@@ -1721,7 +1723,7 @@ describe('runFullReview end to end', () => {
 
     it('never approves a PR that conflicts with its base, and says so once per head', async () => {
       mockGitHub.mergeable = false;
-      const held = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';
+      const held = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.';
       const outputs = () => Object.fromEntries(jest.mocked(core.setOutput).mock.calls.filter(([name]) => name === 'verdict' || name === 'approval_held'));
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
@@ -1814,7 +1816,9 @@ describe('runFullReview end to end', () => {
       const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the `maintain` role or a higher one.';
       await replyInThread(thread, 'I will handle it in a follow-up.', 'Agreed. A follow-up works.');
       await replyInThread(thread, '@manki dismiss', '');
-      expect(answers().slice(3)).toEqual([`Agreed. A follow-up works.\n\n${keepsBlocking}\n\n<!-- manki -->`, `${keepsBlocking}\n\n<!-- manki -->`]);
+      await replyInThread(thread, '/manki dismiss', '');
+      // Only the answer to the command that mentions `@manki` asks for the slash form.
+      expect(answers().slice(3)).toEqual([`Agreed. A follow-up works.\n\n${keepsBlocking}\n\n<!-- manki -->`, `${keepsBlocking}\n\n${SLASH_HINT}\n\n<!-- manki -->`, `${keepsBlocking}\n\n<!-- manki -->`]);
       expect(thread.isResolved).toBe(true);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
     });
