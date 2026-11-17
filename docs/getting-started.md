@@ -428,7 +428,7 @@ Manki itself decides who can start it from a comment, on a PR, an issue or a rev
 - **Resolving a thread can approve the PR.** Resolving the last open thread by hand runs the auto-approve check at once.
 - **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open, non-draft PR from your repository, updated in the last day and not opened by a bot, whose head has no Manki review yet.
 
-`timeout-minutes: 30` ends a run that hangs, for example on a model call that never returns. A higher value gains nothing: the service cancels a run after 40 minutes, so the PR's queue moves on. A full review usually takes a few minutes.
+`timeout-minutes: 30` ends a run that hangs, for example on a model call that never returns. A higher value gains nothing: the service cancels a run after 40 minutes, so the PR's queue moves on. A full review usually takes a few minutes. A review with slow models on every stage can still reach this limit, since a call of a finder or the verdict reader has 15 minutes and the judge has up to 20, and GitHub then cancels the run before it posts a verdict.
 
 ### Pull requests from forks
 

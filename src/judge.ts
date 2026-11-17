@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 
 import { extractCurrentCodeWindow, holdsLines } from './code-window';
 import { readFileInRoot } from './mcp-server';
-import { LLMClient, LLMResponse, QuotaError, RefusalError, SendMessageOptions } from './providers';
+import { LLMClient, LLMResponse, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
 import { extractJSON } from './json';
 import {
   applySuppressions,
@@ -259,7 +259,8 @@ export function cutFilesNote({ cut, omitted }: { cut?: string; omitted: readonly
   ];
 }
 
-const JUDGE_TIMEOUT_MS = 300_000;
+/** The least time the judge gets to grade without tools after its attempt with tools failed. */
+const RETRY_WITHOUT_TOOLS_TIMEOUT_MS = 300_000;
 
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
@@ -1639,11 +1640,13 @@ export async function runJudgeAgent(
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles, carried);
 
   const effort = input.effort ?? 'high';
-  const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({
+  const judgeCall = (steps: number, budgetMs = FINDER_TOOLS_TIMEOUT_MS): { systemPrompt: string; budgetMs: number; options: SendMessageOptions } => ({
     systemPrompt: judgePrompt(steps),
-    options: steps > 0
-      ? { effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: repoTools(refutation!.workspace, steps, refutation!.related, 'check') }
-      : { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate: judgeTemplate(0) },
+    budgetMs,
+    options: {
+      effort, promptTemplate: judgeTemplate(steps),
+      ...(steps > 0 && { repoTools: repoTools(refutation!.workspace, steps, refutation!.related, 'check') }),
+    },
   });
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned. The
@@ -1668,8 +1671,15 @@ export async function runJudgeAgent(
       threads: missingThreadIds(threadsToEvaluate, result.threadEvaluations),
     };
   };
-  const judge = async ({ systemPrompt, options }: ReturnType<typeof judgeCall>): Promise<JudgeResult> => {
-    const send = (message: string) => client.sendMessage(systemPrompt, message, options);
+  const judge = async ({ systemPrompt, budgetMs, options }: ReturnType<typeof judgeCall>): Promise<JudgeResult> => {
+    // The calls of one attempt share `budgetMs`, counted from the first call, so each call gets the time the earlier ones left.
+    let deadline: number | undefined;
+    const send = async (message: string): Promise<LLMResponse> => {
+      const now = Date.now();
+      deadline ??= now + budgetMs;
+      if (now >= deadline) throw new TimeoutError(`The judge used up its ${budgetMs / 1000}s before this call`);
+      return client.sendMessage(systemPrompt, message, { ...options, timeoutMs: deadline - now });
+    };
     const first = await sendWithParseRetry(
       userMessage,
       send,
@@ -1706,6 +1716,7 @@ export async function runJudgeAgent(
     return { ...merged, threadEvaluations: synthesizeMissingThreadEvaluations(merged.threadEvaluations, still.threads) };
   };
   let judgeResult: JudgeResult;
+  const started = Date.now();
   try {
     judgeResult = await judge(judgeCall(toolSteps));
   } catch (error) {
@@ -1713,7 +1724,8 @@ export async function runJudgeAgent(
     // quota or a refusal, which already moved to the fallback, would fail again.
     if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError) throw error;
     core.warning(`The judge with tools failed (${error}), grading once more without tools`);
-    judgeResult = await judge(judgeCall(0));
+    // The retry gets the time the attempt with tools left of its limit, and never less than `RETRY_WITHOUT_TOOLS_TIMEOUT_MS`.
+    judgeResult = await judge(judgeCall(0, Math.max(RETRY_WITHOUT_TOOLS_TIMEOUT_MS, FINDER_TOOLS_TIMEOUT_MS - (Date.now() - started))));
   }
 
   const threadEvaluations = overrideApplied

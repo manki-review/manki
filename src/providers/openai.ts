@@ -8,8 +8,8 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, CliTimeoutError, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -195,6 +195,15 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
   return new QuotaError(`${limit}: ${text}`, limit, matchQuotaText(text)?.resetsAt, 'key');
 }
 
+/** The SDK's limit for one API request of a call that sets no `timeoutMs`. The SDK tries a request that ran past it again. */
+const API_REQUEST_TIMEOUT_MS = 300_000;
+
+/** Maps the error the SDK throws once its last try of a request ran past `requestTimeoutMs` to a `TimeoutError`. */
+function openAITimeoutError(error: unknown, requestTimeoutMs: number): TimeoutError | undefined {
+  if (!(error instanceof OpenAI.APIConnectionTimeoutError)) return undefined;
+  return new TimeoutError(`OpenAI API timed out after ${requestTimeoutMs / 1000}s per request`, { cause: error });
+}
+
 // The line Codex ends its stderr with when the provider reports an overload.
 const CAPACITY_ERROR = 'ERROR: Selected model is at capacity. Please try a different model.';
 
@@ -321,7 +330,7 @@ export class OpenAIClient implements LLMClient {
     if (this.auth.kind === 'apiKey') {
       // Explicit timeout makes the bound visible and consistent with the OAuth/CLI path's
       // 1200s hard deadline. The SDK default (600s) leaves the action hanging on slow calls.
-      this.openai = new OpenAI({ apiKey: this.auth.key, timeout: 300_000 });
+      this.openai = new OpenAI({ apiKey: this.auth.key, timeout: API_REQUEST_TIMEOUT_MS });
     } else if (this.auth.kind === 'endpoint') {
       registerSecret(this.auth.key);
     }
@@ -478,7 +487,7 @@ export class OpenAIClient implements LLMClient {
         if (failure.pauseMs > 0) await pause(failure.pauseMs, options?.signal).catch(carry);
         exit = await run(['resume', session, '-'], RESUME_PROMPT, Date.now() - startTime).catch((error: unknown) => {
           // A call that runs out of time after a limit fails as that limit, since a new call would meet it again.
-          const limitError = error instanceof CliTimeoutError ? codexLimitError(finalError, !!endpoint) : undefined;
+          const limitError = error instanceof TimeoutError ? codexLimitError(finalError, !!endpoint) : undefined;
           if (!limitError) throw error;
           core.warning(limitError.message);
           return carry(Object.assign(limitError, { cause: error }));
@@ -548,9 +557,12 @@ export class OpenAIClient implements LLMClient {
 
     const startTime = Date.now();
     const openai = this.openai;
+    // The SDK's timer for a request starts after the signal of `callWithTimeout` and runs as long, so the signal ends
+    // the request first. The SDK sends no request again once that signal has aborted.
+    const requestTimeoutMs = options?.timeoutMs || API_REQUEST_TIMEOUT_MS;
     const response = await callWithTimeout('OpenAI API', options, (signal) =>
-      openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, signal ? { signal } : undefined))
-      .catch((error: unknown) => { throw openAIQuotaError(error) ?? error; });
+      openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, { timeout: requestTimeoutMs, ...(signal && { signal }) }))
+      .catch((error: unknown) => { throw openAIQuotaError(error) ?? openAITimeoutError(error, requestTimeoutMs) ?? error; });
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));

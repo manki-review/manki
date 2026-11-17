@@ -12,7 +12,7 @@ import { trackCliProcess } from '../run-diagnostics';
 import { LISTED_FILES_TO_OPEN, STALE_TIMEOUT_MS, STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepoTools } from '../types';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
-import { LLMResponse, RepoTools, SendMessageOptions } from './types';
+import { LLMResponse, RepoTools, SendMessageOptions, TimeoutError } from './types';
 
 export { STALE_TIMEOUT_MS };
 export const HARD_TIMEOUT_MS = 1_200_000;
@@ -116,7 +116,7 @@ export async function callWithTimeout<T>(label: string, { timeoutMs, signal }: S
     return await call(AbortSignal.any(signals));
   } catch (error) {
     signal?.throwIfAborted();
-    if (timeout?.aborted) throw new Error(`${label} timed out after ${timeoutMs! / 1000}s`, { cause: error });
+    if (timeout?.aborted) throw new TimeoutError(`${label} timed out after ${timeoutMs! / 1000}s`, { cause: error });
     throw error;
   }
 }
@@ -596,9 +596,6 @@ export function pause(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** The error `runCli` rejects with when a run passes its hard timeout. */
-export class CliTimeoutError extends Error {}
-
 export interface RunCliOptions {
   /** Provider name used in error messages, e.g. `Claude`. */
   label: string;
@@ -756,7 +753,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
         const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
         const msg = `${label} CLI timed out after ${hardTimeoutMs / 1000}s${details ? `. ${details}` : ''}`;
         core.warning(msg);
-        reject(new CliTimeoutError(msg));
+        reject(new TimeoutError(msg));
         return;
       }
       if (outputExceeded) {

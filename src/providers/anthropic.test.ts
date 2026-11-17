@@ -9,7 +9,7 @@ import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthrop
 import { runnerDiagnostics } from '../run-diagnostics';
 import { installPinned } from '../tool-install';
 import { RelatedRepoTools } from '../types';
-import { QuotaError, RefusalError, SendMessageOptions } from './types';
+import { QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './types';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -819,6 +819,7 @@ describe('sendViaOAuth — error paths', () => {
       closeCb!(null, 'SIGTERM');
 
       const err: Error = await promise.then(() => { throw new Error('expected rejection'); }, (e) => e);
+      expect(err).toBeInstanceOf(TimeoutError);
       expect(err.message).toContain('Claude CLI timed out after 1200s');
       expect(err.message).toContain('Last stdout: keepalive');
       expect(err.message).toContain('stderr: some diagnostic output');
@@ -1296,6 +1297,7 @@ describe('sendViaOAuth — stale process detection', () => {
       closeCb!(null, 'SIGTERM');
 
       const err: Error = await promise.then(() => { throw new Error('expected rejection'); }, (e) => e);
+      expect(err).not.toBeInstanceOf(TimeoutError);
       expect(err.message).toContain(`Claude CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s`);
     } finally {
       jest.useRealTimers();

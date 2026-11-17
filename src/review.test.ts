@@ -47,7 +47,7 @@ import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
+import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, withRefusalFallback, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { repoToolsPrompt } from './providers/cli-utils';
 
@@ -3208,7 +3208,7 @@ describe('runReview', () => {
 
     // A judge that fails on the sweep's findings ends the round incomplete, so no blocker the sweep found is lost
     // behind an approval. The record keeps what the first judge call graded, and nothing is posted.
-    for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with @manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
+    for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with @manki review.'], [new TimeoutError('Codex CLI timed out after 900s'), 'The judge ran out of time on the findings of the sweep. Retry with @manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
       const failed = (await run('blockers', false, error)).result;
       expect([failed.outcome, failed.verdict, failed.reviewComplete, failed.findings]).toEqual(['INCOMPLETE', 'COMMENT', false, []]);
       expect(failed.summary).toEqual(summary);
@@ -4816,7 +4816,10 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     expect(result.verdictReport?.verdict).toBe('READY');
     expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
-    expect(jest.mocked(judgeFallback.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high', timeoutMs: 900_000 });
+    // The fallback gets what the refused call left of its 900 seconds.
+    const resent = jest.mocked(judgeFallback.sendMessage).mock.calls[0][2];
+    expect(resent).toEqual({ effort: 'high', timeoutMs: expect.any(Number) });
+    expect(resent?.timeoutMs).toBeLessThanOrEqual(900_000);
     expect(result.modelFallbacks).toEqual([
       { stage: 'reviewer', agent: result.agentNames[0], fallbackModel: 'claude-opus-5-5', reason: 'refusal (reasoning_extraction)' },
       { stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' },
@@ -5501,7 +5504,7 @@ describe('runReview', () => {
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
-    expect(result.summary).toContain('judge failed');
+    expect(result.summary).toBe('The judge failed. Retry with @manki review.');
     expect(result).not.toHaveProperty('relatedWork');
     expect(result).toMatchObject({
       judgeEffort: 'high', rawFindingCount: 2, staticDedupCount: 0, llmDedupCount: 0, judgeRetryCount: 0, agentDurationMs: expect.any(Map),
@@ -5511,6 +5514,10 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', undefined, 'key'));
     const limited = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect([limited.outcome, limited.summary]).toEqual(['INCOMPLETE', 'Anthropic API rate limit reached. Retry with @manki review later, or use another key.']);
+
+    mockedRunJudgeAgent.mockRejectedValueOnce(new TimeoutError('Codex CLI timed out after 900s'));
+    const slow = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect([slow.outcome, slow.summary]).toEqual(['INCOMPLETE', 'The judge ran out of time. Retry with @manki review.']);
 
     const actualJudge = jest.requireActual<typeof import('./judge')>('./judge');
     mockedRunJudgeAgent.mockImplementation(actualJudge.runJudgeAgent);
@@ -7214,6 +7221,34 @@ describe('withRefusalFallback', () => {
     expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'first', { effort: 'low' }], ['sys', 'second', undefined]]);
     expect(onFallback).toHaveBeenCalledTimes(1);
     expect(onFallback).toHaveBeenCalledWith(refusal);
+  });
+
+  it('gives the fallback the time the refused call left of its limit, and fails as out of time when none is left', async () => {
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const refusedAfter = (seconds: number) => ({ sendMessage: jest.fn(async () => { now += seconds * 1000; throw refusal; }) }) as unknown as LLMClient;
+    const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
+    const onFallback = jest.fn();
+    try {
+      const client = withRefusalFallback(refusedAfter(100), fallback, onFallback);
+      await expect(client.sendMessage('sys', 'first', { effort: 'low', timeoutMs: 900_000 })).resolves.toEqual({ content: 'ok' });
+      // A call after the stage moved has its whole limit, and a call without one gets none.
+      await client.sendMessage('sys', 'second', { timeoutMs: 500_000 });
+      await withRefusalFallback(refusedAfter(100), fallback, onFallback).sendMessage('sys', 'third', { effort: 'low' });
+      expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([
+        ['sys', 'first', { effort: 'low', timeoutMs: 800_000 }], ['sys', 'second', { timeoutMs: 500_000 }], ['sys', 'third', { effort: 'low' }],
+      ]);
+
+      jest.mocked(fallback.sendMessage).mockClear();
+      onFallback.mockClear();
+      const usedUp = await withRefusalFallback(refusedAfter(900), fallback, onFallback).sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      expect(usedUp).toBeInstanceOf(TimeoutError);
+      expect(usedUp).toMatchObject({ message: 'The refused call used up its 900s, so it is not sent to the fallback model', cause: refusal });
+      expect(fallback.sendMessage).not.toHaveBeenCalled();
+      expect(onFallback).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('records one fallback when parallel calls are all refused', async () => {

@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 
 import { wrapUpNoted } from '../tool-steps';
 import { estimateCostUsd } from './model-registry';
-import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, RefusalError, UsageSummary, ZERO_USAGE } from './types';
+import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, RefusalError, TimeoutError, UsageSummary, ZERO_USAGE } from './types';
 import { readingsOf, sanitizeLogOutput } from './cli-utils';
 
 export interface UsageTotals {
@@ -39,6 +39,8 @@ export function wrapClientForUsage(client: LLMClient): {
 /**
  * Sends each request to `client`, and once a safety filter refuses one, sends it and every later
  * request to `fallback`. A refusal on `fallback` and any other error are thrown unchanged.
+ * A refused request with a `timeoutMs` gets only the time the refused call left of it on `fallback`,
+ * and fails with a `TimeoutError` when none is left.
  */
 export function withRefusalFallback(
   client: LLMClient,
@@ -49,17 +51,20 @@ export function withRefusalFallback(
   let refused = false;
   return {
     sendMessage: async (sys, user, opts) => {
-      if (!refused) {
-        try {
-          return await client.sendMessage(sys, user, opts);
-        } catch (error) {
-          if (!(error instanceof RefusalError)) throw error;
-          // Parallel calls can all be refused before the first one returns, and the stage moves only once.
-          if (!refused) onFallback(error);
-          refused = true;
-        }
+      if (refused) return fallback.sendMessage(sys, user, opts);
+      const start = Date.now();
+      try {
+        return await client.sendMessage(sys, user, opts);
+      } catch (error) {
+        if (!(error instanceof RefusalError)) throw error;
+        // Parallel calls can all be refused before the first one returns, and the stage moves only once.
+        if (!refused) onFallback(error);
+        refused = true;
+        if (!opts?.timeoutMs) return fallback.sendMessage(sys, user, opts);
+        const leftMs = opts.timeoutMs - (Date.now() - start);
+        if (leftMs <= 0) throw new TimeoutError(`The refused call used up its ${opts.timeoutMs / 1000}s, so it is not sent to the fallback model`, { cause: error });
+        return fallback.sendMessage(sys, user, { ...opts, timeoutMs: leftMs });
       }
-      return fallback.sendMessage(sys, user, opts);
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
     ...(client.repoTools ? { repoTools: true } : {}),
