@@ -32,11 +32,11 @@ on:
         required: false
         type: string
       baseline:
-        description: Run ids of the last release's benchmark, space-separated. Applies the release gate.
+        description: Run ids of the last release's benchmark and of any rerun of its commit, space-separated. Applies the release gate.
         required: false
         type: string
       rerun_of:
-        description: Run ids of earlier runs of the same ref, space-separated. The gate decides on the mean.
+        description: Run ids of earlier runs of the same ref, space-separated. The gate decides on all runs.
         required: false
         type: string
 

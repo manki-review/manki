@@ -1026,15 +1026,32 @@ interface GateSide {
 
 type GateFigure = Exclude<keyof GateSide, 'runs'>;
 
-/** The figures the gate compares, and whether more or less of each is better. */
-const GATE_FIGURES: Array<{ key: GateFigure; label: string; row: string; better: 'more' | 'less' }> = [
-  { key: 'found', label: "Must-catch items found at the key's grade", row: 'Must-catch found at grade', better: 'more' },
-  { key: 'resolvedRight', label: 'Earlier threads resolved as the key says', row: 'Resolved right', better: 'more' },
+/**
+ * The figures the gate compares, and whether more or less of each is better. A figure `byItem` is judged per key item
+ * by `gateItems`, and every other figure by `GATE_MARGIN`.
+ */
+const GATE_FIGURES: Array<{ key: GateFigure; label: string; row: string; better: 'more' | 'less'; byItem?: true }> = [
+  { key: 'found', label: "Must-catch items found at the key's grade", row: 'Must-catch found at grade', better: 'more', byItem: true },
+  { key: 'resolvedRight', label: 'Earlier threads resolved as the key says', row: 'Resolved right', better: 'more', byItem: true },
   { key: 'falseBlockers', label: 'False blockers', row: 'False blockers', better: 'less' },
   { key: 'unexpectedWarnings', label: 'Unexpected warnings', row: 'Unexpected warnings', better: 'less' },
   { key: 'resolvedWrong', label: 'Earlier threads resolved that the key keeps open', row: 'Resolved wrong', better: 'less' },
   { key: 'repeats', label: 'Earlier findings posted again', row: 'Repeats', better: 'less' },
 ];
+
+/** How many runs of one side got a key item right. */
+interface ItemRuns {
+  right: number;
+  runs: number;
+}
+
+/** A must-catch item or an earlier thread the key says the push fixes, and how many runs of each side got it right. */
+interface GateItem {
+  case: string;
+  item: string;
+  baseline: ItemRuns;
+  candidate: ItemRuns;
+}
 
 export interface GateResult {
   variant: string;
@@ -1048,10 +1065,17 @@ export interface GateResult {
   rekeyed?: string[];
   baseline?: GateSide;
   candidate?: GateSide;
+  /** The key items one side got right in a run where the other did not, or that a side got right in only some runs. */
+  items?: GateItem[];
+}
+
+/** The reports of case `id` among `variants`, one per report that holds the case. */
+function casesOf(variants: VariantReport[], id: string): CaseReport[] {
+  return variants.flatMap(v => v.cases.filter(c => c.id === id));
 }
 
 function gateSide(variants: VariantReport[], shared: string[]): GateSide {
-  const perCase = shared.map(id => variants.map(v => v.cases.find(c => c.id === id)!));
+  const perCase = shared.map(id => casesOf(variants, id));
   const meanPerRun = (score: (c: CaseReport, run: RunScore) => number) =>
     perCase.reduce((sum, reports) => sum + (mean(reports.flatMap(c => c.runs.map(run => score(c, run)))) ?? 0), 0);
   return {
@@ -1076,11 +1100,46 @@ function figure(value: number): string {
   return String(Number(value.toFixed(2)));
 }
 
+/** Returns the key items of the shared cases that changed: not right in every run of both sides, and not wrong in every run of both sides. */
+function gateItems(base: VariantReport[], cand: VariantReport[], shared: string[]): GateItem[] {
+  return shared.flatMap((id) => {
+    const [baseRuns, candRuns] = [base, cand].map(side => casesOf(side, id).flatMap(c => c.runs));
+    const count = (runs: RunScore[], right: (run: RunScore) => boolean): ItemRuns => ({ right: runs.filter(right).length, runs: runs.length });
+    const judged = (item: string, right: (run: RunScore) => boolean): GateItem => ({ case: id, item, baseline: count(baseRuns, right), candidate: count(candRuns, right) });
+    const items = casesOf(base, id)[0].items;
+    return [
+      ...items.filter(item => item.tier === 'must_catch').map(item => judged(item.id, run => foundAtGrade(item, run))),
+      ...items.filter(item => item.tier === 'must_resolve').map(item => judged(item.id, run => !!run.followUp?.resolved.includes(item.id))),
+    ].filter(({ baseline: b, candidate: c }) => !(b.right === b.runs && c.right === c.runs) && !(b.right === 0 && c.right === 0));
+  });
+}
+
+/** Whether every baseline run got the item right and no candidate run did. */
+function looksLost({ baseline, candidate }: GateItem): boolean {
+  return baseline.right === baseline.runs && candidate.right === 0;
+}
+
+/** Whether some runs of a side got the item right and others did not. */
+function differs(side: ItemRuns): boolean {
+  return side.right > 0 && side.right < side.runs;
+}
+
+function itemList(items: GateItem[]): string {
+  return items.map(i => `${i.case} ${i.item}`).join(', ');
+}
+
+function itemCount(items: GateItem[]): string {
+  return `${items.length} ${items.length === 1 ? 'item is' : 'items are'}`;
+}
+
 /**
  * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
  * version. A side with an incomplete review, or a case whose config does not load, decides nothing, and so does a
- * baseline with fewer than `GATE_RUNS` runs per case. Each figure may get worse by at most `GATE_MARGIN` per run, and a change within it on a single candidate run asks
- * for a rerun, decided on the mean. Throws when the reports of a side reviewed different commits or hold one run twice,
+ * baseline with fewer than `GATE_RUNS` runs per case. Each case pools the runs of every report of a side that holds it.
+ * A key item that every baseline run gets right and no candidate run does asks for a rerun of its case on both sides,
+ * and fails once both sides have more than `GATE_RUNS` runs of it. An item that only some runs of a side get right is
+ * noise. Each figure without item ids may get worse by at most `GATE_MARGIN` per run. Any change on a single candidate
+ * run asks for a rerun of the candidate. Throws when the reports of a side reviewed different commits or hold one run twice,
  * the baseline reviewed the candidate's commit, or the reports were matched by different models.
  */
 export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
@@ -1104,17 +1163,17 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
   return names.map((name): GateResult => {
     const pick = (reports: BenchReport[]) => reports.map(r => r.variants.find(v => v.name === name)!);
     const [base, cand, every] = [pick(baseline), pick(candidate), pick(all)];
-    const held = every[0].cases.filter(c => c.set === 'holdout' && every.every(v => v.cases.some(o => o.id === c.id && o.set === 'holdout')));
-    const shared = held.filter(c => every.every(v => v.cases.find(o => o.id === c.id)!.keyVersion === c.keyVersion)).map(c => c.id);
-    const rekeyed = held.map(c => c.id).filter(id => !shared.includes(id));
+    // A report may hold only some cases, such as a rerun of the cases with an item that looks lost, so each case pools the runs of every report that holds it.
+    const ids = [...new Set(every.flatMap(v => v.cases.map(c => c.id)))];
+    const held = ids.filter(id => [base, cand].every(side => casesOf(side, id).length > 0) && casesOf(every, id).every(c => c.set === 'holdout'));
+    const shared = held.filter(id => new Set(casesOf(every, id).map(c => c.keyVersion)).size === 1);
+    const rekeyed = held.filter(id => !shared.includes(id));
     const keyed = rekeyed.length > 0 ? { rekeyed } : {};
     if (shared.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The baseline and the candidate share no hold-out case with the same key version.', shared, ...keyed };
-    const runsOf = (side: VariantReport[], id: string) => side.flatMap(v => v.cases.find(c => c.id === id)!.runs);
+    const runsOf = (side: VariantReport[], id: string) => casesOf(side, id).flatMap(c => c.runs);
     const unloadable = (side: VariantReport[]) => shared.filter(id => runsOf(side, id).some(run => run.outcome === CONFIG_INVALID));
-    const incomplete = (side: VariantReport[]) => shared.filter(id => !unloadable(side).includes(id) && side.some((v) => {
-      const runs = v.cases.find(c => c.id === id)!.runs;
-      return runs.length === 0 || runs.some(run => !run.complete);
-    }));
+    const incomplete = (side: VariantReport[]) => shared.filter(id => !unloadable(side).includes(id)
+      && casesOf(side, id).some(c => c.runs.length === 0 || c.runs.some(run => !run.complete)));
     const listed = (ids: (side: VariantReport[]) => string[], sentence: (side: string, ids: string) => string) =>
       ([['baseline', ids(base)], ['candidate', ids(cand)]] as const).filter(([, found]) => found.length > 0).map(([side, found]) => sentence(side, found.join(', ')));
     const noConfig = listed(unloadable, (side, ids) => `The ${side} has no review of ${ids}, because the case's config does not load.`);
@@ -1127,12 +1186,13 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
       return { variant: name, verdict: 'NO DECISION', reason, shared, ...keyed };
     }
     // A ref without follow-up cases reviews one as a first round, so its figures do not compare with a follow-up round's.
-    const unlike = shared.filter(id => new Set(every.flatMap(v => v.cases.find(c => c.id === id)!.runs.map(run => !!run.followUp))).size > 1);
+    const unlike = shared.filter(id => new Set(runsOf(every, id).map(run => !!run.followUp)).size > 1);
     const alike = shared.filter(id => !unlike.includes(id));
     const left = { ...keyed, ...(unlike.length > 0 && { unlike }) };
     if (alike.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The shared hold-out cases were scored as a follow-up round on one side and as a first round on the other.', shared: alike, ...left };
     const [b, c] = [gateSide(base, alike), gateSide(cand, alike)];
-    const sides = { shared: alike, ...left, baseline: b, candidate: c };
+    const items = gateItems(base, cand, alike);
+    const sides = { shared: alike, ...left, baseline: b, candidate: c, ...(items.length > 0 && { items }) };
     if (b.runs < GATE_RUNS) {
       return {
         variant: name, verdict: 'NO DECISION', ...sides,
@@ -1141,18 +1201,40 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
     }
     const worse = GATE_FIGURES.map(f => ({ ...f, by: f.better === 'more' ? b[f.key] - c[f.key] : c[f.key] - b[f.key] })).filter(f => f.by > GATE_EPSILON);
     const changed = (figures: typeof worse) => joinParts(figures.map(f => `${f.label} ${f.better === 'more' ? 'fell' : 'rose'} from ${figure(b[f.key])} to ${figure(c[f.key])}`), ', and ');
-    const failed = worse.filter(f => f.by > GATE_MARGIN + GATE_EPSILON);
-    if (failed.length > 0) {
-      return { variant: name, verdict: 'FAIL', reason: `${changed(failed)} per run, by more than ${GATE_MARGIN}.`, ...sides };
+    const [byMargin, byItem] = [worse.filter(f => !f.byItem), worse.filter(f => f.byItem)];
+    const lost = items.filter(looksLost);
+    // An item that looks lost fails only once both sides hold more runs of its case than the gate asks for, which takes a rerun.
+    const proven = lost.filter(i => i.baseline.runs > GATE_RUNS && i.candidate.runs > GATE_RUNS);
+    const failed = byMargin.filter(f => f.by > GATE_MARGIN + GATE_EPSILON);
+    if (failed.length > 0 || proven.length > 0) {
+      const reason = [
+        ...(failed.length > 0 ? [`${changed(failed)} per run, by more than ${GATE_MARGIN}.`] : []),
+        ...(proven.length > 0 ? [`${itemCount(proven)} right in every baseline run and in no candidate run, over more than ${GATE_RUNS} runs per side: ${itemList(proven)}.`] : []),
+      ].join(' ');
+      return { variant: name, verdict: 'FAIL', reason, ...sides };
     }
-    if (worse.length > 0 && c.runs < GATE_RUNS) {
+    const lostSentence = lost.length > 0 ? [`${itemCount(lost)} right in every baseline run and in no candidate run: ${itemList(lost)}.`] : [];
+    if ((worse.length > 0 || lost.length > 0) && c.runs < GATE_RUNS) {
+      const reason = [
+        ...(byMargin.length > 0 ? [`${changed(byMargin)} per run, within the margin of ${GATE_MARGIN}.`] : []),
+        ...(byItem.length > 0 ? [`${changed(byItem)} per run.`] : []),
+        ...lostSentence,
+        'Run the candidate once more and decide on both runs.',
+      ].join(' ');
+      return { variant: name, verdict: 'RERUN', reason, ...sides };
+    }
+    if (lost.length > 0) {
+      const cases = [...new Set(lost.map(i => i.case))].join(', ');
       return {
         variant: name, verdict: 'RERUN', ...sides,
-        reason: `${changed(worse)} per run, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
+        reason: `${lostSentence[0]} Run ${cases} again on the baseline's commit and on the candidate's, and decide on all runs of each side. An item that some runs of a side get right and others do not is noise.`,
       };
     }
-    const within = worse.length > 0 ? `${changed(worse)} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}. ` : '';
-    return { variant: name, verdict: 'PASS', reason: `${within}No ${within ? 'other ' : ''}figure got worse.`, ...sides };
+    const within = [
+      ...(byMargin.length > 0 ? [`${changed(byMargin)} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}.`] : []),
+      ...(byItem.length > 0 ? [`${changed(byItem)} on the mean of ${c.runs} runs, and no item is right in every baseline run and in no candidate run.`] : []),
+    ];
+    return { variant: name, verdict: 'PASS', reason: [...within, `No ${within.length > 0 ? 'other ' : ''}figure got worse.`].join(' '), ...sides };
   });
 }
 
@@ -1163,6 +1245,16 @@ export function formatGate(results: GateResult[]): string {
     if (r.baseline && r.candidate) {
       const row = (label: string, key: keyof GateSide) => `| ${label} | ${figure(r.baseline![key])} | ${figure(r.candidate![key])} |`;
       lines.push('| Figure | Baseline | Candidate |', '| --- | --- | --- |', row('Runs per case', 'runs'), ...GATE_FIGURES.map(f => row(f.row, f.key)), '');
+    }
+    if (r.items) {
+      const runs = (side: ItemRuns) => `${side.right} of ${side.runs}`;
+      const marks = (i: GateItem) => {
+        const sides = (['baseline', 'candidate'] as const).filter(side => differs(i[side]));
+        if (looksLost(i)) return 'looks lost';
+        return sides.length === 2 ? 'differs between the runs of both sides' : sides.length === 1 ? `differs between ${sides[0]} runs` : '';
+      };
+      lines.push('Key items that changed, with the runs that got each right on each side:', '');
+      lines.push(...r.items.map(i => `- ${i.case} ${i.item}: baseline ${runs(i.baseline)}, candidate ${runs(i.candidate)}${marks(i) && `, ${marks(i)}`}`), '');
     }
     lines.push(`Shared hold-out cases (${r.shared.length}): ${r.shared.join(', ') || 'none'}`, '');
     if (r.unlike) lines.push(`Left out, scored as a follow-up round on one side and as a first round on the other: ${r.unlike.join(', ')}`, '');
