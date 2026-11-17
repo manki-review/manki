@@ -72,5 +72,5 @@ The labelled set records only the posted finding and the judge's grade, and it s
 ## Commit and PR conventions
 
 - Commit messages and PR titles use [Conventional Commits](https://www.conventionalcommits.org/) (`feat`, `fix`, `refactor`, `build`, `ci`, `chore`, `docs`, `test`). PR titles are enforced by CI.
-- Do not edit `CHANGELOG.md` in a PR. CI fails any PR that does unless it bumps the `package.json` version, which only release PRs do. Give the PR a clear title and say in its body what changes for users. The release PR writes the changelog from the merged PRs.
+- Do not edit `CHANGELOG.md` in a PR. CI fails any PR that does unless it bumps the `package.json` version, which only release PRs do, or rewrites the notes of a release that has no tag yet and changes nothing else, in `CHANGELOG.md` or in any other file (see [`RELEASE.md`](RELEASE.md#changing-a-release-that-is-not-published)). Give the PR a clear title and say in its body what changes for users. The release PR writes the changelog from the merged PRs.
 - Open the PR against `main`. CI must be green before merge.
