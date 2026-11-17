@@ -276,7 +276,7 @@ function matchTitleLine(body: string): RegExpMatchArray | null {
  * place, since posting can change its text, and only below a title line at the top of the body, where no text of the
  * finding can stand.
  */
-export function withoutDetachedNote(body: string): string {
+export function withoutPlaceNote(body: string): string {
   const title = matchTitleLine(body);
   if (!title || title.index !== 0 || !parseFindingData(body)?.detached) return body;
   const rest = body.slice(title[0].length).trimStart();
@@ -955,7 +955,7 @@ const OLD_MISSED_EARLIER_NOTES = [
  * unexpected layouts skip extraction rather than emit garbage.
  */
 function parseFindingFromComment(posted: string): FindingMetadata {
-  const body = withoutDetachedNote(posted);
+  const body = withoutPlaceNote(posted);
   const titleMatch = matchTitleLine(body);
   if (!titleMatch || titleMatch.index === undefined) return {};
   const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);
