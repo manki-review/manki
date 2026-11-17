@@ -6308,8 +6308,9 @@ describe('runReview', () => {
       expect(unused).not.toHaveBeenCalled();
     }
 
-    // Two finders never move to one model: the second stays on its limit, so the round is incomplete.
-    const shared = answers();
+    // Two finders that reach a limit at once never move to one model: the first holds it while its call runs, so the
+    // second stays on its limit and the round is incomplete.
+    const shared = jest.fn(() => new Promise(resolve => setTimeout(() => resolve({ content: '[]' }), 20)));
     const { result: both } = await run(limited(), limited(), ['gpt-5.5', shared], ['openai/gpt-5.5', shared]);
     expect([both.outcome, both.summary, both.failedAgents]).toEqual(['INCOMPLETE', limitSummary(opus), [opus]]);
     expect(both.modelFallbacks).toEqual([moved]);
@@ -6321,6 +6322,33 @@ describe('runReview', () => {
     expect([mixed.outcome, mixed.failedAgents]).toEqual(['INCOMPLETE', [opus]]);
     expect(mixed.modelFallbacks).toEqual([{ stage: 'reviewer', agent: sonnet, fallbackModel: 'gpt-5.5', reason: 'content_filter' }]);
     expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(2);
+
+    // A fallback that failed gives its model back, so a finder that reaches a limit later still moves there.
+    const limitedLater = () => jest.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      throw limit;
+    });
+    const movedLater = { ...moved, agent: opus, fallbackModel: 'openai/gpt-5.5' };
+    const flaky = jest.fn().mockRejectedValueOnce(new Error('401 invalid x-api-key')).mockResolvedValue({ content: '[]' });
+    const { result: freed } = await run(limited(), limitedLater(), ['gpt-5.5', flaky], ['openai/gpt-5.5', flaky]);
+    expect([freed.outcome, freed.summary, freed.failedAgents, freed.modelFallbacks]).toEqual(['INCOMPLETE', limitSummary(sonnet), [sonnet], [movedLater]]);
+    expect(flaky).toHaveBeenCalledTimes(2);
+
+    // So does a finder whose call used up its time before the limit, which is never sent to the fallback.
+    let now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const spent = jest.fn(async () => {
+        now += 900_000;
+        throw limit;
+      });
+      const fresh = answers();
+      const { result: skipped } = await run(spent, limitedLater(), ['gpt-5.5', fresh], ['openai/gpt-5.5', fresh]);
+      expect([skipped.failedAgents, skipped.modelFallbacks]).toEqual([[sonnet], [movedLater]]);
+      expect(fresh).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('threads a non-empty provenance map to the judge but not into reviewer prompts', async () => {
@@ -7195,15 +7223,52 @@ describe('withModelFallback', () => {
     const primary = { sendMessage: jest.fn().mockRejectedValueOnce(limit).mockRejectedValueOnce(limit).mockRejectedValue(refusal) } as unknown as LLMClient;
     const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
     const onFallback = jest.fn();
-    const movesOnLimit = jest.fn().mockReturnValue(false);
+    const movesOnLimit = jest.fn().mockReturnValue(undefined);
     const client = withModelFallback(primary, fallback, onFallback, movesOnLimit);
 
     await expect(client.sendMessage('sys', 'first')).rejects.toBe(limit);
     await expect(client.sendMessage('sys', 'second')).rejects.toBe(limit);
     expect(fallback.sendMessage).not.toHaveBeenCalled();
-    expect(movesOnLimit).toHaveBeenCalledTimes(1);
+    // A stage that holds nothing asks again at its next limit, since another stage may have given the fallback back.
+    expect(movesOnLimit).toHaveBeenCalledTimes(2);
     await expect(client.sendMessage('sys', 'third')).resolves.toEqual({ content: 'ok' });
     expect(onFallback.mock.calls).toEqual([[refusal]]);
+  });
+
+  it('gives back what a limit took once every fallback call of the stage failed, and takes nothing for a call out of time', async () => {
+    const primary = { sendMessage: jest.fn().mockRejectedValue(limit) } as unknown as LLMClient;
+    const giveBack = jest.fn();
+    const movesOnLimit = jest.fn(() => giveBack);
+    const fallback = { sendMessage: jest.fn().mockRejectedValueOnce(new Error('timed out')).mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = withModelFallback(primary, fallback, jest.fn(), movesOnLimit);
+    await expect(client.sendMessage('sys', 'first')).rejects.toBe(limit);
+    expect([movesOnLimit.mock.calls.length, giveBack.mock.calls.length]).toEqual([1, 1]);
+    // The next limit takes the fallback again, and a stage that moved keeps it.
+    await expect(client.sendMessage('sys', 'second')).resolves.toEqual({ content: 'ok' });
+    expect([movesOnLimit.mock.calls.length, giveBack.mock.calls.length]).toEqual([2, 1]);
+
+    // While another fallback call of the stage can still answer, a failed one gives nothing back.
+    const parallelGiveBack = jest.fn();
+    const slow = { sendMessage: jest.fn()
+      .mockRejectedValueOnce(new Error('timed out'))
+      .mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve({ content: 'ok' }), 10))) } as unknown as LLMClient;
+    const parallel = withModelFallback(primary, slow, jest.fn(), jest.fn(() => parallelGiveBack));
+    const settled = await Promise.allSettled([parallel.sendMessage('sys', 'a'), parallel.sendMessage('sys', 'b')]);
+    expect(settled.map(s => s.status)).toEqual(['rejected', 'fulfilled']);
+    expect(parallelGiveBack).not.toHaveBeenCalled();
+    warning.mockRestore();
+
+    let now = 1_000_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const spent = { sendMessage: jest.fn(async () => { now += 900_000; throw limit; }) } as unknown as LLMClient;
+      const untouched = jest.fn(() => giveBack);
+      await expect(withModelFallback(spent, fallback, jest.fn(), untouched).sendMessage('sys', 'late', { timeoutMs: 900_000 })).rejects.toBe(limit);
+      expect(untouched).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 

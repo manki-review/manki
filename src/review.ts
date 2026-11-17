@@ -686,10 +686,12 @@ export async function runReview(
   // Searched while the planner runs, since no model call depends on it before the finders.
   const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths, dependencyNames: config.related_repos?.some(r => r.kind === 'dependency') });
   const modelFallbacks: RoundModelFallback[] = [];
-  // Every model that reads for a finder of the round: each finder's own, and each fallback model a finder moved to.
-  const readingModels = new Set<string>();
+  // How many finders of the round read on each model: on their own, on a fallback a refusal moved them to, or on one a
+  // limit holds for them. A count, so giving back what a limit held never frees a model another finder still reads on.
+  const readingModels = new Map<string, number>();
+  const addReader = (model: string, step: 1 | -1): void => { readingModels.set(model, (readingModels.get(model) ?? 0) + step); };
   const llmCalls: LLMCall[] = [];
-  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => boolean): LLMClient => {
+  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined): LLMClient => {
     const label = { stage, ...(agent && { agent }) };
     const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
     return withSignal(withModelFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
@@ -698,7 +700,8 @@ export async function runReview(
         ? `The ${agent ?? stage} call reached a limit (${error.limit}), so ${fallback!.model} answered in its place`
         : `A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
       modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: limit ? error.limit : error.reason, ...(limit && { limit: true as const }) });
-      if (stage === 'reviewer') readingModels.add(modelIdentity(fallback!.model));
+      // A limit already holds its fallback model for the finder.
+      if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
     }, movesOnLimit), signal);
   };
   // Classified while the review runs, since only the posted note reads it.
@@ -751,18 +754,23 @@ export async function runReview(
   }
 
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
-  for (const finder of team.finders) readingModels.add(modelIdentity(finder.model));
+  for (const finder of team.finders) addReader(modelIdentity(finder.model), 1);
   // Two reads by one model are weaker than the group, so a limit moves a finder only to a model that reads for no finder of the round.
+  // The model is held from the moment the finder is sent there, so two finders that reach a limit at once never both get it.
   const finderClients = new Map(team.finders.map(f => {
     const stage = pickReviewerClient(clients, f.model);
-    const movesOnLimit = (): boolean => {
+    const movesOnLimit = (): (() => void) | undefined => {
       const model = modelIdentity(stage.fallback!.model);
-      if (readingModels.has(model)) {
+      if ((readingModels.get(model) ?? 0) > 0) {
         core.info(`${f.name} reached a limit and is not sent to ${stage.fallback!.model}, which already reads for a finder of this round`);
-        return false;
+        return undefined;
       }
-      readingModels.add(model);
-      return true;
+      addReader(model, 1);
+      let held = true;
+      return () => {
+        if (held) addReader(model, -1);
+        held = false;
+      };
     };
     return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit)];
   }));

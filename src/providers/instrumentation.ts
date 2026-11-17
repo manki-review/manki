@@ -46,7 +46,9 @@ export function wrapClientForUsage(client: LLMClient): {
  *
  * A request that fails with a `QuotaError` is sent to `fallback` once too, with the time the failed call left.
  * Later requests go to `fallback` only after it answered one. The `QuotaError` is thrown unchanged when `fallback`
- * fails as well, when no time is left, or when `movesOnLimit` returns false. `movesOnLimit` is asked once, at the first limit.
+ * fails as well, when no time is left, or when `movesOnLimit` returns undefined. `movesOnLimit` takes `fallback` for
+ * the stage and returns the function that gives it back. That function runs once, when every fallback call the stage
+ * started after a limit failed and the stage has not moved. A request with no time left takes nothing.
  *
  * A request made with repository tools (`repoTools` in its options) never goes to a `fallback` without them. It is sent to
  * `client` and fails with its own error, also after the stage moved, since such a `fallback` would answer as if it had read the code.
@@ -57,11 +59,12 @@ export function withModelFallback(
   client: LLMClient,
   fallback: LLMClient | undefined,
   onFallback: (error: RefusalError | QuotaError) => void,
-  movesOnLimit: () => boolean = () => true,
+  movesOnLimit: () => (() => void) | undefined = () => () => {},
 ): LLMClient {
   if (!fallback) return client;
   let moved = false;
-  let limitMoves: boolean | undefined;
+  let giveBack: (() => void) | undefined;
+  let trying = 0;
   const needsMissingTools = (opts: SendMessageOptions | undefined): boolean => !!opts?.repoTools && !fallback.repoTools;
   return {
     sendMessage: async (sys, user, opts) => {
@@ -73,21 +76,33 @@ export function withModelFallback(
       } catch (error) {
         const limit = error instanceof QuotaError;
         if (!limit && !(error instanceof RefusalError)) throw error;
-        if (limit && !(limitMoves ??= movesOnLimit())) throw error;
         const timeoutMs = opts?.timeoutMs || undefined;
         const usedMs = Date.now() - start;
         const outOfTime = timeoutMs !== undefined && usedMs >= timeoutMs;
         const resend = () => fallback.sendMessage(sys, user, timeoutMs === undefined ? opts : { ...opts, timeoutMs: timeoutMs - usedMs });
         if (limit) {
           if (outOfTime) throw error;
-          // The limit of the configured model stays the stage's error, whatever stops the fallback.
-          const response = await resend().catch((failure: unknown) => {
+          giveBack ??= movesOnLimit();
+          if (!giveBack) throw error;
+          trying += 1;
+          try {
+            const response = await resend();
+            if (!moved) onFallback(error);
+            moved = true;
+            return response;
+          } catch (failure) {
+            // The limit of the configured model stays the stage's error, whatever stops the fallback.
             core.warning(`The fallback model failed too, so the call fails with "${error.limit}": ${sanitizeLogOutput(String((failure as Error)?.message ?? failure)).slice(0, 300)}`);
             throw error;
-          });
-          if (!moved) onFallback(error);
-          moved = true;
-          return response;
+          } finally {
+            trying -= 1;
+            // Another fallback call of the stage can still answer, and a stage that moved keeps the fallback.
+            if (trying === 0 && !moved) {
+              const release = giveBack;
+              giveBack = undefined;
+              release?.();
+            }
+          }
         }
         // Parallel calls can all be refused before the first one returns, and the stage moves only once.
         if (!moved) onFallback(error);
