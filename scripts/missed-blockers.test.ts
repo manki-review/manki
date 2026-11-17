@@ -9,8 +9,10 @@ function entry(title: string, overrides: Partial<FindingFingerprintEntry> & { fi
   return { ...makeFindingFingerprintEntry({ title, file: overrides.file, severity: 'blocker' }), origin: 'reviewed', ...overrides };
 }
 
-function round(n: number, entries: FindingFingerprintEntry[]) {
-  return makeRoundContext(n, { findings: { count: entries.length, severityCounts: {}, entries } });
+function round(n: number, entries: FindingFingerprintEntry[], interRoundDiffState: RoundContext['judge']['interRoundDiffState'] = 'changed') {
+  const context = makeRoundContext(n, { judge: { summary: '', ...(interRoundDiffState && { interRoundDiffState }) }, findings: { count: entries.length, severityCounts: {}, entries } });
+  context.meta.mankiVersion = '7.6.0';
+  return context;
 }
 
 describe('collectMisses', () => {
@@ -26,6 +28,8 @@ describe('collectMisses', () => {
         entry('Overflow', { file: 'src/d.rs', threadId: 'T1' }),
       ]),
       round(4, [entry('Overflow, renamed', { file: 'src/d.rs', threadId: 'T1' }), entry('Lock order', { file: 'src/b.rs' })]),
+      // Without the diff since round 4, a line a push deleted or restored can read as reviewed.
+      round(5, [entry('Race on close', { file: 'src/e.rs' })], 'unknown'),
     ]);
 
     expect(misses.map(({ missedBy, foundIn, head, blockers }) => ({ missedBy, foundIn, head, titles: blockers.map(b => b.title) }))).toEqual([

@@ -25,7 +25,7 @@ import { fixedMarker } from '../src/state';
 import { FindingFingerprintEntry, FindingSeverity, isGradeCell, PRE_EXISTING_TAG, RoundContext } from '../src/types';
 import { COMMENT_MARKER } from '../src/utils';
 import { githubToken } from './review-history';
-import { fetchPrRecords, listMergedPrs, PrRecords } from './review-stats';
+import { fetchPrRecords, listMergedPrs, originsProven, PrRecords } from './review-stats';
 
 const DEFAULT_LAST = 40;
 const DEFAULT_OUT = 'bench/drafts';
@@ -49,7 +49,8 @@ function findingKey(entry: FindingFingerprintEntry): string {
 
 /**
  * Returns the misses in a pull request's rounds: blockers on code the previous round already reviewed, which no earlier
- * round raised as a blocker. A pre-existing finding is left out, since the pull request did not write that code.
+ * round raised as a blocker. A pre-existing finding is left out, since the pull request did not write that code, and so
+ * is a blocker of a round whose `origin` tags `originsProven` does not trust.
  */
 export function collectMisses(rounds: RoundContext[]): Miss[] {
   const sorted = [...rounds].sort((a, b) => a.meta.round - b.meta.round);
@@ -58,7 +59,7 @@ export function collectMisses(rounds: RoundContext[]): Miss[] {
   for (const [i, round] of sorted.entries()) {
     const entries = round.findings?.entries ?? [];
     const previous = sorted[i - 1];
-    const missed = entries.filter(e => e.severity === 'blocker' && e.origin === 'reviewed' && !e.tags?.includes(PRE_EXISTING_TAG)
+    const missed = entries.filter(e => originsProven(round) && e.severity === 'blocker' && e.origin === 'reviewed' && !e.tags?.includes(PRE_EXISTING_TAG)
       && !raised.has(findingKey(e)) && !(e.threadId && raised.has(e.threadId)));
     if (previous && missed.length > 0) {
       const head = previous.meta.commitSha;

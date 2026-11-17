@@ -106,6 +106,9 @@ type FirstRoundGrade = (typeof FIRST_ROUND_GRADES)[number];
 // Before this release a round without the earlier round's change tagged every finding `new` and did not say so.
 const ORIGINS_PROVEN_FROM = '7.5.0';
 
+/** The condition `originsProven` checks, as the report and the docs name it. */
+const ORIGINS_PROVEN_TEXT = `ran on Manki ${ORIGINS_PROVEN_FROM} or later, read the change the round before reviewed, and read the diff since that round`;
+
 /** The blockers and warnings one PR posted: those round 1 found, and those a later round first raised on code an earlier round reviewed. */
 interface FirstRoundPr {
   number: number;
@@ -363,7 +366,7 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         if (fromSweep(entry)) increment(stats.sweeps.posted, entry.severity);
         if (approved) severity.inApprovedRounds++;
         // A finding with the origin `earlier` restates one an earlier round listed.
-        if (numbered && round.meta.round > 1 && !round.findings?.originsWithoutPrior && entry.origin && entry.origin !== 'earlier') {
+        if (numbered && round.meta.round > 1 && originsProven(round) && entry.origin && entry.origin !== 'earlier') {
           severity.raisedLater++;
           if (entry.origin === 'reviewed') severity.onReviewedCode++;
         }
@@ -466,6 +469,17 @@ function inSequence(round: RoundContext, previous: RoundContext | undefined): bo
 }
 
 /**
+ * Whether a later round's `origin` tags can be trusted. A round without the change the round before reviewed tags every
+ * finding `new`, and says so with `originsWithoutPrior` from 7.5.0 on. A round without the diff since the last round can
+ * tag a line a push deleted or restored `reviewed`, and records `judge.interRoundDiffState` as `unknown` or not at all.
+ */
+export function originsProven(round: RoundContext): boolean {
+  const diffState = round.judge?.interRoundDiffState;
+  return (compareVersions(round.meta.mankiVersion, ORIGINS_PROVEN_FROM) ?? -1) >= 0 && !round.findings?.originsWithoutPrior
+    && diffState !== undefined && diffState !== 'unknown';
+}
+
+/**
  * Adds the blockers and warnings `round` posted to `found`. Each counts in the round that first raised it: round 1, or a
  * later round when it sits on code an earlier round reviewed. A pre-existing finding counts in neither. A later round
  * that posted one but cannot prove its origins counts as unproven instead, and so does a record out of sequence.
@@ -483,8 +497,7 @@ function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: Rou
     return;
   }
   if (graded.length === 0) return;
-  const proven = (compareVersions(round.meta.mankiVersion, ORIGINS_PROVEN_FROM) ?? -1) >= 0 && !round.findings?.originsWithoutPrior;
-  if (!proven || graded.some(entry => !entry.origin)) {
+  if (!originsProven(round) || graded.some(entry => !entry.origin)) {
     found.unproven++;
     return;
   }
@@ -719,7 +732,7 @@ function firstRoundLines(prs: FirstRoundPr[]): string[] {
     ...FIRST_ROUND_GRADES.map(grade => `| ${grade} | ${total([grade])} |`),
     `| both | ${total(FIRST_ROUND_GRADES)} |`,
     '',
-    `A blocker or warning counts once, in the round that first raised it. A finding of a later round counts only when it sits on code an earlier round reviewed, so one on code a push changed since the round before counts in neither column. A finding round 1 posted counts even when its thread was resolved later. A pre-existing finding counts in neither. The record says only that an earlier round reviewed the lines, not which one, so a later finding on code a push after round 1 added counts as late too. A PR counts only when its records prove where each finding was first raised: every record decodes, its first record in posting order is of round 1, each later record is of the round after the one before, and each later round that posted a blocker or warning ran on Manki ${ORIGINS_PROVEN_FROM} or later and read the change the round before reviewed.`,
+    `A blocker or warning counts once, in the round that first raised it. A finding of a later round counts only when it sits on code an earlier round reviewed, so one on code a push changed since the round before counts in neither column. A finding round 1 posted counts even when its thread was resolved later. A pre-existing finding counts in neither. The record says only that an earlier round reviewed the lines, not which one, so a later finding on code a push after round 1 added counts as late too. A PR counts only when its records prove where each finding was first raised: every record decodes, its first record in posting order is of round 1, each later record is of the round after the one before, and each later round that posted a blocker or warning ${ORIGINS_PROVEN_TEXT}.`,
     ...(left.length > 0
       ? ['', `${left.length} ${left.length === 1 ? 'PR' : 'PRs'} left out (${left.map(pr => `#${pr.number}`).join(', ')}): ${noFirstRound} without a round 1 record, ${records} round ${records === 1 ? 'record' : 'records'} that cannot say where a finding was first raised.`]
       : []),
@@ -763,7 +776,7 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     ...[...SEVERITIES, ...Object.keys(stats.severities).filter(s => !SEVERITIES.includes(s))].map(s => findingsRow(s, stats.severities[s])),
     findingsRow('all', all),
     '',
-    'The table leaves out a finding the round put under an earlier Manki thread, such as another instance of a finding that went into its thread as a reply. A record from before the `posted` field does not say where a finding went. For those the script leaves out a finding that names an earlier thread, or that matches one by file, title and line. It cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`. A record that says so is left out of the reviewed-code share. An older record does not say so, and its findings on reviewed code are missing from the share, so the share reads too low. A note on reviewed code is not posted, so it counts in none of these either, and shows under `reviewed_code` in the table of findings recorded without posting.',
+    'The table leaves out a finding the round put under an earlier Manki thread, such as another instance of a finding that went into its thread as a reply. A record from before the `posted` field does not say where a finding went. For those the script leaves out a finding that names an earlier thread, or that matches one by file, title and line. It cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved. A finding first raised in a later round counts only when that round ' + ORIGINS_PROVEN_TEXT + '. A round without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`. A round without the diff since the last round can tag a line a push deleted or restored as reviewed. A note on reviewed code is not posted, so it counts in none of these either, and shows under `reviewed_code` in the table of findings recorded without posting.',
     '',
     `- Blocker threads: ${blockerThreads}, fixed ${stats.blockerOutcomes.fixed}, withdrawn ${stats.blockerOutcomes.withdrawn}, other ${stats.blockerOutcomes.other}`,
     `- Verdict reader blockers: ${stats.readerBlockers} in ${stats.readerRounds} rounds`,
