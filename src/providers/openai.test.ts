@@ -46,21 +46,36 @@ const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
 describe('buildOpenAIAuth', () => {
   it('throws when neither token is present', () => {
-    expect(() => buildOpenAIAuth('', '')).toThrow(
+    expect(() => buildOpenAIAuth('', '', '')).toThrow(
       'Either openai_oauth_token or openai_api_key must be provided',
     );
   });
 
   it('returns oauth kind when only oauth token is present', () => {
-    expect(buildOpenAIAuth('oauth-tok', '')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
+    expect(buildOpenAIAuth('oauth-tok', '', '')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
   });
 
   it('returns apiKey kind when only api key is present', () => {
-    expect(buildOpenAIAuth('', 'sk-key')).toEqual({ kind: 'apiKey', key: 'sk-key' });
+    expect(buildOpenAIAuth('', 'sk-key', '')).toEqual({ kind: 'apiKey', key: 'sk-key' });
   });
 
   it('oauth wins when both tokens are present', () => {
-    expect(buildOpenAIAuth('oauth-tok', 'sk-key')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
+    expect(buildOpenAIAuth('oauth-tok', 'sk-key', '')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
+  });
+
+  it.each(['https://llm.example/v1', 'http://localhost:4000/v1'])('returns endpoint kind for the API key with the base URL %s', baseUrl => {
+    expect(buildOpenAIAuth('', 'sk-key', baseUrl)).toEqual({ kind: 'endpoint', key: 'sk-key', baseUrl });
+  });
+
+  it.each([
+    ['has no API key', '', '', 'https://llm.example/v1', 'openai_base_url is set but openai_api_key is missing. Set openai_api_key to the key of that endpoint.'],
+    ['comes with an OAuth token', 'oauth-tok', '', 'https://llm.example/v1', 'openai_base_url cannot be used with openai_oauth_token: a ChatGPT login works only on the servers of OpenAI. Remove openai_oauth_token and set openai_api_key to the key of that endpoint.'],
+    ['comes with an OAuth token and an API key', 'oauth-tok', 'sk-key', 'https://llm.example/v1', 'openai_base_url cannot be used with openai_oauth_token'],
+    ['has no scheme', '', 'sk-key', 'llm.example/v1', 'openai_base_url must be an http or https URL, such as https://host/v1'],
+    ['has another scheme', '', 'sk-key', 'ftp://llm.example/v1', 'openai_base_url must be an http or https URL'],
+    ['is no URL', '', 'sk-key', 'not a url', 'openai_base_url must be an http or https URL'],
+  ])('throws when the base URL %s', (_case, oauthToken, apiKey, baseUrl, message) => {
+    expect(() => buildOpenAIAuth(oauthToken, apiKey, baseUrl)).toThrow(message);
   });
 });
 
@@ -413,7 +428,7 @@ describe('sendMessage (API path)', () => {
   });
 });
 
-describe('sendViaOAuth (Codex CLI path)', () => {
+describe('sendViaCLI (Codex CLI path)', () => {
   let savedCodexHome: string | undefined;
 
   beforeEach(() => {
@@ -539,6 +554,54 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(instructions[0]).not.toContain('## Related repos');
     expect(instructions[1]).toBe('Review the diff.');
     expect(stdin.mock.calls.map(c => String(c[0]))).toEqual(['the diff', 'the diff']);
+  });
+
+  it('runs an endpoint call with Manki\'s own model provider and the key in the CLI\'s environment only, without a login file', async () => {
+    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+    const setSecret = jest.spyOn(core, 'setSecret').mockImplementation(() => {});
+    setupSpawnMock('[]\n');
+    const key = 'sk-endpoint-key-for-codex-only';
+    const savedEnv = process.env;
+    process.env = {
+      PATH: '/usr/bin',
+      HOME: '/home/runner',
+      CODEX_HOME: '/tmp/manki-test-codex',
+      GITHUB_API_URL: 'https://api.github.com',
+      OPENAI_API_KEY: 'sk-ambient-key',
+      OPENAI_OAUTH_TOKEN: 'ambient-login',
+      GITHUB_TOKEN: 'ghs_ambient',
+    };
+    try {
+      const client = new OpenAIClient({ auth: { kind: 'endpoint', key, baseUrl: 'https://llm.example/v1' }, model: 'gpt-5.5' });
+      expect(client.repoTools).toBe(true);
+      await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related: undefined } });
+    } finally {
+      process.env = savedEnv;
+    }
+
+    const [, args, { env }] = mockSpawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
+    expect(args).toEqual([
+      'exec', '--skip-git-repo-check', '--model=gpt-5.5', '--sandbox', 'read-only', '-c', 'approval_policy=never',
+      '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
+      '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+      '-c', 'model_provider="manki"',
+      '-c', 'model_providers.manki.name="OpenAI-compatible endpoint"',
+      '-c', 'model_providers.manki.base_url="https://llm.example/v1"',
+      '-c', 'model_providers.manki.wire_api="responses"',
+      '-c', 'model_providers.manki.env_key="OPENAI_API_KEY"',
+      '-c', `mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
+      '-c', `mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
+      '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
+      '-c', expect.stringMatching(/^mcp_servers\.manki\.env_vars=/),
+      '-c', expect.stringMatching(/^model_instructions_file=".*\/instructions\.md"$/), '-',
+    ]);
+    expect(args.join(' ')).not.toContain(key);
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/runner', CODEX_HOME: '/tmp/manki-test-codex', GITHUB_API_URL: 'https://api.github.com', OPENAI_API_KEY: key });
+    // Codex gives its tool server only the variables `env_vars` names, so the key stays with Codex.
+    const envVars = JSON.parse(args.find(arg => arg.startsWith('mcp_servers.manki.env_vars='))!.slice('mcp_servers.manki.env_vars='.length)) as string[];
+    expect(envVars.sort()).toEqual(['GITHUB_API_URL', 'HOME', 'PATH']);
+    expect(seedAuthFile).not.toHaveBeenCalled();
+    expect(setSecret).toHaveBeenCalledWith(key);
   });
 
   it('reads back how often the tool server read each related repo, and passes no reads file without related repos', async () => {
@@ -823,6 +886,18 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     setupSpawnMock('', { exitCode: 1, stderr: 'user\nreview this: rate limit reached\nERROR: stream disconnected\n' });
     const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
     expect(other).not.toBeInstanceOf(QuotaError);
+
+    // An endpoint has no ChatGPT subscription behind it, so the limit is named as the endpoint's.
+    jest.spyOn(core, 'setSecret').mockImplementation(() => {});
+    setupSpawnMock('', { exitCode: 1, stderr: 'ERROR: exceeded retry limit, last status: 429 Too Many Requests\n' });
+    const endpoint = new OpenAIClient({ auth: { kind: 'endpoint', key: 'sk-endpoint-key', baseUrl: 'https://llm.example/v1' }, model: 'gpt-5.5' });
+    const limited = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(limited).toBeInstanceOf(QuotaError);
+    expect(limited).toMatchObject({
+      message: 'OpenAI endpoint limit reached: ERROR: exceeded retry limit, last status: 429 Too Many Requests',
+      limit: 'OpenAI endpoint limit reached',
+      credential: 'key',
+    });
   });
 
   it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {
@@ -859,7 +934,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   });
 });
 
-describe('sendViaOAuth — extended coverage', () => {
+describe('sendViaCLI — extended coverage', () => {
   let savedCodexHome: string | undefined;
 
   beforeEach(() => {

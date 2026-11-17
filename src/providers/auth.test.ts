@@ -5,17 +5,19 @@ const empty: ProviderInputs = {
   anthropicApiKey: '',
   openaiOauthToken: '',
   openaiApiKey: '',
+  openaiBaseUrl: '',
   geminiOauthToken: '',
   geminiApiKey: '',
 };
 
 describe('hasAnyProviderCredentials', () => {
-  it('returns false when all six fields are empty', () => {
+  it('returns false when no credential is set, also with an OpenAI base URL', () => {
     expect(hasAnyProviderCredentials(empty)).toBe(false);
+    expect(hasAnyProviderCredentials({ ...empty, openaiBaseUrl: 'https://llm.example/v1' })).toBe(false);
   });
 
-  it('returns true when any single field is set', () => {
-    for (const key of Object.keys(empty) as (keyof ProviderInputs)[]) {
+  it('returns true when any single credential is set', () => {
+    for (const key of (Object.keys(empty) as (keyof ProviderInputs)[]).filter(key => key !== 'openaiBaseUrl')) {
       const inputs = { ...empty, [key]: 'x' };
       expect(hasAnyProviderCredentials(inputs)).toBe(true);
     }
@@ -41,6 +43,12 @@ describe('buildAuthForProvider', () => {
   it('routes openai to apiKey when only the API key is present', () => {
     const inputs = { ...empty, openaiApiKey: 'sk-openai' };
     expect(buildAuthForProvider('openai', inputs)).toEqual({ kind: 'apiKey', key: 'sk-openai' });
+  });
+
+  it('routes openai to the endpoint when a base URL comes with the API key, and refuses it with the OAuth token', () => {
+    const inputs = { ...empty, openaiApiKey: 'sk-endpoint', openaiBaseUrl: 'https://llm.example/v1' };
+    expect(buildAuthForProvider('openai', inputs)).toEqual({ kind: 'endpoint', key: 'sk-endpoint', baseUrl: 'https://llm.example/v1' });
+    expect(() => buildAuthForProvider('openai', { ...inputs, openaiOauthToken: 'codex-tok' })).toThrow('openai_base_url cannot be used with openai_oauth_token');
   });
 
   it('routes gemini to oauth when only the OAuth token is present', () => {
@@ -93,6 +101,7 @@ describe('readProviderInputsFromEnv', () => {
       ANTHROPIC_API_KEY: 'b',
       OPENAI_OAUTH_TOKEN: 'c',
       OPENAI_API_KEY: 'd',
+      OPENAI_BASE_URL: 'g',
       GEMINI_OAUTH_TOKEN: 'e',
       GEMINI_API_KEY: 'f',
     };
@@ -101,6 +110,7 @@ describe('readProviderInputsFromEnv', () => {
       anthropicApiKey: 'b',
       openaiOauthToken: 'c',
       openaiApiKey: 'd',
+      openaiBaseUrl: 'g',
       geminiOauthToken: 'e',
       geminiApiKey: 'f',
     });
@@ -113,6 +123,7 @@ describe('readProviderInputsFromEnv', () => {
       anthropicApiKey: '',
       openaiOauthToken: '',
       openaiApiKey: '',
+      openaiBaseUrl: '',
       geminiOauthToken: '',
       geminiApiKey: '',
     });

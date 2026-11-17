@@ -40,8 +40,8 @@ Arguments:
              Or use provider/model syntax: anthropic/claude-..., openai/gpt-..., gemini/gemini-...
   --effort   Optional. low | medium | high | xhigh | max. Provider behaviour varies.
              OpenAI models that reject reasoning effort (gpt-4o, gpt-4.1, ...)
-             ignore --effort. The Codex CLI (OAuth path) then applies its own
-             default effort and the API path omits reasoning_effort. A warning
+             ignore --effort. The Codex CLI (OAuth and endpoint paths) then applies
+             its own default effort and the API path omits reasoning_effort. A warning
              is emitted in both cases so the effective effort is visible in CI logs.
   --prompt   Optional. Override the default test prompt.
   --help     Print this message.
@@ -49,6 +49,7 @@ Arguments:
 Environment:
   ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN
   OPENAI_API_KEY, OPENAI_OAUTH_TOKEN
+  OPENAI_BASE_URL (with OPENAI_API_KEY, an OpenAI-compatible endpoint through the Codex CLI)
   GEMINI_API_KEY, GEMINI_OAUTH_TOKEN
 
 Exit codes:

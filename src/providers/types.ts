@@ -217,7 +217,9 @@ export type AnthropicAuth =
 
 export type OpenAIAuth =
   | { kind: 'oauth'; token: string }
-  | { kind: 'apiKey'; key: string };
+  | { kind: 'apiKey'; key: string }
+  /** An OpenAI-compatible endpoint other than OpenAI's own servers, with the key it takes. */
+  | { kind: 'endpoint'; key: string; baseUrl: string };
 
 export type GeminiAuth =
   | { kind: 'oauth'; token: string }

@@ -8,17 +8,20 @@ export interface ProviderInputs {
   anthropicApiKey: string;
   openaiOauthToken: string;
   openaiApiKey: string;
+  /** An OpenAI-compatible endpoint that takes `openaiApiKey`, or empty for OpenAI's own servers. */
+  openaiBaseUrl: string;
   geminiOauthToken: string;
   geminiApiKey: string;
 }
 
-/** Reads the credentials from the environment variables named after the action's secrets. */
+/** Reads the credentials and the OpenAI endpoint from the environment variables named after the action's inputs. */
 export function readProviderInputsFromEnv(): ProviderInputs {
   return {
     anthropicOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     openaiOauthToken: process.env.OPENAI_OAUTH_TOKEN ?? '',
     openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+    openaiBaseUrl: process.env.OPENAI_BASE_URL ?? '',
     geminiOauthToken: process.env.GEMINI_OAUTH_TOKEN ?? '',
     geminiApiKey: process.env.GEMINI_API_KEY ?? '',
   };
@@ -29,7 +32,7 @@ export function buildAuthForProvider(provider: ProviderName, inputs: ProviderInp
     case 'anthropic':
       return buildAnthropicAuth(inputs.anthropicOauthToken, inputs.anthropicApiKey);
     case 'openai':
-      return buildOpenAIAuth(inputs.openaiOauthToken, inputs.openaiApiKey);
+      return buildOpenAIAuth(inputs.openaiOauthToken, inputs.openaiApiKey, inputs.openaiBaseUrl);
     case 'gemini':
       return buildGeminiAuth(inputs.geminiOauthToken, inputs.geminiApiKey);
     default: {

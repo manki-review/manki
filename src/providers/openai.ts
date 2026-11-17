@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
+import { registerSecret } from '../utils';
 import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
@@ -127,7 +128,24 @@ const OPENAI_OAUTH_BOOTSTRAP_HINT =
 // in sync with the explicit install step in `.github/workflows/manki.yml`.
 export const CODEX_CLI_VERSION = '0.166.0';
 
-export function buildOpenAIAuth(oauthToken: string, apiKey: string): OpenAIAuth {
+function isHttpUrl(value: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+export function buildOpenAIAuth(oauthToken: string, apiKey: string, baseUrl: string): OpenAIAuth {
+  if (baseUrl) {
+    if (oauthToken) {
+      throw new Error('openai_base_url cannot be used with openai_oauth_token: a ChatGPT login works only on the servers of OpenAI. Remove openai_oauth_token and set openai_api_key to the key of that endpoint.');
+    }
+    if (!apiKey) throw new Error('openai_base_url is set but openai_api_key is missing. Set openai_api_key to the key of that endpoint.');
+    // A URL can carry a password, so the message leaves the value out.
+    if (!isHttpUrl(baseUrl)) throw new Error('openai_base_url must be an http or https URL, such as https://host/v1');
+    return { kind: 'endpoint', key: apiKey, baseUrl };
+  }
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
   throw new Error('Either openai_oauth_token or openai_api_key must be provided');
@@ -177,18 +195,38 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
   return new QuotaError(`${limit}: ${text}`, limit, matchQuotaText(text)?.resetsAt, 'key');
 }
 
+// The variable Codex reads an endpoint's key from, and the id of the model provider Manki defines for the endpoint.
+const ENDPOINT_KEY_ENV = 'OPENAI_API_KEY';
+const ENDPOINT_PROVIDER = 'manki';
+
+/**
+ * Returns the `-c` overrides that send Codex to the OpenAI-compatible endpoint at `baseUrl` instead of OpenAI's own
+ * servers. Codex reads the key from `ENDPOINT_KEY_ENV`, so the key is not on the command line and no login file is needed.
+ */
+function codexEndpointArgs(baseUrl: string): string[] {
+  const provider = `model_providers.${ENDPOINT_PROVIDER}`;
+  return [
+    '-c', `model_provider=${JSON.stringify(ENDPOINT_PROVIDER)}`,
+    '-c', `${provider}.name="OpenAI-compatible endpoint"`,
+    '-c', `${provider}.base_url=${JSON.stringify(baseUrl)}`,
+    '-c', `${provider}.wire_api="responses"`,
+    '-c', `${provider}.env_key=${JSON.stringify(ENDPOINT_KEY_ENV)}`,
+  ];
+}
+
 /**
  * Returns the `-c` overrides that give Codex Manki's tool server. Its tools are read-only, so they run without
  * approval. Codex starts the server with a few default variables only, so `env_vars` names the rest of the CLI's own
  * environment, such as the runner temp folder, the proxy settings and the GitHub API URL `repo_info` needs. Codex reads
  * their values from its own environment, so none of them, such as a proxy password, lands on the command line.
+ * `ENDPOINT_KEY_ENV` is not named, so the server never gets an endpoint's key.
  */
 function codexToolServerArgs({ command, args }: MankiCommand, env: NodeJS.ProcessEnv): string[] {
   return [
     '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
     '-c', `mcp_servers.manki.args=${JSON.stringify(args)}`,
     '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
-    '-c', `mcp_servers.manki.env_vars=${JSON.stringify(Object.keys(env).filter(name => name !== 'CODEX_HOME'))}`,
+    '-c', `mcp_servers.manki.env_vars=${JSON.stringify(Object.keys(env).filter(name => name !== 'CODEX_HOME' && name !== ENDPOINT_KEY_ENV))}`,
   ];
 }
 
@@ -217,11 +255,13 @@ export class OpenAIClient implements LLMClient {
       // Explicit timeout makes the bound visible and consistent with the OAuth/CLI path's
       // 1200s hard deadline. The SDK default (600s) leaves the action hanging on slow calls.
       this.openai = new OpenAI({ apiKey: this.auth.key, timeout: 300_000 });
+    } else if (this.auth.kind === 'endpoint') {
+      registerSecret(this.auth.key);
     }
   }
 
   get repoTools(): boolean {
-    return this.auth.kind === 'oauth';
+    return this.auth.kind !== 'apiKey';
   }
 
   sentEffort(effort: OpenAIReasoningEffort): OpenAIReasoningEffort | undefined {
@@ -229,10 +269,10 @@ export class OpenAIClient implements LLMClient {
   }
 
   async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
-    if (this.auth.kind === 'oauth') {
-      return this.sendViaOAuth(systemPrompt, userMessage, options);
+    if (this.auth.kind === 'apiKey') {
+      return this.sendViaAPI(systemPrompt, userMessage, options);
     }
-    return this.sendViaAPI(systemPrompt, userMessage, options);
+    return this.sendViaCLI(systemPrompt, userMessage, options);
   }
 
   private async ensureCLI(): Promise<string> {
@@ -279,12 +319,13 @@ export class OpenAIClient implements LLMClient {
     }
   }
 
-  private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
+  private async sendViaCLI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const repoTools = options?.repoTools;
     const toolsPrompt = repoTools ? `\n\n${repoToolsPrompt(repoTools, '`read_file`, `grep` and `glob`')}` : '';
     const instructions = `${systemPrompt}${toolsPrompt}`;
     const codexHome = resolveCodexHome();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
+    const endpoint = this.auth.kind === 'endpoint' ? this.auth : undefined;
     const model = this.model;
     if (oauthToken) {
       seedAuthFile({
@@ -312,6 +353,7 @@ export class OpenAIClient implements LLMClient {
       'exec', '--skip-git-repo-check', `--model=${this.model}`, '--sandbox', 'read-only', '-c', 'approval_policy=never',
       '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+      ...(endpoint ? codexEndpointArgs(endpoint.baseUrl) : []),
     ];
 
     const reasoningEffort = options?.effort && resolveReasoningEffort(this.model, options.effort);
@@ -325,7 +367,11 @@ export class OpenAIClient implements LLMClient {
 
     // The GitHub API URL is for the tool server's `repo_info`, which Codex starts with names from this environment.
     const apiUrl = process.env.GITHUB_API_URL;
-    const env = cliEnv('codex', { CODEX_HOME: codexHome, ...(repoTools && apiUrl && { GITHUB_API_URL: apiUrl }) });
+    const env = cliEnv('codex', {
+      CODEX_HOME: codexHome,
+      ...(repoTools && apiUrl && { GITHUB_API_URL: apiUrl }),
+      ...(endpoint && { [ENDPOINT_KEY_ENV]: endpoint.key }),
+    }, endpoint && ENDPOINT_KEY_ENV);
 
     let output = '';
     const { code, signal, stderr, lastStdoutChunk, relatedReads } = await withPromptDir(async (promptDir) => {
@@ -359,9 +405,10 @@ export class OpenAIClient implements LLMClient {
       const errorLine = extractCliErrorSnippet(stderr);
       const quota = matchQuotaText(errorLine);
       if (quota && !quota.overloaded) {
-        const message = `ChatGPT subscription limit reached: ${errorLine}`;
+        const limit = endpoint ? 'OpenAI endpoint limit reached' : 'ChatGPT subscription limit reached';
+        const message = `${limit}: ${errorLine}`;
         core.warning(message);
-        throw carryReadings(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), { relatedReads, ...limits });
+        throw carryReadings(new QuotaError(message, limit, quota.resetsAt, endpoint ? 'key' : 'token'), { relatedReads, ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,

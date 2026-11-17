@@ -1,3 +1,5 @@
+import * as core from '@actions/core';
+
 import * as AnthropicModule from './anthropic';
 import { AnthropicClient } from './anthropic';
 import { OpenAIClient } from './openai';
@@ -53,6 +55,15 @@ describe('createLLMClient', () => {
   it('returns an OpenAIClient for the openai provider with oauth auth', () => {
     const client = createLLMClient('openai', 'o3', { kind: 'oauth', token: 'tok' });
     expect(client).toBeInstanceOf(OpenAIClient);
+  });
+
+  it('takes endpoint auth for the openai provider only', () => {
+    const setSecret = jest.spyOn(core, 'setSecret').mockImplementation(() => {});
+    const auth = { kind: 'endpoint' as const, key: 'sk-endpoint-factory', baseUrl: 'https://llm.example/v1' };
+    expect(createLLMClient('openai', 'gpt-5.5', auth)).toBeInstanceOf(OpenAIClient);
+    expect(() => createLLMClient('anthropic', 'claude-opus-4-6', auth)).toThrow('The anthropic provider cannot use the OpenAI endpoint');
+    expect(() => createLLMClient('gemini', 'gemini-2.5-pro', auth)).toThrow('The gemini provider cannot use the OpenAI endpoint');
+    setSecret.mockRestore();
   });
 
   it('returns a GeminiClient for the gemini provider with apiKey auth', () => {
