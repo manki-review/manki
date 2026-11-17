@@ -296,13 +296,29 @@ function streamFailure(finalError: string | undefined, resume: number): { reason
 }
 
 /**
+ * Returns the arguments of a `codex exec` run of `model`, before the tool server and the instructions, sent to the
+ * endpoint at `baseUrl` when one is set. `codex exec` reads the prompt from stdin when `-` is the prompt argument.
+ * `runCli` runs it in an empty directory, which is not a git repository.
+ */
+export function codexExecArgs(model: string, baseUrl?: string): string[] {
+  // The read-only sandbox still lets tools read every file, such as the auth files, so every built-in tool
+  // that reads files or reaches the network or an account is off, and only Manki's tool server is left.
+  return [
+    'exec', '--skip-git-repo-check', `--model=${model}`, '--sandbox', 'read-only', '-c', 'approval_policy=never',
+    '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
+    '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+    ...(baseUrl ? codexEndpointArgs(baseUrl) : []),
+  ];
+}
+
+/**
  * Returns the `-c` overrides that give Codex Manki's tool server. Its tools are read-only, so they run without
  * approval. Codex starts the server with a few default variables only, so `env_vars` names the rest of the CLI's own
  * environment, such as the runner temp folder, the proxy settings and the GitHub API URL `repo_info` needs. Codex reads
  * their values from its own environment, so none of them, such as a proxy password, lands on the command line.
  * `ENDPOINT_KEY_ENV` is not named, so the server never gets an endpoint's key.
  */
-function codexToolServerArgs({ command, args }: MankiCommand, env: NodeJS.ProcessEnv): string[] {
+export function codexToolServerArgs({ command, args }: MankiCommand, env: NodeJS.ProcessEnv): string[] {
   return [
     '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
     '-c', `mcp_servers.manki.args=${JSON.stringify(args)}`,
@@ -429,17 +445,7 @@ export class OpenAIClient implements LLMClient {
       return limits.length > 0 ? { limits } : {};
     };
 
-    // `codex exec` runs a non-interactive completion, reading the prompt from stdin
-    // when invoked with `-` as the prompt argument. `--model` selects the model.
-    // `runCli` runs it in an empty directory, which is not a git repository.
-    // The read-only sandbox still lets tools read every file, such as the auth files, so every built-in tool
-    // that reads files or reaches the network or an account is off, and only Manki's tool server is left.
-    const args = [
-      'exec', '--skip-git-repo-check', `--model=${this.model}`, '--sandbox', 'read-only', '-c', 'approval_policy=never',
-      '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
-      '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
-      ...(endpoint ? codexEndpointArgs(endpoint.baseUrl) : []),
-    ];
+    const args = codexExecArgs(this.model, endpoint?.baseUrl);
 
     const reasoningEffort = options?.effort && resolveReasoningEffort(this.model, options.effort);
     if (reasoningEffort) {
