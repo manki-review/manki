@@ -407,7 +407,7 @@ function text(data: string): Response {
   return new Response(data, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
 }
 
-type Stage = 'planner' | 'reviewer' | 'judge' | 'refute' | 'verdict' | 'dedup' | 'related' | 'claims' | 'claim_check';
+type Stage = 'planner' | 'reviewer' | 'judge' | 'refute' | 'verdict' | 'dedup' | 'related' | 'claims' | 'claim_check' | 'scope';
 
 const READY_REPLIES: Record<Stage, string> = {
   planner: JSON.stringify({ trivial: false, subtle: true, paired: false, judgeEffort: 'low', prType: 'refactor', language: 'typescript' }),
@@ -419,6 +419,7 @@ const READY_REPLIES: Record<Stage, string> = {
   claims: '[]',
   claim_check: JSON.stringify({ status: 'unchecked', reason: 'Could not tell.' }),
   refute: JSON.stringify({ outcome: 'unsettled', reason: 'Could not tell.' }),
+  scope: JSON.stringify({ useful: true, topics: [{ name: 'Sum', files: ['src/math.ts'] }], split: [] }),
 };
 
 const BLOCKER = { severity: 'blocker', title: 'Sum is never range checked', file: 'src/math.ts', line: 2, description: 'Large inputs overflow silently.', suggestedFix: 'Check the range before adding.', proof: ['src/math.ts:2'] };
@@ -451,6 +452,7 @@ class FakeLLM {
         : system.startsWith('You compare a pull request') ? 'related'
         : system.startsWith('You list the statements') ? 'claims'
         : system.startsWith('You check one statement') ? 'claim_check'
+        : system.startsWith('You judge a pull request as a whole') ? 'scope'
           : system.includes('"judgeEffort"') ? 'planner'
             : 'reviewer';
     this.calls.push(stage);
@@ -614,7 +616,7 @@ describe('runFullReview end to end', () => {
       judge: { skipped: 'nothing_to_judge', summary: 'No new problems found.' },
     });
     // The claims of the PR text are listed while the planner runs, and this PR makes none. The finder found nothing, so no judge is called.
-    expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'verdict']);
+    expect(mockLLM.calls).toEqual(['claims', 'planner', 'scope', 'reviewer', 'verdict']);
     const progress = mockGitHub.comments.find(c => c.body.includes('**Judge'))?.body;
     expect(progress).toContain('**Judge:** skipped, nothing to judge');
     expect(progress).toContain('- Judge: skipped\n');
@@ -677,7 +679,7 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.stateReports).toContainEqual(expect.objectContaining({ approval: { commit: HEAD_SHA, held: true } }));
   });
 
-  it('gives only the finders read-only tools on the fetched PR head with a step budget, and reviews without them when the fetch fails', async () => {
+  it('gives the finders and the scope reader read-only tools on the fetched PR head with a step budget, and reviews without them when the fetch fails', async () => {
     mockLLM.repoTools = true;
     jest.mocked(fetchWorkspace).mockResolvedValueOnce('/work/pr-head');
 
@@ -685,7 +687,7 @@ describe('runFullReview end to end', () => {
 
     expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app');
     // One finder on a PR in no floor class gets the normal budget.
-    expect(mockLLM.tools).toEqual([['reviewer', { root: '/work/pr-head', steps: 30 }]]);
+    expect(mockLLM.tools).toEqual([['scope', { root: '/work/pr-head', steps: 10 }], ['reviewer', { root: '/work/pr-head', steps: 30 }]]);
 
     mockLLM.tools = [];
     jest.mocked(fetchWorkspace).mockRejectedValueOnce(new Error('fetch failed'));
@@ -1113,8 +1115,8 @@ describe('runFullReview end to end', () => {
   });
 
   it.each([
-    ['the finders run', 'reviewer', ['claims', 'planner', 'reviewer']],
-    ['the verdict reader runs', 'verdict', ['claims', 'planner', 'reviewer', 'verdict']],
+    ['the finders run', 'reviewer', ['claims', 'planner', 'scope', 'reviewer']],
+    ['the verdict reader runs', 'verdict', ['claims', 'planner', 'scope', 'reviewer', 'verdict']],
   ] as const)('posts no verdict and marks the progress comment superseded when a push lands while %s', async (_label, pushDuring, calls) => {
     mockLLM.onCall = stage => {
       if (stage === pushDuring) mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
@@ -1140,7 +1142,7 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     expect(mockLLM.aborted).toEqual(['verdict']);
-    expect(mockLLM.calls).toEqual(['claims', 'planner', 'reviewer', 'verdict']);
+    expect(mockLLM.calls).toEqual(['claims', 'planner', 'scope', 'reviewer', 'verdict']);
     expect(core.setFailed).not.toHaveBeenCalled();
     expect(mockGitHub.reviews).toEqual([]);
     expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`. No verdict was posted');
