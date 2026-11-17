@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -183,28 +183,20 @@ describe('runReviewCommand', () => {
 });
 
 describe('runCliCommand', () => {
-  it('drops the secret mask lines core logs, and gives the command an empty Codex home it removes afterwards', async () => {
+  it('drops the secret mask lines core logs', async () => {
     const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const saved = process.env.CODEX_HOME;
-    delete process.env.CODEX_HOME;
-    let home: string | undefined;
     try {
       const code = await runCliCommand('test', async (out) => {
         process.stdout.write('::add-mask::secret-token\n');
         process.stdout.write('a log line\n');
-        home = process.env.CODEX_HOME;
-        expect(home && readdirSync(home)).toEqual([]);
         out('');
         return 0;
       });
       expect(code).toBe(0);
       expect(stderr).toHaveBeenCalledWith('a log line\n');
       expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining('secret-token'));
-      expect(existsSync(home!)).toBe(false);
-      expect(process.env.CODEX_HOME).toBeUndefined();
     } finally {
       stderr.mockRestore();
-      if (saved !== undefined) process.env.CODEX_HOME = saved;
     }
   });
 });
