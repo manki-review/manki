@@ -939,19 +939,21 @@ describe('sendViaOAuth — extended coverage', () => {
     throw new Error('Listeners were never wired up');
   }
 
-  it('rejects with stale error when no stdout for STALE_TIMEOUT_MS', async () => {
+  it('keeps a call that prints nothing for longer than STALE_TIMEOUT_MS, since Codex is silent while the model thinks', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const wiring = makeProc();
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
       const promise = client.sendMessage('sys', 'user');
-      promise.catch(() => {});
 
       await waitForListeners(wiring);
-      jest.advanceTimersByTime(STALE_TIMEOUT_MS + 100);
-      wiring.procHandlers['close']?.(null, 'SIGTERM');
+      wiring.stderrHandlers['data']?.(Buffer.from('reasoning effort: high\n'));
+      jest.advanceTimersByTime(STALE_TIMEOUT_MS * 5);
+      expect(wiring.proc.kill).not.toHaveBeenCalled();
+      wiring.stdoutHandlers['data']?.(Buffer.from('late answer'));
+      wiring.procHandlers['close']?.(0, null);
 
-      await expect(promise).rejects.toThrow(/stale/);
+      expect((await promise).content).toContain('late answer');
     } finally {
       jest.useRealTimers();
     }
@@ -966,9 +968,7 @@ describe('sendViaOAuth — extended coverage', () => {
       promise.catch(() => {});
 
       await waitForListeners(wiring);
-      // Emit stdout periodically so the stale timer keeps resetting; only the hard
-      // 1200s deadline should fire. Step strictly shorter than STALE_TIMEOUT_MS, with
-      // a final stdout chunk after the loop so stale always has > step time remaining.
+      // Output up to the end, so only the hard 1200s deadline can end the call.
       const step = STALE_TIMEOUT_MS - 10_000;
       let elapsed = 0;
       while (elapsed + step < 1_200_000) {
@@ -1061,7 +1061,7 @@ describe('sendViaOAuth — extended coverage', () => {
     expect(result.content).toContain('A');
   });
 
-  it('includes last 500 bytes of stdout in stale error message', async () => {
+  it('includes last 500 bytes of stdout in the timeout error message', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const wiring = makeProc();
@@ -1071,10 +1071,10 @@ describe('sendViaOAuth — extended coverage', () => {
 
       await waitForListeners(wiring);
       wiring.stdoutHandlers['data']?.(Buffer.from('UNIQUE_DIAGNOSTIC_MARKER'));
-      jest.advanceTimersByTime(STALE_TIMEOUT_MS + 100);
+      jest.advanceTimersByTime(1_200_000 + 100);
       wiring.procHandlers['close']?.(null, 'SIGTERM');
 
-      await expect(promise).rejects.toThrow(/UNIQUE_DIAGNOSTIC_MARKER/);
+      await expect(promise).rejects.toThrow(/timed out after 1200s.*UNIQUE_DIAGNOSTIC_MARKER/s);
     } finally {
       jest.useRealTimers();
     }

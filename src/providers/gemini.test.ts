@@ -626,7 +626,7 @@ describe('GeminiClient OAuth path', () => {
     await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Failed to install Gemini CLI/);
   });
 
-  it('rejects with stderr details when CLI fails on stale timeout', async () => {
+  it('keeps a call that is silent for longer than the stale limit of a streaming CLI', async () => {
     jest.useFakeTimers();
     try {
       const proc: MockProc = {
@@ -640,7 +640,7 @@ describe('GeminiClient OAuth path', () => {
       proc.on.mockImplementation((event: string, cb: (code: number | null, signal: string | null) => void) => {
         handlers[event] = cb;
       });
-      // Emit some stdout first, then go stale.
+      // Some output first, then a long silence.
       proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') setTimeout(() => cb(Buffer.from('partial output')), 1);
       });
@@ -654,15 +654,13 @@ describe('GeminiClient OAuth path', () => {
       const promise = client.sendMessage('sys', 'user');
 
       await jest.advanceTimersByTimeAsync(5);
-      // STALE_TIMEOUT_MS is 90s; advance past it to fire handleStale.
-      await jest.advanceTimersByTimeAsync(91_000);
-      // Now invoke close handler with SIGTERM signal as if kill('SIGTERM') landed.
-      handlers.close?.(null, 'SIGTERM');
+      await jest.advanceTimersByTimeAsync(600_000);
+      expect(proc.kill).not.toHaveBeenCalled();
+      handlers.close?.(0, null);
 
-      await expect(promise).rejects.toThrow(/Gemini CLI stale/);
-      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+      expect((await promise).content).toContain('partial output');
       const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(allWarnings).toContain('Gemini CLI stale');
+      expect(allWarnings).not.toContain('stale');
       warnSpy.mockRestore();
     } finally {
       jest.useRealTimers();
@@ -683,7 +681,7 @@ describe('GeminiClient OAuth path', () => {
       proc.on.mockImplementation((event: string, cb: (code: number | null, signal: string | null) => void) => {
         handlers[event] = cb;
       });
-      // Keep emitting stdout to bypass the stale timer until the overall timer fires.
+      // Output up to the end, so only the overall timer can end the call.
       proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') {
           for (let i = 0; i < 30; i++) setTimeout(() => cb(Buffer.from(`keepalive-${i}`)), i * 60_000);
@@ -818,7 +816,7 @@ describe('GeminiClient OAuth path', () => {
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
-  it('truncates lastStdoutChunk when a single chunk exceeds 500 chars (used in stale diagnostics)', async () => {
+  it('truncates lastStdoutChunk when a single chunk exceeds 500 chars (used in timeout diagnostics)', async () => {
     jest.useFakeTimers();
     try {
       const proc: MockProc = {
@@ -844,10 +842,10 @@ describe('GeminiClient OAuth path', () => {
       const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });
       const promise = client.sendMessage('sys', 'user');
       await jest.advanceTimersByTimeAsync(2);
-      await jest.advanceTimersByTimeAsync(91_000);
+      await jest.advanceTimersByTimeAsync(1_201_000);
       handlers.close?.(null, 'SIGTERM');
 
-      await expect(promise).rejects.toThrow(/Gemini CLI stale/);
+      await expect(promise).rejects.toThrow(/Gemini CLI timed out/);
       const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warnings).toContain('TAIL');
       warnSpy.mockRestore();

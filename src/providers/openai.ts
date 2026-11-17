@@ -346,7 +346,6 @@ export class OpenAIClient implements LLMClient {
         hardTimeoutMs: options?.timeoutMs,
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
-        stderrResetsStale: true,
       }).catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); });
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
