@@ -677,9 +677,9 @@ describe('sendViaCLI (Codex CLI path)', () => {
       const { value, tookMs } = await settle(endpoint.sendMessage('Review the diff.', 'the diff', { effort: 'high', ...tools }));
 
       expect(value?.content).toBe('[]');
-      const pauses = [5_000, 30_000, 0, 0, 0, 3_000, 60_500, 60_000];
+      const pauses = [5_000, 15_000, 0, 0, 0, 3_000, 60_500, 60_000];
       expect(starts.slice(1).map((start, i) => start - starts[i] - RUN_MS)).toEqual(pauses);
-      expect(tookMs).toBe(158_500 + 9 * RUN_MS);
+      expect(tookMs).toBe(143_500 + 9 * RUN_MS);
       // A resumed run gets every option of the first one, so the sandbox, the model, the effort and the tool server are the same.
       const [firstArgs, ...resumedArgs] = mockSpawn.mock.calls.map(call => call[1] as string[]);
       expect(firstArgs).toEqual(expect.arrayContaining(['--sandbox', 'read-only', '--model=gpt-5.5', 'model_reasoning_effort=high', 'model_providers.manki.stream_max_retries=0']));
@@ -700,14 +700,14 @@ describe('sendViaCLI (Codex CLI path)', () => {
       expect(outcome.error).toBeInstanceOf(QuotaError);
       expect(outcome.error).toMatchObject({ message: `OpenAI model at capacity: ERROR: ${CAPACITY}`, limit: 'OpenAI model at capacity' });
       expect(mock.starts).toHaveLength(9);
-      expect(outcome.tookMs).toBe(395_000 + 9 * RUN_MS);
+      expect(outcome.tookMs).toBe(350_000 + 9 * RUN_MS);
 
-      // The second pause of 30 s would leave the resumed run under 30 s of a limit of 60 s, so the call fails when the second run does.
+      // The third pause of 30 s would leave the resumed run under 30 s of a limit of 60 s, so the call fails when the third run does.
       mock = setupSpawnMock('', failed(CAPACITY));
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
       expect(outcome.error).toMatchObject({ limit: 'OpenAI model at capacity' });
-      expect(mock.starts).toHaveLength(2);
-      expect(outcome.tookMs).toBe(5_000 + 2 * RUN_MS);
+      expect(mock.starts).toHaveLength(3);
+      expect(outcome.tookMs).toBe(20_000 + 3 * RUN_MS);
 
       // An advised wait is not sat out when it is longer than the time left, or leaves the resumed run under 30 s.
       const wait58 = failed(`${RATE_LIMIT} Please try again in 58s.`);
