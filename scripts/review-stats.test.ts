@@ -274,21 +274,34 @@ describe('review stats', () => {
       pr(12, [round(1, '7.6.0', [entry('blocker')]), round(2, '7.6.0', [entry('warning', { origin: 'new' })], true), round(3, '7.6.0', [entry('warning')])]),
       // A later round of an old release that posted no blocker or warning adds nothing late, so the PR still counts.
       pr(13, [round(1, '6.1.0', [entry('warning')]), round(2, '6.1.0', [entry('note')])]),
-      // Without the record of round 1 the PR's first findings are unknown.
-      pr(14, [round(2, '7.6.0', [entry('warning', { origin: 'reviewed' })])]),
+      // Without the record of round 1 the PR's first findings are unknown, and so are those its later rounds call late.
+      pr(14, [round(2, '7.6.0', [entry('warning', { origin: 'reviewed' })]), round(3, '7.6.0', [entry('warning', { origin: 'reviewed' })])]),
       pr(15, [round(1, '7.6.0', [])]),
+      // A round that could not read the earlier records numbers itself round 1 again. Only the first record can be round 1.
+      pr(16, [round(1, '7.6.0', [entry('warning')]), round(2, '7.6.0', [entry('note', { origin: 'new' })]), round(1, '7.6.0', [entry('warning', { origin: 'new' })])]),
+      // Two records of one round leave the order unknown.
+      pr(17, [round(1, '7.6.0', [entry('blocker')]), round(2, '7.6.0', []), round(2, '7.6.0', [])]),
     ];
+    // A record that does not decode may hold any round, findings on reviewed code included.
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    prs.push(prRecords('o/r', 18, { reviews: [review(180, round(1, '7.6.0', [entry('warning')])), { id: 181, body: '<!-- manki-context: {not json} -->', user: bot }], threadComments: [] }));
+    errorSpy.mockRestore();
+    expect(prs.at(-1)).toMatchObject({ undecodedRounds: 1, rounds: [{ meta: { round: 1 } }] });
     const stats = computeStats(prs);
     const grades = (blocker: [number, number], warning: [number, number]) => ({
       blocker: { firstRound: blocker[0], later: blocker[1] }, warning: { firstRound: warning[0], later: warning[1] },
     });
+    const counts = (number: number, blocker: [number, number], warning: [number, number], unproven = 0, noFirstRound = false) => ({ number, grades: grades(blocker, warning), noFirstRound, unproven });
     expect(stats.firstRound).toEqual([
-      { number: 10, grades: grades([1, 1], [2, 1]), unproven: 0 },
-      { number: 11, grades: grades([0, 0], [1, 0]), unproven: 1 },
-      { number: 12, grades: grades([1, 0], [0, 0]), unproven: 2 },
-      { number: 13, grades: grades([0, 0], [1, 0]), unproven: 0 },
-      { number: 14, grades: grades([0, 0], [0, 1]), unproven: 1 },
-      { number: 15, grades: grades([0, 0], [0, 0]), unproven: 0 },
+      counts(10, [1, 1], [2, 1]),
+      counts(11, [0, 0], [1, 0], 1),
+      counts(12, [1, 0], [0, 0], 2),
+      counts(13, [0, 0], [1, 0]),
+      counts(14, [0, 0], [0, 1], 0, true),
+      counts(15, [0, 0], [0, 0]),
+      counts(16, [0, 0], [1, 0], 1),
+      counts(17, [1, 0], [0, 0], 1),
+      counts(18, [0, 0], [1, 0], 1),
     ]);
     const report = renderStats(stats);
     expect(report).toContain([
@@ -299,7 +312,7 @@ describe('review stats', () => {
       '| warning | 3 | 1 | 75% (3 of 4) |',
       '| both | 4 | 2 | 67% (4 of 6) |',
     ].join('\n'));
-    expect(report).toContain('\n\nLeft out, because their records cannot say where a finding was first raised: 3 PRs with 4 such round records (#11, #12, #14).\n\n');
+    expect(report).toContain('\n\n6 PRs left out (#11, #12, #14, #16, #17, #18): 1 without a round 1 record, 6 round records that cannot say where a finding was first raised.\n\n');
     expect(report).toContain([
       '| PR | round 1 blockers | round 1 warnings | later blockers | later warnings | found in round 1 |',
       '| --- | ---: | ---: | ---: | ---: | ---: |',
@@ -310,7 +323,7 @@ describe('review stats', () => {
     ].join('\n'));
     const none = renderStats(computeStats([]));
     expect(none).toContain('| both | 0 | 0 | - |');
-    expect(none).not.toContain('Left out, because');
+    expect(none).not.toContain('left out (');
     expect(none).not.toContain('| PR | round 1 blockers');
   });
 

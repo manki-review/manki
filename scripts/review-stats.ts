@@ -51,6 +51,8 @@ export interface PrRecords {
   reviewIds: number[];
   /** The records of its incomplete rounds, which no later round read as an earlier round. */
   incompleteRounds: RoundContext[];
+  /** The round records in its reviews that could not be decoded or parsed. */
+  undecodedRounds: number;
   /** The records of Manki's thread replies. */
   replies: ReplyRecord[];
   /** The decisions of the review state checks, from their approval reviews and the notices still standing. */
@@ -108,6 +110,8 @@ const ORIGINS_PROVEN_FROM = '7.5.0';
 interface FirstRoundPr {
   number: number;
   grades: Record<FirstRoundGrade, { firstRound: number; later: number }>;
+  /** Whether the PR's first record in posting order is of a round other than 1. Such a PR counts in no share. */
+  noFirstRound: boolean;
   /** The PR's round records that cannot say where a finding was first raised. A PR with any counts in no share. */
   unproven: number;
 }
@@ -234,7 +238,10 @@ function tally(stats: ReviewStats, decision: Decision, value: string, by = 1): v
 export function prRecords(
   repo: string, number: number, posted: { reviews: Posted[]; threadComments: ThreadComment[]; issueComments?: Posted[] },
 ): PrRecords {
-  const lines = historyLines(repo, number, { reviews: posted.reviews, comments: posted.threadComments });
+  let undecodedRounds = 0;
+  const lines = historyLines(repo, number, { reviews: posted.reviews, comments: posted.threadComments }, (kind) => {
+    if (kind === 'round') undecodedRounds++;
+  });
   // The state check's approval decisions ride on its approval reviews and on its notices while they stand.
   const approvals = [...posted.reviews, ...(posted.issueComments ?? [])]
     .filter(item => item.user?.type === 'Bot' && item.body)
@@ -252,6 +259,7 @@ export function prRecords(
     rounds: completed.map(round => round.record),
     reviewIds: completed.map(round => round.reviewId),
     incompleteRounds: rounds.filter(round => round.record.meta?.incomplete).map(round => round.record),
+    undecodedRounds,
     replies: lines.filter(line => line.kind === 'reply').map(line => line.record as ReplyRecord),
     approvals,
     threadComments: posted.threadComments,
@@ -322,8 +330,8 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
     let prCost = 0;
     const answers = new Set<string>();
     const threads = mankiThreads(pr.threadComments);
-    // Without the record of round 1 the PR's round 1 findings are unknown.
-    const found: FirstRoundPr = { number: pr.number, grades: { blocker: { firstRound: 0, later: 0 }, warning: { firstRound: 0, later: 0 } }, unproven: pr.rounds[0].meta.round === 1 ? 0 : 1 };
+    // A record that did not decode may hold any round.
+    const found: FirstRoundPr = { number: pr.number, grades: { blocker: { firstRound: 0, later: 0 }, warning: { firstRound: 0, later: 0 } }, noFirstRound: false, unproven: pr.undecodedRounds };
     stats.firstRound.push(found);
     for (const [index, round] of pr.rounds.entries()) {
       stats.rounds++;
@@ -341,7 +349,7 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         // An earlier blocker listed again to get a thread is no finding of this round.
         return !carried && !entry.relisted;
       });
-      tallyFirstRound(found, round, posted);
+      tallyFirstRound(found, round, index > 0 ? pr.rounds[index - 1] : undefined, posted);
       for (const entry of posted) {
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
@@ -446,12 +454,20 @@ function tokenCallKey(call: TokenServiceCall): string {
  * Adds the blockers and warnings `round` posted to `found`. Each counts in the round that first raised it: round 1, or a
  * later round when it sits on code an earlier round reviewed. A pre-existing finding counts in neither. A later round
  * that posted one but cannot prove its origins counts as unproven instead.
+ *
+ * A round numbers itself from the earlier records it could read, so a round after a failed read can call itself round 1.
+ * Only the first record in posting order, `previous` unset, can be round 1, and each later one must follow `previous`.
  */
-function tallyFirstRound(found: FirstRoundPr, round: RoundContext, posted: FindingFingerprintEntry[]): void {
+function tallyFirstRound(found: FirstRoundPr, round: RoundContext, previous: RoundContext | undefined, posted: FindingFingerprintEntry[]): void {
   const graded = posted.filter((entry): entry is FindingFingerprintEntry & { severity: FirstRoundGrade } =>
     (FIRST_ROUND_GRADES as readonly string[]).includes(entry.severity) && !entry.tags?.includes(PRE_EXISTING_TAG));
-  if (round.meta.round === 1) {
-    for (const entry of graded) found.grades[entry.severity].firstRound++;
+  if (!previous) {
+    if (round.meta.round !== 1) found.noFirstRound = true;
+    else for (const entry of graded) found.grades[entry.severity].firstRound++;
+    return;
+  }
+  if (round.meta.round !== previous.meta.round + 1) {
+    found.unproven++;
     return;
   }
   if (graded.length === 0) return;
@@ -663,8 +679,8 @@ function finderToolLines(finders: [string, FinderStats][]): string[] {
  * them, the PRs left out, and a row per counted PR that posted one.
  */
 function firstRoundLines(prs: FirstRoundPr[]): string[] {
-  const counted = prs.filter(pr => pr.unproven === 0);
-  const left = prs.filter(pr => pr.unproven > 0);
+  const counted = prs.filter(pr => !pr.noFirstRound && pr.unproven === 0);
+  const left = prs.filter(pr => pr.noFirstRound || pr.unproven > 0);
   const cells = (of: FirstRoundPr[], grades: readonly FirstRoundGrade[]) => {
     const sum = (key: 'firstRound' | 'later') => of.reduce((n, pr) => n + grades.reduce((m, grade) => m + pr.grades[grade][key], 0), 0);
     const [firstRound, later] = [sum('firstRound'), sum('later')];
@@ -681,15 +697,16 @@ function firstRoundLines(prs: FirstRoundPr[]): string[] {
       : [];
   });
   const records = left.reduce((n, pr) => n + pr.unproven, 0);
+  const noFirstRound = left.filter(pr => pr.noFirstRound).length;
   return [
     '| grade | round 1 | later, on code an earlier round reviewed | found in round 1 |',
     '| --- | ---: | ---: | ---: |',
     ...FIRST_ROUND_GRADES.map(grade => `| ${grade} | ${total([grade])} |`),
     `| both | ${total(FIRST_ROUND_GRADES)} |`,
     '',
-    `A blocker or warning counts once, in the round that first raised it. A finding of a later round counts only when it sits on code an earlier round reviewed, so one on code a push changed since the round before counts in neither column. A finding round 1 posted counts even when its thread was resolved later. A pre-existing finding counts in neither. The record says only that an earlier round reviewed the lines, not which one, so a later finding on code a push after round 1 added counts as late too. A PR counts only when its records prove where each finding was first raised: its first record is of round 1, and each later round that posted a blocker or warning ran on Manki ${ORIGINS_PROVEN_FROM} or later and read the change the round before reviewed.`,
+    `A blocker or warning counts once, in the round that first raised it. A finding of a later round counts only when it sits on code an earlier round reviewed, so one on code a push changed since the round before counts in neither column. A finding round 1 posted counts even when its thread was resolved later. A pre-existing finding counts in neither. The record says only that an earlier round reviewed the lines, not which one, so a later finding on code a push after round 1 added counts as late too. A PR counts only when its records prove where each finding was first raised: every record decodes, its first record in posting order is of round 1, each later record is of the round after the one before, and each later round that posted a blocker or warning ran on Manki ${ORIGINS_PROVEN_FROM} or later and read the change the round before reviewed.`,
     ...(left.length > 0
-      ? ['', `Left out, because their records cannot say where a finding was first raised: ${left.length} ${left.length === 1 ? 'PR' : 'PRs'} with ${records} such round ${records === 1 ? 'record' : 'records'} (${left.map(pr => `#${pr.number}`).join(', ')}).`]
+      ? ['', `${left.length} ${left.length === 1 ? 'PR' : 'PRs'} left out (${left.map(pr => `#${pr.number}`).join(', ')}): ${noFirstRound} without a round 1 record, ${records} round ${records === 1 ? 'record' : 'records'} that cannot say where a finding was first raised.`]
       : []),
     ...(rows.length > 0
       ? ['', '| PR | round 1 blockers | round 1 warnings | later blockers | later warnings | found in round 1 |', '| --- | ---: | ---: | ---: | ---: | ---: |', ...rows]
