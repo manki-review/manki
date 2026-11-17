@@ -7,6 +7,7 @@ import * as core from '@actions/core';
 import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, pause, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
+import { TimeoutError } from './types';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -311,6 +312,7 @@ describe('callWithTimeout', () => {
 
   it('names the label and the limit when its signal aborts the call', async () => {
     const error = await callWithTimeout('Anthropic API', { timeoutMs: 20 }, untilAborted).then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(TimeoutError);
     expect(error?.message).toBe('Anthropic API timed out after 0.02s');
     expect((error?.cause as Error).message).toBe('Request was aborted.');
   });

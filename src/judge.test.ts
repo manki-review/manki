@@ -1704,7 +1704,7 @@ describe('runJudgeAgent', () => {
     expect(withTools[0]).toContain('Name in `doubts` only a doubt your calls did not settle. The files you read');
     for (const [system, , options] of [noBudget, noWorkspace]) {
       expect(system).not.toContain('## Your Tools');
-      expect(options).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.any(String) });
+      expect(options).toEqual({ effort: 'high', timeoutMs: 900_000, promptTemplate: expect.any(String) });
     }
   });
 
@@ -1720,7 +1720,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].severity).toBe('warning');
     const [, again] = mockSendMessage.mock.calls;
     expect(again[0]).not.toContain('## Your Tools');
-    expect(again[2]).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
+    expect(again[2]).toEqual({ effort: 'high', timeoutMs: 900_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
 
     // A finding the judge with tools leaves out twice fails that attempt like any other failure.
     const empty = { content: JSON.stringify({ summary: 'ok', findings: [] }) };
@@ -1760,7 +1760,7 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      { effort: 'high', timeoutMs: 300_000, promptTemplate: expect.any(String) },
+      { effort: 'high', timeoutMs: 900_000, promptTemplate: expect.any(String) },
     );
   });
 

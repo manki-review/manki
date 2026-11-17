@@ -259,8 +259,6 @@ export function cutFilesNote({ cut, omitted }: { cut?: string; omitted: readonly
   ];
 }
 
-const JUDGE_TIMEOUT_MS = 300_000;
-
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
 const MAX_CITED_WINDOWS = 40;
@@ -1641,9 +1639,10 @@ export async function runJudgeAgent(
   const effort = input.effort ?? 'high';
   const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({
     systemPrompt: judgePrompt(steps),
-    options: steps > 0
-      ? { effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: repoTools(refutation!.workspace, steps, refutation!.related, 'check') }
-      : { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate: judgeTemplate(0) },
+    options: {
+      effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps),
+      ...(steps > 0 && { repoTools: repoTools(refutation!.workspace, steps, refutation!.related, 'check') }),
+    },
   });
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned. The

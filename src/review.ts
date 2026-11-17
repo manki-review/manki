@@ -5,7 +5,7 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
@@ -152,7 +152,7 @@ export const PLANNER_TIMEOUT_MS = 60_000;
 const QUICK_CHECK_STEPS = 8;
 const FINDER_STEPS = 30;
 const RISKY_FINDER_STEPS = 40;
-// A safety net for a finder. With tools, the step budget is what normally ends its call.
+// A safety net for a call of a finder or the judge. With tools, the step budget is what normally ends the call.
 export const FINDER_TOOLS_TIMEOUT_MS = 900_000;
 /** How long the round still waits for the sibling comparisons once the finders are done. */
 const COMPARISON_GRACE_MS = 60_000;
@@ -219,6 +219,12 @@ function quotaSummary(error: QuotaError, readers: readonly string[] = []): strin
   const resets = error.resetsAt ? ` It resets ${error.resetsAt}.` : '';
   const other = error.credential ? `, or use another ${error.credential}` : '';
   return `${error.limit}${who}.${resets} Retry with @manki review ${error.resetsAt ? 'after that' : 'later'}${other}.`;
+}
+
+/** The round's summary for a judge call that failed. `what` names what the call graded when that is not the finders' findings. */
+function judgeFailureSummary(error: unknown, what = ''): string {
+  if (error instanceof QuotaError) return quotaSummary(error);
+  return `The judge ${error instanceof TimeoutError ? 'ran out of time' : 'failed'}${what && ` on ${what}`}. ${RETRY_HINT}`;
 }
 
 /** Summarises a round whose finders hit a used-up limit, one sentence group per limit, then any finder that failed otherwise. */
@@ -1475,7 +1481,7 @@ export async function runReview(
     } catch (error) {
       core.warning(`Judge failed: ${error}`);
       logOutputTokens('Judge', judgeWrap.getTotals().usage);
-      return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The judge failed. ${RETRY_HINT}`, {
+      return incomplete(judgeFailureSummary(error), {
         // The failed attempts count too, since the judge ended on one.
         judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
       });
@@ -1548,7 +1554,7 @@ export async function runReview(
       } catch (error) {
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
-        return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The judge failed on the findings of the sweep. ${RETRY_HINT}`);
+        return incompleteAfterJudge(judgeFailureSummary(error, 'the findings of the sweep'));
       }
     }
   }

@@ -8,8 +8,8 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, CliTimeoutError, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -478,7 +478,7 @@ export class OpenAIClient implements LLMClient {
         if (failure.pauseMs > 0) await pause(failure.pauseMs, options?.signal).catch(carry);
         exit = await run(['resume', session, '-'], RESUME_PROMPT, Date.now() - startTime).catch((error: unknown) => {
           // A call that runs out of time after a limit fails as that limit, since a new call would meet it again.
-          const limitError = error instanceof CliTimeoutError ? codexLimitError(finalError, !!endpoint) : undefined;
+          const limitError = error instanceof TimeoutError ? codexLimitError(finalError, !!endpoint) : undefined;
           if (!limitError) throw error;
           core.warning(limitError.message);
           return carry(Object.assign(limitError, { cause: error }));

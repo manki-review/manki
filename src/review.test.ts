@@ -47,7 +47,7 @@ import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
+import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, withRefusalFallback, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { repoToolsPrompt } from './providers/cli-utils';
 
@@ -3208,7 +3208,7 @@ describe('runReview', () => {
 
     // A judge that fails on the sweep's findings ends the round incomplete, so no blocker the sweep found is lost
     // behind an approval. The record keeps what the first judge call graded, and nothing is posted.
-    for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with @manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
+    for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with @manki review.'], [new TimeoutError('Codex CLI timed out after 900s'), 'The judge ran out of time on the findings of the sweep. Retry with @manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
       const failed = (await run('blockers', false, error)).result;
       expect([failed.outcome, failed.verdict, failed.reviewComplete, failed.findings]).toEqual(['INCOMPLETE', 'COMMENT', false, []]);
       expect(failed.summary).toEqual(summary);
@@ -5501,7 +5501,7 @@ describe('runReview', () => {
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
-    expect(result.summary).toContain('judge failed');
+    expect(result.summary).toBe('The judge failed. Retry with @manki review.');
     expect(result).not.toHaveProperty('relatedWork');
     expect(result).toMatchObject({
       judgeEffort: 'high', rawFindingCount: 2, staticDedupCount: 0, llmDedupCount: 0, judgeRetryCount: 0, agentDurationMs: expect.any(Map),
@@ -5511,6 +5511,10 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', undefined, 'key'));
     const limited = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect([limited.outcome, limited.summary]).toEqual(['INCOMPLETE', 'Anthropic API rate limit reached. Retry with @manki review later, or use another key.']);
+
+    mockedRunJudgeAgent.mockRejectedValueOnce(new TimeoutError('Codex CLI timed out after 900s'));
+    const slow = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect([slow.outcome, slow.summary]).toEqual(['INCOMPLETE', 'The judge ran out of time. Retry with @manki review.']);
 
     const actualJudge = jest.requireActual<typeof import('./judge')>('./judge');
     mockedRunJudgeAgent.mockImplementation(actualJudge.runJudgeAgent);
