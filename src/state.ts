@@ -572,28 +572,35 @@ function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRoun
   return { capRounds, roundsLeft, capReached, paused: reason !== undefined, ...(reason && { reason }), ...(restart && { restart }) };
 }
 
+/** Why no automatic review will run on a new head commit, with how to start one. An automatic pause carries its `pause`. */
+type AutoReviewHalt =
+  | { cause: 'auto_review_off' | 'settings_paused' | 'pause_unknown'; text: string }
+  | { cause: 'automatic_pause'; text: string; pause: PauseState };
+
 /**
  * Returns why no automatic review will run on a new head commit, with how to start one, or `undefined` when a push review will run.
+ * It checks `auto_review` first, then the Pause box of the settings block, then `pauseState`.
  * When the token service cannot say whether the PR is paused, the cause is `pause_unknown`, so no caller promises a push review.
- * Reads the PR's rounds unless `rounds` holds them.
+ * Reads the PR's rounds unless `rounds` holds them, and the Pause box unless `pauseBox` says whether it is ticked.
  */
 async function autoReviewHalt(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig,
-  rounds?: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>,
-): Promise<{ cause: 'auto_review_off' | 'settings_paused' | 'automatic_pause' | 'pause_unknown'; text: string } | undefined> {
+  rounds?: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>, pauseBox?: boolean,
+): Promise<AutoReviewHalt | undefined> {
   if (!config.auto_review) {
     return { cause: 'auto_review_off', text: 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.' };
   }
-  const boxTicked = await fetchPrState(owner, repo, prNumber, github.context.runId).then(state => !!state?.settings.paused, (error: unknown) => {
+  const boxTicked = pauseBox ?? await fetchPrState(owner, repo, prNumber, github.context.runId).then(state => !!state?.settings.paused, (error: unknown) => {
     core.warning(`Could not read whether #${prNumber} is paused, so not counting on a push review: ${error instanceof Error ? error.message : error}`);
     return undefined;
   });
   if (boxTicked) {
     return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.' };
   }
-  const { reason, restart } = pauseState(rounds ?? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
+  const pause = pauseState(rounds ?? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
+  const { reason, restart } = pause;
   if (reason) {
-    return { cause: 'automatic_pause', text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`@manki review\`, to review it.${restart ? ` ${restart}` : ''}` };
+    return { cause: 'automatic_pause', pause, text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`@manki review\`, to review it.${restart ? ` ${restart}` : ''}` };
   }
   return boxTicked === undefined
     ? { cause: 'pause_unknown', text: 'Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `@manki review`.' }
@@ -1106,4 +1113,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorClearLine, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
