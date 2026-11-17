@@ -16,7 +16,7 @@ import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, order
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
-import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, findersOf, modelIdentity, resolveRouting } from './routing';
+import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
@@ -353,13 +353,12 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
 }
 
 /**
- * Returns every model a finder can run on this round, so each gets a client before the round:
+ * Returns every model a finder can run on this round, once however it is written, so each gets a client before the round:
  * the routed groups, and the `full` group of a class with no route, a floor or a deeper review.
  */
 export function teamModels(config: ReviewConfig): string[] {
   const routing = resolveRouting(config.review);
-  const groups = [...Object.values(routing.routing), FULL_GROUP].map(name => routing.groups[name]);
-  return [...new Set(groups.flatMap(g => g.reviewers.map(r => r.model)))];
+  return distinctModels([...Object.values(routing.routing), FULL_GROUP].flatMap(name => routing.groups[name].reviewers.map(r => r.model)));
 }
 
 export function shuffleDiffFiles(diff: ParsedDiff): ParsedDiff {
@@ -409,7 +408,7 @@ interface FallbackClient {
 
 export interface ReviewClients {
   reviewer: LLMClient;
-  /** Clients keyed by finder model. A finder whose model is missing runs on `reviewer`. */
+  /** Clients keyed by the `modelIdentity` of a finder model. A finder whose model is missing runs on `reviewer`. */
   reviewerByModel?: ReadonlyMap<string, LLMClient>;
   judge: LLMClient;
   /** The second refuter, on `models.second_refuter`. */
@@ -432,8 +431,9 @@ interface StageClient {
 }
 
 function pickReviewerClient(clients: ReviewClients, model: string): StageClient {
-  const client = clients.reviewerByModel?.get(model);
-  return client ? { client, fallback: clients.fallbacks?.reviewerByModel?.get(model) } : { client: clients.reviewer };
+  const key = modelIdentity(model);
+  const client = clients.reviewerByModel?.get(key);
+  return client ? { client, fallback: clients.fallbacks?.reviewerByModel?.get(key) } : { client: clients.reviewer };
 }
 
 export interface ReviewProgress {

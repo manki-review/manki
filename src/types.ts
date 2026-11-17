@@ -1214,7 +1214,7 @@ export interface Finder {
 export interface GroupReviewer {
   /** A model id or `provider/model`. */
   model: string;
-  /** Unset means `auto`. */
+  /** Unset means `auto`, and `medium` in the `trivial` group. */
   effort?: EffortLevel | 'auto';
   /** One more line for this finder to check, added to its prompt like a `reviewers` entry. */
   focus?: string;
@@ -1308,8 +1308,8 @@ export interface TeamRouting {
   classSource: 'paths' | 'triage' | 'default';
   /** Review group the finders came from. */
   group: string;
-  /** Whether the class's route, the default group, the floor or a deeper review picked the group. */
-  groupSource: 'routing' | 'default_group' | 'floor_escalation' | 'deeper_review';
+  /** What picked the group: the class's route, `full` for a class with no route, the floor or a deeper review. */
+  groupSource: 'routing' | 'no_route' | 'floor_escalation' | 'deeper_review';
   /** Highest ranked floor class the PR matched. */
   floor?: string;
   /** Routed group the floor, or a deeper review, moved the PR up from. */

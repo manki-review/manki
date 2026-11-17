@@ -130,7 +130,8 @@
 # three are floors: at least two finders on two distinct models, none at `low`
 # effort. Built-in groups: trivial (the quick check), solo (one finder) and
 # full (two finders). A config that sets `groups` defines all three, and may
-# add groups of its own. A class with no route goes to `full`. See
+# add groups of its own. `full` always holds at least two finders on two
+# distinct models. A class with no route goes to `full`. See
 # docs/how-reviews-work.md, "Review groups".
 #
 # Minimal: two strong readers on security and data contract PRs only.
@@ -149,11 +150,11 @@
 # Typical:
 # review:
 #   groups:
-#     trivial: [{ model: claude-sonnet-5-5, effort: medium }]   # effort: low, medium, high, xhigh, max or auto (default)
+#     trivial: [claude-sonnet-5-5]   # the quick check takes `model` and `effort` only, and runs at medium
 #     solo: [claude-sonnet-5-5]
 #     full: [claude-sonnet-5-5, gpt-6.1-terra]
 #     deep:
-#       - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
+#       - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }   # effort: low, medium, high, xhigh, max or auto (default)
 #       - { model: gemini-3-pro, effort: high }
 #       - { model: claude-sonnet-5-5, effort: medium, focus: "error paths and rollback" }
 #   classes:

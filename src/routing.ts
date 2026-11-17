@@ -69,13 +69,13 @@ const SONNET_MODEL = 'claude-sonnet-5-5';
 export const OPUS_MODEL = 'claude-opus-5-5';
 
 /** The group whose readers run the quick check. */
-const TRIVIAL_GROUP = 'trivial';
-/** The group of a class with no route, and the one a floor or a deeper review moves a PR up to. */
+export const TRIVIAL_GROUP = 'trivial';
+/** The group of a class with no route, and the one a floor or a deeper review moves a PR up to. It always holds two finders on two distinct models. */
 export const FULL_GROUP = 'full';
 
 /** The groups of a config without `review.groups`. */
 export const BUILT_IN_GROUPS: Readonly<Record<string, ReadonlyArray<string | GroupReviewer>>> = Object.freeze({
-  [TRIVIAL_GROUP]: [{ model: SONNET_MODEL, effort: 'medium' }],
+  [TRIVIAL_GROUP]: [SONNET_MODEL],
   solo: [SONNET_MODEL],
   [FULL_GROUP]: [SONNET_MODEL, OPUS_MODEL],
 });
@@ -166,10 +166,14 @@ export function resolveRouting(review: ReviewRoutingConfig | undefined): Resolve
       ? { ...builtIn, match: { ...builtIn.match, paths_any: [...(builtIn.match.paths_any ?? []), ...(def.match?.paths_any ?? [])] } }
       : { rank: def.rank ?? 0, match: def.match ?? {} };
   }
-  const groups = Object.entries({ ...BUILT_IN_GROUPS, ...review?.groups }).map(([name, entries]): [string, ReviewGroup] => [name, {
-    reviewers: entries.map(entry => (typeof entry === 'string' ? { model: entry } : entry)),
-    ...(name === TRIVIAL_GROUP && { quickCheck: true as const }),
-  }]);
+  const groups = Object.entries({ ...BUILT_IN_GROUPS, ...review?.groups }).map(([name, entries]): [string, ReviewGroup] => {
+    // The quick check runs at medium effort unless its entry sets one.
+    const quickCheck = name === TRIVIAL_GROUP && { effort: 'medium' as const };
+    return [name, {
+      reviewers: entries.map(entry => ({ ...quickCheck, ...(typeof entry === 'string' ? { model: entry } : entry) })),
+      ...(quickCheck && { quickCheck: true as const }),
+    }];
+  });
   return { classes, groups: Object.fromEntries(groups), routing: { ...BUILT_IN_ROUTING, ...review?.routing } };
 }
 
@@ -193,9 +197,22 @@ export function modelIdentity(model: string): string {
   }
 }
 
+/** Returns `models` with each model once however it is written, in its first spelling. */
+export function distinctModels(models: string[]): string[] {
+  return models.filter((model, i) => models.findIndex(m => modelIdentity(m) === modelIdentity(model)) === i);
+}
+
 /** Returns the finders of a group. The readers of the quick check group are none. */
 export function findersOf(group: ReviewGroup): GroupReviewer[] {
   return group.quickCheck ? [] : group.reviewers;
+}
+
+/** Returns why a group has no two finders on two distinct models, or undefined when it has them. */
+export function finderShortfall(group: ReviewGroup): string | undefined {
+  const finders = findersOf(group);
+  if (finders.length < 2) return 'it has fewer than two finders';
+  if (distinctModels(finders.map(r => r.model)).length < 2) return 'its finders run on fewer than two distinct models';
+  return undefined;
 }
 
 /**
@@ -203,11 +220,7 @@ export function findersOf(group: ReviewGroup): GroupReviewer[] {
  * The floor is two finders on two distinct models, and no reader at `low` effort.
  */
 export function floorShortfall(group: ReviewGroup): string | undefined {
-  const finders = findersOf(group);
-  if (finders.length < 2) return 'it has fewer than two finders';
-  if (new Set(finders.map(r => modelIdentity(r.model))).size < 2) return 'its finders run on fewer than two distinct models';
-  if (group.reviewers.some(r => r.effort === 'low')) return 'a reader runs at `low` effort';
-  return undefined;
+  return finderShortfall(group) ?? (group.reviewers.some(r => r.effort === 'low') ? 'a reader runs at `low` effort' : undefined);
 }
 
 export interface GroupChoice {
@@ -225,7 +238,7 @@ export interface GroupChoice {
 export function chooseGroup(routing: ResolvedRouting, classification: PrClassification): GroupChoice {
   const routed = classification.name ? routing.routing[classification.name] : undefined;
   const name = routed ?? FULL_GROUP;
-  const source = routed ? 'routing' : 'default_group';
+  const source = routed ? 'routing' : 'no_route';
   const floors = classification.matched.filter(c => routing.classes[c].floor);
   const accepted = (groupName: string) => floors.length === 0 || !floorShortfall(routing.groups[groupName]);
   if (accepted(name)) return { name, group: routing.groups[name], source };

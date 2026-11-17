@@ -1505,7 +1505,9 @@ describe('postReview with context', () => {
     expect(body.match(/<details>/g)).toHaveLength(1);
     expect(body.endsWith(TRAILING_MARKERS)).toBe(true);
     // The footer closes the body as a fold with the commit, round, lines, time and the models the routed group ran.
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, routing: { ...ctx.routing!, reviewers: [{ name: 'deep', model: 'gemini-3-pro', provider: 'gemini' }] } }, 60000);
+    // A model two readers write differently is named once.
+    const readers = ['gemini-3-pro', 'gemini/gemini-3-pro'].map(model => ({ name: 'deep', model, provider: 'gemini' as const }));
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, routing: { ...ctx.routing!, reviewers: readers } }, 60000);
     expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('- Found by `gemini-3-pro`, judged by ');
     expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\n<details>\n<summary>About this review<\/summary>\n\n- Reviewed \[`abc`\]\([^)]+\), round \d+\n- 200 changed lines read in 1m 0s\n- Found by `claude-sonnet-4-20250514`, judged by `[^`]+`\n- \[How Manki reviews\]\([^)]+\)\n\n<\/details>$/);
     // Code reads the reviewed commit from that footer, never from the commit GitHub reports the review on.

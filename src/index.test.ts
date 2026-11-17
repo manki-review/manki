@@ -7657,9 +7657,9 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       const clientsArg = jest.mocked(reviewModule.runReview).mock.calls[0][0];
-      expect(clientsArg.reviewerByModel?.get('claude-opus-5-5')).toBe(pairClient);
-      expect(clientsArg.fallbacks?.reviewerByModel?.get('claude-opus-5-5')?.model).toBe('claude-sonnet-5-5');
-      expect(clientsArg.fallbacks?.judge?.client).toBe(clientsArg.fallbacks?.reviewerByModel?.get('claude-opus-5-5')?.client);
+      expect(clientsArg.reviewerByModel?.get('anthropic/claude-opus-5-5')).toBe(pairClient);
+      expect(clientsArg.fallbacks?.reviewerByModel?.get('anthropic/claude-opus-5-5')?.model).toBe('claude-sonnet-5-5');
+      expect(clientsArg.fallbacks?.judge?.client).toBe(clientsArg.fallbacks?.reviewerByModel?.get('anthropic/claude-opus-5-5')?.client);
       expect(clientsArg.refuterPair).toBeUndefined();
 
       // `models.second_refuter` gets a client of its own, for the second refuter.

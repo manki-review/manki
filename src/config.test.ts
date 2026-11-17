@@ -259,15 +259,25 @@ describe('config', () => {
       expect(() => loadConfigFromContent(low)).toThrow('a reader runs at `low` effort');
     });
 
-    it('checks the floor on the `full` group of the config, which the floor classes route to unless the config routes them', () => {
+    it('needs two finders on two distinct models in the `full` group, whatever routes to it', () => {
       const own = (full: string) => `review:\n  groups:\n    trivial: [gpt-5.5]\n    solo: [gpt-5.5]\n    full: ${full}\n`;
       expect(loadConfigFromContent(own('[gpt-5.5, gemini-3-pro]')).review?.groups?.full).toEqual(['gpt-5.5', 'gemini-3-pro']);
-      for (const [full, shortfall] of [['[gpt-5.5]', 'it has fewer than two finders'], ['[gpt-5.5, gpt-5.5]', 'its finders run on fewer than two distinct models']]) {
-        expect(() => loadConfigFromContent(own(full))).toThrow(`routes the \`security\` floor class to the \`full\` group, but ${shortfall}`);
+      const elsewhere = '    deep: [gpt-5.5, gemini-3-pro]\n  routing: { security: deep, supply_chain: deep, data_contract: deep }\n';
+      const shortfalls = [
+        ['[gpt-5.5]', 'it has fewer than two finders'],
+        ['[gpt-5.5, gpt-5.5]', 'its finders run on fewer than two distinct models'],
+        ['[openai/gpt-5.5, gpt-5.5]', 'its finders run on fewer than two distinct models'],
+      ];
+      for (const [full, shortfall] of shortfalls) {
+        // The error is given once, with or without a floor class routed to `full`.
+        for (const rest of ['', elsewhere]) {
+          expect(() => loadConfigFromContent(own(full) + rest)).toThrow(new Error(`Invalid config in .manki.yml: \`review.groups.full\` must hold at least two finders on two distinct models, but ${shortfall}`));
+        }
       }
-      // A config that routes every floor class elsewhere may keep one reader in `full`.
-      const routed = `${own('[gpt-5.5]')}    deep: [gpt-5.5, gemini-3-pro]\n  routing: { security: deep, supply_chain: deep, data_contract: deep }\n`;
-      expect(loadConfigFromContent(routed).review?.groups?.full).toEqual(['gpt-5.5']);
+      // A `low` reader in `full` counts only for a floor class routed to it.
+      const low = own('[{ model: gpt-5.5, effort: low }, gemini-3-pro]');
+      expect(() => loadConfigFromContent(low)).toThrow('routes the `security` floor class to the `full` group, but a reader runs at `low` effort');
+      expect(loadConfigFromContent(low + elsewhere).review?.routing).toEqual({ security: 'deep', supply_chain: 'deep', data_contract: 'deep' });
       // The quick check is no finder, however many readers the `trivial` group lists.
       expect(() => loadConfigFromContent('review:\n  groups:\n    trivial: [gpt-5.5, gemini-3-pro]\n    solo: [gpt-5.5]\n    full: [gpt-5.5, gemini-3-pro]\n  routing:\n    security: trivial\n'))
         .toThrow('routes the `security` floor class to the `trivial` group, but it has fewer than two finders');
@@ -700,6 +710,10 @@ models:
       expect(resolveFallbackModel(withFull(['gpt-5.5', 'gemini-3-pro'], { fallback: 'gpt-5.5' }), 'gpt-5.5')).toBe('gemini-3-pro');
       expect(resolveFallbackModel(withFull(['gpt-5.5', 'gpt-5.5']), 'gpt-5.5')).toBeUndefined();
       expect(resolveFallbackModel(withFull(['gpt-5.5'], { fallback: 'gpt-5.5' }), 'gpt-5.5')).toBeUndefined();
+      // One model written with and without its provider is the stage's own model.
+      expect(resolveFallbackModel(withFull(['openai/gpt-5.5', 'gpt-5.5']), 'gpt-5.5')).toBeUndefined();
+      expect(resolveFallbackModel(withFull(['openai/gpt-5.5', 'gemini-3-pro'], { fallback: 'gpt-5.5' }), 'openai/gpt-5.5')).toBe('gemini-3-pro');
+      expect(resolveFallbackModel(withModels({ fallback: 'openai/gpt-5.5' }), 'gpt-5.5')).toBe('claude-sonnet-5-5');
     });
   });
 
@@ -712,11 +726,13 @@ models:
 
     it('warns about the removed finder, refuter and group keys and reviews with the defaults', () => {
       const removed = 'models:\n  reviewer: gpt-5.5\n  reviewer_pair: gpt-5.5\n  refuter_pair: gpt-5.5\nreview:\n  default_group: solo\n  allow_weaker: [security]\n'
-        + '  groups:\n    trivial: [{ model: gpt-5.5, role: verifier }]\n    solo: [gpt-5.5]\n    full: [gpt-5.5, claude-opus-5-5]\n';
+        + '  groups:\n    trivial: [{ model: gpt-5.5, role: verifier, focus: "" }]\n    solo: [gpt-5.5]\n    full: [gpt-5.5, claude-opus-5-5]\n';
       const config = loadConfigFromContent(removed);
       expect(config.models).toEqual(DEFAULT_CONFIG.models);
       expect(jest.mocked(core.warning).mock.calls.map(call => call[0])).toEqual(
-        ['models.reviewer', 'models.reviewer_pair', 'models.refuter_pair', 'review.default_group', 'review.allow_weaker', 'review.groups.trivial[0].role'].map(key => `Unknown config key: "${key}"`),
+        // The quick check takes `model` and `effort` only, so `focus` is unknown in `trivial`.
+        ['models.reviewer', 'models.reviewer_pair', 'models.refuter_pair', 'review.default_group', 'review.allow_weaker', 'review.groups.trivial[0].role', 'review.groups.trivial[0].focus']
+          .map(key => `Unknown config key: "${key}"`),
       );
     });
   });

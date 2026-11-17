@@ -3,7 +3,7 @@ import { parse as parseYaml } from 'yaml';
 
 import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
-import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, FULL_GROUP, OPUS_MODEL, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
+import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, FULL_GROUP, OPUS_MODEL, PATH_ALIASES, TRIVIAL_GROUP, canonicalJson, finderShortfall, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
 import { ANALYZERS, AUTHOR_CLEAR_ROLES, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig, RULES_MODES, SWEEP_MODES } from './types';
 
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
@@ -113,6 +113,8 @@ export const DEFAULT_NOTES = 3;
 
 export const REVIEW_KEYS: ReadonlySet<string> = new Set(['groups', 'classes', 'routing', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus']);
+/** The keys of a reader of the `trivial` group. The quick check has one fixed prompt, so it takes no `focus`. */
+const QUICK_CHECK_KEYS: ReadonlySet<string> = new Set(['model', 'effort']);
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
@@ -485,6 +487,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
           errors.push(`\`review.groups.${name}\` must be a non-empty array of reviewers`);
           continue;
         }
+        const known = name === TRIVIAL_GROUP ? QUICK_CHECK_KEYS : GROUP_REVIEWER_KEYS;
         reviewers.forEach((reviewer: unknown, i) => {
           const at = `\`review.groups.${name}[${i}]`;
           if (typeof reviewer === 'string' && reviewer !== '') {
@@ -495,11 +498,11 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
             errors.push(`${at}\` must be a model id or an object with a \`model\``);
             return;
           }
-          warnUnknownKeys(reviewer, GROUP_REVIEWER_KEYS, `review.groups.${name}[${i}]`, warnings);
+          warnUnknownKeys(reviewer, known, `review.groups.${name}[${i}]`, warnings);
           if (typeof reviewer.model !== 'string' || reviewer.model === '') errors.push(`${at}.model\` must be a non-empty string`);
           else pushModelError(errors, `review.groups.${name}[${i}].model`, reviewer.model);
           if ('effort' in reviewer && !EFFORT_CHOICES.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, xhigh, max, auto`);
-          if ('focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
+          if (known.has('focus') && 'focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
         });
       }
     }
@@ -586,14 +589,19 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   }
 }
 
-/** Returns an error for each floor class the `review` block routes to a group below the floor. */
+/**
+ * Returns an error when the `full` group has no two finders on two distinct models, and one for each floor class
+ * the `review` block routes to another group below the floor.
+ */
 export function reviewFloorErrors(config: ReviewConfig): string[] {
   if (!config.review) return [];
   const routing = resolveRouting(config.review);
-  const errors: string[] = [];
+  const full = finderShortfall(routing.groups[FULL_GROUP]);
+  const errors = full ? [`\`review.groups.${FULL_GROUP}\` must hold at least two finders on two distinct models, but ${full}`] : [];
   for (const [name, c] of Object.entries(routing.classes)) {
     if (!c.floor) continue;
     const groupName = routeClass(routing, name);
+    if (full && groupName === FULL_GROUP) continue;
     const shortfall = floorShortfall(routing.groups[groupName]);
     if (shortfall) {
       errors.push(`\`review\` routes the \`${name}\` floor class to the \`${groupName}\` group, but ${shortfall}. A floor class needs two finders on two distinct models, none at \`low\` effort. Route it to a stronger group`);
@@ -728,13 +736,10 @@ export function resolveModel(config: ReviewConfig, stage: 'planner' | 'judge' | 
  * Returns undefined when no other model is left.
  */
 export function resolveFallbackModel(config: ReviewConfig, stageModel: string): string | undefined {
+  const other = (model: string): boolean => modelIdentity(model) !== modelIdentity(stageModel);
   const fallback = config.models?.fallback;
-  if (fallback && !sameModel(fallback, stageModel)) return fallback;
-  return resolveRouting(config.review).groups[FULL_GROUP].reviewers.map(r => r.model).find(model => !sameModel(model, stageModel));
-}
-
-function sameModel(a: string, b: string): boolean {
-  return a.replace(/^anthropic\//, '') === b.replace(/^anthropic\//, '');
+  if (fallback && other(fallback)) return fallback;
+  return resolveRouting(config.review).groups[FULL_GROUP].reviewers.map(r => r.model).find(other);
 }
 
 /**

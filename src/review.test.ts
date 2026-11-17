@@ -1272,7 +1272,7 @@ describe('selectTeam', () => {
   const names = (team: ReturnType<typeof selectTeam>) => team.finders.map(f => f.name);
   type Groups = NonNullable<ReviewRoutingConfig['groups']>;
   /** The three groups a `review.groups` must define, on the built-in models, with `own` over them. */
-  const groups = (own: Groups): Groups => ({ trivial: [{ model: 'claude-sonnet-5-5', effort: 'medium' }], solo: ['claude-sonnet-5-5'], full: ['claude-sonnet-5-5', 'claude-opus-5-5'], ...own });
+  const groups = (own: Groups): Groups => ({ trivial: ['claude-sonnet-5-5'], solo: ['claude-sonnet-5-5'], full: ['claude-sonnet-5-5', 'claude-opus-5-5'], ...own });
 
   it('runs the trivial verifier alone at medium effort on a change whose files could be trivial', () => {
     const trivial = { trivial: true, subtle: true, paired: true };
@@ -1371,7 +1371,7 @@ describe('selectTeam', () => {
       // The first finder's model has no `xhigh`, as Claude Sonnet 4.6 does not. The second finder's model takes every tier.
       const noXhigh: LLMClient = { sendMessage: jest.fn(), sentEffort: effort => (effort === 'xhigh' ? 'high' : effort) };
       const everyTier: LLMClient = { sendMessage: jest.fn() };
-      const clients: ReviewClients = { reviewer: noXhigh, reviewerByModel: new Map([['claude-sonnet-5-5', noXhigh], ['claude-opus-5-5', everyTier]]), judge: everyTier };
+      const clients: ReviewClients = { reviewer: noXhigh, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noXhigh], ['anthropic/claude-opus-5-5', everyTier]]), judge: everyTier };
       const team = (triage: ReturnType<typeof t>, deeper: boolean, config = makeConfig()) => selectTeam(makeDiff({ files: code }), config, triage, deeper, clients);
 
       // A subtle change already runs at high, so the step to xhigh sends the first model the same effort.
@@ -1391,14 +1391,14 @@ describe('selectTeam', () => {
 
       // A deeper review that moves a one-finder group up to the `full` group adds the second finder, so only the finder the
       // group already had is compared, though neither model takes `xhigh`.
-      const bothCapped: ReviewClients = { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noXhigh], ['claude-opus-5-5', noXhigh]]) };
+      const bothCapped: ReviewClients = { ...clients, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noXhigh], ['anthropic/claude-opus-5-5', noXhigh]]) };
       const escalated = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, false), true, bothCapped);
       expect(escalated.routing).toMatchObject({ group: 'full', groupSource: 'deeper_review', escalatedFrom: 'solo' });
       expect(readers(escalated)).toEqual([`${S} · high`, `${O} · high`]);
       expect(escalated.routing.deeperSameEffort).toEqual([`${S} · high`]);
       // The `full` group asks for less than a `max` the earlier group set. The kept finder stays at `max`, which is no
       // more effort for it, and the added finder runs at the deeper effort.
-      const max1 = (model = 'claude-sonnet-5-5', full?: string[]) => makeConfig({ review: { groups: groups({ deep: [{ model, effort: 'max' }], ...(full && { full }) }), routing: { internal: 'deep' } } });
+      const max1 = (model = 'claude-sonnet-5-5') => makeConfig({ review: { groups: groups({ deep: [{ model, effort: 'max' }] }), routing: { internal: 'deep' } } });
       const kept = selectTeam(makeDiff({ files: code }), max1(), t(false, true, false), true, clients);
       expect(kept.routing).toMatchObject({ group: 'full', groupSource: 'deeper_review', escalatedFrom: 'deep' });
       expect(kept.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · max`, 'max'], [`${O} · xhigh`, 'xhigh']]);
@@ -1409,10 +1409,6 @@ describe('selectTeam', () => {
         expect(keptPair.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · high`, 'xhigh'], [`${O} · max`, 'max']]);
         expect(keptPair.routing.deeperSameEffort).toEqual([`${O} · max`]);
       }
-      // When both finders of `full` run on that model, only the first is the kept one. The other is added and runs at the deeper effort.
-      const oneModel = selectTeam(makeDiff({ files: code }), max1('claude-sonnet-5-5', ['claude-sonnet-5-5', 'claude-sonnet-5-5']), t(false, true, false), true, clients);
-      expect(oneModel.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · max`, 'max'], [`${S} · high`, 'xhigh']]);
-      expect(oneModel.routing.deeperSameEffort).toEqual([`${S} · max`]);
       // A finder on a model `full` does not run is replaced, so no finder is kept.
       const replaced = selectTeam(makeDiff({ files: code }), max1('gpt-5.5'), t(false, true, false), true, clients);
       expect(replaced.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · high`, 'xhigh'], [`${O} · xhigh`, 'xhigh']]);
@@ -1422,7 +1418,7 @@ describe('selectTeam', () => {
 
       // A model that takes no effort receives none either way. Its name and record keep the asked tier.
       const noEffort: LLMClient = { sendMessage: jest.fn(), sentEffort: () => undefined };
-      const none = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, true), true, { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noEffort], ['claude-opus-5-5', everyTier]]) });
+      const none = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, true), true, { ...clients, reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', noEffort], ['anthropic/claude-opus-5-5', everyTier]]) });
       expect(none.finders.map(f => [f.name, f.sentEffort])).toEqual([[`${S} · xhigh`, 'xhigh'], [`${O} · xhigh`, 'xhigh']]);
       expect(none.routing.deeperSameEffort).toEqual([`${S} · xhigh`]);
 
@@ -1595,7 +1591,7 @@ describe('selectTeam', () => {
     expect(focusesWith(['reference', 'consumer'], toolClients)).toEqual([focus, focus]);
     expect(focusesWith(['reference', 'consumer'], { reviewer: noTools, judge: withTools }, '/work/pr-head')).toEqual([focus, focus]);
     // In a pair, only the finder whose client has the tools gets the checks.
-    const mixed = focusesWith(['consumer'], { reviewer: noTools, reviewerByModel: new Map([['claude-opus-5-5', withTools]]), judge: withTools }, '/work/pr-head');
+    const mixed = focusesWith(['consumer'], { reviewer: noTools, reviewerByModel: new Map([['anthropic/claude-opus-5-5', withTools]]), judge: withTools }, '/work/pr-head');
     expect(mixed.filter(f => f === focus)).toHaveLength(1);
     expect(mixed.filter(f => f.includes('Consumers:'))).toHaveLength(1);
     const withReference = focusWith('reference');
@@ -1664,8 +1660,15 @@ describe('selectTeam', () => {
       expect(route(selectTeam(diffOf('README.md'), config, { trivial: true, subtle: false, paired: false }))).toEqual(['docs', 'trivial', 'routing', ['Quick check · GPT 5.5']]);
       expect(route(selectTeam(plainDiff, config, quiet))).toEqual(['internal', 'solo', 'routing', ['GPT 5.5 · medium']]);
       expect(route(selectTeam(authDiff, config, quiet))).toEqual(['security', 'full', 'routing', ['GPT 5.5 · medium', 'Claude Opus 5.5 · medium']]);
-      expect(route(selectTeam(diffOf('src/net/peer.ts'), config, quiet))).toEqual(['hot_path', 'full', 'default_group', ['GPT 5.5 · medium', 'Claude Opus 5.5 · medium']]);
+      expect(route(selectTeam(diffOf('src/net/peer.ts'), config, quiet))).toEqual(['hot_path', 'full', 'no_route', ['GPT 5.5 · medium', 'Claude Opus 5.5 · medium']]);
       expect(teamModels(config)).toEqual(['gpt-5.5', 'claude-opus-5-5']);
+      // A model written with and without its provider gets one client.
+      expect(teamModels(makeConfig({ review: { groups: { ...own, solo: ['openai/gpt-5.5'] } } }))).toEqual(['gpt-5.5', 'claude-opus-5-5']);
+      // A quick check without an effort runs at medium, whatever the planner says about the change. Its entry may set another.
+      const subtle = { trivial: true, subtle: true, paired: false };
+      expect(selectTeam(diffOf('README.md'), config, subtle).finders.map(f => f.effort)).toEqual(['medium']);
+      const auto = makeConfig({ review: { groups: { ...own, trivial: [{ model: 'gpt-5.5', effort: 'auto' }] } } });
+      expect(selectTeam(diffOf('README.md'), auto, subtle).finders.map(f => f.effort)).toEqual(['high']);
     });
 
     it('moves a security, supply chain or data contract PR routed lower up to a group of two models', () => {
@@ -2362,7 +2365,7 @@ describe('runReview', () => {
       const mixed = makeClients();
       Object.assign(mixed.reviewer, { repoTools: true });
       const withoutTools = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
-      mixed.reviewerByModel = new Map([['claude-opus-5-5', withoutTools]]);
+      mixed.reviewerByModel = new Map([['anthropic/claude-opus-5-5', withoutTools]]);
       await runReview(mixed, { config: makeConfig(), diff: generated.diff, rawDiff: 'raw diff', repoContext: '', workspace: generated.root });
       const [[, withTools, toolsSent]] = jest.mocked(mixed.reviewer.sendMessage).mock.calls;
       expect(withTools).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files');
@@ -4816,9 +4819,9 @@ describe('runReview', () => {
     jest.mocked(clients.judge.sendMessage).mockRejectedValue(refusal);
     const reviewerFallback = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as LLMClient;
     const judgeFallback = { sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }) } as unknown as LLMClient;
-    clients.reviewerByModel = new Map([['claude-sonnet-5-5', clients.reviewer]]);
+    clients.reviewerByModel = new Map([['anthropic/claude-sonnet-5-5', clients.reviewer]]);
     clients.fallbacks = {
-      reviewerByModel: new Map([['claude-sonnet-5-5', { model: 'claude-opus-5-5', client: reviewerFallback }]]),
+      reviewerByModel: new Map([['anthropic/claude-sonnet-5-5', { model: 'claude-opus-5-5', client: reviewerFallback }]]),
       judge: { model: 'claude-sonnet-5-5', client: judgeFallback },
     };
 
@@ -5149,7 +5152,7 @@ describe('runReview', () => {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: findingJson }),
       } as unknown as import('./providers').LLMClient,
-      reviewerByModel: new Map([['claude-opus-5-5', {
+      reviewerByModel: new Map([['anthropic/claude-opus-5-5', {
         sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
       } as unknown as import('./providers').LLMClient]]),
       judge: {
@@ -6321,7 +6324,7 @@ describe('runReview', () => {
   function pairedClients(primary: jest.Mock, pair: jest.Mock): ReviewClients {
     return {
       reviewer: { sendMessage: primary } as unknown as import('./providers').LLMClient,
-      reviewerByModel: new Map([['claude-opus-5-5', { sendMessage: pair } as unknown as import('./providers').LLMClient]]),
+      reviewerByModel: new Map([['anthropic/claude-opus-5-5', { sendMessage: pair } as unknown as import('./providers').LLMClient]]),
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
       } as unknown as import('./providers').LLMClient,
@@ -7754,7 +7757,7 @@ describe('runReview triage', () => {
   it('sends the pair finder the same prompt on the pair client', async () => {
     const clients = makeClients();
     const pair = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
-    clients.reviewerByModel = new Map([['claude-opus-5-5', pair]]);
+    clients.reviewerByModel = new Map([['anthropic/claude-opus-5-5', pair]]);
     await runReview(clients, { config: makeConfig({ reviewers: [{ name: 'Protocol', focus: 'wire format' }] }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     const primaryCall = jest.mocked(clients.reviewer.sendMessage).mock.calls;
     const pairCall = jest.mocked(pair.sendMessage).mock.calls;
@@ -7766,7 +7769,7 @@ describe('runReview triage', () => {
 
   it('ends INCOMPLETE when the pair finder fails, even though the primary finder succeeded', async () => {
     const clients = makeClients();
-    clients.reviewerByModel = new Map([['claude-opus-5-5', { sendMessage: jest.fn().mockRejectedValue(new Error('Codex token expired')) } as unknown as import('./providers').LLMClient]]);
+    clients.reviewerByModel = new Map([['anthropic/claude-opus-5-5', { sendMessage: jest.fn().mockRejectedValue(new Error('Codex token expired')) } as unknown as import('./providers').LLMClient]]);
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');
