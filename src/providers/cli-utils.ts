@@ -596,6 +596,9 @@ export function pause(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** The error `runCli` rejects with when a run passes its hard timeout. */
+export class CliTimeoutError extends Error {}
+
 export interface RunCliOptions {
   /** Provider name used in error messages, e.g. `Claude`. */
   label: string;
@@ -753,7 +756,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
         const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
         const msg = `${label} CLI timed out after ${hardTimeoutMs / 1000}s${details ? `. ${details}` : ''}`;
         core.warning(msg);
-        reject(new Error(msg));
+        reject(new CliTimeoutError(msg));
         return;
       }
       if (outputExceeded) {

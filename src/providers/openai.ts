@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, CliTimeoutError, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -249,6 +249,9 @@ function codexEndpointArgs(baseUrl: string): string[] {
 // How often one call resumes its Codex session, and the pause before each resume of a model at capacity. The last pause repeats.
 const MAX_RESUMES = 8;
 const CAPACITY_PAUSES_MS = [15_000, 30_000, 60_000];
+// The least time a resumed run is started with. Starting Codex again on its session takes about 2 s before the model
+// writes anything, and the model then has to write the whole answer.
+const MIN_RESUMED_RUN_MS = 30_000;
 // Codex's own words for a connection that ended before the answer did. A failure the endpoint words follows the same
 // prefix, and so does an answer a content filter cut. Neither is a dropped connection.
 const DROPPED_TEXT = /^ERROR: stream disconnected before completion: (?:stream closed before response\.completed|Transport error|idle timeout waiting for SSE)\b/;
@@ -466,12 +469,20 @@ export class OpenAIClient implements LLMClient {
       let exit = await run(['-'], userMessage);
       const session = endpoint && SESSION_ID.exec(exit.stderr.slice(0, HEADER_CHARS))?.[1];
       for (let resume = 1; session && exit.code !== 0 && resume <= MAX_RESUMES; resume++) {
-        const failure = streamFailure(codexFinalError(exit, output), resume);
-        // A pause that ends past the call's time limit is not started, so the call fails on this run's error.
-        if (!failure || Date.now() - startTime + failure.pauseMs >= limitMs) break;
+        const finalError = codexFinalError(exit, output);
+        const failure = streamFailure(finalError, resume);
+        // A resume whose pause leaves the resumed run too little of the call's time is not started, so the call fails
+        // on this run's error.
+        if (!failure || Date.now() - startTime + failure.pauseMs + MIN_RESUMED_RUN_MS > limitMs) break;
         core.info(`Codex stream failed (${failure.reason}). Resuming the session in ${failure.pauseMs / 1000}s, resume ${resume} of ${MAX_RESUMES}.`);
         if (failure.pauseMs > 0) await pause(failure.pauseMs, options?.signal).catch(carry);
-        exit = await run(['resume', session, '-'], RESUME_PROMPT, Date.now() - startTime);
+        exit = await run(['resume', session, '-'], RESUME_PROMPT, Date.now() - startTime).catch((error: unknown) => {
+          // A call that runs out of time after a limit fails as that limit, since a new call would meet it again.
+          const limitError = error instanceof CliTimeoutError ? codexLimitError(finalError, !!endpoint) : undefined;
+          if (!limitError) throw error;
+          core.warning(limitError.message);
+          return carry(Object.assign(limitError, { cause: error }));
+        });
       }
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {

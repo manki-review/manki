@@ -450,8 +450,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
   const instructionsPath = (args: string[]): string => JSON.parse(args.find(arg => arg.startsWith('model_instructions_file='))!.replace(/^model_instructions_file=/, ''));
 
-  /** One run of the mocked CLI. With `hangs` it ends only once it is killed. */
-  interface CodexRun { stdout?: string; exitCode?: number; signal?: NodeJS.Signals; stderr?: string; hangs?: true }
+  /** One run of the mocked CLI. It ends after `ms`, or `RUN_MS`, and with `hangs` only once it is killed. */
+  interface CodexRun { stdout?: string; exitCode?: number; signal?: NodeJS.Signals; stderr?: string; ms?: number; hangs?: true }
   const RUN_MS = 5;
 
   /**
@@ -475,7 +475,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       proc.on.mockImplementation((event: string, cb: (code: number | null, signal: string | null) => void) => {
         if (event !== 'close') return;
         if (run.hangs) proc.kill.mockImplementationOnce(() => cb(null, 'SIGTERM'));
-        else setTimeout(() => cb(run.signal ? null : run.exitCode ?? 0, run.signal ?? null), RUN_MS);
+        else setTimeout(() => cb(run.signal ? null : run.exitCode ?? 0, run.signal ?? null), run.ms ?? RUN_MS);
       });
       return proc;
     });
@@ -687,24 +687,56 @@ describe('sendViaCLI (Codex CLI path)', () => {
       expect(mock.starts).toHaveLength(9);
       expect(outcome.tookMs).toBe(405_000 + 9 * RUN_MS);
 
-      // The third pause of 60 s would end past a limit of 60 s, so the call fails when the third run does.
+      // The second pause of 30 s would leave the resumed run under 30 s of a limit of 60 s, so the call fails when the second run does.
       mock = setupSpawnMock('', failed(CAPACITY));
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
       expect(outcome.error).toMatchObject({ limit: 'OpenAI model at capacity' });
-      expect(mock.starts).toHaveLength(3);
-      expect(outcome.tookMs).toBe(45_000 + 3 * RUN_MS);
+      expect(mock.starts).toHaveLength(2);
+      expect(outcome.tookMs).toBe(15_000 + 2 * RUN_MS);
 
-      // An advised wait longer than the time left is not sat out.
-      mock = setupSpawnMock('', failed(`${RATE_LIMIT} Please try again in 3s.`));
-      outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 2_000 }));
-      expect(outcome.error).toBeInstanceOf(QuotaError);
-      expect(outcome.error).toMatchObject({ limit: 'OpenAI endpoint limit reached', resetsAt: 'in 3s' });
-      expect(mock.starts).toHaveLength(1);
-      expect(outcome.tookMs).toBe(RUN_MS);
+      // An advised wait is not sat out when it is longer than the time left, or leaves the resumed run under 30 s.
+      const wait58 = failed(`${RATE_LIMIT} Please try again in 58s.`);
+      for (const [run, timeoutMs, resetsAt] of [
+        [failed(`${RATE_LIMIT} Please try again in 3s.`), 2_000, 'in 3s'],
+        [{ ...wait58, ms: 57_900 }, 60_000, 'in 58s'],
+        [wait58, 60_000, 'in 58s'],
+      ] as const) {
+        mock = setupSpawnMock('', run, answer);
+        outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs }));
+        expect(outcome.error).toBeInstanceOf(QuotaError);
+        expect(outcome.error).toMatchObject({ limit: 'OpenAI endpoint limit reached', resetsAt });
+        expect(mock.starts).toHaveLength(1);
+        expect(outcome.tookMs).toBe(run.ms ?? RUN_MS);
+      }
 
-      // A resumed run has only the time the call has left, and the error names the call's whole limit.
+      // A resume with no pause needs the same 30 s: with exactly that left it starts, with less the call fails.
+      mock = setupSpawnMock('', { ...failed(DROPPED), ms: 30_000 }, answer);
+      outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
+      expect(outcome.value?.content).toBe('[]');
+      expect(mock.starts).toHaveLength(2);
+      for (const ms of [30_001, 57_900]) {
+        mock = setupSpawnMock('', { ...failed(DROPPED), ms }, answer);
+        outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
+        expect(outcome.error).not.toBeInstanceOf(QuotaError);
+        expect(outcome.error?.message).toContain(`Codex CLI invocation failed (exit 1: ERROR: ${DROPPED} [`);
+        expect(mock.starts).toHaveLength(1);
+        expect(outcome.tookMs).toBe(ms);
+      }
+
+      // A resumed run has only the time the call has left. When it runs out, the call fails as the limit that made it
+      // resume, and the timeout it carries names the call's whole limit.
       mock = setupSpawnMock('', failed(CAPACITY), { hangs: true });
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
+      expect(outcome.error).toBeInstanceOf(QuotaError);
+      expect(outcome.error).toMatchObject({ message: `OpenAI model at capacity: ERROR: ${CAPACITY}`, limit: 'OpenAI model at capacity' });
+      expect((outcome.error?.cause as Error).message).toContain('Codex CLI timed out after 60s');
+      expect(mock.starts).toHaveLength(2);
+      expect(outcome.tookMs).toBe(60_000);
+
+      // A dropped connection is no limit, so the timeout stays the error.
+      mock = setupSpawnMock('', failed(DROPPED), { hangs: true });
+      outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
+      expect(outcome.error).not.toBeInstanceOf(QuotaError);
       expect(outcome.error?.message).toContain('Codex CLI timed out after 60s');
       expect(mock.starts).toHaveLength(2);
       expect(outcome.tookMs).toBe(60_000);
