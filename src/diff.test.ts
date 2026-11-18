@@ -580,6 +580,8 @@ describe('rebuildRawDiff', () => {
     expect(raw).toContain('diff --git a/src/new-file.ts b/src/new-file.ts\n--- /dev/null\n+++ b/src/new-file.ts\n');
     expect(raw).toContain('diff --git a/src/old-file.ts b/src/old-file.ts\n--- a/src/old-file.ts\n+++ /dev/null\n');
     expect(raw).toContain('diff --git a/src/old-name.ts b/src/new-name.ts\n--- a/src/old-name.ts\n+++ b/src/new-name.ts\n');
+    // Read back without file mode lines, each file keeps its kind.
+    expect(parsePRDiff(raw).files.map(f => [f.path, f.changeType])).toEqual([['src/new-file.ts', 'added'], ['src/old-file.ts', 'deleted'], ['src/new-name.ts', 'renamed']]);
   });
 });
 

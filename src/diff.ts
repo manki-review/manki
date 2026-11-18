@@ -551,12 +551,12 @@ function isBinaryFile(file: parseDiff.File): boolean {
 }
 
 function determineChangeType(file: parseDiff.File): DiffFile['changeType'] {
-  if (file.new) return 'added';
-  if (file.deleted) return 'deleted';
-
   const from = file.from ?? '';
   const to = file.to ?? '';
-  if (from !== to && from !== '/dev/null' && to !== '/dev/null') {
+  // `rebuildRawDiff` writes no file mode line, so its added and deleted files show only in the `/dev/null` path.
+  if (file.new || from === '/dev/null') return 'added';
+  if (file.deleted || to === '/dev/null') return 'deleted';
+  if (from !== to) {
     return 'renamed';
   }
 
