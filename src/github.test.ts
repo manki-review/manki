@@ -559,7 +559,8 @@ describe('formatFindingComment', () => {
     const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'] };
     const confirmedBefore: Finding = {
       ...baseFinding, severity: 'warning', tags: ['pre-existing'], evidence: { checks: [], proof: ['src/main.ts:42'] },
-      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', base: same },
+      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'first-model', base: same },
+      pairRefutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'pair-model', base: same },
     };
     expect(render(confirmedBefore)).toContain(`**Same before this PR**\nManki read the code before this PR and found it fails the same way, so this PR did not cause it. The queue had no cap before this PR. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
     expect(render(confirmedBefore)).toContain('double-checked, same before this PR</summary>');

@@ -7,7 +7,7 @@ import * as core from '@actions/core';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -1158,7 +1158,7 @@ describe('refuteBlockers', () => {
     const doubt = { premise: 'Nothing bounds the inputs', decides: 'defect' as const };
     const same = { outcome: 'disproved', reason: 'The sum overflowed the same way before this PR.', proof: ['src/math.ts:2'] };
     const confirmed = { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] };
-    const client = fakeClient({
+    const replies = {
       'Same before': { ...confirmed, base: same },
       'No answer about the base': confirmed,
       'Same before without proof': { ...confirmed, base: { ...same, proof: [] } },
@@ -1166,7 +1166,9 @@ describe('refuteBlockers', () => {
       'Pending blocker': { ...confirmed, premises: [confirmed], base: same },
       'Security': { ...confirmed, base: same },
       'Plain warning': { ...confirmed, base: same },
-    });
+    };
+    const client = fakeClient(replies, 'first-model');
+    const pair = fakeClient(replies, 'pair-model');
     const findings = [
       finding('Same before'),
       finding('No answer about the base'),
@@ -1177,7 +1179,7 @@ describe('refuteBlockers', () => {
       finding('Plain warning', { severity: 'warning', evidence: { checks: [], proof: [] } }),
     ];
 
-    const result = await refuteBlockers(client, findings, { workspace, diff, excludedPaths: ['gen/client.ts'] });
+    const result = await refuteBlockers(client, findings, { workspace, diff, pair, excludedPaths: ['gen/client.ts'] });
 
     const message = (title: string) => client.calls.find(([t]) => t === title)![2];
     const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
@@ -1186,35 +1188,44 @@ describe('refuteBlockers', () => {
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
     expect(message('Pending blocker')).toContain('- **Other files this PR changes**');
     expect(message('Plain warning')).not.toContain('Other files this PR changes');
-    // The answer never moves the outcome or the grade here. Only an answer with a line of the finding's file or the diff counts.
+    // The answer never moves the outcome or the grade here. Only an answer with a line of the finding's file or the diff
+    // counts, from both refuters on different models, for a security finding as for any other.
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.base?.outcome, !!sameOnBase(f)])).toEqual([
       ['Same before', 'blocker', 'confirmed', 'disproved', true],
       ['No answer about the base', 'blocker', 'confirmed', 'unsettled', false],
       ['Same before without proof', 'blocker', 'confirmed', 'unsettled', false],
       ['Same before by an unrelated file', 'blocker', 'confirmed', 'unsettled', false],
       ['Pending blocker', 'blocker', 'confirmed', 'disproved', true],
-      // One check never lowers a security finding.
-      ['Security', 'blocker', 'confirmed', 'disproved', false],
+      ['Security', 'blocker', 'confirmed', 'disproved', true],
       ['Plain warning', 'warning', 'confirmed', undefined, false],
     ]);
     expect(result[0].refutation?.base).toEqual({ premise: BASE_QUESTION, outcome: 'disproved', reason: same.reason, proof: ['src/math.ts:2'] });
-    // A second check that finds the failure the PR's own, or leaves it open, keeps the finding as it is.
-    const paired = (f: Finding, base: Partial<PremiseCheck>, model = 'pair-model'): Finding => ({ ...f, refutation: { ...f.refutation!, model: 'first-model' }, pairRefutation: { ...f.refutation!, model, base: { ...f.refutation!.base!, ...base } } });
-    expect(sameOnBase(paired(result[0], { outcome: 'confirmed' }))).toBeUndefined();
-    expect(sameOnBase(paired(result[0], { outcome: 'unsettled' }))).toBeUndefined();
-    expect(sameOnBase(paired(result[0], {}))).toBe(result[0].refutation?.base);
-    // A security finding needs both checks of the refuter pair, on different models, to find it the same before this PR with proof lines.
-    expect(sameOnBase(paired(result[5], {}))).toBe(result[5].refutation?.base);
-    expect(sameOnBase(paired(result[5], {}, 'first-model'))).toBeUndefined();
-    expect(sameOnBase(paired(result[5], { proof: [] }))).toBeUndefined();
-    expect(sameOnBase({ ...paired(result[5], {}), refutation: { ...result[5].refutation!, model: undefined } })).toBeUndefined();
+    // One refuter, a second call that failed, two on the same model, or a second check that finds the failure the PR's
+    // own or leaves it open, keeps the finding as it is.
+    const [lowered] = result;
+    expect(sameOnBase({ ...lowered, pairRefutation: undefined })).toBeUndefined();
+    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, model: 'first-model' } })).toBeUndefined();
+    expect(sameOnBase({ ...lowered, refutation: { ...lowered.refutation!, model: undefined } })).toBeUndefined();
+    for (const outcome of ['confirmed', 'unsettled'] as const) {
+      expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...lowered.pairRefutation!.base!, outcome } } })).toBeUndefined();
+    }
+    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...lowered.pairRefutation!.base!, proof: undefined } } })).toBeUndefined();
+    const failed = fakeClient({ 'Same before': new Error('timed out') }, 'pair-model');
+    const [alone] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, pair: failed });
+    expect([alone.refutation?.base?.outcome, alone.pairRefutation, sameOnBase(alone)]).toEqual(['disproved', undefined, undefined]);
 
-    // A changed file the message does not name looks the same at the base, so an answer under a cut list stays open.
+    // A change the message leaves out looks the same at the base, so an answer under a cut list of changed files, or
+    // under a cut change to the cited file, stays open.
     const paths = (n: number) => Array.from({ length: n }, (_, i) => `gen/file${i}.ts`);
     const [named] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(49) });
     const [cut] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(50) });
     expect(client.calls.at(-1)![2]).toContain(', and 1 more it does not name');
-    expect([named.refutation?.base?.outcome, cut.refutation?.base?.outcome, !!sameOnBase(cut)]).toEqual(['disproved', 'unsettled', false]);
+    const longChange = (lines: number): ParsedDiff => ({
+      ...diff, files: [...diff.files, { path: 'src/math.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 + lines, content: '+  // note\n'.repeat(lines) }] }],
+    });
+    const [shortChange] = await refuteBlockers(client, [finding('Same before')], { workspace, diff: longChange(10) });
+    const [cutChange] = await refuteBlockers(client, [finding('Same before')], { workspace, diff: longChange(1000) });
+    expect([named, cut, shortChange, cutChange].map(f => f.refutation?.base?.outcome)).toEqual(['disproved', 'unsettled', 'disproved', 'unsettled']);
 
     // A warning reuses its stored check without the answer about the base, so no stale answer makes it pre-existing.
     const stored = (refutation: Refutation) => [{ findings: { entries: [{ title: 'Same before', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation }] }, judge: {} }] as unknown as RoundContext[];

@@ -963,16 +963,15 @@ export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts
 }
 
 /**
- * Returns the answer that shows the code at the PR's base fails the same way as `finding`, when every check of it
- * disproved `BASE_QUESTION` with proof lines. A security finding needs two such checks on different models, since one
- * model's answer, read from files the PR author controls, must not lower it. Any other outcome keeps the finding as it is.
+ * Returns the answer that shows the code at the PR's base fails the same way as `finding`, when both refuters, on
+ * different models, disproved `BASE_QUESTION` with proof lines. One model's answer, read from files the PR author
+ * controls, never lowers a blocker, so one refuter alone, or one whose call failed, keeps the finding as it is.
  */
-export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'tags' | 'reviewers'>): PremiseCheck | undefined {
-  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  const answers = checks.map(r => r.base);
-  if (answers.length === 0 || !answers.every(a => a?.outcome === 'disproved' && !!a.proof?.length)) return undefined;
-  if (isSecurityFinding(finding.tags, finding.reviewers) && (checks.length < 2 || !checks[0].model || !checks[1].model || checks[0].model === checks[1].model)) return undefined;
-  return answers[0];
+export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
+  const { refutation, pairRefutation } = finding;
+  if (!refutation?.model || !pairRefutation?.model || refutation.model === pairRefutation.model) return undefined;
+  const same = (r: Refutation): boolean => r.base?.outcome === 'disproved' && !!r.base.proof?.length;
+  return same(refutation) && same(pairRefutation) ? refutation.base : undefined;
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
