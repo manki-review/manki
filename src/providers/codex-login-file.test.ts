@@ -58,6 +58,8 @@ class StandIn {
   events: string[] = [];
   /** Runs when the stand-in renews, before Codex gets the new tokens. */
   onRenew?: () => void;
+  /** Runs when a Codex run starts, before it reads the login. */
+  onStart?: () => void;
   /** Holds back the start of each Codex run until this many runs started. */
   startsTogether?: Gate;
   /** Holds back each refused model request until this many were refused. */
@@ -95,7 +97,12 @@ class StandIn {
       req.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
       req.on('end', () => {
         this.homes.add(String(req.headers['x-codex-home']));
+        if (req.url === '/answered') {
+          res.writeHead(200).end(String(this.answered.length));
+          return;
+        }
         if (req.url === '/start') {
+          this.onStart?.();
           this.started[raw] = Date.now();
           this.events.push(`start ${raw}`);
           void (this.startsTogether?.arrive() ?? Promise.resolve()).then(() => res.writeHead(200).end());
@@ -235,11 +242,16 @@ describe('openai_oauth_file', () => {
    * Starts a second run in a process of its own, with its own Codex home, as a second review on the runner is. Returns
    * when its call started and how it ended.
    */
-  const otherRun = () => {
+  const ns = existsSync('/proc/self/ns/pid') ? readlinkSync('/proc/self/ns/pid') : '';
+  /** Writes `lock` as held by the process `pid` on this host. */
+  const holdLock = (lock: string, pid: number | undefined) => writeFileSync(lock, JSON.stringify({ host: hostname(), ns, pid, id: 'other' }));
+  const otherRun = (exitOnRenewal = false) => {
     const script = join(scratch, 'other-run.ts');
     writeFileSync(script, [
       `import { buildOpenAIAuth, OpenAIClient } from ${JSON.stringify(resolve(__dirname, 'openai'))};`,
       'const at = Date.now();',
+      // As a second Ctrl-C ends `manki review`, once Codex renewed and sent its request with the renewed token.
+      ...(exitOnRenewal ? [`setInterval(() => fetch('${standIn.url}/answered').then(r => r.text()).then(n => { if (n !== '0') process.exit(130); }), 100);`] : []),
       `new OpenAIClient({ auth: buildOpenAIAuth('', '', '', ${JSON.stringify(file)}), model: 'gpt-5.5' }).sendMessage('sys', 'other')`,
       '  .then(r => r.content, (e: Error) => e.message)',
       '  .then(result => process.stdout.write(`\\nresult: ${JSON.stringify({ at, result })}\\n`));',
@@ -365,10 +377,7 @@ describe('openai_oauth_file', () => {
   it('waits for a run that renews, takes over a lock whose process stopped, and gives up after its time limit', async () => {
     await start(2 * MINUTE);
     const lock = `${file}.lock`;
-    const ns = existsSync('/proc/self/ns/pid') ? readlinkSync('/proc/self/ns/pid') : '';
-    const holder = (pid: number | undefined) => JSON.stringify({ host: hostname(), ns, pid, id: 'other' });
-
-    writeFileSync(lock, holder(spawnSync('true').pid));
+    holdLock(lock, spawnSync('true').pid);
     // A process that stopped while it removed a lock left its marker too.
     writeFileSync(`${lock}.removing`, '');
     utimesSync(`${lock}.removing`, new Date(Date.now() - 2 * 60_000), new Date(Date.now() - 2 * 60_000));
@@ -380,7 +389,7 @@ describe('openai_oauth_file', () => {
     // A login far from its expiry needs no lock, so a call runs although another process holds it.
     const running = spawn('sleep', ['30']);
     try {
-      writeFileSync(lock, holder(running.pid));
+      holdLock(lock, running.pid);
       expect(await client().sendMessage('sys', 'user')).toMatchObject({ content: 'OK' });
 
       writeFileSync(file, (() => { standIn.issue(2 * MINUTE); return standIn.login(); })());
@@ -406,10 +415,9 @@ describe('openai_oauth_file', () => {
   it('counts the wait for the lock against the time limit of the call', async () => {
     await start(2 * MINUTE);
     const lock = `${file}.lock`;
-    const ns = existsSync('/proc/self/ns/pid') ? readlinkSync('/proc/self/ns/pid') : '';
     const running = spawn('sleep', ['30']);
     try {
-      writeFileSync(lock, JSON.stringify({ host: hostname(), ns, pid: running.pid, id: 'other' }));
+      holdLock(lock, running.pid);
       process.env.CODEX_STANDIN_DELAY_MS = '2000';
       const call = client().sendMessage('sys', 'user', { timeoutMs: 3000 });
       setTimeout(() => running.kill(), 1500);
@@ -458,7 +466,68 @@ describe('openai_oauth_file', () => {
     expect(await call).toMatchObject({ content: 'OK' });
     expect(warnings('Could not compare')).toHaveLength(1);
     warning.mockRestore();
-  }, 20_000);
+  }, 40_000);
+
+  it('waits for another process that writes the file, and keeps the renewal and warns once when it waits too long', async () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => undefined);
+    await start(DAY);
+    standIn.revoke();
+    const writing = `${file}.writing`;
+    // A process that writes the file for 2 seconds, so each look during the call finds it busy.
+    const brief = spawn('sleep', ['2']);
+    holdLock(writing, brief.pid);
+    expect(await client().sendMessage('sys', 'user')).toMatchObject({ content: 'OK' });
+    expect(fileLogin().tokens.refresh_token).toBe('refresh-2');
+    expect(warning).not.toHaveBeenCalled();
+
+    standIn.revoke();
+    const stuck = spawn('sleep', ['30']);
+    try {
+      holdLock(writing, stuck.pid);
+      expect(await client().sendMessage('sys', 'user')).toMatchObject({ content: 'OK' });
+      expect(fileLogin().tokens.refresh_token).toBe('refresh-2');
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(String(warning.mock.calls[0][0])).toContain(`could not write it back to ${file}: ${writing} is held by process ${stuck.pid}`);
+    } finally {
+      stuck.kill();
+    }
+    // The renewal stayed in Codex's home, so the next call writes it instead of starting from the used refresh token.
+    await new Promise(done => setTimeout(done, 100));
+    expect(await client().sendMessage('sys', 'user')).toMatchObject({ content: 'OK' });
+    expect(fileLogin().tokens.refresh_token).toBe('refresh-3');
+    expect(standIn.refused).toEqual([]);
+    expect(readdirSync(folder)).toEqual(['auth.json']);
+    warning.mockRestore();
+  }, 30_000);
+
+  it('writes back at exit a renewal made while the run holds the lock', async () => {
+    await start(2 * MINUTE);
+    process.env.CODEX_STANDIN_NO_APP_RENEWAL = '1';
+    process.env.CODEX_STANDIN_LINGER_MS = '6000';
+    // Another process writes the file until shortly after the renewal, so only the write-back at exit can write it.
+    standIn.onStart = () => holdLock(`${file}.writing`, spawn('sleep', ['3']).pid);
+    await otherRun(true);
+
+    expect(standIn.renewals).toEqual([{ given: 'refresh-1', reason: 'proactive_expiry' }]);
+    expect(fileLogin().tokens.refresh_token).toBe('refresh-2');
+    expect(readdirSync(folder)).toEqual(['auth.json']);
+  }, 60_000);
+
+  it('finishes and writes back a renewal before the call that the calls stopped waiting for', async () => {
+    await start(2 * MINUTE);
+    process.env.CODEX_STANDIN_RENEW_MS = '1500';
+    const cancel = new AbortController();
+    const call = client().sendMessage('sys', 'user', { signal: cancel.signal });
+    const late = client().sendMessage('sys', 'user', { timeoutMs: 800 });
+    setTimeout(() => cancel.abort(new Error('cancelled')), 300);
+    await expect(call).rejects.toThrow('cancelled');
+    // The lock is this run's own, so the message names no other review.
+    await expect(late).rejects.toThrow(`for the lock ${file}.lock of openai_oauth_file and ran out of its time limit, while this review itself renewed the login`);
+    while (standIn.renewals.length === 0 || fileLogin().tokens.refresh_token !== 'refresh-2') await new Promise(done => setTimeout(done, 100));
+    expect(standIn.renewals).toEqual([{ given: 'refresh-1', reason: 'forced' }]);
+    while (existsSync(`${file}.lock`)) await new Promise(done => setTimeout(done, 100));
+    expect(readdirSync(folder)).toEqual(['auth.json']);
+  });
 
   it('checks the file again before each call, and refuses one that is no Codex login', async () => {
     await start(DAY);

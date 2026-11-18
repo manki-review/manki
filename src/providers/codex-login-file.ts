@@ -22,6 +22,8 @@ const POLL_MS = 250;
 // How often a running call looks for a renewal in Codex's home or in the file.
 const SYNC_MS = 1000;
 const RENEWAL_TIMEOUT_MS = 60_000;
+// How long a write-back at the end of a call or at exit waits for another process that writes the file.
+const WRITE_WAIT_MS = 5000;
 // Removing a stopped holder's lock takes a moment, so a removal marker this old was left by a process that stopped.
 const STALE_REMOVAL_MS = 60_000;
 
@@ -47,7 +49,10 @@ const me: Holder = { host: hostname(), ns: pidNamespace(), pid: process.pid, id:
 /** How this process uses one login file. */
 interface LoginFileState {
   path: string;
+  /** Held while a run renews the login, or runs a call that Codex may renew during. */
   lock: string;
+  /** Held only while a run compares the file with what it read and writes it, never across a wait. */
+  writing: string;
   /** The login file inside Codex's home, which the calls of this process share. */
   homeFile?: string;
   /** The login as this process last copied it into the home or wrote it to the file. */
@@ -217,29 +222,29 @@ function removeStoppedLock(lock: string, stopped: Holder): void {
 }
 
 /**
- * Takes the lock of `state` when it is free or its holder stopped. Returns whether this process holds it now. The lock
- * is linked into place complete, so a process that stops while it takes the lock never leaves an empty one.
+ * Takes `lock` when it is free or its holder stopped. Returns whether this process holds it now. The lock is linked
+ * into place complete, so a process that stops while it takes the lock never leaves an empty one.
  */
-function tryLock(state: LoginFileState): boolean {
+function tryLock(lock: string): boolean {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const temp = writeTemp(state.lock, JSON.stringify(me));
+    const temp = writeTemp(lock, JSON.stringify(me));
     try {
-      linkSync(temp, state.lock);
+      linkSync(temp, lock);
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     } finally {
       rmSync(temp, { force: true });
     }
-    const holder = readHolder(state.lock);
+    const holder = readHolder(lock);
     if (!holder || !holderStopped(holder)) return false;
-    removeStoppedLock(state.lock, holder);
+    removeStoppedLock(lock, holder);
   }
   return false;
 }
 
-function unlock(state: LoginFileState): void {
-  if (readHolder(state.lock)?.id === me.id) rmSync(state.lock, { force: true });
+function unlock(lock: string): void {
+  if (readHolder(lock)?.id === me.id) rmSync(lock, { force: true });
 }
 
 function readQuietly(path: string): string | undefined {
@@ -286,37 +291,78 @@ function writeWhole(path: string, text: string): void {
   }
 }
 
+/** The login Codex renewed in the home that is not in the file yet, or `undefined` when there is none. */
+function pendingRenewal(state: LoginFileState): string | undefined {
+  const home = state.homeFile && readQuietly(state.homeFile);
+  return home && state.synced !== undefined && home !== state.synced && isLogin(home) ? home : undefined;
+}
+
 /**
- * Brings Codex's home and the file together without waiting. A login Codex renewed in the home is written to the file,
- * under the lock, and only while the file still holds the login it was renewed from, so the file never goes back to a
- * used refresh token. Until that write succeeds, the home keeps the renewal and nothing is copied over it. A login
- * another run wrote to the file is copied into the home while the home holds no renewal of its own, so a running Codex
- * reads it when a request is refused instead of renewing a used refresh token. A home file Codex is still writing does
- * not parse and waits for the next look. `locked` says this process holds the lock already.
+ * Makes one try to write the login Codex renewed in the home to the file, under the `writing` lock. The file is written
+ * only while it still holds the login the renewal was made from, so it never goes back to a used refresh token. Returns
+ * why the try failed, or `undefined` when nothing is left to write.
  */
-function sync(state: LoginFileState, locked = false): void {
-  const { homeFile } = state;
-  if (!homeFile) return;
-  const home = readQuietly(homeFile);
-  if (home !== undefined && state.synced !== undefined && home !== state.synced && isLogin(home)) {
-    let took = false;
+function tryWriteBack(state: LoginFileState): unknown {
+  const renewed = pendingRenewal(state);
+  if (!renewed) return undefined;
+  try {
+    if (!tryLock(state.writing)) {
+      const holder = readHolder(state.writing);
+      return new Error(`${state.writing} is held by process ${holder?.pid ?? 'unknown'} on ${holder?.host ?? 'an unknown host'}`);
+    }
     try {
-      if (!locked && !(took = tryLock(state))) return;
       if (readLoginFile(state.path) === state.synced) {
-        writeWhole(state.path, home);
+        writeWhole(state.path, renewed);
         core.info(`Wrote the Codex login that Codex renewed back to ${state.path}`);
       } else {
         core.info(`${state.path} changed since this run read it, so Manki keeps it and does not write the login Codex renewed over it.`);
       }
-      state.synced = home;
-      state.warned = undefined;
-    } catch (error) {
-      warnOnce(state, 'write', error, `Codex renewed the login, but Manki could not write it back to ${state.path}: ${message(error)}. Manki tries again while this run lasts. If Codex fails to sign in next time, run codex login again.`);
     } finally {
-      if (took) unlock(state);
+      unlock(state.writing);
     }
+    state.synced = renewed;
+    state.warned = undefined;
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function warnUnwritten(state: LoginFileState, error: unknown): void {
+  warnOnce(state, 'write', error, `Codex renewed the login, but Manki could not write it back to ${state.path}: ${message(error)}. The renewed login stays in ${state.homeFile} while this run lasts, and Manki tries again. If the run ends first, run codex login again.`);
+}
+
+/** Writes a renewal back, trying again until `waitMs` passed, and warns once when it still could not. */
+async function writeBack(state: LoginFileState, waitMs: number): Promise<void> {
+  const deadline = Date.now() + waitMs;
+  let error: unknown;
+  while ((error = tryWriteBack(state)) && Date.now() < deadline) await pause(Math.min(POLL_MS, deadline - Date.now()));
+  if (error) warnUnwritten(state, error);
+}
+
+/** Does what `writeBack` does at exit, which cannot await, so it blocks between tries. */
+function writeBackBlocking(state: LoginFileState, waitMs: number): void {
+  const deadline = Date.now() + waitMs;
+  const slot = new Int32Array(new SharedArrayBuffer(4));
+  let error: unknown;
+  while ((error = tryWriteBack(state)) && Date.now() < deadline) Atomics.wait(slot, 0, 0, Math.min(POLL_MS, deadline - Date.now()));
+  if (error) warnUnwritten(state, error);
+}
+
+/**
+ * Brings Codex's home and the file together. A login Codex renewed in the home gets one try to be written to the file,
+ * and the home keeps it until it is written. The end of the call and exit try longer, and warn. Otherwise, a login another run wrote to the file is copied into the home,
+ * so a running Codex reads it when a request is refused instead of renewing a used refresh token. A home file Codex is
+ * still writing does not parse and waits for the next look.
+ */
+function sync(state: LoginFileState): void {
+  const { homeFile } = state;
+  if (!homeFile) return;
+  if (pendingRenewal(state)) {
+    tryWriteBack(state);
     return;
   }
+  const home = readQuietly(homeFile);
   const file = readLoginFile(state.path);
   if (home === undefined || (file !== state.synced && (home === state.synced || state.synced === undefined))) {
     parseLogin(file);
@@ -369,15 +415,17 @@ async function renewInHome({ cliPath, env }: CodexRunner, home: string): Promise
 }
 
 function lockTimeout(state: LoginFileState, waitedMs: number): Error {
+  const waited = `A Codex call waited ${Math.round(waitedMs / 1000)}s for the lock ${state.lock} of ${INPUT}`;
   const holder = readHolder(state.lock);
+  if (holder?.id === me.id) return new Error(`${waited} and ran out of its time limit, while this review itself renewed the login or ran a call that Codex may renew during.`);
   const by = holder ? `, held by process ${holder.pid} on ${holder.host}` : ', which names no process Manki can read';
-  return new Error(`A Codex call waited ${Math.round(waitedMs / 1000)}s for the lock ${state.lock} of ${INPUT}${by}. Another review on this runner is renewing the login. If none runs, delete the lock.`);
+  return new Error(`${waited}${by}. Another review on this runner is renewing the login. If none runs, delete the lock.`);
 }
 
 /** Waits until this process holds the lock of `state`, and at most until `deadline`. */
 async function lock(state: LoginFileState, deadline: number, signal?: AbortSignal): Promise<void> {
   const start = Date.now();
-  while (!tryLock(state)) {
+  while (!tryLock(state.lock)) {
     if (Date.now() >= deadline) throw lockTimeout(state, Date.now() - start);
     await pause(Math.min(POLL_MS, Math.max(deadline - Date.now(), 0)), signal);
   }
@@ -419,13 +467,13 @@ function waitFor<T>(done: Promise<T>, deadline: number, signal: AbortSignal | un
 async function renew(state: LoginFileState, renewal: Renewal, runner: CodexRunner): Promise<void> {
   await lock(state, Date.now() + HARD_TIMEOUT_MS, renewal.stop.signal);
   try {
-    sync(state, true);
+    sync(state);
     // Checked once the lock is held, since another run may have renewed meanwhile.
     if (!isDue(readLoginFile(state.path), renewal.limitMs)) return;
     await renewInHome(runner, dirname(state.homeFile!));
-    sync(state, true);
+    await writeBack(state, WRITE_WAIT_MS);
   } finally {
-    unlock(state);
+    unlock(state.lock);
   }
 }
 
@@ -451,6 +499,7 @@ async function renewBefore(state: LoginFileState, runner: CodexRunner, limitMs: 
   }
 }
 
+/** Runs `run` while the home is looked at every second, and writes back what Codex renewed once it ends. */
 async function track<T>(state: LoginFileState, run: () => Promise<T>): Promise<T> {
   state.running++;
   state.timer ??= setInterval(() => syncQuietly(state), SYNC_MS).unref();
@@ -462,6 +511,7 @@ async function track<T>(state: LoginFileState, run: () => Promise<T>): Promise<T
       clearInterval(state.timer);
       state.timer = undefined;
     }
+    await writeBack(state, WRITE_WAIT_MS);
   }
 }
 
@@ -472,21 +522,17 @@ async function track<T>(state: LoginFileState, run: () => Promise<T>): Promise<T
 async function runLocked<T>(state: LoginFileState, deadline: number, signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
   await lock(state, deadline, signal);
   try {
-    sync(state, true);
+    sync(state);
     return await track(state, run);
   } finally {
-    try {
-      syncQuietly(state, true);
-    } finally {
-      unlock(state);
-    }
+    unlock(state.lock);
   }
 }
 
-/** Runs `sync` where a failure must not end the run, as on a timer or at exit. */
-function syncQuietly(state: LoginFileState, locked = false): void {
+/** Runs `sync` where a failure must not end the run, as on a timer. */
+function syncQuietly(state: LoginFileState): void {
   try {
-    sync(state, locked);
+    sync(state);
   } catch (error) {
     warnOnce(state, 'read', error, `Could not compare ${state.path} with the login in Codex's home: ${message(error)}`);
   }
@@ -496,8 +542,11 @@ function stateOf(path: string): LoginFileState {
   let state = states.get(path);
   if (!state) {
     // Runs before the home is removed on exit, so a renewal in a call that a cancelled run cut short is not lost.
-    if (states.size === 0) process.prependOnceListener('exit', () => states.forEach(exiting => syncQuietly(exiting)));
-    state = { path, lock: `${path}.lock`, running: 0 };
+    if (states.size === 0) process.prependOnceListener('exit', () => states.forEach(exiting => {
+      writeBackBlocking(exiting, WRITE_WAIT_MS);
+      unlock(exiting.lock);
+    }));
+    state = { path, lock: `${path}.lock`, writing: `${path}.writing`, running: 0 };
     states.set(path, state);
   }
   return state;
@@ -526,9 +575,5 @@ export async function withLoginFile<T>(
       return runLocked(state, deadline, signal, run);
     }
   }
-  try {
-    return await track(state, run);
-  } finally {
-    syncQuietly(state);
-  }
+  return track(state, run);
 }
