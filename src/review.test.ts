@@ -4199,7 +4199,7 @@ describe('runReview', () => {
     expect(elsewhere.calls).toHaveLength(1);
     expect(elsewhere.calls[0][1]).toBe('## Pairs:\n1.\n   A: "Close is skipped after an early return" (src/a.ts:40): "The handle stays open."\n   B: "Caller never closes the handle" (src/b.ts:40): "Leaks a socket."');
     expect(elsewhere.result.findings.map(f => [f.title, f.description])).toEqual([
-      ['Buffer is never flushed', 'Loses data.'], ['Close is skipped after an early return', 'The handle stays open.\n\nAlso reported as: Caller never closes the handle'],
+      ['Buffer is never flushed', 'Loses data.'], ['Close is skipped after an early return', 'The handle stays open.\n\nAlso reported as: Caller never closes the handle (src/b.ts:40)'],
     ]);
     expect(elsewhere.result.findings[1]).not.toHaveProperty('suggestedFix');
 

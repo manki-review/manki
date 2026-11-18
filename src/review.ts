@@ -2954,8 +2954,8 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
  * thread. A pair `sameProblem` does not settle but that `mayRestate` pairs is folded when `dedup` says both describe
  * the same defect, asked in one call for the whole round. The blocker keeps its grade and takes what `foldInto` merges.
  * It takes the finding's code fix only when it has none and both sit on one line of one file, since a one-line fix
- * replaces the line its comment sits on. A title the blocker's does not contain is added to its description, so a second defect folded
- * in by mistake still shows.
+ * replaces the line its comment sits on. A title the blocker's does not contain is added to its description, with its
+ * file and line when it sits in another file, so a second defect folded in by mistake still shows.
  */
 async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined): Promise<{ findings: Finding[]; blockers: Finding[] }> {
   const merged = blockers.map(b => ({ ...b }));
@@ -2972,7 +2972,7 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     if (index === -1) return true;
     const blocker = merged[index];
     const overlap = titleOverlapType(blocker.title, f.title);
-    if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
+    if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}${f.file === blocker.file ? '' : ` (${f.file}:${f.line})`}`;
     foldInto(blocker, f);
     if (!blocker.suggestedFix && f.suggestedFix && f.file === blocker.file && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
