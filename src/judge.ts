@@ -1754,7 +1754,7 @@ export async function runJudgeAgent(
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
   // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting), staysPreExisting)
+  const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
     .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules));
@@ -1849,8 +1849,8 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
 }
 
 /**
- * Applies the judge's entries to the findings they name by `id`, then folds the
- * findings the judge marked as duplicates. A `sameAs` or `variantOf` that names no entry of
+ * Applies the judge's entries to the findings they name by `id`, then folds the findings the judge marked as
+ * duplicates, and then the copies `deduplicateFindings` merges by title and file. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
  */
 export function mapJudgedToFindings(
@@ -1861,8 +1861,9 @@ export function mapJudgedToFindings(
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
   const roots = duplicateRoots(aligned);
-  // The copies the judge merges are graded as one finding, which is filed as a blocker only when every copy was.
-  const filedBlocker = (i: number): boolean => original.every((f, j) => roots[j] !== roots[i] || finderGrade(f, 'lowest') === 'blocker');
+  // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
+  const groups = roots.map(root => mergeKey(original[root - 1]));
+  const filedBlocker = (i: number): boolean => original.every((f, j) => groups[j] !== groups[i] || finderGrade(f, 'lowest') === 'blocker');
   const graded = original.map((o, i) => {
     const finding = { ...o };
     const match = aligned[i];
@@ -1890,7 +1891,7 @@ export function mapJudgedToFindings(
     if (variantOf) finding.variantOf = variantOf;
     return finding;
   });
-  return foldDuplicates(graded, roots, staysPreExisting).map(capUnconfirmedBuildClaim).map(capUnprovenBlocker);
+  return deduplicateFindings(foldDuplicates(graded, roots, staysPreExisting).map(capUnconfirmedBuildClaim).map(capUnprovenBlocker), staysPreExisting);
 }
 
 /**
@@ -2370,6 +2371,8 @@ function hasReversalWord(finding: Finding): boolean {
   return REVERSAL_WORDS.some(word => new RegExp(`\\b${word}\\b`).test(haystack));
 }
 
+const mergeKey = (f: Pick<Finding, 'title' | 'file'>): string => `${f.title}::${f.file}`;
+
 /**
  * Keeps the first finding per title and file, with the finder grades `mergedFinderGrades` gives and the first rule a
  * copy quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
@@ -2378,7 +2381,7 @@ function hasReversalWord(finding: Finding): boolean {
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const kept = new Map<string, Finding>();
   for (const f of findings) {
-    const key = `${f.title}::${f.file}`;
+    const key = mergeKey(f);
     const first = kept.get(key);
     if (!first) {
       kept.set(key, f);

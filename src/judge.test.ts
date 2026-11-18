@@ -2229,6 +2229,25 @@ describe('runJudgeAgent', () => {
       });
       expect(refuterMessages).toEqual([]);
       expect(unchanged.findings.map(f => [f.title, f.severity, f.preExisting, f.refutation])).toEqual([['Old lock order', 'warning', 'The lock order predates this PR.', undefined], ['Lock order', 'warning', undefined, undefined]]);
+
+      // Two finders' copies with one title and file merge after the judge. One filed a blocker and the other a warning, so
+      // the merged finding keeps the consequence premise, whichever copy comes first, and rises only once every check confirms it.
+      const copy = (severity: Finding['severity']) => makeFinding({ title: 'Rows lost on retry', severity, line: 18, evidence: { checks: [], proof: ['src/index.ts:18'] } });
+      const doubted = {
+        title: 'Rows lost on retry', row: 'severe', column: 'normal', gradeIfConfirmed: 'blocker', reasoning: 'warning. The retry path sits outside the code shown.',
+        doubts: [{ premise: 'The retry skips the rows already sent', decides: 'defect' }, { premise: 'The stored table misses those rows', decides: 'consequence' }],
+      };
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [1, 2].map(id => ({ id, ...doubted })) }) });
+      const skips = { outcome: 'confirmed', reason: 'It skips them.', proof: ['src/index.ts:18'] };
+      const judgeSplit = async (order: readonly Finding['severity'][], consequenceAnswer: object) => {
+        replies['Rows lost on retry'] = { ...skips, premises: [skips, consequenceAnswer] };
+        const split = await runJudgeAgent(mockClient, makeConfig(), { findings: order.map(copy), diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace } });
+        return split.findings.map(f => [f.severity, f.lowestReviewerSeverity, f.doubts?.filter(d => d.consequence).length]);
+      };
+      const missing = { outcome: 'confirmed', reason: 'The table misses them.', proof: ['src/index.ts:19'] };
+      expect(await judgeSplit(['blocker', 'warning'], missing)).toEqual([['blocker', 'warning', 1]]);
+      expect(await judgeSplit(['warning', 'blocker'], missing)).toEqual([['blocker', 'warning', 1]]);
+      expect(await judgeSplit(['blocker', 'warning'], { outcome: 'unsettled', reason: 'A later sync may restore them.' })).toEqual([['warning', 'warning', 1]]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -4652,6 +4671,16 @@ describe('mapJudgedToFindings', () => {
       [{ id: 1, title: 'Rows lost on retry', ...consequence }, { id: 2, title: 'Retry drops rows', ...consequence, duplicateOf: 1 }],
     );
     expect([filedAs('blocker', 'warning'), filedAs('warning', 'blocker'), filedAs('blocker', 'blocker')].map(([f, ...rest]) => [rest.length, f.severity, f.doubts, f.reviewerSeverity, f.lowestReviewerSeverity])).toEqual([
+      [0, 'warning', [doubt, harm], 'blocker', 'warning'],
+      [0, 'warning', [doubt, harm], 'blocker', 'warning'],
+      [0, 'warning', [doubt], 'blocker', undefined],
+    ]);
+    // Copies merged by title and file after the judge are graded as one finding in the same way.
+    const sameTitle = (kept: Finding['severity'], copy: Finding['severity']) => mapJudgedToFindings(
+      [proven('Rows lost on retry', { severity: kept }), proven('Rows lost on retry', { severity: copy })],
+      [1, 2].map(id => ({ id, title: 'Rows lost on retry', ...consequence })),
+    );
+    expect([sameTitle('blocker', 'warning'), sameTitle('warning', 'blocker'), sameTitle('blocker', 'blocker')].map(([f, ...rest]) => [rest.length, f.severity, f.doubts, f.reviewerSeverity, f.lowestReviewerSeverity])).toEqual([
       [0, 'warning', [doubt, harm], 'blocker', 'warning'],
       [0, 'warning', [doubt, harm], 'blocker', 'warning'],
       [0, 'warning', [doubt], 'blocker', undefined],
