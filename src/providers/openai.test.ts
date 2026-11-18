@@ -553,6 +553,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
       `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
+      '-c mcp_servers.manki.required=true',
     ].join(' '));
     // The server gets the CLI's own environment by name, so no value, such as a proxy password, is on the command line.
     const envVars = JSON.parse(withTools.find(arg => arg.startsWith('mcp_servers.manki.env_vars='))!.slice('mcp_servers.manki.env_vars='.length)) as string[];
@@ -611,6 +612,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       // The tool server counts its steps in the call's own folder, so the server of a resumed run counts on.
       '-c', `mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15', '--steps-dir', join(dirname(instructionsPath(args)), 'steps')])}`,
       '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
+      '-c', 'mcp_servers.manki.required=true',
       '-c', expect.stringMatching(/^mcp_servers\.manki\.env_vars=/),
       '-c', expect.stringMatching(/^model_instructions_file=".*\/instructions\.md"$/), '-',
     ]);

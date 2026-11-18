@@ -328,13 +328,15 @@ export function codexExecArgs(model: string, baseUrl?: string): string[] {
  * approval. Codex starts the server with a few default variables only, so `env_vars` names the rest of the CLI's own
  * environment, such as the runner temp folder, the proxy settings and the GitHub API URL `repo_info` needs. Codex reads
  * their values from its own environment, so none of them, such as a proxy password, lands on the command line.
- * `ENDPOINT_KEY_ENV` is not named, so the server never gets an endpoint's key.
+ * `ENDPOINT_KEY_ENV` is not named, so the server never gets an endpoint's key. Codex waits for a required server
+ * before its first request, so a server that starts slowly still has its tools in it, and one that fails ends the run.
  */
 export function codexToolServerArgs({ command, args }: MankiCommand, env: NodeJS.ProcessEnv): string[] {
   return [
     '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
     '-c', `mcp_servers.manki.args=${JSON.stringify(args)}`,
     '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
+    '-c', 'mcp_servers.manki.required=true',
     '-c', `mcp_servers.manki.env_vars=${JSON.stringify(Object.keys(env).filter(name => name !== 'CODEX_HOME' && name !== ENDPOINT_KEY_ENV))}`,
   ];
 }
