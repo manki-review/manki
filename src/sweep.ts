@@ -110,9 +110,13 @@ function parseSweep(text: string, reviewer: string): { general: boolean; defectC
  * An evidence line is read with `parseProof`, so one that cites a related repo as `owner/name:path:line` names no line of the PR.
  */
 export function citedBy(cited: Finding, f: Finding, tolerance = OWN_LINE_TOLERANCE): boolean {
-  const spans = [`${cited.file}:${cited.line}`, ...(cited.evidence?.proof ?? []), ...parseProof(cited.evidence?.checks)]
+  return citedSpans(cited).some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
+}
+
+/** Returns `f`'s own line and the lines it cites in its proof or evidence, in spans no wider than `citedBy` reads. */
+function citedSpans(f: Finding): Array<{ file: string; start: number; end: number }> {
+  return [`${f.file}:${f.line}`, ...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)]
     .flatMap(location => parseLocation(location) ?? []).filter(span => span.end - span.start <= OWN_LINE_TOLERANCE * 2);
-  return spans.some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
 }
 
 export interface SweepOptions {
