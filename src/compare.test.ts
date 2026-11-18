@@ -277,10 +277,12 @@ describe('runPatternChecks', () => {
       if (user.includes('`refunds`') && !user.includes('could not be used')) return { answer: 'maybe' };
       if (user.includes('`refunds`')) return { answer: 'no_comparable' };
       return {
-        answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3', 'src/void.ts:2', 'src/refund.ts:1', 'src/missing.ts:1'],
+        answer: 'differs', places: ['src/charge.ts:1', './src/charge.ts:1', 'src/cancel.ts:1-3', 'src/cancel.ts:2', 'src/void.ts:2', 'src/refund.ts:1', 'src/missing.ts:1'],
         findings: [
-          finding('Two places', ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2']),
+          finding('Two places', ['src/charge.ts:2', './src/cancel.ts:2', 'src/cancel.ts:40', 'src/refund.ts:2']),
           finding('One place', ['src/charge.ts:2', 'src/refund.ts:2']),
+          finding('One place spelled three ways', ['src/charge.ts:2', 'src/charge.ts:2-3', './src/charge.ts:1-2']),
+          finding('A line the PR adds, spelled another way', ['src/charge.ts:2', './src/refund.ts:2']),
           finding('A place the PR changes', ['src/charge.ts:2', 'src/void.ts:2', 'src/refund.ts:2']),
           finding('A place that is not there', ['src/charge.ts:2', 'src/cancel.ts:40', 'src/refund.ts:2']),
           finding('A rule', ['src/refund.ts:2'], { rule: 'Every handler must check the session with `withAuth`.', ruleFile: 'AGENTS.md' }),
@@ -318,8 +320,10 @@ describe('runPatternChecks', () => {
       reviewers: ['Pattern check: refund.ts'], description: 'The new handler skips `withAuth`. A caller can refund without a session.',
       evidence: { checks: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] },
     }));
+    // A place is compared by its path from the root and its lines, a made-up line is left out, and the finding's own line closes the proof.
+    expect(result.findings[1].evidence?.proof).toEqual(['src/refund.ts:2']);
     expect(result.comparisons).toEqual([
-      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 5 },
+      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 7 },
       { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0 },
       { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0 },
     ]);

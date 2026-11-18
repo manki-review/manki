@@ -454,7 +454,8 @@ describe('listUsesOutsideDiff', () => {
     const { pieces } = await usesFor({
       'src/orders.rs': 'pub enum OrderError {\n    Missing,\n}\n\npub fn place() {}\n\nfn round_cents(n: u64) -> u64 { n }\n',
       'src/util.rs': 'pub fn noop() {}\n',
-      'src/ledger.ts': 'export const VERSION = 1;\n',
+      'src/ledger.ts': 'export const VERSION = 1;\n// loadLedger is still to come.\n',
+      'lib/shop.rb': 'class Basket\n  def size\n    0\n  end\nend\n',
       'app/handlers.py': 'def charge(order):\n    return order\n',
       'cmd/main.swift': 'import Foundation\n',
       'manki.yml': 'review:\n  noise: low\n',
@@ -467,11 +468,15 @@ describe('listUsesOutsideDiff', () => {
       'docs/billing.md': '# Billing\n',
       'build/out.ts': 'export function built() {}\n',
       'app/handlers.py': 'def charge(order):\n    return order\n\n\ndef refund(order):\n    return order\n',
-      'cmd/main.swift': `import Foundation\n\nfunc computeFee(n: Int) -> Int {\n    return n\n}\nstruct Fee {}\nfunc ${'a'.repeat(200)}() {}\n`,
+      'cmd/main.swift': `import Foundation\n\nfunc computeFee(n: Int) -> Int {\n    return n\n}\nstruct Fee {}\nfunc ${'a'.repeat(200)}() {}\nclass Cart {\n    func add() {\n        return\n    }\n\n    func clear() {}\n}\n`,
+      'lib/shop.rb': 'class Trolley\n  def size\n    0\n  end\nend\n',
       'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n',
     }, ['build/**']);
 
+    // Without a grammar, a class spans its indented body and closing line, so its methods are part of it, and a class
+    // whose body the change does not add is left out. A name only a removed comment holds is still new.
     expect(pieces?.map(p => `${p.kind} ${p.name} ${p.file}:${p.start}-${p.end} (${p.size})`)).toEqual([
+      'type Cart cmd/main.swift:8-14 (7)',
       'type Ledger src/ledger.ts:3-9 (7)',
       'function computeFee cmd/main.swift:3-5 (3)',
       'file src/invoice.ts src/invoice.ts:1-3 (3)',
@@ -482,6 +487,11 @@ describe('listUsesOutsideDiff', () => {
       'error Rejected src/orders.rs:3-3 (1)',
     ]);
     expect(pieces?.find(p => p.name === 'refund')?.code).toBe('5:+ def refund(order):\n6:+     return order');
+
+    const many = Array.from({ length: 22 }, (_, i) => `def handle_step_${i}(order):\n    return order\n`).join('\n');
+    const capped = await usesFor({ 'app/steps.py': 'VERSION = 1\n' }, { 'app/steps.py': `VERSION = 1\n\n${many}` });
+    expect(capped.pieces).toHaveLength(20);
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the change adds more than 20 pieces of structure, so the 2 smallest are not listed');
   });
 
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {

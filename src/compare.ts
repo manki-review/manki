@@ -3,6 +3,7 @@ import * as core from '@actions/core';
 import { addedLines } from './diff';
 import { fenceText, InstructionFile } from './github';
 import { extractJSON } from './json';
+import { resolveInRoot } from './mcp-server';
 import { LLMClient, SendMessageOptions } from './providers';
 import { offeredRepos, repoTools } from './related-repos';
 import { locationFile, locationLines, shownLines } from './refute';
@@ -367,7 +368,9 @@ ${fenceExcerpt({ file: piece.file, line: piece.start, code: piece.code })}${rule
 /**
  * Reads a pattern check's answer. Only a `differs` answer keeps findings, and only those on a line the PR adds whose
  * `proof` cites two existing places, lines there that the PR does not add, or that quote a rule of `instructionFiles`.
- * A finding that names no `cost` is a note at most. The record keeps the answer and the existing places it cites.
+ * Places are compared by their path from the repository root, and places whose lines overlap count once. A finding's
+ * `proof` keeps only its existing places and its own line. A finding that names no `cost` is a note at most. The record
+ * keeps the answer and the existing places it cites.
  */
 function parsePatternAnswer(
   content: string, reviewer: string, workspace: string, diff: ParsedDiff, instructionFiles: readonly InstructionFile[],
@@ -376,11 +379,23 @@ function parsePatternAnswer(
   const answer = PATTERN_ANSWERS.find(a => a === parsed.answer);
   if (!answer) throw new Error(`the answer is ${JSON.stringify(parsed.answer)}, not one of ${PATTERN_ANSWERS.join(', ')}`);
   const added = new Map(diff.files.map(f => [f.path, [...addedLines(f).keys()]]));
-  const addsTo = (location: string) => {
-    const [start, end] = locationLines(location);
-    return !!added.get(locationFile(location))?.some(line => line >= start && line <= end);
+  const rootPath = (file: string) => {
+    try {
+      return resolveInRoot(workspace, file).relative;
+    } catch {
+      return file;
+    }
   };
-  const existing = (proof: unknown) => [...new Set(shownLines(proof, workspace).proof.filter(location => !addsTo(location)))];
+  const addsTo = (file: string, start: number, end: number) => !!added.get(file)?.some(line => line >= start && line <= end);
+  const existing = (proof: unknown) => {
+    const places: Array<{ file: string; start: number; end: number }> = [];
+    for (const location of shownLines(proof, workspace).proof) {
+      const [file, [start, end]] = [rootPath(locationFile(location)), locationLines(location)];
+      if (addsTo(file, start, end) || places.some(p => p.file === file && p.start <= end && start <= p.end)) continue;
+      places.push({ file, start, end });
+    }
+    return places.map(({ file, start, end }) => `${file}:${start}${end > start ? `-${end}` : ''}`);
+  };
   const places = existing(parsed.places);
   const record = { answer, ...(places.length > 0 && { places }) };
   if (answer !== 'differs' || !Array.isArray(parsed.findings)) return { findings: [], record };
@@ -388,11 +403,14 @@ function parsePatternAnswer(
   // `parseFindings` maps the usable elements in order, so the raw `proof` and `cost` of each finding are the element at its index.
   const elements = parsed.findings.filter(isUsableElement);
   const findings = reported.flatMap((finding, i) => {
-    const { proof, cost } = elements[i];
-    if ((!finding.rule && existing(proof).length < 2) || !addsTo(`${finding.file}:${finding.line}`)) return [];
+    const { proof: cited, cost } = elements[i];
+    const own = rootPath(finding.file);
+    const proof = existing(cited);
+    if ((!finding.rule && proof.length < 2) || !addsTo(own, finding.line, finding.line)) return [];
+    const evidence = { ...(finding.evidence ?? { checks: [] }), proof: [...proof, `${own}:${finding.line}`] };
     const stated = typeof cost === 'string' ? cost.trim() : '';
-    if (!stated) return [{ ...finding, severity: 'note' as const }];
-    return [{ ...finding, description: `${finding.description} ${stated}`.trim() }];
+    if (!stated) return [{ ...finding, evidence, severity: 'note' as const }];
+    return [{ ...finding, evidence, description: `${finding.description} ${stated}`.trim() }];
   });
   return { findings, dropped: reported.length - findings.length, record };
 }

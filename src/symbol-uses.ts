@@ -1262,6 +1262,35 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
   });
 }
 
+const BLOCK_CLOSE = /^\s*(?:[}\])]|end\b)/;
+
+/**
+ * Returns the last line of the block a declaration on added line `line` opens, for a file without a grammar here: the
+ * added lines below it that are blank or indented deeper, and a closing line at its own indent. Returns `line` when no
+ * such line follows.
+ */
+function keywordBlockEnd(added: ReadonlyMap<number, string>, line: number): number {
+  const indent = (text: string) => text.length - text.trimStart().length;
+  const own = indent(added.get(line)!);
+  let end = line;
+  for (let next = line + 1; added.has(next); next++) {
+    const text = added.get(next)!;
+    if (text.trim() === '') continue;
+    if (indent(text) > own) end = next;
+    else {
+      if (indent(text) === own && BLOCK_CLOSE.test(text)) end = next;
+      break;
+    }
+  }
+  return end;
+}
+
+/** Whether `text` opens a brace block and closes it again, as a one-line declaration such as `struct Fee {}` does. */
+function closesOnItsLine(text: string): boolean {
+  const opens = text.split('{').length - 1;
+  return opens > 0 && opens === text.split('}').length - 1;
+}
+
 /** Returns the kind of piece `symbol` adds, declared on `text`, or `undefined` when it adds no structure of its own, as a field does. */
 function pieceKind(symbol: ChangedSymbol, text: string): AddedPiece['kind'] | undefined {
   switch (symbol.kind) {
@@ -1276,13 +1305,17 @@ function pieceKind(symbol: ChangedSymbol, text: string): AddedPiece['kind'] | un
 
 /**
  * Returns the structure the diff adds: each added file, and each type, function, error kind and config key declared on
- * an added line of another file whose name is an identifier and no removed line holds, so a moved or renamed one is
- * not new. A file `skip` names, and test code, add none. A piece inside a larger one is part of it. The largest pieces come first, at most
- * `MAX_LISTED_PIECES`.
+ * an added line of another file whose name is an identifier and no removed line declares, so a moved or renamed one is
+ * not new. A file `skip` names, and test code, add none. A piece inside a larger one is part of it. The largest pieces
+ * come first, at most `MAX_LISTED_PIECES`.
  */
 function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], skip: (file: string) => boolean): AddedPiece[] {
   const removed = new Set(diff.files.flatMap(file => file.hunks.flatMap(hunk =>
-    hunk.content.split('\n').filter(line => line.startsWith('-')).flatMap(line => line.match(/[\w$]+/g) ?? []))));
+    hunk.content.split('\n').flatMap(line => {
+      if (!line.startsWith('-')) return [];
+      const config = CONFIG_FILE.test(file.path);
+      return (config ? CONFIG_KEY_LINE : DECLARATION_LINE).exec(line.slice(1))?.[config ? 1 : 2] ?? [];
+    }))));
   const files = new Map(diff.files.filter(f => f.changeType !== 'deleted' && !skip(f.path)).map(f => {
     const added = addedLines(f);
     return [f.path, { file: f, added, sorted: [...added.keys()].sort((a, b) => a - b) }];
@@ -1296,26 +1329,21 @@ function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], skip: (file: s
   for (const entry of files.values()) {
     if (entry.file.changeType === 'added' && entry.sorted.length > 0) pieces.push(piece('file', entry.file.path, entry, 1, entry.sorted.at(-1)!));
   }
-  const starts = new Map<string, Set<number>>();
-  for (const symbol of declared) starts.set(symbol.file, (starts.get(symbol.file) ?? new Set()).add(symbol.line));
   for (const symbol of declared) {
     const entry = files.get(symbol.file);
     const text = entry?.added.get(symbol.line);
     const kind = text === undefined ? undefined : pieceKind(symbol, text);
     if (!entry || !kind || entry.file.changeType === 'added' || symbol.test || !IDENTIFIER.test(symbol.name) || removed.has(symbol.name)) continue;
-    let end = symbol.end;
-    if (end === undefined) {
-      // A declaration found by its keyword runs over the added lines below it, up to the next declaration.
-      const others = starts.get(symbol.file)!;
-      for (end = symbol.line; entry.added.has(end + 1) && !others.has(end + 1); end++);
-    }
+    const end = symbol.end ?? keywordBlockEnd(entry.added, symbol.line);
+    // A type found by its keyword whose body the diff does not add is only a header, which shows no structure.
+    if (end === symbol.line && symbol.end === undefined && (kind === 'type' || kind === 'error') && !closesOnItsLine(text!)) continue;
     pieces.push(piece(kind, symbol.name, entry, symbol.start ?? symbol.line, end));
   }
   pieces.sort((a, b) => b.size - a.size || a.file.localeCompare(b.file) || a.start - b.start);
   const kept: typeof pieces = [];
   for (const [i, p] of pieces.entries()) {
     if (kept.length === MAX_LISTED_PIECES) {
-      core.info(`The change adds more than ${MAX_LISTED_PIECES} pieces of structure, so the ${pieces.length - i} smallest are not listed`);
+      core.info(`Uses outside the diff: the change adds more than ${MAX_LISTED_PIECES} pieces of structure, so the ${pieces.length - i} smallest are not listed`);
       break;
     }
     if (!kept.some(k => k.file === p.file && k.start <= p.start && p.end <= k.end)) kept.push(p);
