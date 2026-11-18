@@ -249,6 +249,7 @@ jest.mock('./github', () => ({
   fetchStandingVerdict: jest.fn().mockResolvedValue(undefined),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
+  markFailedProgressSuperseded: jest.fn().mockResolvedValue(undefined),
   markProgressCommentSuperseded: jest.fn().mockResolvedValue(undefined),
   isFailedProgress: jest.requireActual('./github').isFailedProgress,
   fetchPRComments: jest.fn().mockResolvedValue([]),
@@ -1154,6 +1155,42 @@ describe('handlePullRequest', () => {
         jest.mocked(core.getInput).mockReturnValue('');
         jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
         jest.mocked(configModule.loadConfig).mockReturnValue(config);
+      }
+    });
+
+    it('tells the round whether the token service retries it when incomplete, and marks the retry itself', async () => {
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
+      const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 2, totalDeletions: 0 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
+      const catchUp = jest.spyOn(dispatchModule, 'startedByCatchUp');
+      const own = { full_name: 'test-owner/test-repo' };
+      try {
+        for (const [label, pr, modes, retry, retried, action = 'synchronize'] of [
+          ['a push', {}, [], false, true],
+          ['a PR opened', {}, [], false, true, 'opened'],
+          ['a draft', { draft: true }, [], false, false],
+          ['a fork\'s head', { head: { sha: 'abc123', repo: { full_name: 'fork/test-repo' } } }, [], false, false],
+          ['a bot\'s PR', { user: { login: 'dependabot[bot]', type: 'Bot' } }, [], false, false],
+          ['a PR reopened', {}, [], false, false, 'reopened'],
+          ['a PR marked ready', {}, [], false, false, 'ready_for_review'],
+          ['a ticked box', {}, ['again'], false, false],
+          ['the retry itself', {}, [], true, false],
+        ] as const) {
+          jest.mocked(reviewModule.runReview).mockClear();
+          jest.mocked(ghUtils.updateProgressDashboard).mockClear();
+          jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(false, [...modes]));
+          catchUp.mockReturnValue(retry);
+          const payload = prPayload(false);
+          setContext({ eventName: 'pull_request', payload: { ...payload, action, pull_request: { ...payload.pull_request, user: { login: 'user', type: 'User' }, head: { sha: 'abc123', repo: own }, base: { ref: 'main', repo: own }, ...pr } } });
+          await handlePullRequest();
+          expect([label, jest.mocked(reviewModule.runReview).mock.calls[0][1].automaticRetry]).toEqual([label, retried]);
+          expect([label, jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][4].catchUp]).toEqual([label, retry || undefined]);
+        }
+      } finally {
+        catchUp.mockRestore();
+        jest.mocked(core.getInput).mockReturnValue('');
+        jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
       }
     });
 
@@ -2386,14 +2423,17 @@ describe('runFullReview orchestration', () => {
     it('completes the check as failure for an incomplete round', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
         verdict: 'COMMENT', outcome: 'INCOMPLETE', summary: 'The judge failed.', findings: [], highlights: [], reviewComplete: false, agentNames: ['general'],
+        retryAfter: '2026-11-18T16:00:00.000Z',
       });
 
       await callRunFullReview();
 
       expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual({ noVerdict: true });
-      // The round posts its record, marked so that no later round reads it as an earlier round.
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]).toMatchObject({ meta: { round: 1, commitSha: 'abc123', outcome: 'INCOMPLETE', incomplete: true }, verdict: 'COMMENT' });
+      // The round posts its record, marked so that no later round reads it as an earlier round, with the time its limits lift.
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]).toMatchObject({
+        meta: { round: 1, commitSha: 'abc123', outcome: 'INCOMPLETE', incomplete: true, retryAfter: '2026-11-18T16:00:00.000Z' }, verdict: 'COMMENT',
+      });
       // Nothing reports the commit as reviewed.
       expect(authModule.reportPrState).not.toHaveBeenCalled();
 
@@ -2674,35 +2714,39 @@ describe('runFullReview orchestration', () => {
       expect(authModule.reportPrState).not.toHaveBeenCalled();
     });
 
-    it('deletes the failed progress comment of an earlier run on the same head after posting its own, so a second failure leaves one comment', async () => {
+    it('marks the failed progress comment of an earlier run on the same head superseded once its review starts, and keeps it', async () => {
       const failedOn = (head: string) => ({
         ...older, id: 9, updated_at: '2025-01-02T00:00:00Z',
         body: withSettingsBlock('🔴 **Review failed:** boom\n\n<!-- manki -->', view('review failed', { head, lastReviewed: 'ddd2222' })),
       });
-      const deleteComment = jest.mocked(mockOctokitInstance.rest.issues.deleteComment);
+      const supersede = jest.mocked(ghUtils.markFailedProgressSuperseded);
       jest.mocked(reviewModule.runReview).mockRejectedValue(new Error('boom'));
       const running = view('review running', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'again', 'deeper', 'cancel']) });
 
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failedOn('abc123'), older]);
       await runWith();
       expect(ghUtils.postProgressComment).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, undefined, running);
-      expect(deleteComment).toHaveBeenCalledWith({ owner: 'test-owner', repo: 'test-repo', comment_id: 9 });
-      expect(jest.mocked(ghUtils.postProgressComment).mock.invocationCallOrder[0]).toBeLessThan(deleteComment.mock.invocationCallOrder[0]);
-      expect(ghUtils.retireSettingsBlocks).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [older], 1);
+      expect(ghUtils.retireSettingsBlocks).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [failedOn('abc123'), older], 1);
+      expect(supersede).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', expect.objectContaining({ id: 9, body: failedOn('abc123').body }), 'abc123');
+      expect(jest.mocked(ghUtils.postProgressComment).mock.invocationCallOrder[0]).toBeLessThan(supersede.mock.invocationCallOrder[0]);
+      expect(supersede.mock.invocationCallOrder[0]).toBeLessThan(jest.mocked(reviewModule.runReview).mock.invocationCallOrder[0]);
+      expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 9 }));
       expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls[0].slice(3, 7)).toEqual([1, 'Review', 'boom', view('review failed', { lastReviewed: 'ddd2222' })]);
 
-      // A failed comment that cannot be deleted loses its settings block like any older comment.
-      deleteComment.mockRejectedValueOnce(new Error('Forbidden'));
-      await runWith();
-      expect(ghUtils.retireSettingsBlocks).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [failedOn('abc123'), older], 1);
-
-      // A failure on an earlier head stays, and the new head gets its own comment.
+      // A failure on an earlier head stays as it is, and the new head gets its own comment.
+      supersede.mockClear();
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failedOn('fff0000'), older]);
-      deleteComment.mockClear();
       await runWith();
-      expect(deleteComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 9 }));
+      expect(supersede).not.toHaveBeenCalled();
       expect(ghUtils.retireSettingsBlocks).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [failedOn('fff0000'), older], 1);
       jest.mocked(reviewModule.runReview).mockReset();
+
+      // A run that reviews nothing leaves the failure as it is and gives its settings block back.
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failedOn('abc123'), older]);
+      jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: false, auto_approve: false, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } });
+      await runWith();
+      expect(supersede).not.toHaveBeenCalled();
+      expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 9, view('automatic review off', { lastReviewed: 'ddd2222' }));
     });
 
     it('moves the block back to the comment that had it when the run deletes its progress comment, or posts it once', async () => {
@@ -3059,9 +3103,20 @@ describe('runFullReview orchestration', () => {
     jest.mocked(createLLMClient).mockImplementation(() => ({
       sendMessage: jest.fn(), warmupCLI,
     }));
+    // The failed run of the same head keeps its report, since this round posts no verdict.
+    const failed = { id: 31, body: '🔴 **Review failed** boom\n\n<!-- manki -->\n\n---\nNot reviewed yet · head `abc123` · review failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-18T09:00:00Z' };
+    jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failed]);
 
-    await callRunFullReview();
+    try {
+      await callRunFullReview();
+    } finally {
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
+    }
 
+    expect(ghUtils.markProgressCommentSuperseded).not.toHaveBeenCalled();
+    expect(ghUtils.markFailedProgressSuperseded).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 31 }));
+    expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 31 }));
     const posted = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(posted.verdict).toBe('COMMENT');
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual({ noVerdict: true });

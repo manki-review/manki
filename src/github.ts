@@ -120,6 +120,11 @@ const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
 /** Marks a review that is no verdict on its commit, such as a round no model finished, so auto-approve never builds on it. */
 const NO_VERDICT_MARKER = '<!-- manki-no-verdict -->';
+/**
+ * Opens the marker of a review without a verdict that limits stopped: the time, in ISO 8601, at which they lift. The
+ * token service reads it below the round record and starts no retry of the commit before then.
+ */
+const RETRY_AFTER_MARKER = '<!-- manki-retry-after: ';
 /** Marks a review after which only a person can approve, such as one with unread files, whatever its verdict, so auto-approve never does. */
 const HELD_FOR_PERSON_MARKER = '<!-- manki-held-for-person -->';
 const VERSION_MARKER_PREFIX = '<!-- manki-version:';
@@ -136,6 +141,8 @@ const MANKI_VERSION: string = (() => {
 const VERSION_MARKER = `${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
 const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
 const REVIEW_FAILED_LINE = '🔴 **Review failed**';
+/** Says that the token service's catch-up started the run, in its progress comment and its review. */
+const CATCH_UP_LINE = 'Started automatically, since no review of this commit had finished.';
 const REVIEW_INCOMPLETE_LINE = '⏸️ **Review incomplete:**';
 
 const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
@@ -846,6 +853,7 @@ export function buildDashboard(data: DashboardData): string {
   const hasAgentProgress = !!(agents && agents.length > 0);
   const sections: string[] = [];
 
+  if (data.catchUp) sections.push(CATCH_UP_LINE);
   if (data.phase !== 'complete') {
     sections.push('**Review in progress**');
   }
@@ -1104,7 +1112,7 @@ export async function markProgressCommentSuperseded(
 }
 
 /** Formats `seconds` since the Unix epoch as a UTC minute, such as `2026-11-12 14:00 UTC`. */
-function formatResetTime(seconds: number): string {
+export function formatResetTime(seconds: number): string {
   return `${new Date(seconds * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
@@ -1130,6 +1138,21 @@ function formatLimitWarning(limits: readonly LimitUsage[]): string | undefined {
   });
   if (lines.length === 0) return undefined;
   return `> [!CAUTION]\n${[...lines, 'Once a limit is used up, reviews on that account stop until it resets.'].map(line => `> ${line}`).join('\n>\n')}`;
+}
+
+/**
+ * Marks `comment`, the failed progress comment of an earlier run on `headSha`, as superseded by the review that starts
+ * now. Its report stays below that line, so which reviewer failed and why stays readable, and its settings block goes.
+ */
+export async function markFailedProgressSuperseded(
+  octokit: Octokit, owner: string, repo: string, comment: { id: number; body: string }, headSha: string,
+): Promise<void> {
+  const body = `**Review superseded** by a later review of \`${headSha.slice(0, 7)}\`. This attempt ended as follows.\n\n${stripSettingsBlock(comment.body)}`;
+  try {
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: comment.id, body });
+  } catch (error) {
+    core.warning(`Failed to mark the failed progress comment ${comment.id} as superseded: ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 /**
@@ -2023,6 +2046,7 @@ export async function postReview(
     const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
     const line = approvalRefusal ? APPROVAL_REFUSED_LINES[approvalRefusal] : heldLines;
     let head = line ? `${line}\n\n${lead}` : lead;
+    if (context?.meta.trigger?.catchUp) head += `\n\n${CATCH_UP_LINE}`;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
@@ -2087,7 +2111,8 @@ export async function postReview(
         ...(event === 'APPROVE' && { approval: roundApproval(approvalRefused ? 'refused' : approvalHeld, !!warningHold) }),
         ...(keptReport && { readyReport: keptReport }),
       }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
-      : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
+      : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (noVerdict && result.retryAfter ? `\n${RETRY_AFTER_MARKER}${result.retryAfter} -->` : '')
+      + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };
   const record = recordFor();
 

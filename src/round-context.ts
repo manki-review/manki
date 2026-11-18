@@ -289,6 +289,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(llmCalls.length > 0 && { promptVersions: promptVersions(llmCalls) }),
       ...(options.draft && { draft: true }),
       ...(!result.reviewComplete && { incomplete: true as const }),
+      ...(result.retryAfter && { retryAfter: result.retryAfter }),
     },
     config: {
       memoryEnabled: config.memory?.enabled ?? false,

@@ -1122,6 +1122,8 @@ export interface ReviewResult {
   findings: Finding[];
   highlights: string[];
   reviewComplete: boolean;
+  /** On a round that limits stopped, the latest time, in ISO 8601, at which one of them lifts, when the providers named one. */
+  retryAfter?: string;
   /** Findings sent on toward the judge: the finders', and the earlier leads carried over, without the open leads only listed. */
   rawFindingCount?: number;
   /** Tool results sent to the judge as candidate findings, on top of `rawFindingCount`. */
@@ -1767,6 +1769,8 @@ export interface DashboardData {
   heuristicFallback?: boolean;
   /** The review class and group the round's readers came from, shown in the review header, and the finders a Deeper review gave no more effort. */
   routing?: Pick<TeamRouting, 'class' | 'group' | 'deeperSameEffort'>;
+  /** Set when the token service's catch-up started the run, which the first line says. */
+  catchUp?: true;
 }
 
 /** A finding the judge dropped because a tool check disproved it, with the reason the check gave. */
@@ -1990,6 +1994,11 @@ export interface RoundMeta {
   /** Set when the round ended incomplete. A later round does not read the record as an earlier round. */
   incomplete?: true;
   /**
+   * On an incomplete round that limits stopped, the latest time, in ISO 8601, at which one of them lifts, when the
+   * providers named one. The token service starts no retry of the commit before it.
+   */
+  retryAfter?: string;
+  /**
    * Set when the record was too large for the review even compressed: the fields of per-file and per-finding
    * diagnostics that were left out, such as `judge.dropped`.
    */
@@ -2029,6 +2038,8 @@ export interface FullReviewOptions {
   fullReview?: boolean;
   /** A Deeper review: a group with fewer than two finders moves up to `full`, and every finder runs at xhigh effort or one level above a configured effort. */
   deeper?: boolean;
+  /** The token service starts one more review of the commit if this round ends incomplete. */
+  automaticRetry?: boolean;
 }
 
 /** A one-off mode a settings box queued for a run. */
@@ -2074,6 +2085,8 @@ export interface RoundTrigger {
   event: string;
   /** `github.context.payload.sender.login`, or `'unknown'` when absent. */
   sender: string;
+  /** Set when the token service's catch-up started the round, since no review of the commit had finished. */
+  catchUp?: true;
 }
 
 /** Per stage, the distinct `LLMCall.promptDigest`s of its calls in the round, sorted. Finders can differ by focus. */

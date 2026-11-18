@@ -4,10 +4,10 @@ import { dirname, join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cliHome, cutLegacyCommands, extractCliErrorSnippet, matchQuotaText, pause, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cliHome, cutLegacyCommands, extractCliErrorSnippet, matchQuotaText, pause, quotaResetTime, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
-import { TimeoutError } from './types';
+import { QuotaError, TimeoutError } from './types';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -656,6 +656,24 @@ describe('matchQuotaText', () => {
 
   it.each(['Prompt is too long: 250000 tokens > 200000 maximum', 'Invalid API key · Please run /login', 'context limit reached', ''])('ignores %p', text => {
     expect(matchQuotaText(text)).toBeUndefined();
+  });
+
+  it('reads when a limit lifts only from a used-up window or wording that names the time for certain', () => {
+    const now = Date.parse('2026-11-18T15:00:00Z');
+    const limitWith = (resetsAt?: string, limits?: object[]) => Object.assign(new QuotaError('limit', 'Limit reached', resetsAt), limits && { limits });
+    const window = (usedPercent: number, at: string) => ({ account: 'Claude subscription', window: '5-hour', usedPercent, resetsAt: Date.parse(at) / 1000 });
+    expect(quotaResetTime(limitWith(matchQuotaText('You exceeded your current quota. Please retry in 23.5s.')?.resetsAt), now)).toBe(now + 23_500);
+    expect(quotaResetTime(limitWith('in 1h30m'), now)).toBe(now + 90 * 60_000);
+    expect(quotaResetTime(limitWith('at 2026-11-18T16:30:00+01:00'), now)).toBe(Date.parse('2026-11-18T15:30:00Z'));
+    // The latest used-up window decides, over the wording and over a window still open.
+    const windows = [window(100, '2026-11-18T16:00:00Z'), window(100, '2026-11-18T17:00:00Z'), window(80, '2026-11-25T00:00:00Z')];
+    expect(quotaResetTime(limitWith('in 5m', windows), now)).toBe(Date.parse('2026-11-18T17:00:00Z'));
+    // Wording without a sure day or zone names no time.
+    for (const text of ['Nov 6, 8pm (UTC)', '3pm', 'at 20 Aug 2026, 16:29', 'after 2s', '2026-11-18T16:00:00', 'at 2026-13-45T99:99Z', undefined]) {
+      expect(quotaResetTime(limitWith(text, [window(80, '2026-11-18T16:00:00Z')]), now)).toBeUndefined();
+    }
+    // A time out of a `Date`'s range names none, so it never reaches `toISOString`.
+    expect(quotaResetTime(limitWith('in 5m', [{ ...window(100, '2026-11-18T16:00:00Z'), resetsAt: 1e16 }]), now)).toBeUndefined();
   });
 
   it('reads only the end of a long output and keeps the reset text plain', () => {

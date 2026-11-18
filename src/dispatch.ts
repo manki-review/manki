@@ -41,6 +41,9 @@ interface FetchedEvent {
   headSha?: string;
 }
 
+/** Whether the restored event is a review the token service's catch-up asked for. */
+let catchUp = false;
+
 /** What a dispatched run does next: run the handlers, or stop because the head moved on or the comment or review is gone. */
 export type DispatchOutcome = 'run' | 'superseded' | 'gone';
 
@@ -69,6 +72,14 @@ export function eventPrClosed(): boolean {
 }
 
 /**
+ * Whether the token service's catch-up started the run, which it does for a PR head without a finished review. It names
+ * the delivery `catch-up-` and the first 12 characters of that head, which no webhook delivery id matches.
+ */
+export function startedByCatchUp(): boolean {
+  return catchUp;
+}
+
+/**
  * Replaces the `workflow_dispatch` context with the event the inputs name, read from the API.
  * Only the event kind and the ids come from the inputs, since anyone with write access can dispatch by hand.
  * Throws on an input that does not validate or an object from another PR.
@@ -86,6 +97,7 @@ export async function restoreDispatchedEvent(octokit: Octokit): Promise<Dispatch
     return 'gone';
   }
 
+  catchUp = inputs.event === 'pull_request' && !!inputs.headSha && inputs.deliveryId === `catch-up-${inputs.headSha.slice(0, 12)}`;
   github.context.eventName = inputs.event;
   github.context.payload = { ...event.objects, action: inputs.action, sender: event.sender, repository: github.context.payload.repository };
   github.context.actor = event.sender.login;
