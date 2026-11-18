@@ -1477,6 +1477,11 @@ function isBlockingFinding(finding: Finding): boolean {
   return isBlockingSeverity(finding.severity) && !isFollowUp(finding);
 }
 
+/** Whether the verdict line counts a finding as a blocker. A warning posted as a thread counts as a warning. */
+function isCountedBlocker(finding: Finding): boolean {
+  return finding.severity === 'blocker' && isBlockingFinding(finding);
+}
+
 function isOnChangedLine(finding: Finding, diff: ParsedDiff): boolean {
   const diffFile = finding.file ? diff.files.find(df => df.path === finding.file) : undefined;
   return !!diffFile && isLineInDiff(diffFile, finding.line);
@@ -1984,7 +1989,8 @@ export async function postReview(
   const unthreaded: Finding[] = [];
   /** The findings left to an open thread that matches them, with that thread's ID, which the record keeps. */
   const leftTo = new Map<Finding, string>();
-  let carriedBlockers = 0;
+  /** The findings an open thread already carries. */
+  const carriedFindings = new Set<Finding>();
   const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
@@ -2061,7 +2067,7 @@ export async function postReview(
     const openThread = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
     if (threadId && openThread && !gradedAbove(f.severity, openThread)) {
       core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
-      carriedBlockers++;
+      carriedFindings.add(f);
       carriedThreadIds.add(threadId);
       if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
@@ -2099,10 +2105,21 @@ export async function postReview(
   const round = context?.meta.incomplete ? undefined : context;
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl, round, reviewTimeMs);
 
-  const blockingFindings = result.findings.filter(isBlockingFinding);
+  // A pause counts only what "Needs a human" does not list: on the budget cause every blocker of the round and every
+  // earlier one, on the repeated cause each earlier blocker a finding of this round names again, with its thread.
+  const human = result.outcome === 'NOT_CONVERGING' ? result.needsHuman : undefined;
+  const humanFingerprints = new Set(human?.blockers.map(b => b.fingerprint));
+  const listedByHuman = (f: Finding): boolean => (human?.cause === 'budget' && isCountedBlocker(f)) || (!!f.sameAs && humanFingerprints.has(f.sameAs));
+  const humanThreads = new Set([
+    ...(human?.blockers ?? []).map(b => b.threadId),
+    ...[...carriedFindings].filter(listedByHuman).map(f => f.threadId ?? f.answeredIn?.threadId),
+  ]);
+  const blockingFindings = result.findings.filter(f => isCountedBlocker(f) && !listedByHuman(f));
   const relisted = blockingFindings.filter(f => f.relisted).length;
-  const earlier = carriedThreadIds.size + relisted + (result.verdictTrace?.unresolvedPriors.length ?? 0);
-  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
+  const priors = (result.verdictTrace?.unresolvedPriors ?? []).filter(p => !humanFingerprints.has(p.fingerprint));
+  const earlier = [...carriedThreadIds].filter(id => !humanThreads.has(id)).length + relisted + priors.length;
+  const fresh = blockingFindings.filter(f => !carriedFindings.has(f)).length - relisted;
+  const blockerCounts: BlockerCounts = { fresh, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const holding = threadFindings.filter(holdsApproval);
@@ -2547,18 +2564,26 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
     return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;
   },
   ADDRESS_FIRST: (_result, blockers, { threads }) => {
-    // A blocking warning already counts as a blocker.
-    const others = threads.filter(f => !isBlockingFinding(f));
-    return `🔴 **Changes requested:** ${formatBlockerCounts(blockers)}${others.length > 0 ? `, plus ${formatSeverityCounts(others)} in threads` : ''}.`;
+    const others = formatNonBlockingThreads(threads);
+    return `🔴 **Changes requested:** ${formatBlockerCounts(blockers)}${others ? `, plus ${others}` : ''}.`;
   },
   INCOMPLETE: result => `${REVIEW_INCOMPLETE_LINE} ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
-  NOT_CONVERGING: result => {
-    const blockers = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
+  NOT_CONVERGING: (result, blockers, { threads }) => {
+    const listed = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
+    const others = [blockers.fresh + blockers.earlier > 0 ? formatBlockerCounts(blockers) : '', formatNonBlockingThreads(threads)].filter(Boolean);
+    // A part that already joins two counts with "and" is set apart by a comma.
+    const plus = others.length > 0 ? `, plus ${others.join(others.some(o => o.includes(' and ')) ? ', and ' : ' and ')}` : '';
     return result.needsHuman?.cause === 'budget'
-      ? `🛑 **Needs a human:** ${blockers} still open after the last automatic round.`
-      : `🛑 **Needs a human:** ${blockers} came back after a fix.`;
+      ? `🛑 **Needs a human:** ${listed} still open after the last automatic round${plus}.`
+      : `🛑 **Needs a human:** ${listed} came back after a fix${plus}.`;
   },
 };
+
+/** Returns the counts of the findings posted as threads that do not block, as "1 warning in threads", or '' when there are none. */
+function formatNonBlockingThreads(threads: Finding[]): string {
+  const others = threads.filter(f => !isCountedBlocker(f));
+  return others.length > 0 ? `${formatSeverityCounts(others)} in threads` : '';
+}
 
 /** The findings this round posts: as threads, listed in the body, and the hold on an approval. */
 interface PostedFindings {

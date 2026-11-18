@@ -2194,6 +2194,15 @@ describe('postReview body lead', () => {
     ]);
     expect(body).not.toContain(`[${blocker.title}]`);
     expect(body).not.toContain('What this does');
+    // A warning thread counts as a warning. A thread that carries a warning stays counted as still open, as it is listed.
+    const warning: Finding = { ...blocker, severity: 'warning', title: 'Retry has no limit', line: 8 };
+    const carriedWarning: Finding = { ...warning, title: 'Cache is never cleared', threadId: 'W1' };
+    const warningThread: PreviousFinding = { title: carriedWarning.title, file: 'src/a.ts', line: 8, severity: 'warning', status: 'open', threadId: 'W1' };
+    const warned = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, findings: [blocker, warning] });
+    expect(lead(warned.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker, plus 1 warning in threads\.\n/u);
+    const carriedOpen = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, findings: [blocker, warning, carriedWarning] }, [warningThread]);
+    expect(lead(carriedOpen.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 1 still open, plus 1 warning in threads\.\n/u);
+    expect(carriedOpen.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:8`: Cache is never cleared');
   });
 
   it('opens a NOT_CONVERGING round with "Needs a human" and its blockers', async () => {
@@ -2230,6 +2239,30 @@ describe('postReview body lead', () => {
     expect(budgetStuck.body.split('Still open prior')).toHaveLength(2);
     expect(budgetStuck.body).not.toContain('Still open from earlier reviews');
     expect(stuck.body).not.toContain('What this does');
+
+    // Both causes add the round's other findings, and leave out the blockers "Needs a human" lists and their threads.
+    const warning: Finding = { ...blocker, severity: 'warning', title: 'Retry has no limit', line: 8 };
+    const cameBack = { file: 'src/a.ts', line: 5, title: blocker.title, fingerprint: 'k', threadId: 'T1' };
+    const others = [{ ...blocker, title: 'Retry drops the error', line: 6 }, { ...blocker, title: 'Timeout is ignored', line: 7 }, { ...blocker, title: 'Lock is never released', line: 9 }];
+    const issueCase = await postedBody({
+      ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', findings: [{ ...blocker, sameAs: 'k' }, ...others, warning],
+      needsHuman: { cause: 'repeated', blockers: [cameBack] },
+    });
+    expect(lead(issueCase.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker came back after a fix, plus 3 blockers and 1 warning in threads\.\n/u);
+    const thread: PreviousFinding = { title: blocker.title, file: 'src/a.ts', line: 5, severity: 'blocker', status: 'open', threadId: 'T1' };
+    const repeated = await postedBody({
+      ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING',
+      findings: [{ ...blocker, sameAs: 'k', threadId: 'T1' }, { ...blocker, title: 'Second finding on the same thread', threadId: 'T1' }, others[0], warning],
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [{ file: 'src/a.ts', line: 20, title: 'Other prior', fingerprint: 'k3' }] },
+      needsHuman: { cause: 'repeated', blockers: [cameBack] },
+    }, [thread]);
+    expect(lead(repeated.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker came back after a fix, plus 1 new blocker and 1 still open, and 1 warning in threads\.\n/u);
+    const budgetWarned = await postedBody({
+      ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', findings: [blocker, warning],
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior] },
+      needsHuman: { cause: 'budget', blockers: [prior, { file: 'src/a.ts', title: blocker.title, fingerprint: 'k4' }] },
+    });
+    expect(lead(budgetWarned.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 2 blockers still open after the last automatic round, plus 1 warning in threads\.\n/u);
   });
 
   it('names the findings a PR author dismissed in an approval, with the role that allowed it, and only there', async () => {
