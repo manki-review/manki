@@ -215,6 +215,8 @@ interface CodexRunEvents {
   session?: string;
   /** The text of the last `agent_message` of a turn that ended with `turn.completed`. */
   answer?: string;
+  /** The token counts of the `turn.completed` that gave `answer`. Unset when it carried none. */
+  usage?: LLMUsage;
   /** Codex's own error, from the `turn.failed` that ended the turn. */
   failure?: string;
   /** The text of the last `agent_message`, also of a turn that failed or did not end. */
@@ -232,6 +234,19 @@ const agentMessage = (event: CodexEvent): string | undefined => {
   const item = event.item as { type?: unknown; text?: unknown } | undefined;
   return event.type === 'item.completed' && item?.type === 'agent_message' ? textOf(item.text) : undefined;
 };
+
+/** Reads the token counts of a `turn.completed` event's `usage`, or `undefined` when it has none. */
+function codexUsage(value: unknown): LLMUsage | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const usage = value as Record<string, unknown>;
+  return {
+    inputTokens: readCount(usage.input_tokens),
+    outputTokens: readCount(usage.output_tokens),
+    cacheReadTokens: readCount(usage.cached_input_tokens),
+    cacheWriteTokens: 0,
+    reasoningTokens: readCount(usage.reasoning_output_tokens),
+  };
+}
 
 /**
  * Reads the events a `codex exec --json` run that exited with `code` printed on `stdout`. The model's text arrives inside
@@ -253,11 +268,13 @@ function readCodexEvents(stdout: string, { code, signal }: Pick<CliExit, 'code' 
   const measured = !cut && !signal && events.length === parsed.length && session !== undefined && turns.length === 1 && ends.length === 1 && last === ends[0];
   const messages = (from: CodexEvent[]) => from.map(agentMessage).filter((text): text is string => text !== undefined);
   const answer = measured && code === 0 && last.type === 'turn.completed' ? messages(events.slice(events.indexOf(turns[0]))).at(-1) ?? '' : undefined;
+  const usage = answer !== undefined ? codexUsage(last?.usage) : undefined;
   const failure = measured && code === 1 && last.type === 'turn.failed' ? textOf((last.error as { message?: unknown } | undefined)?.message) : undefined;
   const reply = messages(events).at(-1);
   return {
     ...(session && { session }),
     ...(answer !== undefined && { answer }),
+    ...(usage && { usage }),
     ...(failure && { failure: sanitizeLogOutput(failure).slice(0, MAX_ERROR_CHARS) }),
     ...(reply !== undefined && { reply }),
   };
@@ -647,6 +664,8 @@ export class OpenAIClient implements LLMClient {
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
       content,
+      // Codex counts the whole session in `turn.completed`, so the last run's counts cover the runs it resumed.
+      ...(events.usage && { usage: events.usage }),
       latencyMs: Date.now() - startTime,
       model: this.model,
       ...(relatedReads && { relatedReads }),
