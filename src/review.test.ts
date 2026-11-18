@@ -53,6 +53,7 @@ import { repoToolsPrompt } from './providers/cli-utils';
 /** A planner whose call fails, so the round takes the fail-safe triage. */
 const failedPlanner = (): LLMClient => ({ sendMessage: jest.fn().mockRejectedValue(new Error('planner unavailable')) });
 const isRelatedCheck = (system: string) => system.startsWith('You check a pull request\'s change against one counterpart in a related repository');
+const isPatternCheck = (system: string) => system.startsWith('You check one piece of structure a pull request adds');
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -2252,7 +2253,8 @@ describe('runReview', () => {
     const clients = withDedup(jest.fn().mockResolvedValue({ content: JSON.stringify({ 'o/ref': { ComputeFee: ['CalcFee'] } }) }));
     const differs = { severity: 'warning', title: 'The fee differs from the reference', file: 'cmd/fee.go', line: 5, description: 'd', evidence: ['o/ref:fee.cpp:1 returns `n`'], proof: ['cmd/fee.go:5', 'o/ref:fee.cpp:1'] };
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => ({
-      content: isRelatedCheck(system) && user.includes('the reference repo holds it') ? JSON.stringify([differs]) : '[]',
+      content: isPatternCheck(system) ? JSON.stringify({ answer: 'follows', places: ['cmd/use.go:3', 'cmd/fee.go:3'] })
+        : isRelatedCheck(system) && user.includes('the reference repo holds it') ? JSON.stringify([differs]) : '[]',
     }));
     let result: Awaited<ReturnType<typeof runReview>>;
     let untranslated: Awaited<ReturnType<typeof runReview>>;
@@ -2280,8 +2282,11 @@ describe('runReview', () => {
     expect(result.comparisons).toEqual([
       { kind: 'reference', reviewer: reviewers[0], at: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], status: 'answered', findings: 1, inputDigest: expect.any(String) },
       { kind: 'consumer', reviewer: reviewers[1], at: ['o/app:app.ts:1'], status: 'answered', findings: 0, inputDigest: expect.any(String) },
+      // The new function is compared with how the repository does the same kind of thing, in a call of its own.
+      { kind: 'pattern', reviewer: 'Pattern check: ComputeFee', at: ['cmd/fee.go:5'], status: 'answered', answer: 'follows', places: ['cmd/use.go:3', 'cmd/fee.go:3'], findings: 0, inputDigest: expect.any(String) },
     ]);
     expect(result.llmCalls?.filter(c => c.stage === 'related_check').map(c => c.agent)).toEqual(reviewers);
+    expect(result.llmCalls?.filter(c => c.stage === 'pattern_check').map(c => c.agent)).toEqual(['Pattern check: ComputeFee']);
     expect(result.agentNames).not.toContain(reviewers[0]);
     // Its finding reaches the judge like a finder's, under its own name and with the lines it cites on both sides.
     expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({
@@ -2294,7 +2299,7 @@ describe('runReview', () => {
     expect(uses).toContain('### `ComputeFee`\n\n```\no/app:app.ts:1: const fee = computeFee(2);\n```');
     // A finder that can open files gets the copy of both sections that tells it to open them. The judge's copy does not.
     expect(uses).not.toContain('Before you answer');
-    const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => !isRelatedCheck(system));
+    const finderCalls = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => !isRelatedCheck(system) && !isPatternCheck(system));
     expect(finderCalls.length).toBeGreaterThan(0);
     for (const [, message, sent] of finderCalls) {
       expect(message).toContain('Before you answer, open the file of each use in a file the PR does not change, up to 5 files, and check that every use still holds after the change.');
@@ -2399,7 +2404,7 @@ describe('runReview', () => {
     const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, leaveOut, attempt }: Asked) => {
       const clients = makeClients();
       const reads = (message: string) => (typeof first === 'function' ? first(message) : first);
-      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(ASKED) ? second() : { ...answer('First'), ...reads(message) }));
+      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : isPatternCheck(system) ? { content: '{"answer": "follows"}' } : message.includes(ASKED) ? second() : { ...answer('First'), ...reads(message) }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
       // `leaveOut` drops a file from the diff the finders read, but not from the one the uses are listed for.
@@ -2408,7 +2413,7 @@ describe('runReview', () => {
         config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(read), repoContext: '', workspace: workspace.root,
         headSha: 'abc', changeDigest: 'digest', ...(attempt && { earlierAttempt: { record: { ...attempt, meta: { ...attempt.meta, incomplete: true } }, review: 7 } }),
       });
-      const messages = sendMessage.mock.calls.filter(([system]) => !isRelatedCheck(system)).map(call => call[1]);
+      const messages = sendMessage.mock.calls.filter(([system]) => !isRelatedCheck(system) && !isPatternCheck(system)).map(call => call[1]);
       return { result, first: messages.filter(m => !m.includes(ASKED)), again: messages.filter(m => m.includes(ASKED)), kept: [...new Set(result.rawFindings?.map(f => f.title))], judged: mockedRunJudgeAgent.mock.calls.at(-1)?.[2].findings ?? [] };
     };
     try {
@@ -2821,7 +2826,7 @@ describe('runReview', () => {
       });
       return clients;
     };
-    const reviewerCalls = (clients: ReviewClients) => jest.mocked(clients.reviewer.sendMessage).mock.calls;
+    const reviewerCalls = (clients: ReviewClients) => jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => !isPatternCheck(system));
 
     it('checks each claim in a call of its own beside the finders, without the PR description, and hands the judge only what a check disproved', async () => {
       const { root, diff } = gitWorkspace({ 'src/export.ts': exportFile('  return merge(rows.sort());\n') }, files);
@@ -2872,7 +2877,7 @@ describe('runReview', () => {
         expect(options).toEqual({ effort: 'high', signal: expect.any(AbortSignal), repoTools: { root, steps: 12 }, timeoutMs: 600_000 });
       }
       // The finders read the description, and nothing about the claims or their checks.
-      const finders = reviewerCalls(clients).filter(([system]) => !isCheck(system));
+      const finders = reviewerCalls(clients).filter(([system]) => !isCheck(system) && !isPatternCheck(system));
       expect(finders).toHaveLength(2);
       for (const [system, user] of finders) {
         expect(user).toContain('Drops the sort and the size check.');
@@ -6661,7 +6666,7 @@ describe('runReview', () => {
     // Each finder's tool calls, the steps beside the finders, the judge's grades and the verdict reader reach the progress as they happen.
     const events = () => onProgress.mock.calls.map(([event]: [import('./review').ReviewProgress]) => event);
     expect(events().filter(e => e.phase === 'side-check').map(e => e.sideCheck).sort((a, b) => a!.kind.localeCompare(b!.kind))).toEqual([
-      { kind: 'claim', total: 0 }, { kind: 'comparison', total: 0 }, { kind: 'related', total: 0 },
+      { kind: 'claim', total: 0 }, { kind: 'comparison', total: 0 }, { kind: 'pattern', total: 0 }, { kind: 'related', total: 0 },
     ]);
     expect(events().filter(e => e.phase === 'verdict-reader')).toEqual([{ phase: 'verdict-reader' }, { phase: 'verdict-reader', verdictReaderDone: true }]);
     expect(events().filter(e => e.phase === 'agent-start')).toEqual(result.agentNames.map(agentName => ({ phase: 'agent-start', agentName })));

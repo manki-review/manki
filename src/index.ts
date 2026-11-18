@@ -2195,6 +2195,7 @@ async function runFullReview(
       workspace,
       deeper: options.deeper,
       excludedPaths: excludedFiles.map(f => f.path),
+      fullDiff,
       lockfiles,
       changeDigest: digest,
       automaticRetry: options.automaticRetry,

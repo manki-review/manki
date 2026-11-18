@@ -366,6 +366,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       workspace,
       headSha: head,
       excludedPaths: excludedFiles.map(f => f.path),
+      fullDiff,
       lockfiles,
       changeDigest: changeDigest(fullDiff),
       signal,

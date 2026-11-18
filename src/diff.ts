@@ -300,6 +300,48 @@ export function firstCommentableLine(file: DiffFile): number | undefined {
   return first ?? file.hunks.find(h => h.newLines > 0)?.newStart;
 }
 
+/** Rebuilds the other side of `file`'s change from `text`: undoing it from the head, or applying it to the base. Throws when `text` does not match the diff. */
+export function replayDiff(text: string, file: DiffFile, direction: 'undo' | 'apply'): string {
+  const [dropped, kept] = direction === 'undo' ? ['+', '-'] : ['-', '+'];
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let cursor = 0;
+  for (const hunk of file.hunks) {
+    const [first, count] = direction === 'undo' ? [hunk.newStart, hunk.newLines] : [hunk.oldStart, hunk.oldLines];
+    // A hunk with no line on this side starts after line `first`, any other one at it.
+    const start = count === 0 ? first : first - 1;
+    if (start < cursor || start > lines.length) throw new Error('its diff does not match the file');
+    for (; cursor < start; cursor++) out.push(lines[cursor]);
+    for (const line of hunk.content.split('\n')) {
+      if (line.startsWith('\\')) continue;
+      const content = line.slice(1);
+      if (line.startsWith(kept)) {
+        out.push(content);
+        continue;
+      }
+      if (lines[cursor] !== content) throw new Error('its diff does not match the file');
+      if (!line.startsWith(dropped)) out.push(content);
+      cursor++;
+    }
+  }
+  for (; cursor < lines.length; cursor++) out.push(lines[cursor]);
+  return out.join('\n');
+}
+
+/** Returns the text of each line the diff removes from the file, keyed by its line number in the old file. */
+export function removedOldLines(file: DiffFile): Map<number, string> {
+  const removed = new Map<number, string>();
+  for (const hunk of file.hunks) {
+    let line = hunk.oldStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('+') || content.startsWith('\\')) continue;
+      if (content.startsWith('-')) removed.set(line, content.slice(1));
+      line++;
+    }
+  }
+  return removed;
+}
+
 /**
  * Check if a line number, or any line from `line` to `end`, is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.

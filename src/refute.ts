@@ -93,12 +93,12 @@ export function restsOnSameCode(check: Refutation, workspace: string): boolean {
   return codeDigest(workspace, check.files) === check.codeDigest;
 }
 
-function locationFile(location: string): string {
+export function locationFile(location: string): string {
   return location.replace(/:\d+(?:-\d+)?$/, '');
 }
 
 /** Returns the first and last line a `file:line` or `file:start-end` location cites. */
-function locationLines(location: string): [number, number] {
+export function locationLines(location: string): [number, number] {
   const [, start, end] = location.match(/:(\d+)(?:-(\d+))?$/) ?? [];
   return [Number(start), Number(end ?? start)];
 }

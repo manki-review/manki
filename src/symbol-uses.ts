@@ -7,7 +7,7 @@ import * as core from '@actions/core';
 import type { SgNode, SgRoot } from '@ast-grep/napi';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
-import { addedLines, findExcludePattern, rebuildRawDiff } from './diff';
+import { addedLines, findExcludePattern, rebuildRawDiff, removedOldLines, replayDiff } from './diff';
 import { fenceText } from './github';
 import { resolveInRoot } from './mcp-server';
 import { GUIDE_FILES } from './related-repos';
@@ -43,6 +43,9 @@ const MAX_HIDDEN_NAMES = 20;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_PARSED_FILES = 200;
 const MAX_PARSED_BYTES = 16 * 1024 * 1024;
+// The base versions read for moved names have their own budget, so they never take parses from the head lookups.
+const MAX_BASE_PARSED_FILES = 40;
+const MAX_BASE_PARSED_BYTES = 4 * 1024 * 1024;
 /**
  * A file whose syntax tree nests deeper than this is not parsed. Finding a node's parent or neighbour costs its depth,
  * so a deep tree, from nested blocks or from a long chain such as `a.b.c...` or `x + y + z...`, would make the work
@@ -361,11 +364,18 @@ const IDENTIFIER = new RegExp(`^[A-Za-z_$][\\w$]{0,${MAX_NAME_LENGTH - 1}}$`);
 // A type or trait named by a plain path such as `bincode::Decode`. Any other text, such as a macro, is never quoted in a prompt.
 const TYPE_PATH = /^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$/;
 // A file name safe to quote in a prompt heading.
-const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
+export const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
 // A declaration a keyword opens, for languages without a grammar here.
 const DECLARATION_LINE = /^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|async|final|abstract|open|data|sealed)\s+)*(def|class|func|function|fn|struct|interface|enum|trait|type|const|record|object)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/;
 const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'function', function: 'function', fn: 'function', const: 'constant' };
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
+// A type named for errors, such as `ParseError`, `IOException` or `ApiErr`, whose new variants are new kinds of error.
+const ERROR_TYPE = /(?:Error|Exception|Err|Failure|Fault)s?$/;
+// A constant whose value starts as a function, such as `export const load = async () => {`, and not one that only
+// passes one on, such as `const ids = items.map(i => i.id)`.
+const FUNCTION_VALUE = /^[^=]*=\s*(?:async\s+)?(?:function\b|func\b|lambda\b|(?:<[^>]*>\s*)?\([^)]*\)\s*(?::[^=]*)?=>|[A-Za-z_$][\w$]*\s*=>)/;
+/** Pieces of added structure `listUsesOutsideDiff` lists, the largest first. */
+const MAX_LISTED_PIECES = 20;
 // A config key. Only keys with an underscore, such as `max_diff_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 // Type expressions that declare fields in place, such as a TypeScript `{ a: number }` or a Go `struct { A int }`.
@@ -512,6 +522,21 @@ export interface SiblingQuestions {
   implementations: SiblingImplementationQuestion[];
 }
 
+/** A piece of structure the change adds, to compare with how the repository already does the same kind of thing. */
+export interface AddedPiece {
+  /** `error` is a type or enum variant whose type is named for errors, such as `ParseError` or a variant of `ApiError`. */
+  kind: 'file' | 'type' | 'function' | 'error' | 'key';
+  /** The declared name, or the path of a file. */
+  name: string;
+  file: string;
+  start: number;
+  end: number;
+  /** How many lines the diff adds to it. */
+  size: number;
+  /** Its added lines, each prefixed with its line number and `+`, at most `MAX_EXCERPT_LINES`. */
+  code: string;
+}
+
 interface Lookup {
   field: string;
   item: string;
@@ -544,6 +569,8 @@ export interface UsesOutsideDiff {
   /** The names the added comments mention, then those the diff calls or reads outside tests and does not declare, to search the dependency repos for. */
   dependencyNames?: string[];
   siblings: SiblingQuestions;
+  /** The structure the change adds, the largest pieces first. */
+  pieces?: AddedPiece[];
 }
 
 export interface UsesOptions {
@@ -552,6 +579,8 @@ export interface UsesOptions {
   /** Whether to collect `dependencyNames`. Without it the calls of the changed files are not queried. */
   dependencyNames?: boolean;
   loadApi?: () => Promise<AstGrepApi>;
+  /** The PR's whole diff, with the files `excludePaths` left out of `diff`, whose removed lines can hold a moved piece. */
+  fullDiff?: ParsedDiff;
 }
 
 const NO_SIBLINGS: SiblingQuestions = { fields: [], implementations: [] };
@@ -561,20 +590,20 @@ const NO_SECTION = { section: '', finderSection: '', readingSection: '' };
  * Returns a prompt section that lists, for each type, field, variant, function, constant and config key the diff changes,
  * where the head commit in `workspace` uses it outside the changed lines, other packages first, then other files, then
  * the same file. It also lists the types whose fields the diff reads or changes, with all their fields. The record holds
- * the same list without the quoted code. From the same parse it returns the sibling comparisons worth asking about. The
- * section is empty, with no record, when there is nothing to list, and on any failure, which it logs and which also
- * returns no comparisons.
+ * the same list without the quoted code. From the same parse it returns the sibling comparisons worth asking about and
+ * the structure the change adds. The section is empty, with no record, when there is nothing to list, and on any
+ * failure, which it logs and which also returns no comparisons and no pieces.
  */
-export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], dependencyNames: forDependency = false, loadApi = loadAstGrep }: UsesOptions = {}): Promise<UsesOutsideDiff> {
+export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], dependencyNames: forDependency = false, loadApi = loadAstGrep, fullDiff = diff }: UsesOptions = {}): Promise<UsesOutsideDiff> {
   if (!workspace || !existsSync(join(workspace, '.git'))) {
     core.info('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     return { ...NO_SECTION, siblings: NO_SIBLINGS };
   }
   try {
     const started = Date.now();
-    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency);
+    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff);
     const { fields, implementations } = uses.siblings;
-    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons`);
+    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons and ${uses.pieces?.length ?? 0} added pieces`);
     return uses;
   } catch (error) {
     const failed = (error instanceof Error ? error.message : String(error)).slice(0, MAX_FAILURE_CHARS);
@@ -907,7 +936,9 @@ function formatRelatedUses(
   return { section, readingSection, record, counterparts };
 }
 
-async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean): Promise<UsesOutsideDiff> {
+async function buildUsesSection(
+  workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean, fullDiff: ParsedDiff,
+): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
   const added = new Map(files.map(f => [f.path, new Set(addedLines(f).keys())]));
@@ -923,11 +954,14 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const references = new Map<string, { code: number; count: number; files: Set<string> }>();
   const reliedOn = new Map<string, number>();
   const lookups: Array<Lookup & { file: string }> = [];
+  // Every declaration the diff touches, the namesakes `symbols` keeps one of included.
+  const declared: ChangedSymbol[] = [];
   for (const file of files) {
     const lines = touched.get(file.path)!;
     const parsed = parser.parse(file.path, lines);
     if (parsed) {
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
+      for (const symbol of changed) declared.push(symbol);
       for (const symbol of changed) addSymbol(symbols, symbol);
       for (const { name, kind, owner } of changed) if (kind === 'field' && owner) appendTo(changedOwners, name, { owner, file: file.path });
       const replaced = replacedLines(file);
@@ -959,9 +993,17 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       if (!TEST_PATH.test(file.path)) for (const lookup of parsed.lookups) lookups.push({ ...lookup, file: file.path });
       if (parsed.reliedOn.length > 0 && !TEST_PATH.test(file.path)) for (const name of parsed.reliedOn) reliedOn.set(name, (reliedOn.get(name) ?? 0) + 1);
     } else {
-      for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
+      for (const symbol of keywordDeclarations(file)) {
+        declared.push(symbol);
+        addSymbol(symbols, symbol);
+      }
     }
   }
+  const lastRanked = new LastRankedFiles(workspace);
+  const addsNoPieces = (file: string) => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file);
+  const reviewed = new Set(diff.files.map(f => f.path));
+  // A file left out of `diff` adds no pieces, but a piece can move out of it, so its removed lines are read by keyword.
+  const pieces = addedPieces(diff, declared, movedNames(fullDiff, parser, file => addsNoPieces(file) || !reviewed.has(file)), addsNoPieces);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -986,7 +1028,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     ...files.flatMap(mentionedNames),
     ...[...reliedOn].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).map(([name]) => name).filter(name => !symbols.has(name)),
   ])].filter(name => isSearchable(name) && isCodeLike(name)).slice(0, MAX_SYMBOLS) : [];
-  const nothing = { ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }) };
+  const nothing = {
+    ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }), ...(pieces.length > 0 && { pieces }),
+  };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
   // A file that names the type of a redefined field likely reads that type's field, not a namesake's. Only a searched
@@ -1043,7 +1087,6 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // A symbol that was not searched for is in a line only next to another name, so those lines are not its uses.
   const redefinedNames = new Set(redefined.keys());
   const found = findSymbolUses(searched.filter(s => !unsearched.has(s.name)), hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), redefinedNames, otherType);
-  const lastRanked = new LastRankedFiles(workspace);
   const { blocks: finderBlocks, symbols: listed, common, capped } = formatSymbolUses(found, packages, redefinedNames, typeFiles, file => lastRanked.has(file));
   const { blocks } = formatSymbolUses(found, packages, redefinedNames, typeFiles);
   // What follows the symbols in both copies of the section.
@@ -1219,14 +1262,122 @@ function firstAtOrAfter(lines: number[], line: number): number {
   return low;
 }
 
-/** Returns the declarations and config keys on added lines, for a file without a grammar here. */
-function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
+/** Returns the declarations and config keys on `lines`, the added ones by default, for a file without a grammar here. */
+function keywordDeclarations(file: DiffFile, lines: ReadonlyMap<number, string> = addedLines(file)): ChangedSymbol[] {
   const config = CONFIG_FILE.test(file.path);
-  return [...addedLines(file)].flatMap(([line, text]) => {
+  return [...lines].flatMap(([line, text]) => {
     const match = (config ? CONFIG_KEY_LINE : DECLARATION_LINE).exec(text);
     if (!match || (config && !match[1].includes('_'))) return [];
     const kind: SymbolKind = config ? 'key' : KEYWORD_KIND[match[1]] ?? 'type';
     return [{ name: config ? match[1] : match[2], kind, file: file.path, line, tier: 0 as const }];
+  });
+}
+
+const BLOCK_CLOSE = /^\s*(?:[}\])]|end\b)/;
+
+/**
+ * Returns the last line of the block a declaration on added line `line` opens, for a file without a grammar here: the
+ * added lines below it that are blank or indented deeper, and a closing line at its own indent. Returns `line` when no
+ * such line follows.
+ */
+function keywordBlockEnd(added: ReadonlyMap<number, string>, line: number): number {
+  const indent = (text: string) => text.length - text.trimStart().length;
+  const own = indent(added.get(line)!);
+  let end = line;
+  for (let next = line + 1; added.has(next); next++) {
+    const text = added.get(next)!;
+    if (text.trim() === '') continue;
+    if (indent(text) > own) end = next;
+    else {
+      if (indent(text) === own && BLOCK_CLOSE.test(text)) end = next;
+      break;
+    }
+  }
+  return end;
+}
+
+/** Whether `text` opens a brace block and closes it again, as a one-line declaration such as `struct Fee {}` does. */
+function closesOnItsLine(text: string): boolean {
+  const opens = text.split('{').length - 1;
+  return opens > 0 && opens === text.split('}').length - 1;
+}
+
+/** Returns the kind of piece `symbol` adds, declared on `text`, or `undefined` when it adds no structure of its own, as a field does. */
+function pieceKind(symbol: ChangedSymbol, text: string): AddedPiece['kind'] | undefined {
+  switch (symbol.kind) {
+    case 'type': return ERROR_TYPE.test(symbol.name) ? 'error' : 'type';
+    case 'function': return 'function';
+    case 'constant': return FUNCTION_VALUE.test(text) ? 'function' : undefined;
+    case 'variant': return symbol.owner && ERROR_TYPE.test(symbol.owner) ? 'error' : undefined;
+    case 'key': return 'key';
+    default: return undefined;
+  }
+}
+
+/**
+ * Returns the names declared on the lines the diff removes, found by the parser that finds the added ones: the grammar
+ * on the base version of the file where there is one and its budget allows, and the keywords otherwise. A file `skip`
+ * names adds no pieces, so its base version is read by keyword and takes no budget.
+ */
+function movedNames(diff: ParsedDiff, parser: Parser, skip: (file: string) => boolean): Set<string> {
+  const names = new Set<string>();
+  for (const file of diff.files) {
+    const removed = removedOldLines(file);
+    if (removed.size === 0) continue;
+    const parsed = languageOf(file.path) && !skip(file.path) ? parser.parseBase(file) : undefined;
+    const declared = parsed
+      ? parsed.declarations.filter(d => removed.has(lineOf(d.node))).map(d => d.name)
+      : keywordDeclarations(file, removed).map(s => s.name);
+    for (const name of declared) names.add(name);
+  }
+  if (parser.baseSkipped > 0) core.info(`Uses outside the diff: the parse limit left the base versions of ${parser.baseSkipped} files unparsed, so their removed lines were read by keyword`);
+  return names;
+}
+
+/**
+ * Returns the structure the diff adds: each added file, and each type, function, error kind and config key declared on
+ * an added line of another file whose name is an identifier and was not declared on a removed line, so a moved or
+ * renamed one is not new. A file `skip` names, and test code, add none. A piece inside a larger one is part of it. The
+ * largest pieces come first, at most `MAX_LISTED_PIECES`.
+ */
+function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], removed: ReadonlySet<string>, skip: (file: string) => boolean): AddedPiece[] {
+  const files = new Map(diff.files.filter(f => f.changeType !== 'deleted' && !skip(f.path)).map(f => {
+    const added = addedLines(f);
+    return [f.path, { file: f, added, sorted: [...added.keys()].sort((a, b) => a - b) }];
+  }));
+  type Entry = NonNullable<ReturnType<typeof files.get>>;
+  const piece = (kind: AddedPiece['kind'], name: string, { file, sorted }: Entry, start: number, end: number) => {
+    const from = firstAtOrAfter(sorted, start);
+    return { kind, name, file: file.path, start, end, from, size: firstAtOrAfter(sorted, end + 1) - from };
+  };
+  const pieces: Array<ReturnType<typeof piece>> = [];
+  for (const entry of files.values()) {
+    if (entry.file.changeType === 'added' && entry.sorted.length > 0) pieces.push(piece('file', entry.file.path, entry, 1, entry.sorted.at(-1)!));
+  }
+  for (const symbol of declared) {
+    const entry = files.get(symbol.file);
+    const text = entry?.added.get(symbol.line);
+    const kind = text === undefined ? undefined : pieceKind(symbol, text);
+    if (!entry || !kind || entry.file.changeType === 'added' || symbol.test || !IDENTIFIER.test(symbol.name) || removed.has(symbol.name)) continue;
+    const end = symbol.end ?? keywordBlockEnd(entry.added, symbol.line);
+    // A type found by its keyword whose body the diff does not add is only a header, which shows no structure.
+    if (end === symbol.line && symbol.end === undefined && (kind === 'type' || kind === 'error') && !closesOnItsLine(text!)) continue;
+    pieces.push(piece(kind, symbol.name, entry, symbol.start ?? symbol.line, end));
+  }
+  pieces.sort((a, b) => b.size - a.size || a.file.localeCompare(b.file) || a.start - b.start);
+  const kept: typeof pieces = [];
+  let cut = 0;
+  for (const p of pieces) {
+    if (kept.some(k => k.file === p.file && k.start <= p.start && p.end <= k.end)) continue;
+    if (kept.length < MAX_LISTED_PIECES) kept.push(p);
+    else cut++;
+  }
+  if (cut > 0) core.info(`Uses outside the diff: the change adds more than ${MAX_LISTED_PIECES} pieces of structure, so the ${cut} smallest are not listed`);
+  return kept.map(({ from, ...p }) => {
+    const { added, sorted } = files.get(p.file)!;
+    const lines = sorted.slice(from, from + Math.min(p.size, MAX_EXCERPT_LINES)).map(line => `${line}:+ ${shortLine(added.get(line)!)}`);
+    if (p.size > lines.length) lines.push(`... ${p.size - lines.length} more lines`);
+    return { ...p, code: lines.join('\n') };
   });
 }
 
@@ -1245,6 +1396,10 @@ class Parser {
   private files = 0;
   private bytes = 0;
   skipped = 0;
+  /** The base versions `parseBase` left unparsed for its budget. */
+  baseSkipped = 0;
+  private baseFiles = 0;
+  private baseBytes = 0;
 
   /** `reliedOn` asks for the names each changed file calls or reads outside tests. */
   constructor(private readonly workspace: string, private readonly api?: AstGrepApi, private readonly reliedOn = false) {}
@@ -1268,14 +1423,51 @@ class Parser {
       }
       this.files++;
       this.bytes += size;
-      const source = readFileSync(absolute, 'utf-8');
-      const root = this.api.parse(language.lang, source);
+      return this.build(path, readFileSync(absolute, 'utf-8'), touched);
+    } catch (error) {
+      core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Parses `file` as the base holds it, rebuilt from the head and the diff, for its declarations only, within its own
+   * budget of `MAX_BASE_PARSED_FILES` files and `MAX_BASE_PARSED_BYTES`. Returns `undefined` when it has no grammar
+   * here, the budget is spent or the diff does not match the head.
+   */
+  parseBase(file: DiffFile): ParsedFile | undefined {
+    const language = languageOf(file.path);
+    if (!language || !this.api) return undefined;
+    try {
+      // The base size is known from the head size and the diff, so a file past the budget is never read.
+      const removed = [...removedOldLines(file).values()];
+      const lineBytes = (lines: Iterable<string>) => [...lines].reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+      const absolute = file.changeType === 'deleted' ? undefined : resolveInRoot(this.workspace, file.path).absolute;
+      const size = (absolute ? statSync(absolute).size - lineBytes(addedLines(file).values()) : 0) + lineBytes(removed);
+      if (size > MAX_FILE_BYTES) return undefined;
+      if (this.baseFiles >= MAX_BASE_PARSED_FILES || this.baseBytes + size > MAX_BASE_PARSED_BYTES) {
+        this.baseSkipped++;
+        return undefined;
+      }
+      this.baseFiles++;
+      this.baseBytes += size;
+      const source = absolute ? replayDiff(readFileSync(absolute, 'utf-8'), file, 'undo') : removed.join('\n');
+      return this.build(file.path, source, undefined, false);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private build(path: string, source: string, touched?: Set<number>, reliedOn = this.reliedOn): ParsedFile | undefined {
+    const language = languageOf(path)!;
+    try {
+      const root = this.api!.parse(language.lang, source);
       const tree = Tree.build(root.root(), MAX_NESTING);
       if (!tree) {
         core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
         return undefined;
       }
-      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched, this.reliedOn);
+      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched, reliedOn);
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;

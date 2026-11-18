@@ -3378,6 +3378,7 @@ describe('buildDashboard', () => {
       comparison: { total: 3, ended: comparisons, findings, startedAt: 12_000, ...(comparisons === 3 && { endedAt: endedAt ?? 0 }) },
       related: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 },
       claim: { total: 2, ended: claims, findings: 0, startedAt: 12_000, ...(endedAt && { endedAt }) },
+      pattern: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 },
     });
     const started: DashboardData = {
       phase: 'started', lineCount: 954, agentCount: 2, plannerStartedAt: 0, plannerDurationMs: 6000,
@@ -3449,6 +3450,11 @@ describe('buildDashboard', () => {
       .toContain('> ⏳ Related checks: 1 of 1 done'.replace('> ', INDENT));
     expect(buildDashboard({ ...started, sideChecks: { ...side(3, 2, 0, 238_000), related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 } } }, 300_000))
       .toContain('> ✅ Comparisons, related checks and claim checks: 6 of 6 done (3m 46s)'.replace('> ', INDENT));
+    // The pattern checks run beside the finders too, so the line waits for them and names them.
+    const { pattern: _pattern, ...withoutPattern } = side(3, 2, 0, 238_000)!;
+    expect(buildDashboard({ ...started, sideChecks: withoutPattern }, 300_000)).toContain('> ⏳ Comparisons and claim checks: 5 of 5 done'.replace('> ', INDENT));
+    expect(buildDashboard({ ...started, sideChecks: { ...side(3, 2, 0, 238_000), pattern: { total: 2, ended: 2, findings: 1, startedAt: 12_000, endedAt: 60_000 } } }, 300_000))
+      .toContain('> ✅ Comparisons, claim checks and pattern checks: 7 of 7 done, 1 finding (3m 46s)'.replace('> ', INDENT));
   });
 
   it('renders the started phase with running review and pending judge', () => {

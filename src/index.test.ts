@@ -117,6 +117,8 @@ jest.mock('./diff', () => {
     return { diff: { ...diff, files: included }, excluded };
   });
   return {
+    // The helpers that only read a diff stay real, so the code under test can use any of them.
+    ...jest.requireActual('./diff'),
     parsePRDiff,
     filterFilesWithAttribution,
     filterDiff,
@@ -127,16 +129,6 @@ jest.mock('./diff', () => {
     }),
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
     ownChangeSince: jest.fn((sinceLastRound: string) => sinceLastRound),
-    addCodeContext: jest.requireActual('./diff').addCodeContext,
-    addedLines: jest.requireActual('./diff').addedLines,
-    tagFindingOrigins: jest.requireActual('./diff').tagFindingOrigins,
-    hideSeenNotes: jest.requireActual('./diff').hideSeenNotes,
-    compareChanges: jest.requireActual('./diff').compareChanges,
-    changeDigest: jest.requireActual('./diff').changeDigest,
-    rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
-    listedFilesDiff: jest.requireActual('./diff').listedFilesDiff,
-    shortenLongLines: jest.requireActual('./diff').shortenLongLines,
-    onlyCommitChanging: jest.requireActual('./diff').onlyCommitChanging,
   };
 });
 

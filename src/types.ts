@@ -652,25 +652,43 @@ export interface RoundUsesSymbol {
   notShown?: number;
 }
 
+/**
+ * `follows` the existing places, `differs_with_reason` when the code states why it differs, `differs` when nothing does,
+ * and `no_comparable` when fewer than two existing places do the same kind of thing.
+ */
+export const PATTERN_ANSWERS = ['follows', 'differs_with_reason', 'differs', 'no_comparable'] as const;
+export type PatternAnswer = typeof PATTERN_ANSWERS[number];
+
 /** A targeted call comparing changed code with the code beside it, asked alongside the finders. */
 export interface RoundComparison {
   /**
    * `field` asks whether a sibling field can hold the item a change looks up, `implementations` compares sibling functions.
-   * A related repo kind checks one counterpart of that kind of repo.
+   * A related repo kind checks one counterpart of that kind of repo. `pattern` compares a piece of structure the change
+   * adds with how the repository already does the same kind of thing.
    */
-  kind: 'field' | 'implementations' | RelatedRepoKind;
+  kind: 'field' | 'implementations' | RelatedRepoKind | 'pattern';
   /** The reviewer name its findings carry. */
   reviewer: string;
-  /** The changed lookup, or each function compared, as `file:line`. For a counterpart, its lines as `owner/name:path:line`. */
+  /**
+   * The changed lookup, or each function compared, as `file:line`. For a counterpart, its lines as `owner/name:path:line`.
+   * For a piece of structure, its first line.
+   */
   at: string[];
+  /** How an answered `pattern` call says the piece compares with the existing places that do the same kind of thing. */
+  answer?: PatternAnswer;
+  /** The existing places an answered `pattern` call read and compared, as `file:line`, each a line there that the PR does not add. */
+  places?: string[];
   /**
    * `failed` when the call failed or its reply did not parse twice, `cut` when the round's cap left it out, `timed_out`
-   * when it was still unanswered once the grace after the finders ran out, and `skipped` when a counterpart's call had
-   * no repository tools to open it.
+   * when it was still unanswered once the grace after the finders ran out, and `skipped` when a counterpart's or a
+   * piece's call had no repository tools to read the code.
    */
   status: 'answered' | 'failed' | 'cut' | 'timed_out' | 'skipped';
   findings?: number;
-  /** The findings of a counterpart's answer dropped since they cite no line of the PR or none of the related repo that exists. */
+  /**
+   * The findings an answer dropped: for a counterpart, those that cite no existing line of the PR or none of the related
+   * repo. For a piece, those that cite fewer than two existing places and no rule, or sit on no line the PR adds.
+   */
   dropped?: number;
   /** A digest of everything the call was sent, set on an answered question. */
   inputDigest?: string;
@@ -1808,7 +1826,7 @@ export interface AgentProgressEntry {
 }
 
 /** A step of calls that run beside the finders, or after the judge for the sweeps. */
-export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'sweep';
+export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'pattern' | 'sweep';
 
 /** Hears of the checks of one step as they run. */
 export interface CheckProgress<R> {
@@ -2267,7 +2285,7 @@ export interface RoundDiff {
 /** Resolved model IDs per pipeline stage. */
 export interface RoundModels {
   planner?: string;
-  /** Model of the first reader of the round's review group. The sibling comparisons, related repo checks, claim checks and sweeps ran on it too. */
+  /** Model of the first reader of the round's review group. The sibling comparisons, related repo checks, claim checks, pattern checks and sweeps ran on it too. */
   reviewer?: string;
   judge: string;
   /** Model of the second refuter, on rounds where it checked a finding or an earlier round's answer of it was reused. */
@@ -2851,7 +2869,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'related_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

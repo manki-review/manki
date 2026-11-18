@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
@@ -13,6 +14,8 @@ import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDif
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
+// Passes every read through, so a test can count the files a step reads.
+jest.mock('fs', () => ({ ...jest.requireActual('fs'), readFileSync: jest.fn(jest.requireActual('fs').readFileSync) }));
 // Every test here builds a real git workspace or directory, which a loaded runner takes past the default 5 seconds.
 jest.setTimeout(30_000);
 
@@ -450,6 +453,74 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('### `slice_lines` (config key)\n\n```\ndeclared at manki.yml:3\nsrc/config.ts:1: export const lines = (c: Config) => c.slice_lines;\n```');
   });
 
+  it('lists the structure the change adds, the largest first, each with its added lines, leaving out what it changes, moves, tests or excludes', async () => {
+    const { pieces } = await usesFor({
+      'src/orders.rs': 'pub enum OrderError {\n    Missing,\n}\n\npub fn place() {}\n\nfn round_cents(n: u64) -> u64 { n }\n',
+      'src/util.rs': 'pub fn noop() {}\n',
+      'src/ledger.ts': 'export const VERSION = 1;\n// loadLedger is still to come.\n',
+      'lib/shop.rb': 'class Basket\n  def size\n    0\n  end\nend\n',
+      'src/cart.ts': 'export class Cart {\n  items = 0;\n  clear() {\n    this.items = 0;\n  }\n}\n\nexport class Till {\n  total = 0;\n}\n',
+      'cmd/store.swift': 'class Shelf {\n    func restock() {\n        return\n    }\n}\n\nclass Aisle {\n    var size = 0\n}\n',
+      'app/handlers.py': 'def charge(order):\n    return order\n',
+      'cmd/main.swift': 'import Foundation\n',
+      'manki.yml': 'review:\n  noise: low\n',
+    }, {
+      'src/orders.rs': 'pub enum OrderError {\n    Missing,\n    Rejected,\n}\n\npub fn place() { todo!() }\n',
+      'src/util.rs': 'pub fn noop() {}\n\nfn round_cents(n: u64) -> u64 { n }\n',
+      'src/ledger.ts': 'export const VERSION = 1;\n\n// Sums what each order paid.\nexport class Ledger {\n  total = 0;\n  add(n: number) {\n    this.total += n;\n  }\n}\n\nexport const loadLedger = async () => {\n  return new Ledger();\n};\nexport const ids = [1, 2].map(i => i * 2);\nexport const double = (n: number): number => n * 2;\n',
+      'src/invoice.ts': 'export function invoice() {\n  return 1;\n}\n',
+      'src/ledger.test.ts': 'test("adds", () => {});\n',
+      'docs/billing.md': '# Billing\n',
+      'build/out.ts': 'export function built() {}\n',
+      'app/handlers.py': 'def charge(order):\n    return order\n\n\ndef refund(order):\n    return order\n',
+      'cmd/main.swift': `import Foundation\n\nfunc computeFee(n: Int) -> Int {\n    return n\n}\nstruct Fee {}\nfunc ${'a'.repeat(200)}() {}\nclass Cart {\n    func add() {\n        return\n    }\n\n    func clear() {}\n}\n`,
+      'lib/shop.rb': 'class Trolley\n  def size\n    0\n  end\nend\n',
+      'src/cart.ts': 'export class Cart {\n  items = 0;\n}\n\nexport class Till {\n  total = 0;\n  clear() {\n    this.total = 0;\n  }\n}\n',
+      'cmd/store.swift': 'class Shelf {\n}\n\nclass Aisle {\n    var size = 0\n    func restock() {\n        return\n    }\n}\n',
+      'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n',
+    }, ['build/**']);
+
+    // Without a grammar, a class spans its indented body and closing line, so its methods are part of it, and a class
+    // whose body the change does not add is left out. A method moved to another class, declared with a keyword or
+    // without one, is not new, while a name only a removed comment holds is. A constant is a function only when its
+    // value starts as one, so `ids`, which only passes an arrow on, is no piece.
+    expect(pieces?.map(p => `${p.kind} ${p.name} ${p.file}:${p.start}-${p.end} (${p.size})`)).toEqual([
+      'type Cart cmd/main.swift:8-14 (7)',
+      'type Ledger src/ledger.ts:3-9 (7)',
+      'function computeFee cmd/main.swift:3-5 (3)',
+      'file src/invoice.ts src/invoice.ts:1-3 (3)',
+      'function loadLedger src/ledger.ts:11-13 (3)',
+      'function refund app/handlers.py:5-6 (2)',
+      'type Fee cmd/main.swift:6-6 (1)',
+      'key slice_lines manki.yml:3-3 (1)',
+      'function double src/ledger.ts:15-15 (1)',
+      'error Rejected src/orders.rs:3-3 (1)',
+    ]);
+    expect(pieces?.find(p => p.name === 'refund')?.code).toBe('5:+ def refund(order):\n6:+     return order');
+
+    // A file `exclude_paths` leaves out of the reviewed diff adds no pieces, but a piece moved out of it is not new.
+    const exported = gitWorkspace(
+      { 'gen/api.ts': 'export function toCents(n: number) {\n  return n * 100;\n}\n', 'src/money.ts': 'export const RATE = 1;\n' },
+      { 'gen/api.ts': '// Generated.\n', 'src/money.ts': 'export const RATE = 1;\n\nexport function toCents(n: number) {\n  return n * 100;\n}\n' },
+    );
+    try {
+      const reviewed = { ...exported.diff, files: exported.diff.files.filter(f => !f.path.startsWith('gen/')) };
+      const listed = (fullDiff?: typeof reviewed) => listUsesOutsideDiff(exported.root, reviewed, { loadApi, excludePaths: ['gen/**'], ...(fullDiff && { fullDiff }) });
+      expect((await listed())?.pieces?.map(p => p.name)).toEqual(['toCents']);
+      expect((await listed(exported.diff)).pieces ?? []).toEqual([]);
+    } finally {
+      rmSync(exported.root, { recursive: true, force: true });
+    }
+
+    // The methods of the class are part of it, so they are not counted among the pieces left out.
+    const many = Array.from({ length: 22 }, (_, i) => `def handle_step_${i}(order):\n    return order\n`).join('\n');
+    const runner = 'class Runner:\n    def start(self):\n        return 1\n\n    def stop(self):\n        return 2\n';
+    const capped = await usesFor({ 'app/steps.py': 'VERSION = 1\n' }, { 'app/steps.py': `VERSION = 1\n\n${runner}\n${many}` });
+    expect(capped.pieces).toHaveLength(20);
+    expect(capped.pieces?.[0].name).toBe('Runner');
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the change adds more than 20 pieces of structure, so the 3 smallest are not listed');
+  });
+
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
@@ -528,7 +599,11 @@ describe('listUsesOutsideDiff', () => {
       { name: 'real_function_here', declared: 'tools/gen.rb:18', uses: ['tools/run.rb:1'] },
     ]);
     expect(overlong.referenceNames).toEqual(['real_field_here', 'real_function_here']);
-    expect(JSON.stringify(overlong)).not.toContain('aaaa');
+    // Only the excerpt of the new file quotes them, each of its lines cut.
+    const { pieces, ...listed } = overlong;
+    expect(JSON.stringify(listed)).not.toContain('aaaa');
+    expect(pieces?.map(p => p.name)).toEqual(['tools/gen.rb']);
+    expect(Math.max(...pieces![0].code.split('\n').map(line => line.length))).toBeLessThan(320);
 
     // Names that each fit an identifier can still be too long to search for together, since a `$` takes two bytes of the
     // pattern. The ones left out are named as not searched, in the section and in the record.
@@ -968,6 +1043,36 @@ ${body}	return true
     expect(budget.section).toContain('`total_paid` (210 uses)');
     expect(budget.section).toContain('### `balance` (field of `Account`)\n\n```\ndeclared at src/account.rs:7\nsrc/use.rs:2: a.balance + a.spent\nsrc/a_view.rs:7: self.balance\nsrc/a_view.rs:2: pub balance: u64,\n```');
     expect(budget.section).toContain('### `spent` (field of `Account`)\n\n```\ndeclared at src/account.rs:3\nsrc/use.rs:2: a.balance + a.spent\nsrc/a_other.rs:7: self.spent\nsrc/a_other.rs:2: pub spent: u64,\n```');
+
+    // The base versions read for moved names have a budget of their own. With 191 of the 200 parses spent on changed
+    // files, the lookups of `balance` still read the files they need, and 151 of the 191 base versions are read by keyword.
+    jest.mocked(core.info).mockClear();
+    const handlers = (value: number) => Object.fromEntries(Array.from({ length: 190 }, (_, i) => [`svc/h${String(i).padStart(3, '0')}.go`, `package svc\n\n// Version ${value}.\n`]));
+    const reads = jest.mocked(fs.readFileSync);
+    reads.mockClear();
+    const based = await usesFor({
+      ...handlers(1), 'src/account.rs': account(false), 'src/use.rs': 'pub fn left(a: &Account) -> u64 {\n    a.balance\n}\n',
+      'src/a_view.rs': 'pub struct AccountView {\n    pub balance: u64,\n}\n\nimpl AccountView {\n    pub fn shown(&self, _: &Account) -> u64 {\n        self.balance\n    }\n}\n',
+    }, { ...handlers(2), 'src/account.rs': account(true) });
+    expect(based.section).toContain('declared at src/account.rs:7\nsrc/use.rs:2: a.balance\nsrc/a_view.rs:7: self.balance\nsrc/a_view.rs:2: pub balance: u64,\n```');
+    expect(based.section).not.toContain('left 1 more files unparsed');
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the parse limit left the base versions of 151 files unparsed, so their removed lines were read by keyword');
+    expect(core.info).not.toHaveBeenCalledWith(expect.stringMatching(/^Uses outside the diff: the parse limit left \d+ files unparsed$/));
+    // A base version past the budget is never read: its file is read once, for the head, and one within it twice.
+    const readsOf = (path: string) => reads.mock.calls.filter(([file]) => String(file).endsWith(path)).length;
+    expect([readsOf('svc/h000.go'), readsOf('svc/h189.go')]).toEqual([2, 1]);
+
+    // Test files add no pieces, so their base versions take none of the budget, and the source file's base is still
+    // parsed: a method moved to another class without a keyword is not new.
+    const specs = (value: number) => Object.fromEntries(Array.from({ length: 45 }, (_, i) => [`src/a${String(i).padStart(2, '0')}.test.ts`, `test('t', () => {\n  expect(${value}).toBe(1);\n});\n`]));
+    const moved = await usesFor({
+      ...specs(1), 'src/cart.ts': 'export class Cart {\n  items = 0;\n  clear() {\n    this.items = 0;\n  }\n}\n\nexport class Till {\n  total = 0;\n}\n',
+      'src/fee.ts': 'export const FEE = 1;\n',
+    }, {
+      ...specs(2), 'src/cart.ts': 'export class Cart {\n  items = 0;\n}\n\nexport class Till {\n  total = 0;\n  clear() {\n    this.total = 0;\n  }\n}\n',
+      'src/fee.ts': 'export const FEE = 1;\n\nexport function fee() {\n  return FEE;\n}\n',
+    });
+    expect(moved.pieces?.map(p => p.name)).toEqual(['fee']);
   }, 30_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', finderSection: '', readingSection: '', siblings: { fields: [], implementations: [] } };
@@ -990,7 +1095,7 @@ ${body}	return true
       expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ ...NOTHING, referenceNames: ['compute_total'] });
-      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons$/));
+      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons and 0 added pieces$/));
       // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name.
       rmSync(join(root, '.git'), { recursive: true, force: true });
       mkdirSync(join(root, '.git'));

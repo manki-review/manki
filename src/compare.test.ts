@@ -2,11 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { runComparisons, runRelatedChecks } from './compare';
+import { runComparisons, runPatternChecks, runRelatedChecks } from './compare';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
-import { fakeClient, HANG } from './test-utils';
+import { AddedPiece, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
+import { fakeClient, gitWorkspace, HANG } from './test-utils';
 
 jest.mock('@actions/core');
 
@@ -251,6 +251,112 @@ describe('runRelatedChecks', () => {
       const skipped = await runRelatedChecks(() => plain, [question('reference', 'MIN_PEER_VERSION')], { workspace, progress: skippedProgress });
       expect(skippedProgress.ended.mock.calls).toEqual([[undefined]]);
       expect(skipped).toEqual({ findings: [], comparisons: [{ kind: 'reference', reviewer: 'Reference check: MIN_PEER_VERSION', at: ['acme/node:src/net.cpp:2'], status: 'skipped' }] });
+    }
+    expect(plain.calls).toEqual([]);
+  });
+});
+
+describe('runPatternChecks', () => {
+  const HANDLER = (name: string) => `export function ${name}(req: Request) {\n  return withAuth(req, () => ok());\n}\n`;
+  const piece = (name: string, extra: Partial<AddedPiece> = {}): AddedPiece => ({
+    kind: 'function', name, file: 'src/refund.ts', start: 1, end: 3, size: 3, code: '1:+ export function refund(req: Request) {\n2:+   return ok();\n3:+ }', ...extra,
+  });
+  const finding = (title: string, proof: string[], extra: Record<string, unknown> = {}) => ({
+    severity: 'warning', title, file: 'src/refund.ts', line: 2, description: 'The new handler skips `withAuth`.', cost: 'A caller can refund without a session.',
+    evidence: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof, ...extra,
+  });
+
+  it('asks one call per piece with its added lines, and keeps a finding of a difference only with two existing places or a rule, on a line the PR adds', async () => {
+    const { root, diff } = gitWorkspace(
+      { 'src/charge.ts': HANDLER('charge'), 'src/cancel.ts': HANDLER('cancel'), 'src/void.ts': HANDLER('voidOrder'), 'AGENTS.md': '# Rules\n' },
+      { 'src/void.ts': 'export function voidOrder(req: Request) {\n  return ok();\n}\n', 'src/refund.ts': 'export function refund(req: Request) {\n  return ok();\n}\n', 'gen/handlers.ts': HANDLER('generated') },
+    );
+    // `exclude_paths` leaves the generated file out of the reviewed diff, but the PR still adds its lines.
+    const reviewed = { ...diff, files: diff.files.filter(f => !f.path.startsWith('gen/')) };
+    const instructionFiles = [{ path: 'AGENTS.md', text: '# Rules\n\nEvery handler must check the session with `withAuth`.' }];
+    const client = fakeClient(user => {
+      if (user.includes('`Refund`')) return { answer: 'follows', places: ['src/charge.ts:1'], findings: [finding('Ignored without a difference', ['src/charge.ts:2', 'src/cancel.ts:2'])] };
+      if (user.includes('`refunds`') && !user.includes('could not be used')) return { answer: 'maybe' };
+      if (user.includes('`Refunds`')) return { answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1'], findings: [{ proof: ['src/charge.ts:2'], cost: 'Some cost.' }] };
+      if (user.includes('`refunds`')) return { answer: 'no_comparable' };
+      return {
+        answer: 'differs', places: ['src/charge.ts:1', './src/charge.ts:1', 'src/cancel.ts:1-3', 'src/cancel.ts:2', 'src/void.ts:2', 'src/refund.ts:1', 'src/missing.ts:1'],
+        findings: [
+          finding('Two places', ['src/charge.ts:2', './src/cancel.ts:2', 'src/cancel.ts:40', 'src/refund.ts:2']),
+          finding('One place', ['src/charge.ts:2', 'src/refund.ts:2']),
+          finding('A line an excluded file adds', ['src/charge.ts:2', 'gen/handlers.ts:2', 'src/refund.ts:2']),
+          finding('One place spelled three ways', ['src/charge.ts:2', 'src/charge.ts:2-3', './src/charge.ts:1-2']),
+          finding('A line the PR adds, spelled another way', ['src/charge.ts:2', './src/refund.ts:2']),
+          finding('A place the PR changes', ['src/charge.ts:2', 'src/void.ts:2', 'src/refund.ts:2']),
+          finding('A place that is not there', ['src/charge.ts:2', 'src/cancel.ts:40', 'src/refund.ts:2']),
+          finding('A rule', ['src/refund.ts:2'], { rule: 'Every handler must check the session with `withAuth`.', ruleFile: 'AGENTS.md', file: './src/refund.ts' }),
+          finding('A made-up rule', ['src/refund.ts:2'], { rule: 'Every handler must log the request first.', ruleFile: 'AGENTS.md' }),
+          finding('No cost', ['src/charge.ts:2', 'src/cancel.ts:2'], { cost: ' ' }),
+          finding('Off the new code', ['src/charge.ts:2', 'src/cancel.ts:2'], { file: 'src/charge.ts' }),
+        ],
+      };
+    });
+    const pieces = [piece('refund', { kind: 'file', name: 'src/refund.ts' }), piece('Refund', { kind: 'type' }), piece('refunds', { kind: 'key' }), piece('Refunds', { kind: 'type' })];
+    let result: Awaited<ReturnType<typeof runPatternChecks>>;
+    let retried: Awaited<ReturnType<typeof runPatternChecks>>;
+    const again = fakeClient(() => ({ answer: 'follows' }));
+    try {
+      result = await runPatternChecks(() => client, pieces, { effort: 'high', workspace: root, diff: reviewed, fullDiff: diff, instructionFiles });
+      // A retry of the round keeps each answer whose question is unchanged, with its findings, and asks nothing again.
+      const answers = new Map(result.comparisons.map(c => [c.reviewer, { record: c, findings: result.findings.filter(f => f.reviewers.includes(c.reviewer)) }]));
+      retried = await runPatternChecks(() => again, pieces, { effort: 'high', workspace: root, diff: reviewed, fullDiff: diff, instructionFiles, earlier: { answers, confirm: async () => true } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    const [file, type] = client.calls;
+    expect(file.options).toEqual({ effort: 'high', repoTools: { root, steps: 12 }, timeoutMs: 600_000 });
+    expect(file.system).toContain('You check one piece of structure a pull request adds');
+    expect(file.system).toContain('- **no_comparable**: you found fewer than two existing places that do the same kind of thing. One existing example is not a pattern.');
+    expect(file.system).toContain('Manki drops a finding that cites fewer than two existing places and quotes no rule, or that is not on a line the PR adds.');
+    expect(file.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${UNTRUSTED_CONTENT_RULE}\n- ${VERIFY_CLAIMS_RULE}`);
+    expect(file.user).toContain('The change adds a new file. Find the existing places in the repository that do the same kind of thing');
+    expect(file.user).toContain('```ts\nsrc/refund.ts\n1:+ export function refund(req: Request) {');
+    expect(file.user).toContain("## Instruction Files\n\nThe repository's instruction files, as the base branch holds them.");
+    expect(type.user).toContain('The change adds the type `Refund`.');
+    expect(client.calls.filter(c => c.user.includes('`refunds`')).map(c => c.user.includes('Reply with only the JSON object'))).toEqual([false, true]);
+    // Every path the PR controls sits inside a fence: outside the fences only Manki's own text and checked names remain.
+    for (const { user } of client.calls) expect(user.replace(/^(`{3,})[^\n]*\n[\s\S]*?^\1$/gm, '')).not.toMatch(/src\/|AGENTS/);
+
+    expect(result.findings.map(f => `${f.title}: ${f.severity}`)).toEqual(['Two places: warning', 'A rule: warning', 'No cost: note']);
+    expect(result.findings[0]).toEqual(expect.objectContaining({
+      reviewers: ['Pattern check: refund.ts'], description: 'The new handler skips `withAuth`. A caller can refund without a session.',
+      evidence: { checks: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] },
+    }));
+    // A place is compared by its path from the root and its lines, a made-up line is left out, and the finding's own line closes the proof.
+    expect(result.findings[1]).toEqual(expect.objectContaining({ file: 'src/refund.ts', evidence: expect.objectContaining({ proof: ['src/refund.ts:2'] }) }));
+    expect(result.comparisons).toEqual([
+      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 8, inputDigest: expect.any(String) },
+      { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0, inputDigest: expect.any(String) },
+      { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0, inputDigest: expect.any(String) },
+      // A difference whose findings are all unusable keeps its answer and places.
+      { kind: 'pattern', reviewer: 'Pattern check: Refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1'], findings: 0, dropped: 1, inputDigest: expect.any(String) },
+    ]);
+    expect(again.calls).toEqual([]);
+    expect(retried.findings).toEqual(result.findings);
+    expect(retried.comparisons).toEqual(result.comparisons.map(c => ({ ...c, reused: true })));
+  });
+
+  it('asks at most four pieces in their order and records the rest as cut, names a file of no plain name by its kind, and asks none without repository tools', async () => {
+    const names = Array.from({ length: 5 }, (_, i) => `piece_${i}`);
+    const client = fakeClient(() => ({ answer: 'follows' }));
+    const result = await runPatternChecks(() => client, [...names.map(name => piece(name)), piece('src/a b.ts', { kind: 'file' })], {
+      workspace: '/repo', diff: { files: [], totalAdditions: 0, totalDeletions: 0 },
+    });
+    expect(client.calls.map(c => c.user.match(/`(piece_\d)`/)![1])).toEqual(names.slice(0, 4));
+    expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual([
+      ...names.slice(0, 4).map(name => `Pattern check: ${name}: answered`), 'Pattern check: piece_4: cut', 'Pattern check: new file: cut',
+    ]);
+
+    const plain = fakeClient(() => ({ answer: 'follows' }), false);
+    for (const workspace of ['/repo', undefined]) {
+      const skipped = await runPatternChecks(() => plain, [piece('refund')], { workspace, diff: { files: [], totalAdditions: 0, totalDeletions: 0 } });
+      expect(skipped).toEqual({ findings: [], comparisons: [{ kind: 'pattern', reviewer: 'Pattern check: refund', at: ['src/refund.ts:1'], status: 'skipped' }] });
     }
     expect(plain.calls).toEqual([]);
   });

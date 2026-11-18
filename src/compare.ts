@@ -1,13 +1,15 @@
 import * as core from '@actions/core';
 
-import { fenceText } from './github';
+import { addedLines } from './diff';
+import { fenceText, InstructionFile } from './github';
 import { extractJSON } from './json';
+import { resolveInRoot } from './mcp-server';
 import { LLMClient, SendMessageOptions } from './providers';
 import { offeredRepos, repoTools } from './related-repos';
-import { shownLines } from './refute';
+import { locationFile, locationLines, shownLines } from './refute';
 import { isUsableElement, parseFindings } from './review';
-import { CodeExcerpt, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
-import { CheckProgress, EffortLevel, Finding, RelatedRepoKind, RelatedRepoTools, RoundComparison } from './types';
+import { AddedPiece, CodeExcerpt, PLAIN_FILE_NAME, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
+import { CheckProgress, EffortLevel, Finding, ParsedDiff, PATTERN_ANSWERS, RelatedRepoKind, RelatedRepoTools, RoundComparison } from './types';
 import { digestOf, mapWithConcurrency, sendWithParseRetry } from './utils';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -15,6 +17,8 @@ const MAX_FIELD_QUESTIONS = 6;
 const MAX_IMPLEMENTATION_QUESTIONS = 6;
 /** Related repo counterparts checked in a round, the ones the diff changes most first. */
 const MAX_RELATED_QUESTIONS = 8;
+/** Pieces of added structure checked in a round, the largest first. */
+const MAX_PATTERN_QUESTIONS = 4;
 const MAX_PARALLEL_QUESTIONS = 4;
 const COMPARE_STEPS = 12;
 // A safety net. With tools, the step budget is what normally ends the call.
@@ -57,6 +61,37 @@ ${SEVERITY_RULES}
 - ${PRE_EXISTING_RULE}
 - You can read the repository and the related repos with read-only tools. Check the code your answer rests on before you report it.
 - ${RELATED_REPO_TRUST_RULE}
+- ${UNTRUSTED_CONTENT_RULE}
+- ${VERIFY_CLAIMS_RULE}
+
+${WRITING_RULES}`;
+
+const PATTERN_SYSTEM_PROMPT = `You check one piece of structure a pull request adds, such as a file, a type, a function, an error kind or a config key, against how the repository already does the same kind of thing. Other reviewers look for bugs in the whole change, so report only a difference from a pattern that the code shows, never what you would prefer.
+
+Work in this order:
+1. Search the repository with your tools for existing places that do the same kind of thing as the new piece, such as another module with the same role, another handler, command or setting of the same family, or another error of the same family. Read at least two of them. Each place is a separate example, such as another file, type or function, never two lines of one.
+2. Say what those places have in common: where the code lives and which layer calls which, how errors are returned, how state is held, how the piece is registered or wired up, how it is named and how it is tested.
+3. Compare the new piece with that pattern.
+
+Give one answer:
+- **follows**: the new piece does it the way the existing places do.
+- **differs_with_reason**: it differs, and the code states why, such as a comment or a constraint the existing places do not have. Say the reason in \`reason\`.
+- **differs**: it differs, and nothing in the code says why.
+- **no_comparable**: you found fewer than two existing places that do the same kind of thing. One existing example is not a pattern.
+
+Report findings only for \`differs\`, one per difference you can show:
+- Cite in \`proof\` at least two existing places that agree with each other, and the new line that does not. A line this PR adds is no existing place, so a change that moves the existing places over to a new pattern on purpose is no finding. Instead of the two places, a finding can rest on a rule of the repository's instruction files: set \`"rule"\` to the rule quoted word for word and \`"ruleFile"\` to the file it comes from.
+- Say in \`cost\` what the difference costs in practice, such as a caller that now has two ways to do one thing, a check the shared path has and the new one lacks, or a layer that now reaches into another. A difference with no cost is filed as a note.
+- Put the finding on the new line that needs the change.
+Manki drops a finding that cites fewer than two existing places and quotes no rule, or that is not on a line the PR adds.
+
+Respond with ONLY a JSON object (no markdown fences, no explanation):
+
+{"answer": "follows" | "differs_with_reason" | "differs" | "no_comparable", "pattern": "One or two plain sentences on what the existing places have in common", "places": ["file:line of each existing place you read and compared"], "reason": "For differs_with_reason, the reason the code states", "findings": [{"severity": "blocker" | "warning" | "note", "title": "The difference in one plain line", "file": "path/to/file.ext", "line": <line number in the NEW file>, "description": "At most three sentences: how the new code differs from the existing places and the decisive evidence.", "cost": "One sentence on what the difference costs in practice", "howToFix": "The change that makes it follow the pattern, in one or two sentences", "evidence": ["file:line, then what you read there and what it showed, quoting the key code in backticks"], "proof": ["file:line of each existing place", "file:line of the new line"]}]}
+
+${SEVERITY_RULES}
+- When Manki tells you to wrap up, answer from the code you have read. With fewer than two places read, the answer is \`no_comparable\`.
+- ${CLAIMS_MISSING_RULE}
 - ${UNTRUSTED_CONTENT_RULE}
 - ${VERIFY_CLAIMS_RULE}
 
@@ -199,12 +234,16 @@ export interface EarlierAnswers<R> {
   confirm: () => Promise<boolean>;
 }
 
-/** How a step asks its questions: what its log calls them, its system prompt, how it reads a reply, and whether a call needs repository tools. */
+/**
+ * How a step asks its questions: what its log calls them, its system prompt, how it reads a reply and what of it the
+ * record keeps, whether a call needs repository tools, and whether a reply is a JSON object instead of an array.
+ */
 interface Asking {
   what: string;
   system: (tools: boolean) => string;
-  parse: (content: string, reviewer: string) => { findings: Finding[]; dropped?: number };
+  parse: (content: string, reviewer: string) => { findings: Finding[]; dropped?: number; record?: Pick<RoundComparison, 'answer' | 'places'> };
   needsTools?: boolean;
+  shape?: 'object' | 'array';
 }
 
 type Answers = { findings: Finding[]; comparisons: RoundComparison[] };
@@ -215,7 +254,7 @@ type Answers = { findings: Finding[]; comparisons: RoundComparison[] };
  * as `timed_out`, and with `needsTools` one whose client has no repository tools as `skipped`. It never throws.
  */
 async function ask(
-  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal, progress, earlier }: ComparisonOptions, { what, system, parse, needsTools }: Asking,
+  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal, progress, earlier }: ComparisonOptions, { what, system, parse, needsTools, shape = 'array' }: Asking,
 ): Promise<Answers> {
   if (asked.length > 0) core.info(`Asking ${asked.length} ${what} question(s)${cut.length > 0 ? `, ${cut.length} cut by the cap` : ''}`);
   progress?.started(asked.length);
@@ -238,7 +277,7 @@ async function ask(
       ...(tools && { repoTools: repoTools(workspace!, COMPARE_STEPS, related) }),
     };
     try {
-      const { findings, dropped } = await sendWithParseRetry(
+      const { findings, dropped, record: answer } = await sendWithParseRetry(
         q.message(tools),
         message => client.sendMessage(system(tools), message, options),
         reply => {
@@ -246,10 +285,10 @@ async function ask(
           return parse(reply.content, q.reviewer);
         },
         error => core.warning(`${q.reviewer} reply could not be used (${error}), asking once more`),
-        'array',
+        shape,
       );
-      core.info(`${q.reviewer}: ${findings.length} finding(s)${dropped ? `, ${dropped} dropped without a cited line on both sides` : ''}`);
-      return { record: { ...record, status: 'answered', findings: findings.length, ...(dropped && { dropped }), inputDigest }, findings };
+      core.info(`${q.reviewer}: ${answer?.answer ? `${answer.answer}, ` : ''}${findings.length} finding(s)${dropped ? `, ${dropped} dropped without the lines they must cite` : ''}`);
+      return { record: { ...record, status: 'answered', ...answer, findings: findings.length, ...(dropped && { dropped }), inputDigest }, findings };
     } catch (error) {
       if (signal?.aborted) {
         core.warning(`${q.reviewer} was still running when the round stopped waiting, so its question goes unanswered this round`);
@@ -306,5 +345,97 @@ export async function runRelatedChecks(clientFor: (reviewer: string) => LLMClien
   const { workspace, related } = options;
   return ask(clientFor, all.slice(0, MAX_RELATED_QUESTIONS), all.slice(MAX_RELATED_QUESTIONS), options, {
     what: 'related repo', system: () => RELATED_SYSTEM_PROMPT, needsTools: true, parse: (content, reviewer) => parseRelatedFindings(content, reviewer, workspace!, related),
+  });
+}
+
+const PIECE_LABELS: Record<AddedPiece['kind'], string> = { file: 'file', type: 'type', function: 'function', error: 'error kind', key: 'config key' };
+
+function patternMessage(piece: AddedPiece, instructionFiles: readonly InstructionFile[]): string {
+  // A file's path comes from the PR, so only the fenced block names it.
+  const what = piece.kind === 'file' ? 'a new file' : `the ${PIECE_LABELS[piece.kind]} \`${piece.name}\``;
+  const rules = instructionFiles.length > 0
+    ? `\n\n## Instruction Files\n\nThe repository's instruction files, as the base branch holds them. A rule counts only as quoted from one of these, and the PR's own edits to them are not in force.\n\n${fenceText(instructionFiles.map(f => f.path).join('\n'))}`
+    : '';
+  return `## Question
+
+The change adds ${what}. Find the existing places in the repository that do the same kind of thing, say what they have in common, and compare the new code with that pattern.
+
+${MARKS_NOTE} Only the lines the PR adds are shown, so read the file with your tools for the rest.
+
+${fenceExcerpt({ file: piece.file, line: piece.start, code: piece.code })}${rules}`;
+}
+
+/**
+ * Reads a pattern check's answer. Only a `differs` answer keeps findings, and only those on a line `diff` adds whose
+ * `proof` cites two existing places, lines there that `fullDiff`, excluded files included, does not add, or that quote
+ * a rule of `instructionFiles`. Places are compared by their path from the repository root, and places whose lines
+ * overlap count once. A kept finding's file is that path, and its `proof` keeps only its existing places and its own
+ * line. A finding that names no `cost` goes to the judge as a note, and the judge sets its grade. The record keeps the
+ * answer and the existing places it cites, also when no finding is usable.
+ */
+function parsePatternAnswer(
+  content: string, reviewer: string, workspace: string, { diff, fullDiff }: { diff: ParsedDiff; fullDiff: ParsedDiff }, instructionFiles: readonly InstructionFile[],
+): ReturnType<Asking['parse']> {
+  const parsed = JSON.parse(extractJSON(content, 'object')) as Record<string, unknown>;
+  const answer = PATTERN_ANSWERS.find(a => a === parsed.answer);
+  if (!answer) throw new Error(`the answer is ${JSON.stringify(parsed.answer)}, not one of ${PATTERN_ANSWERS.join(', ')}`);
+  const addedBy = (changed: ParsedDiff) => new Map(changed.files.map(f => [f.path, [...addedLines(f).keys()]]));
+  const [reviewed, added] = [addedBy(diff), addedBy(fullDiff)];
+  const rootPath = (file: string) => {
+    try {
+      return resolveInRoot(workspace, file).relative;
+    } catch {
+      return file;
+    }
+  };
+  const adds = (lines: Map<string, number[]>, file: string, start: number, end: number) => !!lines.get(file)?.some(line => line >= start && line <= end);
+  const existing = (proof: unknown) => {
+    const places: Array<{ file: string; start: number; end: number }> = [];
+    for (const location of shownLines(proof, workspace).proof) {
+      const [file, [start, end]] = [rootPath(locationFile(location)), locationLines(location)];
+      if (adds(added, file, start, end) || places.some(p => p.file === file && p.start <= end && start <= p.end)) continue;
+      places.push({ file, start, end });
+    }
+    return places.map(({ file, start, end }) => `${file}:${start}${end > start ? `-${end}` : ''}`);
+  };
+  const places = existing(parsed.places);
+  const record = { answer, ...(places.length > 0 && { places }) };
+  if (answer !== 'differs' || !Array.isArray(parsed.findings)) return { findings: [], record };
+  // `parseFindings` maps the usable elements in order, so the raw `proof` and `cost` of each finding are the element at its index.
+  const elements = parsed.findings.filter(isUsableElement);
+  const reported = elements.length > 0 ? parseFindings(JSON.stringify(elements), reviewer, instructionFiles) : [];
+  const findings = reported.flatMap((finding, i) => {
+    const { proof: cited, cost } = elements[i];
+    const own = rootPath(finding.file);
+    const proof = existing(cited);
+    if ((!finding.rule && proof.length < 2) || !adds(reviewed, own, finding.line, finding.line)) return [];
+    const evidence = { ...(finding.evidence ?? { checks: [] }), proof: [...proof, `${own}:${finding.line}`] };
+    const stated = typeof cost === 'string' ? cost.trim() : '';
+    if (!stated) return [{ ...finding, file: own, evidence, severity: 'note' as const }];
+    return [{ ...finding, file: own, evidence, description: `${finding.description} ${stated}`.trim() }];
+  });
+  return { findings, dropped: parsed.findings.length - findings.length, record };
+}
+
+/**
+ * Asks one call per piece of structure the change adds, at most `MAX_PATTERN_QUESTIONS` in the order of `pieces`, as
+ * `ask` says. A call runs only with repository tools, since it must search the repository for the existing places.
+ * Returns their findings, which carry the piece's name, and a record of every piece with its answer, the ones past the
+ * cap as `cut`.
+ */
+export async function runPatternChecks(
+  clientFor: (reviewer: string) => LLMClient, pieces: readonly AddedPiece[],
+  options: ComparisonOptions & { diff: ParsedDiff; fullDiff?: ParsedDiff; instructionFiles?: readonly InstructionFile[] },
+): Promise<Answers> {
+  const { workspace, diff, fullDiff = diff, instructionFiles = [] } = options;
+  // A file's path comes from the PR, so its name is used only when it is plain.
+  const names = uniqueNames(pieces.map(p => {
+    const base = p.name.slice(p.name.lastIndexOf('/') + 1);
+    return `Pattern check: ${p.kind !== 'file' ? p.name : PLAIN_FILE_NAME.test(base) ? base : 'new file'}`;
+  }));
+  const all = pieces.map((piece, i): Question => ({ kind: 'pattern', reviewer: names[i], at: [`${piece.file}:${piece.start}`], message: () => patternMessage(piece, instructionFiles) }));
+  return ask(clientFor, all.slice(0, MAX_PATTERN_QUESTIONS), all.slice(MAX_PATTERN_QUESTIONS), options, {
+    what: 'pattern', system: () => PATTERN_SYSTEM_PROMPT, needsTools: true, shape: 'object',
+    parse: (content, reviewer) => parsePatternAnswer(content, reviewer, workspace!, { diff, fullDiff }, instructionFiles),
   });
 }
