@@ -1342,20 +1342,24 @@ function describeForDedup(f: DedupItem): string {
 }
 
 /**
- * Asks `client` which findings repeat an earlier resolved one, or an `auto-resolved` one `decidedWithoutFix`, in any wording. A match counts in the same file, or in
- * another file when `acrossFiles` pairs the two. A repeat of a waived finding is dropped, and a repeat of a fixed one
- * goes to the judge with a note. A failed call, or one the round did not start or stopped, keeps every finding.
+ * Asks `client` which findings repeat an earlier resolved one, or an `auto-resolved` one `decidedWithoutFix`, in any
+ * wording. A match counts in the same file, or in another file when `acrossFiles` pairs the two. A repeat of a waived
+ * finding is dropped, and a repeat of a fixed one goes to the judge with a note. A repeat of an `auto-resolved` thread
+ * is dropped only while `mayHaveChanged` says no push could have changed its code. Otherwise it goes to the judge with
+ * the thread's answer as `answeredIn`, as static dedup sends an answered repeat. A failed call, or one the round did not
+ * start or stopped, keeps every finding.
  */
 async function llmDeduplicateFindings(
   findings: Finding[],
   previousFindings: PreviousFinding[],
   client: LLMClient,
   acrossFiles: (prev: PreviousFinding, finding: Finding) => boolean = () => false,
+  mayHaveChanged: (prev: PreviousFinding, finding: Finding) => boolean = () => true,
 ): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
   // A lockfile alert names its package and change, so only the exact static match may drop it.
   const alerts = findings.filter(f => isLockfileAlert(f.title));
   if (alerts.length > 0) {
-    const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client, acrossFiles);
+    const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client, acrossFiles, mayHaveChanged);
     return { unique: [...alerts, ...rest.unique], duplicates: rest.duplicates };
   }
   // A thread Manki resolved after an answer that accepted no fix was decided like one a person resolved. Any other may have been fixed.
@@ -1385,13 +1389,19 @@ async function llmDeduplicateFindings(
       // A finding in another file is another place, which the static matcher never matches either, unless `acrossFiles` pairs them.
       const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedResolved - 1])
         .filter(p => !!p && (p.file === findings[i].file || acrossFiles(p, findings[i])));
-      const waived = priors.find(p => mayWaive(p, findings[i]));
+      // Manki's answer on an `auto-resolved` thread held for the code it read, so after a change the judge checks it again.
+      const recheck = (p: PreviousFinding) => p.status === 'auto-resolved' && mayHaveChanged(p, findings[i]);
+      const waived = priors.find(p => mayWaive(p, findings[i]) && !recheck(p));
       const fixed = priors.find(p => p.fixed);
+      const answered = priors.filter(p => mayWaive(p, findings[i])).find(isAnswered);
       if (waived) {
         core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${waived.title}"`);
         duplicates.push({ finding: findings[i], matchedTitle: waived.title ?? 'unknown', matchType: 'llm' });
       } else if (fixed) {
         unique.push(resemblingFixed(findings[i], fixed));
+      } else if (answered) {
+        core.info(`LLM dedup: "${findings[i].title}" repeats answered "${answered.title}" on code a push may have changed, sending it to the judge`);
+        unique.push({ ...findings[i], answeredIn: answeredInOf(answered) });
       } else {
         unique.push(findings[i]);
       }

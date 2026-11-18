@@ -5847,6 +5847,26 @@ describe('runReview', () => {
     expect([...new Set(crossFile.duplicateMatches?.map(m => m.droppedTitle))]).toEqual(['Unchecked locks reach the wallet', 'Unchecked locks reach the cache']);
     expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['Unchecked locks reach the log', 'Unchecked locks reach the log']);
 
+    // A thread Manki resolved on an answer that accepted no fix drops a repeat only while no push since the thread was
+    // raised changed its file, a file its findings cited or a file the repeat cites. Otherwise, or with the push unknown,
+    // the repeat goes to the judge with the answer.
+    const decidedThread = { ...previousFindings[0], threadId: 'T1', status: 'auto-resolved' as const, decidedWithoutFix: true, answer: 'Withdrawn. The caller checks it.' };
+    const push = (file: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-a\n+b\n`;
+    const afterPush = async (interRoundDiff: string | undefined) => {
+      mockedRunJudgeAgent.mockClear();
+      const run = await runReview(clients, {
+        config, diff, rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, priorRounds: [cited], openThreads: [], previousFindings: [decidedThread], interRoundDiff,
+      });
+      const judged = mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => `${f.title}${f.answeredIn ? ` (${f.answeredIn.threadId})` : ''}`);
+      return [[...new Set(run.duplicateMatches?.map(m => m.droppedTitle) ?? [])], [...new Set(judged)]];
+    };
+    const wallet = 'Unchecked locks reach the wallet';
+    const cache = 'Unchecked locks reach the cache';
+    const log = 'Unchecked locks reach the log';
+    expect(await afterPush('')).toEqual([[wallet, cache], [log]]);
+    expect(await afterPush(push('src/b.ts'))).toEqual([[cache], [`${wallet} (T1)`, log]]);
+    for (const unsure of [push('src/lib.ts'), undefined]) expect(await afterPush(unsure)).toEqual([[], [`${wallet} (T1)`, `${cache} (T1)`, log]]);
+
     // Finders that leave less than 30 seconds start no dedup call, and the round ends incomplete before the judge. Its
     // record keeps what the static dedup dropped before that call.
     jest.mocked(clients.dedup!.sendMessage).mockClear();

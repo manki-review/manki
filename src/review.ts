@@ -1386,7 +1386,7 @@ export async function runReview(
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
       const dedupWrap = lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
-      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client, restatesThreadAcrossFiles(priorRounds ?? []));
+      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff));
       if (stopped) return incomplete(stopped, { ...(openLeads.length > 0 && { openLeads }) });
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
@@ -1575,7 +1575,7 @@ export async function runReview(
       const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
       const statics = deduplicateFindings(fresh, previousFindings, changed);
       const llm = dedupClient && statics.unique.length > 0
-        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient, restatesThreadAcrossFiles(priorRounds ?? []))
+        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient, restatesThreadAcrossFiles(priorRounds ?? []), threadMayHaveChanged(priorRounds ?? [], interRoundDiff))
         : { unique: statics.unique, duplicates: [] };
       for (const d of [...statics.duplicates, ...llm.duplicates]) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
       staticDedupCount += statics.duplicates.length;
@@ -3251,6 +3251,22 @@ function restatesThreadAcrossFiles(priorRounds: RoundContext[]): (prev: Previous
     { title: prev.title, file: prev.file, line: currentFindingLine(prev) },
     ...entries.filter(e => !!prev.threadId && e.threadId === prev.threadId).map(e => ({ title: e.title ?? '', file: e.fingerprint.file, line: e.fingerprint.lineStart, evidence: e.evidence })),
   ].some(earlier => mayRestate(earlier, f));
+}
+
+/**
+ * Returns a test of whether a push since the earlier thread `prev` was first raised may have changed its file, a file
+ * its findings cited, or a file `f` cites, by `filesMayHaveChangedSince`. A thread no round recorded, or one tied to no
+ * file, counts as changed.
+ */
+function threadMayHaveChanged(priorRounds: RoundContext[], interRoundDiff: string | undefined): (prev: PreviousFinding, f: Finding) => boolean {
+  const sorted = [...priorRounds].sort((a, b) => a.meta.round - b.meta.round);
+  return (prev, f) => {
+    const recorded = sorted.flatMap(r => r.findings.entries.filter(e => !!prev.threadId && e.threadId === prev.threadId).map(entry => ({ entry, round: r.meta.round })));
+    const first = recorded[0]?.round;
+    if (first === undefined || !prev.file) return true;
+    const files = [prev.file, ...(prev.evidenceFiles ?? []), ...recorded.flatMap(({ entry }) => citedFiles({ file: entry.fingerprint.file, evidence: entry.evidence })), ...citedFiles(f)];
+    return filesMayHaveChangedSince(first, files, sorted, interRoundDiff);
+  };
 }
 
 /** Whether `a` and `b` may name one defect in other words, so the dedup model is asked: they sit near each other in one file, or share a cited line in any file. */
