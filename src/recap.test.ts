@@ -2662,10 +2662,14 @@ describe('parseFindingFromComment', () => {
     const long = 'The logic is duplicated. '.repeat(40).trim();
     for (const description of ['The logic is duplicated.', long]) {
       const onFile = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/a.ts', line: 2, description, reviewers: [] }, TEST_LINKS, 'file');
-      const lineNote = 'This is on [line 2](https://github.com/o/r/blob/sha/src/a.ts#L2). A comment on that line is not possible, so the thread is on the file.\n\n';
+      const lineNote = 'This is on [line 2](https://github.com/o/r/blob/sha/src/a.ts#L2). A comment on that line is not possible, so the thread is elsewhere in the file.\n\n';
       expect(onFile).toContain(`**Extract helper**\n\n${lineNote}**What goes wrong:** The logic is duplicated.`);
       const before = onFile.replace(lineNote, '').replace(',"lineNote":true', '');
-      expect(before).toBe(formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/a.ts', line: 0, description, reviewers: [] }, TEST_LINKS, 'file').replace('src/a.ts:0:', 'src/a.ts:2:').replace('"line":0', '"line":2'));
+      // A finding that names no line says it concerns the whole file, which is no part of the description either.
+      const wholeFile = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/a.ts', line: 0, description, reviewers: [] }, TEST_LINKS, 'file');
+      expect(wholeFile).toContain('**Extract helper**\n\nThis concerns the whole file, not one line of it.\n\n**What goes wrong:**');
+      expect(parseFindingFromComment(wholeFile)).toEqual(parseFindingFromComment(before));
+      expect(before).toBe(wholeFile.replace('This concerns the whole file, not one line of it.\n\n', '').replace(',"lineNote":true', '').replace('src/a.ts:0:', 'src/a.ts:2:').replace('"line":0', '"line":2'));
       const parsed = parseFindingFromComment(before);
       expect(parsed.description).toMatch(/^The logic is duplicated\./);
       for (const posted of [onFile, highlightCode(onFile, new Set(['This', 'comment', 'thread', 'file', 'line']))]) {

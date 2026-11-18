@@ -841,16 +841,21 @@ describe('checkAndAutoApprove', () => {
       const check = (body: string, threads: ReturnType<typeof thread>[] = []) => checkAndAutoApprove(
         makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body, state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] }),
         TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
-      /** Posts a round whose blocker sits outside the hunks of its file, so its file-level thread follows the review. `comment` gets the review body. */
+      /**
+       * Posts a round whose blocker sits outside the hunks of its file. GitHub refuses the review's line comments, so its
+       * file-level thread follows the review. `comment` gets the review body.
+       */
       const post = async (comment: (submitted: string) => Promise<unknown>, updateReview = jest.fn(), description = 'd') => {
-        const createReview = jest.fn().mockResolvedValue({ data: { id: 7 } });
-        const createReviewComment = jest.fn(() => comment(createReview.mock.calls[0][0].body as string));
+        const createReview = jest.fn()
+          .mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'))
+          .mockResolvedValue({ data: { id: 7 } });
+        const createReviewComment = jest.fn(() => comment(createReview.mock.calls[1][0].body as string));
         const failure = await postReview({ rest: { pulls: { createReview, createReviewComment, updateReview } } } as unknown as Octokit, 'owner', 'repo', 1, HEAD,
           { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: '', findings: [{ severity: 'blocker', title: 'Lock is never released', file: 'src/lock.ts', line: 40, description, reviewers: [] }], highlights: [], reviewComplete: true, agentNames: [] },
           { files: [{ path: 'src/lock.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, content: '' }] }], totalAdditions: 1, totalDeletions: 0 },
           blockingRound(HEAD, { findings: { count: 1, severityCounts: {}, entries: [blocker({ lineStart: 40 })] } }),
         ).then(() => undefined, (error: Error) => error.message);
-        return { body: createReview.mock.calls[0][0].body as string, failure, updateReview };
+        return { body: createReview.mock.calls[1][0].body as string, failure, updateReview };
       };
       const refuse = () => Promise.reject(Object.assign(new Error('refused'), { status: 422 }));
       const held = () => expect(infoSpy).toHaveBeenLastCalledWith(`The record of Manki's review of \`bead000\` ${GONE}\nSkipping auto-approve, the next review round decides`);
@@ -963,11 +968,13 @@ describe('checkAndAutoApprove', () => {
       const postedComment = jest.fn().mockResolvedValue({ data: { id: 30 } });
       await postReview({ rest: { pulls: { createReview: postedReview, createReviewComment: postedComment } } } as unknown as Octokit, 'owner', 'repo', 1, testSha('3'),
         { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: '', findings: [relisted], highlights: [], reviewComplete: true, agentNames: [] },
-        { files: [{ path: 'src/api.ts', changeType: 'modified', hunks: [] }], totalAdditions: 1, totalDeletions: 0 }, third);
-      expect(postedComment.mock.calls.map(([c]) => c.path)).toEqual(['src/api.ts']);
+        { files: [{ path: 'src/api.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, content: '+x' }] }], totalAdditions: 1, totalDeletions: 0 }, third);
+      expect(postedComment).not.toHaveBeenCalled();
+      const [threadComment] = postedReview.mock.calls[0][0].comments as Array<{ path: string; line: number; body: string }>;
+      expect([threadComment.path, threadComment.line]).toEqual(['src/api.ts', 1]);
       expect(postedReview.mock.calls[0][0].body).toMatch(/\*\*Changes requested:\*\* 1 blocker still open from an earlier review\./);
       const withThird = [...reviews.map(r => ({ ...r, state: 'DISMISSED' })), { id: 3, body: postedReview.mock.calls[0][0].body as string, state: 'CHANGES_REQUESTED', commit_id: testSha('3'), user }];
-      const carrying = (resolvedBy?: string) => makeGraphqlFetchThreadNode({ id: 't4', path: 'src/api.ts', line: null, body: postedComment.mock.calls[0][0].body as string, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }) });
+      const carrying = (resolvedBy?: string) => makeGraphqlFetchThreadNode({ id: 't4', path: 'src/api.ts', line: 1, body: threadComment.body, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }) });
 
       expect(await check(testSha('3'), withThird, [...threads, carrying()])).toBe(false);
       expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
