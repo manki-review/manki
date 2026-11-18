@@ -1458,17 +1458,25 @@ describe('fetchRecapState', () => {
         kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome, thread: 'resolves' },
       })}`;
       const confirmed = `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`;
-      const answeredWith = (id: string, path: string, replies: string[]) => {
+      const answeredWith = (id: string, path: string, replies: string[], people = ['The caller checks this.']) => {
         const answered = thread(id, path, BOT_LOGIN);
-        answered.comments.nodes.push({ body: 'The caller checks this.', author: { login: 'alice' } }, ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
+        // alice, who has write access, replies last, so Manki's resolve is backed and the thread is `auto-resolved`.
+        const persons = people.map((body, i) => ({ body, author: { login: i === people.length - 1 ? 'alice' : 'mallory' } }));
+        answered.comments.nodes.push(...persons, ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
         return answered;
       };
-      const decided: Array<[string, string[], boolean]> = [
-        ['waived', [answer('Withdrawn')], true], ['agreed', [answer('Agreed')], true], ['fixed', [answer('Fixed')], false],
-        ['fix confirmed later', [answer('Agreed'), confirmed], false], ['no record', ['**Withdrawn.** The caller checks it.\n\n<!-- manki -->'], false],
+      // Only Manki's own reply record counts, never a person's text. A dismissal counts in no form: neither a dismiss
+      // command from someone without write access, nor one Manki accepted, whose reply carries no record of it.
+      const typedRecord = answer('Agreed').replace('**Agreed.**', 'Agreed, see below.');
+      const decided: Array<[string, string[], string[] | undefined, boolean]> = [
+        ['waived', [answer('Withdrawn')], undefined, true], ['agreed', [answer('Agreed')], undefined, true], ['fixed', [answer('Fixed')], undefined, false],
+        ['fix confirmed later', [answer('Agreed'), confirmed], undefined, false], ['no record', ['**Withdrawn.** The caller checks it.\n\n<!-- manki -->'], undefined, false],
+        ['dismiss without write access', [], ['@manki dismiss', 'The caller checks this.'], false],
+        ['record typed by a person', [], [typedRecord], false],
+        ['accepted dismiss', ['Dismissed: the null check.\n\n<!-- manki -->'], ['@manki dismiss'], false],
       ];
-      for (const [why, replies, without] of decided) {
-        const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+      for (const [why, replies, people, without] of decided) {
+        const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
         expect([why, read.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])]).toEqual([why, [['auto-resolved', without]]]);
       }
 

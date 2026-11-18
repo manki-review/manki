@@ -744,13 +744,13 @@ interface ThreadFacts extends OverrideCandidate {
 }
 
 /**
- * Whether Manki's replies show that the thread was settled without a fix: one accepted an "Agreed." or "Withdrawn."
- * answer that settled it, or a person asked to dismiss it. A reply of Manki's that accepted or confirmed a fix rules it out.
+ * Whether Manki's own replies show that the thread was settled without a fix: the reply record of an accepted "Agreed."
+ * or "Withdrawn." answer that settled it, and no reply that accepted or confirmed a fix. A person's text never counts.
  */
 function decidedWithoutFix(bot: BotIdentity, comments: ThreadCommentNode[]): boolean {
   const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
   if (own.some(body => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined)) return false;
-  return own.some(body => !!settlingDecision(body)) || personReplies(bot, comments).some(c => DISMISS_COMMAND_RE.test(c.body ?? ''));
+  return own.some(body => !!settlingDecision(body));
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
