@@ -80,18 +80,30 @@ describe('sanitizeLogOutput', () => {
 
 describe('cliEnv', () => {
   // The private home every call gets, which the first test checks. The others look at what else passes.
-  const HOME_NAMES = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME'];
+  const folders = (home: string): NodeJS.ProcessEnv => ({
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, 'AppData', 'Roaming'),
+    LOCALAPPDATA: join(home, 'AppData', 'Local'),
+    XDG_CONFIG_HOME: join(home, '.config'),
+    XDG_DATA_HOME: join(home, '.local', 'share'),
+    XDG_STATE_HOME: join(home, '.local', 'state'),
+    XDG_CACHE_HOME: join(home, '.cache'),
+  });
+  const HOME_NAMES = [...Object.keys(folders('')), 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME'];
   const passed = (...args: Parameters<typeof cliEnv>): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(cliEnv(...args)).filter(([name]) => !HOME_NAMES.includes(name)));
 
-  it('points `HOME` and the CLI\'s own folder at a private folder of the run, whatever the runner or the call sets', () => {
+  it('points every user folder variable and the CLI\'s own folder at a private folder of the run, whatever the runner or the call sets', () => {
     const own = { CLAUDE_CONFIG_DIR: '/runner-home/.claude', CODEX_HOME: '/runner-home/.codex', GEMINI_CLI_HOME: '/runner-home' };
-    const env = { PATH: '/usr/bin', HOME: '/runner-home', ...own };
+    const windows = { UserProfile: 'C:\\Users\\runner', AppData: 'C:\\Users\\runner\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\runner\\AppData\\Local', HOMEDRIVE: 'C:', HOMEPATH: '\\Users\\runner' };
+    const xdg = { XDG_CONFIG_HOME: '/runner-home/.config', XDG_DATA_HOME: '/runner-home/.local/share', XDG_STATE_HOME: '/runner-home/.local/state', XDG_CACHE_HOME: '/runner-home/.cache' };
+    const env = { PATH: '/usr/bin', HOME: '/runner-home', ...own, ...windows, ...xdg };
     const claude = cliHome('claude');
     const codex = cliHome('codex');
     const gemini = cliHome('gemini');
-    expect(cliEnv('claude', { HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: claude, CLAUDE_CONFIG_DIR: join(claude, '.claude') });
-    expect(cliEnv('codex', { HOME: '/call-home', CODEX_HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: codex, CODEX_HOME: codex });
-    expect(cliEnv('gemini', { HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: gemini, GEMINI_CLI_HOME: gemini });
+    expect(cliEnv('claude', { HOME: '/call-home', USERPROFILE: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', ...folders(claude), CLAUDE_CONFIG_DIR: join(claude, '.claude') });
+    expect(cliEnv('codex', { HOME: '/call-home', CODEX_HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', ...folders(codex), CODEX_HOME: codex });
+    expect(cliEnv('gemini', { HOME: '/call-home', xdg_config_home: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', ...folders(gemini), GEMINI_CLI_HOME: gemini });
     // Each CLI has its own, so none sees what another wrote, and the calls of a run share it.
     expect(new Set([claude, codex, gemini]).size).toBe(3);
     for (const home of [claude, codex, gemini]) {
@@ -109,7 +121,7 @@ describe('cliEnv', () => {
       LOGNAME: 'runner',
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
-      XDG_CONFIG_HOME: '/home/runner/.config',
+      XDG_RUNTIME_DIR: '/run/user/1001',
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
       all_proxy: 'socks5://proxy:1080',
@@ -143,7 +155,7 @@ describe('cliEnv', () => {
       LOGNAME: 'runner',
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
-      XDG_CONFIG_HOME: '/home/runner/.config',
+      XDG_RUNTIME_DIR: '/run/user/1001',
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
       all_proxy: 'socks5://proxy:1080',
@@ -153,8 +165,8 @@ describe('cliEnv', () => {
   });
 
   it('keeps the Windows variables a CLI needs whatever their case', () => {
-    const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe', DEPLOY_PEM: 'pem' };
-    expect(passed('codex', {}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe' });
+    const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', PATHEXT: '.COM;.EXE', ComSpec: 'cmd.exe', DEPLOY_PEM: 'pem' };
+    expect(passed('codex', {}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', PATHEXT: '.COM;.EXE', ComSpec: 'cmd.exe' });
   });
 
   it('gives each provider only its own configuration, and none of its keys or tokens', () => {
@@ -263,6 +275,7 @@ describe('cliEnv', () => {
     const { GOOGLE_APPLICATION_CREDENTIALS: adc, ...aws } = files;
     const bedrock = { HOME: home, CLAUDE_CODE_USE_BEDROCK: '1' };
     const vertex = { HOME: home, CLAUDE_CODE_USE_VERTEX: '1' };
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     try {
       // A file the runner does not have stays unnamed, so Vertex can still fall back to the metadata server.
       expect(passed('claude', {}, undefined, bedrock)).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1' });
@@ -278,6 +291,31 @@ describe('cliEnv', () => {
         .toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', ...aws, ...named });
       expect(passed('claude', {}, undefined, { HOME: home })).toEqual({});
       for (const provider of ['codex', 'gemini'] as const) expect(passed(provider, {}, undefined, { ...bedrock, ...vertex })).toEqual({});
+      // On Windows Google's auth library reads the login from `%APPDATA%`, which no longer reaches the CLI.
+      const appData = join(home, 'AppData', 'Roaming');
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+      try {
+        expect(passed('claude', {}, undefined, { ...vertex, APPDATA: appData })).toEqual({ CLAUDE_CODE_USE_VERTEX: '1' });
+        mkdirSync(join(appData, 'gcloud'), { recursive: true });
+        writeFileSync(join(appData, 'gcloud', 'application_default_credentials.json'), '{}');
+        expect(passed('claude', {}, undefined, { ...vertex, APPDATA: appData }))
+          .toEqual({ CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: join(appData, 'gcloud', 'application_default_credentials.json') });
+      } finally {
+        Object.defineProperty(process, 'platform', platform);
+      }
+
+      // A `credential_process` helper runs with the CLI's own home, so Manki warns once, and only when Bedrock reads AWS credentials.
+      warning.mockClear();
+      writeFileSync(aws.AWS_CONFIG_FILE, '[profile helper]\ncredential_process = /opt/bin/creds --profile helper\n');
+      cliEnv('claude', {}, undefined, { ...bedrock, CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1' });
+      cliEnv('claude', {}, undefined, { ...bedrock, AWS_CONFIG_FILE: join(home, 'missing') });
+      expect(warning).not.toHaveBeenCalled();
+      cliEnv('claude', {}, undefined, bedrock);
+      cliEnv('claude', {}, undefined, bedrock);
+      expect(warning.mock.calls).toEqual([[expect.stringContaining(`${aws.AWS_CONFIG_FILE} use credential_process.`)]]);
+      expect(warning.mock.calls[0][0]).toContain("or set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN in the Manki step's env.");
+      warning.mockClear();
 
       // The token of `aws sso login` has no variable, so only its folder is linked, and only when Bedrock reads AWS credentials.
       const cache = join(home, '.aws', 'sso', 'cache');
@@ -292,8 +330,26 @@ describe('cliEnv', () => {
       cliEnv('claude', {}, undefined, { ...bedrock, AWS_PROFILE: 'sso', AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE', AWS_SECRET_ACCESS_KEY: 'secret' });
       expect(realpathSync(link)).toBe(realpathSync(cache));
       expect(readdirSync(join(cliHome('claude'), '.aws'), { recursive: true })).toEqual(['sso', join('sso', 'cache')]);
+
+      // A link whose target is gone is replaced.
+      rmSync(home, { recursive: true });
+      const moved = join(mkdtempSync(join(tmpdir(), 'manki-runner-home-')), '.aws', 'sso', 'cache');
+      mkdirSync(moved, { recursive: true });
+      cliEnv('claude', {}, undefined, { ...bedrock, HOME: dirname(dirname(dirname(moved))) });
+      expect(realpathSync(link)).toBe(realpathSync(moved));
+
+      // A link that cannot be made warns once, and the call still gets its environment.
+      rmSync(join(cliHome('claude'), '.aws'), { recursive: true });
+      writeFileSync(join(cliHome('claude'), '.aws'), '');
+      const runner = { ...bedrock, HOME: dirname(dirname(dirname(moved))), AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE' };
+      expect(cliEnv('claude', {}, undefined, runner)).toMatchObject({ AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE' });
+      cliEnv('claude', {}, undefined, runner);
+      expect(warning.mock.calls).toEqual([[expect.stringContaining(`Could not link the runner's AWS SSO cache ${moved} into the Claude CLI's home`)]]);
+      rmSync(dirname(dirname(dirname(moved))), { recursive: true });
     } finally {
       rmSync(home, { recursive: true, force: true });
+      rmSync(join(cliHome('claude'), '.aws'), { recursive: true, force: true });
+      warning.mockRestore();
     }
   });
 
