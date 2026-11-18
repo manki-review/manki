@@ -131,7 +131,7 @@ export interface SweepOptions {
  * the blockers, the warnings and the notes. Within a grade, those a check confirmed come before those the cited lines
  * prove, and the notes keep the judge's order. Returns their findings, which carry that name, without any on the
  * source's own line, and a record of every sweep, the ones past the cap as `cut`. A call that fails is recorded as
- * `failed`. It never throws.
+ * `failed`. A call the round did not start or stopped has no record. It never throws.
  */
 export async function runSweeps(
   clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace, related }: SweepOptions,
@@ -142,7 +142,7 @@ export async function runSweeps(
   const asked = ordered.slice(0, MAX_SWEEPS).map((source, i) => ({ source, reviewer: names[i] }));
   const from = (f: Finding): Pick<RoundSweep, 'source' | 'severity'> => ({ source: `${f.file}:${f.line}`, severity: f.severity });
   if (asked.length > 0) core.info(`Sweeping the diff for ${asked.length} defect class(es)${ordered.length > asked.length ? `, ${ordered.length - asked.length} cut by the cap` : ''}`);
-  const answers = await mapWithConcurrency(asked, MAX_SWEEPS, async ({ source, reviewer }): Promise<{ record: RoundSweep; findings: Finding[] }> => {
+  const answers = await mapWithConcurrency(asked, MAX_SWEEPS, async ({ source, reviewer }): Promise<{ record?: RoundSweep; findings: Finding[] }> => {
     const client = clientFor(reviewer);
     const tools = !!workspace && !!client.repoTools;
     const record = { reviewer, ...from(source) };
@@ -169,13 +169,13 @@ export async function runSweeps(
       core.info(`${reviewer}: ${elsewhere.length} other place(s)`);
       return { record: { ...record, status: 'answered', class: defectClass, findings: elsewhere.length }, findings: elsewhere };
     } catch (error) {
-      if (error instanceof NotStartedError) throw error;
+      if (error instanceof NotStartedError) return { findings: [] };
       core.warning(`${reviewer} failed, so its finding's class goes unswept this round: ${error}`);
       return { record: { ...record, status: 'failed' }, findings: [] };
     }
   });
   return {
     findings: answers.flatMap(a => a.findings),
-    sweeps: [...answers.map(a => a.record), ...ordered.slice(MAX_SWEEPS).map((f, i) => ({ reviewer: names[MAX_SWEEPS + i], ...from(f), status: 'cut' as const }))],
+    sweeps: [...answers.flatMap(a => a.record ? [a.record] : []), ...ordered.slice(MAX_SWEEPS).map((f, i) => ({ reviewer: names[MAX_SWEEPS + i], ...from(f), status: 'cut' as const }))],
   };
 }

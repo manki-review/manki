@@ -6,7 +6,7 @@ import { minimatch } from 'minimatch';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
 import { formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
-import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, RefuterNotStartedError, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
+import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
@@ -686,29 +686,9 @@ export interface ReviewOptions {
   relatedReposAsOf?: string;
 }
 
-/**
- * Runs one review round. A model call after the finders that the round has no time left to start ends the round
- * incomplete at once, with the result `reviewRound` last set for that point.
- */
-export async function runReview(clients: ReviewClients, options: ReviewOptions): Promise<ReviewResult & { outcome: RoundOutcome }> {
-  const ending: RoundEnding = {};
-  try {
-    return await reviewRound(clients, options, ending);
-  } catch (error) {
-    if (error instanceof NotStartedError && ending.incomplete) return ending.incomplete(error.message);
-    throw error;
-  }
-}
-
-/** The incomplete result of the round so far, for the summary of a call it did not start. */
-interface RoundEnding {
-  incomplete?: (summary: string) => ReviewResult & { outcome: RoundOutcome };
-}
-
-async function reviewRound(
+export async function runReview(
   clients: ReviewClients,
   options: ReviewOptions,
-  ending: RoundEnding,
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
     config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal, deadline,
@@ -744,9 +724,8 @@ async function reviewRound(
   };
   // The summary of the incomplete round, set once a call after the finders could not start. No later call starts then.
   let stopped: string | undefined;
-  // Aborted with `stopped`, so the late calls still running stop. The record ends with the calls that ended before.
+  // Aborted with `stopped`, so the late calls still running stop.
   const stopLate = new AbortController();
-  let recordedAtStop: { calls: number; fallbacks: number } | undefined;
   // Records `call` as not started and returns `stopped`, when the round has less time left than the call starts with.
   const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>): string | undefined => {
     if (stopped) return stopped;
@@ -756,7 +735,6 @@ async function reviewRound(
     const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });
     stopped = `A ${lateCallName(call)} was not started, since ${reason}. ${RETRY_HINT}`;
-    recordedAtStop = { calls: llmCalls.length, fallbacks: modelFallbacks.length };
     stopLate.abort();
     return stopped;
   };
@@ -778,8 +756,9 @@ async function reviewRound(
       if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
     }, movesOnLimit, () => skip({ kind: 'fallback', stage, ...(agent && { agent }), reason: 'the failed call left no time' })), signal, until);
   };
-  // A call `noTimeFor` stops throws a `NotStartedError` before any wrapper records it, which ends the round. So does a
-  // call still running then, whatever it returns, so no stage reads it.
+  // A call `noTimeFor` stops throws a `NotStartedError` before any wrapper records it. So does a call still running then,
+  // whatever it returns, so no stage reads its answer. Each stage takes that error as a failed call without a warning, and
+  // the round ends incomplete once that stage is done, so its record keeps what the round produced before.
   const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>): LLMClient => {
     // Without a deadline no call is stopped.
     const stoppable = deadline === undefined ? client : withSignal(client, stopLate.signal);
@@ -903,16 +882,13 @@ async function reviewRound(
   const agentFailureReasons = new Map<string, string>();
   let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims'> = {};
   // Related work is left out: the posted incomplete review would render it.
-  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => {
-    const fallbacks = modelFallbacks.slice(0, recordedAtStop?.fallbacks);
-    return {
-      verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
-      agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
-      ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-      ...(fallbacks.length > 0 && { modelFallbacks: fallbacks }), ...(notStarted.length > 0 && { notStarted }), llmCalls: llmCalls.slice(0, recordedAtStop?.calls),
-      ...finderContext, ...relatedRecord(), ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
-    };
-  };
+  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
+    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
+    agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
+    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+    ...(modelFallbacks.length > 0 && { modelFallbacks }), ...(notStarted.length > 0 && { notStarted }), llmCalls, ...finderContext, ...relatedRecord(),
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
+  });
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
   if (related && unread) return incomplete(unread);
@@ -1254,7 +1230,6 @@ async function reviewRound(
   if (carried.length > 0) core.info(`Carrying over ${carried.length} open lead(s) the last round left unsettled`);
   const { findings: checkedFindings, openLeads: listedLeads } = splitOpenLeads([...current, ...carried], settleLeads);
   const openLeads = [...listedLeads];
-  ending.incomplete = summary => incomplete(summary, { ...(openLeads.length > 0 && { openLeads }) });
   const finderFindings: Finding[] = checkedFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
   // Alerts go first, so a reviewer finding that repeats one folds into the alert and keeps its source label.
   const toolAlerts = toolAlertFindings(staticSignals);
@@ -1277,11 +1252,13 @@ async function reviewRound(
     for (const d of duplicates) {
       duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
     }
+    Object.assign(recorded, { staticDedupCount, ...(duplicateMatches.length > 0 && { duplicateMatches }) });
 
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
       const dedupWrap = lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
       const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
+      if (stopped) return incomplete(stopped, { ...(openLeads.length > 0 && { openLeads }) });
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
       }
@@ -1418,7 +1395,6 @@ async function reviewRound(
       return incomplete(error instanceof NotStartedError ? error.message : judgeFailureSummary(error), {
         // The failed attempts count too, since the judge ended on one.
         judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
-        ...(error instanceof RefuterNotStartedError && { allJudgedFindings: error.graded }),
       });
     }
   }
@@ -1432,12 +1408,14 @@ async function reviewRound(
   // A finding's defect class can recur elsewhere in the diff, so the kept findings that `review.sweep` names each start a search for it.
   let sweeps: RoundSweep[] | undefined;
   let sweepRaw: Finding[] = [];
+  // The verdict reader's blockers, which only a round that ends before it checks them records as raw findings.
+  let readerRaw: Finding[] = [];
   // The sweep and the checks at the round's end change what the judge's call recorded, so a round that ends incomplete after it records these as they then are.
   const incompleteAfterJudge = (summary: string): ReviewResult & { outcome: RoundOutcome } => incomplete(summary, {
-    allJudgedFindings, rawFindings: [...allFindings, ...sweepRaw], rawFindingCount: checkedFindings.length + sweepRaw.length, staticDedupCount, llmDedupCount,
+    allJudgedFindings, rawFindings: [...allFindings, ...sweepRaw, ...readerRaw], rawFindingCount: checkedFindings.length + sweepRaw.length, staticDedupCount, llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(sweeps && { sweeps }), ...(openLeads.length > 0 && { openLeads }),
   });
-  ending.incomplete = incompleteAfterJudge;
+  if (stopped) return incompleteAfterJudge(stopped);
   // Below blocker, a finding on code the PR did not change is posted only once a later check confirms it, so it starts none.
   const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
   if (sweepSources.length > 0) {
@@ -1473,6 +1451,7 @@ async function reviewRound(
       llmDedupCount += llm.duplicates.length;
       fresh = llm.unique;
     }
+    if (stopped) return incompleteAfterJudge(stopped);
     if (fresh.length > 0) {
       try {
         core.info(`Judging ${fresh.length} finding(s) the sweep found`);
@@ -1488,14 +1467,14 @@ async function reviewRound(
         openLeads.push(...unsettled);
         finalFindings = [...finalFindings, ...kept.filter(f => !unsettled.includes(f))];
       } catch (error) {
-        if (error instanceof RefuterNotStartedError) allJudgedFindings = [...(allJudgedFindings ?? []), ...error.graded.map(({ noteRank: _, ...f }): Finding => f)];
-        if (error instanceof NotStartedError) throw error;
+        if (error instanceof NotStartedError) return incompleteAfterJudge(error.message);
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
         return incompleteAfterJudge(judgeFailureSummary(error, 'the findings of the sweep'));
       }
     }
   }
+  if (stopped) return incompleteAfterJudge(stopped);
 
   // Memory suppressions apply after the judge, so the judge's severity and security tag decide what they may hide.
   let suppressionCount = 0;
@@ -1506,6 +1485,7 @@ async function reviewRound(
     finalFindings = kept;
     suppressionCount = suppressed.length;
     memorySuppressed = suppressed;
+    Object.assign(recorded, { ...(suppressionCount > 0 && { suppressionCount }), ...(memorySuppressed.length > 0 && { memorySuppressed }) });
   }
   // Each judge call checked the warnings on changed code that nothing proves. Every other check that shares the limit waits until here, so none takes a check from a later judge call.
   if (refutation) {
@@ -1519,6 +1499,7 @@ async function reviewRound(
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
     finalFindings = checked.filter(f => f.severity !== 'ignore');
+    if (stopped) return incompleteAfterJudge(stopped);
   }
   // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
   const { posted, unposted: unpostedPreExisting } = markPreExisting(finalFindings, unchangedCheck);
@@ -1570,8 +1551,13 @@ async function reviewRound(
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
   if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
   const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
+  Object.assign(recorded, {
+    ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }), ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
+    ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
+  });
   const earlierWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
+  if (stopped) return incompleteAfterJudge(stopped);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
   threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
@@ -1590,9 +1576,7 @@ async function reviewRound(
   const roundSlices = diffSlices(rawDiff);
   const slicing: RoundSlicing | undefined = roundSlices.length > 1 ? { files: roundSlices.map(s => s.paths?.size ?? 0) } : undefined;
   Object.assign(recorded, {
-    threadEvaluations, ...(slicing && { slicing }), ...(suppressionCount > 0 && { suppressionCount }), ...(memorySuppressed.length > 0 && { memorySuppressed }),
-    ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }), ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-    ...(staticSignalMatches.length > 0 && { staticSignalMatches }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
+    threadEvaluations, ...(slicing && { slicing }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
   });
   if (outcome === 'READY') {
     const verdictWrap = lateUsage({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict');
@@ -1600,19 +1584,24 @@ async function reviewRound(
     // The reader reads the slices the finders read, so no slice of the diff is cut.
     const slices = roundSlices;
     if (slices.length > 1) core.info(`The verdict reader reads the diff in ${slices.length} slices`);
+    let reports: VerdictReport[];
     try {
-      const reports = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
+      reports = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
         runVerdictReader(verdictWrap.client, buildReviewerUserMessage(raw, repoContext, {
           fileContents: readerFiles && filesIn(readerFiles, paths), changedSinceLastRound: pathsIn(changedSinceLastRound, paths, slices), sliceNote: sliceNote(index, slices), lockfileChanges,
-        })));
-      if (slicing) slicing.reader = reports.map(report => ({ verdict: report.verdict, blockers: report.blockers.length }));
-      verdictReport = combineVerdictReports(reports);
+        })).catch((error: unknown) => {
+          if (error instanceof NotStartedError) return undefined;
+          throw error;
+        })).then(answers => answers.filter((report): report is VerdictReport => !!report));
     } catch (error) {
-      if (error instanceof NotStartedError) throw error;
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
       return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`);
     }
+    readerRaw = reports.flatMap(report => report.blockers);
+    if (stopped) return incompleteAfterJudge(stopped);
+    if (slicing) slicing.reader = reports.map(report => ({ verdict: report.verdict, blockers: report.blockers.length }));
+    verdictReport = combineVerdictReports(reports);
     verdictUsage = verdictWrap.getTotals().usage;
     logOutputTokens('Verdict reader', verdictUsage);
     core.info(`Verdict reader: ${verdictReport.verdict}. ${verdictReport.summary}`);
@@ -1630,6 +1619,7 @@ async function reviewRound(
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
       const foldWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
+      if (stopped) return incompleteAfterJudge(stopped);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
       // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
