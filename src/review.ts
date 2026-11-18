@@ -417,15 +417,17 @@ function keptOf(attempt: EarlierAttempt, team: TeamRoster, { headSha, changeDige
 }
 
 /**
- * Whether the round reads each related repo at the commit `record` read it at. Fetches every repo of `related` to find
- * out, and requires each to be fetched in both. Without `related`, no model of the round reads a related repo.
+ * Whether the round reads each related repo the attempt of `record` read at the commit the attempt read it at. Fetches
+ * each such repo to find out. A repo the attempt left `unused` was read by no call of it, so its commit does not matter.
  */
 async function readsSameRelatedCommits(record: RoundContext, related: RelatedRepoTools | undefined): Promise<boolean> {
   if (!related) return true;
-  await fetchRelatedRepos(related);
-  return relatedRepoOutcomes(related.repos, related.stateDir).every(now => {
-    const then = record.relatedRepos?.find(r => r.repo === now.repo);
-    return now.status === 'fetched' && !!now.commit && then?.status === 'fetched' && then.commit === now.commit;
+  const then = new Map((record.relatedRepos ?? []).map(r => [r.repo, r]));
+  const read = related.repos.filter(r => then.get(r.repo)?.status !== 'unused');
+  await fetchRelatedRepos({ ...related, repos: read });
+  return relatedRepoOutcomes(read, related.stateDir).every(now => {
+    const before = then.get(now.repo);
+    return now.status === 'fetched' && !!now.commit && before?.status === 'fetched' && before.commit === now.commit;
   });
 }
 
@@ -1095,6 +1097,7 @@ export async function runReview(
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;
   const comparisonDeadline = new AbortController();
+  const checksStart = Date.now();
   const sideProgress = (kind: SideCheckKind): CheckProgress<number> | undefined =>
     onProgress && reportChecks(event => onProgress({ phase: 'side-check', sideCheck: { kind, ...event } }));
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
@@ -1439,7 +1442,9 @@ export async function runReview(
   }
 
   // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
-  const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), COMPARISON_GRACE_MS);
+  // With every finder kept, the checks still get the time a finder could have taken.
+  const findersEnd = running.length > 0 ? Date.now() : Math.min(checksStart + FINDER_TOOLS_TIMEOUT_MS, finderDeadline ?? Infinity);
+  const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), Math.max(0, findersEnd - Date.now()) + COMPARISON_GRACE_MS);
   const { findings: comparisonFindings, comparisons: siblingComparisons } = await comparisonsPromise;
   const relatedChecks = await relatedChecksPromise;
   const claimChecks = await claimChecksPromise;

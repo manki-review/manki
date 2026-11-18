@@ -25,6 +25,7 @@ import {
   ReviewProgress,
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
+  FINDER_TOOLS_TIMEOUT_MS,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
@@ -3760,19 +3761,38 @@ describe('runReview', () => {
     });
     // The grace timer fires at once, so the hanging comparison is cut as soon as the finders are done.
     const realSetTimeout = global.setTimeout;
+    const graces: number[] = [];
     const timers = jest.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
-      if (ms === 60_000) {
+      if (ms !== undefined && ms >= 60_000) {
+        graces.push(ms);
         fn();
         return realSetTimeout(() => undefined, 0);
       }
       return realSetTimeout(fn, ms);
     }) as typeof setTimeout);
     let result;
+    const options = {
+      config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' as const }] }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, signal: new AbortController().signal,
+      prContext: { title: 'Skip started ids', body: `Safe, since ${quote}.`, baseBranch: 'main' }, headSha: 'abc', changeDigest: 'digest',
+    };
     try {
-      result = await runReview(clients, {
-        config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, signal: new AbortController().signal,
-        prContext: { title: 'Skip started ids', body: `Safe, since ${quote}.`, baseBranch: 'main' },
-      });
+      result = await runReview(clients, options);
+      expect(new Set(graces)).toEqual(new Set([60_000]));
+      graces.length = 0;
+
+      // A retry that keeps every finder still gives the checks it asks again the time a finder could have taken, and the grace after it.
+      const record = postedRecord(result);
+      expect(record.relatedRepos).toEqual([expect.objectContaining({ repo: 'o/ref', status: 'unused' })]);
+      jest.mocked(clients.reviewer.sendMessage).mockClear();
+      const retry = await runReview(clients, { ...options, earlierAttempt: { record: { ...record, meta: { ...record.meta, incomplete: true } }, review: 7 } });
+      expect(retry.reused?.finders).toHaveLength(2);
+      const checksOnly = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(([system]) => system.startsWith('You compare code') || system.startsWith('You check one statement'));
+      expect(checksOnly).toContain(true);
+      expect(checksOnly).not.toContain(false);
+      const grace = graces.filter(ms => ms > 60_000);
+      expect(grace).toHaveLength(1);
+      expect(grace[0]).toBeGreaterThan(FINDER_TOOLS_TIMEOUT_MS);
+      expect(grace[0]).toBeLessThanOrEqual(FINDER_TOOLS_TIMEOUT_MS + 60_000);
     } finally {
       timers.mockRestore();
       fetchSpy.mockRestore();
@@ -8921,7 +8941,7 @@ describe('runReview triage', () => {
     Object.assign(clients.judge, { repoTools: true });
     let commit = 'c1';
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([]);
-    const outcomeSpy = jest.spyOn(relatedRepos, 'relatedRepoOutcomes').mockImplementation(() => [{ repo: 'o/r', status: 'fetched', commit }]);
+    const outcomeSpy = jest.spyOn(relatedRepos, 'relatedRepoOutcomes').mockImplementation(repos => repos.map(({ repo }) => ({ repo, status: 'fetched' as const, commit })));
     const options = {
       config: makeConfig({ related_repos: [{ repo: 'o/r', kind: 'reference' }] }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo',
       headSha: 'abc', changeDigest: 'digest', workspace: '/work/pr-head',
@@ -8936,6 +8956,12 @@ describe('runReview triage', () => {
         await runReview(clients, { ...options, earlierAttempt: { record, review: 7 } });
         expect([now, jest.mocked(clients.reviewer.sendMessage).mock.calls.length]).toEqual([now, runs]);
       }
+      // A repo no call of the attempt read is not fetched for the check, and its commit keeps nothing from being kept.
+      jest.mocked(clients.reviewer.sendMessage).mockClear();
+      fetchSpy.mockClear();
+      await runReview(clients, { ...options, earlierAttempt: { record: { ...record, relatedRepos: [{ repo: 'o/r', status: 'unused' }] }, review: 7 } });
+      expect(jest.mocked(clients.reviewer.sendMessage).mock.calls).toHaveLength(0);
+      expect(fetchSpy.mock.calls[0][0].repos).toEqual([]);
     } finally {
       fetchSpy.mockRestore();
       outcomeSpy.mockRestore();
