@@ -667,6 +667,70 @@ describe('refuteBlockers', () => {
     expect([splitKept.severity, splitKept.gradeIfConfirmed, splitKept.refutation?.outcome, staysWarningIfConfirmed(splitKept)]).toEqual(['warning', 'warning', 'confirmed', true]);
   });
 
+  it('checks the premise a blocker the judge dropped rests on, and grades it by the stated cell only when a check disproves that premise', async () => {
+    const drop = { premise: 'Every caller bounds both inputs of `add`', decides: 'drop' as const };
+    const dropped = (overrides: Partial<Finding> = {}): Partial<Finding> => ({
+      severity: 'ignore', reviewerSeverity: 'blocker', gradePath: [{ from: 'blocker', to: 'ignore', by: 'judge' }],
+      cell: { row: 'severe', column: 'normal' }, gradeIfConfirmed: 'blocker', doubts: [drop], judgeNotes: 'ignore. The handler bounds both inputs.', ...overrides,
+    });
+    const unbounded = { outcome: 'disproved', reason: 'A queue consumer passes `a` unbounded.', proof: ['src/api.ts:4'] };
+    const client = fakeClient({
+      'Premise disproved': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [unbounded] },
+      'Premise disproved, defect open': { outcome: 'unsettled', reason: 'Could not tell.', premises: [unbounded] },
+      'Premise disproved in a warning cell': { outcome: 'unsettled', reason: 'Could not tell.', premises: [unbounded] },
+      'Premise confirmed': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome: 'confirmed', reason: 'Every caller bounds them.', proof: ['src/api.ts:9'] }] },
+      'Premise unsettled': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [{ outcome: 'unsettled', reason: 'Too many callers.' }] },
+      // A check that disproves the premise and the defect itself contradicts itself, so it settles nothing.
+      'Defect disproved beside a disproved premise': { outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'], premises: [unbounded] },
+      // A disproof that cites no line of the finding's file or of the diff settles nothing.
+      'Disproof on an unrelated file': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ ...unbounded, proof: ['README.md:1'] }] },
+      'Dropped without a premise': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+    });
+    const findings = [
+      finding('Premise disproved', dropped()),
+      finding('Premise disproved, defect open', dropped()),
+      finding('Premise disproved in a warning cell', dropped({ cell: { row: 'degraded', column: 'normal' }, gradeIfConfirmed: 'warning' })),
+      finding('Premise confirmed', dropped()),
+      finding('Premise unsettled', dropped()),
+      finding('Defect disproved beside a disproved premise', dropped()),
+      finding('Disproof on an unrelated file', dropped()),
+      // A drop the judge rests on no premise, such as one the diff itself shows, is never checked.
+      finding('Dropped without a premise', dropped({ cell: undefined, gradeIfConfirmed: undefined, doubts: undefined })),
+    ];
+
+    const result = await refuteBlockers(client, findings, { workspace, diff });
+
+    expect(result.map(f => [f.title, f.severity, f.refutation && outcomeOf(f.refutation), f.refutation?.premises?.map(p => p.outcome)])).toEqual([
+      ['Premise disproved', 'blocker', 'confirmed', ['disproved']],
+      ['Premise disproved, defect open', 'blocker', 'confirmed', ['disproved']],
+      ['Premise disproved in a warning cell', 'warning', 'confirmed', ['disproved']],
+      ['Premise confirmed', 'ignore', 'disproved', ['confirmed']],
+      ['Premise unsettled', 'ignore', 'unsettled', ['unsettled']],
+      ['Defect disproved beside a disproved premise', 'ignore', 'disproved', ['disproved']],
+      ['Disproof on an unrelated file', 'ignore', 'unsettled', ['unsettled']],
+      ['Dropped without a premise', 'ignore', undefined, undefined],
+    ]);
+    expect(client.calls.map(([title]) => title)).not.toContain('Dropped without a premise');
+    // A finding the check brings back is graded as if the judge had not dropped it: the premise is gone, the step is
+    // recorded, and the lines of the path that disproved the premise prove it.
+    const [back, open] = result;
+    expect([back.doubts, back.gradePath?.at(-1), back.evidence?.proof, checkStatus(back)])
+      .toEqual([undefined, { from: 'ignore', to: 'blocker', by: 'refutation', reason: 'It overflows.' }, ['src/math.ts:2', 'src/api.ts:4'], 'confirmed']);
+    expect([open.evidence?.proof, checkStatus(open)]).toEqual([['src/math.ts:2', 'src/api.ts:4'], 'unconfirmed']);
+    // A finding that stays dropped keeps the premise and the check for the round record.
+    expect(result[3].doubts).toEqual([drop]);
+    const message = client.messages.find(([, user]) => user.includes(': Premise disproved\n'))![1];
+    expect(message).toContain('## Blocker the judge dropped because of code outside the diff: Premise disproved');
+    expect(message).toContain("- **Judge's reasoning**: ignore. The handler bounds both inputs.");
+    expect(message).toContain("  1. (the premise the drop rests on) Every caller bounds both inputs of 'add'");
+
+    // A second refuter that confirms the premise keeps the finding dropped, and one that settles nothing leaves the first to decide.
+    for (const [answer, severity] of [[{ outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome: 'confirmed', reason: 'Bounded.', proof: ['src/api.ts:9'] }] }, 'ignore'], [{ outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome: 'unsettled', reason: 'Too many callers.' }] }, 'blocker']] as const) {
+      const [paired] = await refuteBlockers(client, [finding('Premise disproved', dropped())], { workspace, diff, pair: fakeClient({ 'Premise disproved': answer }) });
+      expect(paired.severity).toBe(severity);
+    }
+  });
+
   it('drops a finding below blocker when the refuter answers that the defect does not exist, whatever its premises add up to', async () => {
     const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
     const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };
@@ -836,7 +900,7 @@ describe('refuteBlockers', () => {
       'Note to warning', 'Second warning to blocker', 'Warning to blocker', 'Warning without proof',
     ]);
     expect(client.messages.find(([, user]) => user.includes(': Warning without proof\n'))![1]).toMatch(/^## Warning no cited line proves: Warning without proof\n/);
-    expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts');
+    expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, a finding that rests on premises the judge doubts');
 
     // Only a check that settled nothing and the limit leave a doubted warning unproven. Where no check could run, the cited lines decide.
     const reasons = (list: Finding[]) => Object.fromEntries(list.filter(f => f.severity === 'warning').map(f => [f.title, unprovenReason(f)]));
@@ -1073,7 +1137,7 @@ describe('refuteBlockers', () => {
     warnSpy.mockRestore();
     // The five unproven warnings on changed code take the first checks and the three readable ones with a doubt the last, which leaves none for the other two.
     expect(client.calls.map(([title]) => title).sort()).toEqual(['Old and the call fails', 'Old confirmed', 'Old with a doubt', ...Array.from({ length: 5 }, (_, i) => `Unproven ${i + 1}`)]);
-    expect(client.messages[0][0]).toContain('a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts');
+    expect(client.messages[0][0]).toContain('a warning no cited line proves, a warning on code the pull request did not change, a finding that rests on premises the judge doubts');
     // Only the confirmed one is `confirmed`, the status that posts a warning on unchanged code.
     expect(result.slice(0, 7).map(f => [f.title, f.severity, checkStatus(f)])).toEqual([
       ['Old without proof', 'warning', 'unconfirmed'], ['Old plain', 'warning', 'proven'], ['Old with a doubt', 'warning', 'unconfirmed'], ['Old confirmed', 'warning', 'confirmed'], ['Old security', 'warning', 'proven'],
@@ -1398,6 +1462,19 @@ describe('refuteBlockers', () => {
     const unmarked = { ...open, premises: open.premises.map(({ decides: _decides, ...rest }) => rest) };
     expect(await Promise.all(stillOpen.map(later => statusLater(unmarked, later)))).toEqual(['unconfirmed', 'unconfirmed', 'unconfirmed', 'confirmed']);
     expect(confirming.calls.length).toBe(3);
+
+    // A check of the premise the judge dropped a blocker on answered whether the drop holds, not whether the finding is
+    // wrong. So a later round that keeps the finding as a warning never reuses it, also when it confirmed the premise.
+    const dropCheck = fakeClient({ 'Dropped then kept': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome: 'confirmed', reason: 'Every caller bounds them.', proof: ['src/math.ts:1'] }] } });
+    const [stillDropped] = await refuteBlockers(dropCheck, [finding('Dropped then kept', {
+      severity: 'ignore', reviewerSeverity: 'blocker', gradePath: [{ from: 'blocker', to: 'ignore', by: 'judge' }], cell: { row: 'severe', column: 'normal' }, gradeIfConfirmed: 'blocker',
+      doubts: [{ premise: 'Every caller bounds both inputs of `add`', decides: 'drop' }],
+    })], { workspace, diff });
+    expect([stillDropped.severity, outcomeOf(stillDropped.refutation!), stillDropped.refutation?.proof]).toEqual(['ignore', 'disproved', ['src/math.ts:1']]);
+    const droppedRounds = [{ findings: { entries: [] }, judge: { dropped: [{ title: 'Dropped then kept', file: 'src/math.ts', line: 2, reviewers: ['R'], refutation: stillDropped.refutation }] } }] as unknown as RoundContext[];
+    const keptLater = fakeClient({ 'Dropped then kept': { outcome: 'unsettled', reason: 'Could not tell.' } });
+    const [kept] = await refuteRound(keptLater, [finding('Dropped then kept', noProof)], { workspace, diff, priorRounds: droppedRounds });
+    expect([keptLater.calls.length, kept.severity, kept.refutation?.outcome, unprovenReason(kept)]).toEqual([1, 'warning', 'unsettled', 'unsettled_check']);
 
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');

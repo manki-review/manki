@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -42,7 +42,7 @@ type RefutationField = 'refutation' | 'pairRefutation';
 
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
-The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
+The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade, or a blocker the judge dropped because of how code outside the diff behaves. Try to refute it, then follow the failure path from its trigger to the damage.
 
 For an open lead, the message says what the reviewer checked so far and what is left to check. Start with what is left: read the code that decides it before anything else, so your tool steps are not used up before you reach it. What the reviewer says was checked is a claim like any other, so check the part of it your answer rests on as well, after the open point.
 
@@ -53,6 +53,7 @@ To refute it:
 - For a doubt that the failure is reached, search for a path from an entry point to the failing code. A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API: any caller of it can pass a value it accepts, so a path from it counts as reached with no caller in the repository. In an application, an exported function is no entry point on its own and needs a caller. Confirm when such a path carries the triggering value, and disprove only when every path checks the value or cannot carry it.
 - A premise that normal use or outside input can produce a state is such a doubt about the state: the judge holds that only the code's own logic produces it. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces the state, and cite the lines of that path. Disprove it only when the code shows nothing but its own logic produces the state.
 - For any other doubt, check in the code the premise the message lists, or else the one the judge's reasoning names.
+- For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
 
@@ -180,8 +181,9 @@ function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutat
  * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
  * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
  * covers the PR's files only and the related repo can have changed, when it is a disproof that no longer cites the
- * finding's code or that confirmed the defect, which contradicts itself, or when it ended unsettled on its step budget,
- * since it may only have run out of steps.
+ * finding's code or that confirmed the defect, which contradicts itself, when it ended unsettled on its step budget,
+ * since it may only have run out of steps, or when it checked a `drop` premise. Such a check answered whether the
+ * judge's reason to drop holds, never whether the finding is wrong, so it is no answer for a finding the judge kept.
  */
 function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);
@@ -193,7 +195,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
       && restsOnSameCode(refutation, workspace))?.refutation;
     if (!refutation) continue;
-    const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes'
+    const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes' && !refutation.premises?.some(p => p.decides === 'drop')
       && (outcomeOf(refutation) !== 'disproved' || (refutation.defect !== 'confirmed' && citesFindingCode(finding.file, refutation.proof ?? [], diff)));
     return reusable ? refutation : undefined;
   }
@@ -202,6 +204,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
 
 function findingKind(finding: Finding, unchanged: boolean): string {
   if (finding.lead) return 'Open lead';
+  if (dropsOnPremise(finding)) return 'Blocker the judge dropped because of code outside the diff';
   if (finding.gradeIfConfirmed) return 'Finding the judge could not settle without tools';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
   if (finding.severity === 'warning' && !finding.tags?.includes(UNPROVEN_TAG)) {
@@ -223,7 +226,7 @@ function buildRefuteMessage(finding: Finding, unchanged: boolean, usesOutsideDif
     ...(finding.evidence?.proof.length ? [`- **Proving lines cited**: ${finding.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
     ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(leadText(finding.lead).checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(leadText(finding.lead).left)}`] : []),
     ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
-    ...(finding.doubts ? ['- **Premises the judge doubts**, to answer in order:', ...finding.doubts.map((d, i) => `  ${i + 1}. ${sanitizeForPromptEmbed(d.premise)}`)] : []),
+    ...(finding.doubts ? ['- **Premises the judge doubts**, to answer in order:', ...finding.doubts.map((d, i) => `  ${i + 1}. ${d.decides === 'drop' ? '(the premise the drop rests on) ' : ''}${sanitizeForPromptEmbed(d.premise)}`)] : []),
     ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
   ];
   const change = changed.length > 0 && diff
@@ -237,14 +240,15 @@ function replyText(value: unknown): string {
 }
 
 /**
- * A disproved premise the defect rests on disproves the finding, unless the check confirmed the `defect` itself. Such a
- * reply contradicts itself, so it settles nothing. A disproved `ruleFact` still disproves, since the answer on the defect
- * is about the damage, not the rule. Only a confirmation of every premise confirms the finding.
+ * A premise the defect rests on that counts against the finding by `towardFinding` disproves it, unless the check
+ * confirmed the `defect` itself. Such a reply contradicts itself, so it settles nothing. A disproved `ruleFact` still
+ * disproves, since the answer on the defect is about the damage, not the rule. Only every premise backing the finding
+ * confirms it, so the disproof of a `drop` premise confirms only beside a confirmation of every other premise.
  */
 function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck[], defect: RefutationOutcome, ruleFact?: string): RefutationOutcome {
-  const disproving = checks.filter((c, i) => c.outcome === 'disproved' && doubts[i].decides === 'defect');
+  const disproving = checks.filter((c, i) => towardFinding(c) === 'disproved' && doubts[i].decides !== 'grade');
   if (disproving.length > 0) return defect === 'confirmed' && disproving.every(c => c.premise !== ruleFact) ? 'unsettled' : 'disproved';
-  return checks.every(c => c.outcome === 'confirmed') ? 'confirmed' : 'unsettled';
+  return checks.every(c => towardFinding(c) === 'confirmed') ? 'confirmed' : 'unsettled';
 }
 
 function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools): Refutation {
@@ -280,7 +284,7 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
     // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect.
     const doubts = finding.doubts;
     const disproved = outcome === 'disproved' || defect === 'disproved';
-    const cites = (p: PremiseCheck, i: number): boolean => disproved ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
+    const cites = (p: PremiseCheck, i: number): boolean => disproved ? towardFinding(p) === 'disproved' && doubts[i].decides !== 'grade' : p.outcome !== 'unsettled';
     const ownAnswer = defect === (disproved ? 'disproved' : 'confirmed');
     proof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []), ...(ownAnswer ? shown : [])])];
     // The answer's own lines come first, so the cut drops lines of a premise before a line that decides the defect.
@@ -445,14 +449,17 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     return { ...lowered, ...gradeStep(finding, filed, 'refutation', reason), ...(cell && { judgeCell: cell }), judgeNotes: `${graded.judgeNotes}\nPosted as a ${filed}, since ${reason}.` };
   }
   if (outcome === 'confirmed') {
-    const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
+    const { lead: _lead, notChecked: _notChecked, doubts, ...confirmed } = graded;
     // A check that left the consequence or the defect open abstains in `agreedOutcome`, and here it holds the blocker back.
     const restored = needsConsequence(finding, restates) && !confirmsAll(checks) ? undefined : confirmedGrade(finding);
+    // A restored grade settles the premise the judge dropped the finding on, so the finding keeps no such doubt.
+    const kept = restored ? doubts?.filter(d => d.decides !== 'drop') : doubts;
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
     const proving = checks.filter(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r, finding)));
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
-      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: withProof(finding.evidence, proving),
+      ...confirmed, ...(!!kept?.length && { doubts: kept }),
+      ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: withProof(finding.evidence, proving),
       ...(tags && { tags }),
     };
   }
@@ -474,6 +481,9 @@ function alwaysChecked(finding: Finding): boolean {
 }
 
 const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => d.decides === 'defect');
+
+/** Whether the judge dropped `finding` on a premise about code outside the diff that the refuter checks. */
+const dropsOnPremise = (finding: Finding): boolean => finding.severity === 'ignore' && restsOnDrop(finding);
 
 const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
 
@@ -683,8 +693,8 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const overLimit = new Set(picked.over);
   const checked = new Set(reopened.filter(finding => {
     if (overLimit.has(finding)) return false;
-    // A finding the judge dropped stays dropped, even when it was a lead.
-    if (finding.severity === 'ignore' || !((!roundEnd && alwaysChecked(finding)) || doubtChecks.has(finding))) return false;
+    // A finding the judge dropped stays dropped, even when it was a lead, unless its drop rests on a premise to check.
+    if ((finding.severity === 'ignore' && !dropsOnPremise(finding)) || !((!roundEnd && alwaysChecked(finding)) || doubtChecks.has(finding))) return false;
     // Only a check that can raise a finding changes what happens to one a later step hides. A check no grade hangs on
     // is skipped for a finding `noCheck` accepts, as for any warning.
     if (decidesGrade(finding) ? !confirmedGrade(finding) && hiddenLater?.(finding) : noCheck(finding)) return false;

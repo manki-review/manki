@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -375,6 +375,8 @@ export interface JudgedFinding {
   ruleUnseen?: string;
   /** The premises the judge doubts. */
   doubts?: Doubt[];
+  /** On a finding marked `ignore`, the premise about code outside the diff the drop rests on, and the cell the finding earns when that premise is false. */
+  dropRestsOn?: { premise: string; row: CellRow; column: CellColumn };
   /** The grade the judge states that the finding earns once every doubt holds. Only `warning` changes a grade. Any other answer leaves the cell's grade. */
   gradeIfConfirmed?: 'blocker' | 'warning';
   /** The failure the finding names that its fix does not remove. */
@@ -605,11 +607,13 @@ Being certain overrides this. It governs doubt, never judgment.
 
 State on every finding the \`row\` its consequence earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A premise you only assume, with no line to cite for it, is still a doubt. So is a premise that lowers or caps the grade, such as callers probably validating a value, a path looking limited or an input looking trusted, unless the code shown or your tool calls prove it. Except for an open lead, which follows its own rule, never mark a finding \`ignore\` for an unsettled doubt alone: when its cell gives \`warning\` or \`blocker\` if the doubt holds, state that cell and list the doubt.
 
-A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. Manki counts a \`grade\` doubt only on the \`wrong\` row, where the column decides whether the finding blocks. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools on a `blocker` cell with a doubt where confirming every premise can raise the grade, and on the `rare` column of the `wrong` row, where no answer raises the grade. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to ' + MAX_DOUBT_CHECKS + ' findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding with a `blocker` cell gets that grade only when every premise is confirmed and its `gradeIfConfirmed` is not `warning`. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.' : ''}
+A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. Manki counts a \`grade\` doubt only on the \`wrong\` row, where the column decides whether the finding blocks. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools on a `blocker` cell with a doubt where confirming every premise can raise the grade, and on the `rare` column of the `wrong` row, where no answer raises the grade. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to ' + MAX_DOUBT_CHECKS + ' findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding with a `blocker` cell gets that grade only when every premise is confirmed and its `gradeIfConfirmed` is not `warning`. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is checked only for its `dropRestsOn`, as below.' : ''}
 
 On a finding whose cell gives \`blocker\` and that you list a doubt for, also set \`gradeIfConfirmed\`: the grade its consequence earns if every premise you doubt holds, \`blocker\` or \`warning\`. This is where you say how serious the damage is. Set \`warning\` only when the finding would still fail one of the five blocker tests with every doubt confirmed. A status line that counts one retry too many while every result is right does no serious damage, for example, so it fails test 3. Name the test in \`reasoning\` and say what in the code makes it fail. A premise you list in \`doubts\` is no such reason, since it holds in that case. Neither is the state being rare, which is the claim of the \`rare\` column, nor the change being "not a regression". When you cannot tell which grade it earns, set \`blocker\`. Leave \`gradeIfConfirmed\` empty on every other finding. Manki reads it only on a \`blocker\` cell with a doubt, and never on a security finding: with \`warning\` no check raises the finding, and with \`blocker\` or nothing a check that confirms every premise can give it the cell's grade.
 
 With \`gradeIfConfirmed\` \`blocker\`, also list in \`doubts\` the consequence that puts the finding on its row, with \`decides\` set to \`consequence\`. State what goes wrong once the defect happens and where it lands, as a fact the code can confirm, worded so the blocker needs it to be true: "the skipped row is missing from the CSV file \`exportOrders\` writes for download", not "data may be lost". Manki checks it with your other premises, and a check that leaves it open can keep the finding a \`warning\`.
+
+When you mark a finding \`ignore\` because of how code outside the diff behaves, such as other code already checking a value, every caller passing a safe one or a lock taken elsewhere, fill \`dropRestsOn\`, also when you read or cite that code. Set its \`premise\` to the fact your drop needs, in general form, as a fact the code can confirm or disprove: "every caller of \`writeRecord\` holds \`storeLock\`", not "the store is locked elsewhere". Set its \`row\` and \`column\` to the cell the finding earns if that premise is false. Leave \`dropRestsOn\` empty when the diff itself shows the reason for the drop, and on every finding you keep.${toolsCheckFindings ? ' On a finding a reviewer filed as a `blocker`, Manki checks the premise with tools. The finding is graded by that cell only when the check disproves the premise, and otherwise it stays dropped.' : ''}
 
 Start \`reasoning\` with your verdict, the grade the cell gives or \`ignore\`, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
@@ -733,6 +737,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "ruleUnseen": "",` : ''}
       "doubts": [{"premise": "A fact the code can confirm or disprove", "decides": "defect" | "grade" | "consequence"}],
       "gradeIfConfirmed": "" | "blocker" | "warning",
+      "dropRestsOn": {"premise": "", "row": "severe" | "wrong" | "degraded" | "improvement" | "style", "column": "normal" | "rare"},
       "buildClaim": false,
       "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
       "effort": "quick" | "moderate" | "larger",
@@ -1396,6 +1401,15 @@ function parseDoubts(value: unknown): Doubt[] {
   });
 }
 
+/** Returns the premise and cell in the `dropRestsOn` of a judge entry, or undefined when it names no premise or no row of the table. */
+function parseDropRestsOn(value: unknown): JudgedFinding['dropRestsOn'] {
+  const { premise, row, column } = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const text = typeof premise === 'string' ? premise.trim().slice(0, MAX_DOUBT_CHARS) : '';
+  const stated = tableWord(row);
+  if (!text || !Object.hasOwn(CELL_GRADES, stated)) return undefined;
+  return { premise: text, row: stated as CellRow, column: tableWord(column) === 'rare' ? 'rare' : 'normal' };
+}
+
 /**
  * Returns the cell the judge states for what remains of a partly fixed thread, and the grade it gives. Nothing checks a
  * `rare` claim on a thread, and a lower grade can lift the thread's block, so where the column decides the block the
@@ -1460,6 +1474,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const doubts = parseDoubts(f.doubts);
       const fixLeaves = typeof f.fixLeaves === 'string' ? f.fixLeaves.trim().slice(0, MAX_REMAINING_CHARS) : '';
       const ruleUnseen = typeof f.ruleUnseen === 'string' ? f.ruleUnseen.trim().slice(0, MAX_DOUBT_CHARS) : '';
+      const dropRestsOn = row === 'none' ? parseDropRestsOn(f.dropRestsOn) : undefined;
       const statedIfConfirmed = (['blocker', 'warning'] as const).find(grade => grade === tableWord(f.gradeIfConfirmed));
       return [{
         ...(id !== undefined && { id }),
@@ -1476,6 +1491,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(f.ruleBroken === true && { ruleBroken: true }),
         ...(ruleUnseen && { ruleUnseen }),
         ...(doubts.length > 0 && { doubts }),
+        ...(dropRestsOn && { dropRestsOn }),
         ...(statedIfConfirmed && { gradeIfConfirmed: statedIfConfirmed }),
         ...(fixLeaves && { fixLeaves }),
         ...(f.buildClaim === true && { buildClaim: true }),
@@ -1754,7 +1770,7 @@ export async function runJudgeAgent(
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
   // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
-  const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting)
+  const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting, !!refutation)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
     .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules));
@@ -1852,24 +1868,29 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
  * Applies the judge's entries to the findings they name by `id`, then folds the findings the judge marked as
  * duplicates, and then the copies `deduplicateFindings` merges by title and file. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
+ * A drop gets a `dropCheck` only with `dropsChecked`, set when a refuter checks the round, so no record shows a check that cannot run.
  */
 export function mapJudgedToFindings(
   original: Finding[],
   judged: JudgedFinding[],
   priorFindings: PriorFinding[] = [],
   staysPreExisting?: (copy: Finding) => boolean,
+  dropsChecked = false,
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
   const roots = duplicateRoots(aligned);
   // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
   const groups = roots.map(root => mergeKey(original[root - 1]));
-  const filedBlocker = (i: number): boolean => original.every((f, j) => groups[j] !== groups[i] || finderGrade(f, 'lowest') === 'blocker');
+  const copies = (i: number): Finding[] => original.filter((_, j) => groups[j] === groups[i]);
+  const filedBlocker = (i: number): boolean => copies(i).every(f => finderGrade(f, 'lowest') === 'blocker');
+  // A drop is checked when any finder filed a copy as a blocker, whichever copy the merge keeps.
+  const dropCheckable = (i: number): boolean => dropsChecked && copies(i).some(f => finderGrade(f) === 'blocker');
   const graded = original.map((o, i) => {
     const finding = { ...o };
     const match = aligned[i];
     if (!match) throw new Error(`Finding ${i + 1} "${safeTruncate(o.title, 80)}" has no judge entry`);
     if (!match.preExisting) delete finding.preExisting;
-    Object.assign(finding, gradeByCell(o, match, filedBlocker(i)));
+    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), dropCheckable(i)));
     if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
     finding.judgeNotes = match.reasoning;
     if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
@@ -1905,9 +1926,9 @@ export function mapJudgedToFindings(
  * has no `pendingGrade`: no answer raises it. A tool
  * alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade }: JudgedFinding, filedBlocker: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
-  // A dropped finding keeps its doubts for the round record. The refuter never checks a finding marked `ignore`.
-  if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(named.length > 0 && !o.toolSource && { doubts: named }) };
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+  // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
+  if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, dropCheckable, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
   if (security && row !== 'severe') core.warning(`The judge marked "${o.title}" a security finding on the \`${row}\` row, not \`severe\``);
   // An attacker chooses the input, so how rarely the state occurs is no discount on a security finding.
@@ -1928,6 +1949,23 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   // The judge's own `warning` says how serious the damage is, so a confirmed doubt raises no such finding.
   const gradeIfConfirmed = heldDown && judgeGrade === 'warning' ? judgeGrade : cellGrade(row, checkedRare ? 'normal' : column);
   return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge'), cell, gradeIfConfirmed, ...(judgeGrade && { judgeIfConfirmed: judgeGrade }), doubts };
+}
+
+/**
+ * Returns the fields that let the refuter check a drop the judge rests on code outside the diff: its `dropRestsOn`
+ * premise as a `drop` doubt after the doubts it `named`, and the cell it stated for when that premise is false, whose
+ * grade becomes the `gradeIfConfirmed`. Only a finding that is `dropCheckable` gets them: a refuter checks the round, and
+ * a finder filed it as a blocker, in this copy or one merged with it. That grade must also be one a check can give: a
+ * `warning` or a `blocker`. A security finding takes the `normal` column, as in `gradeByCell`.
+ */
+function dropCheck(o: Finding, named: Doubt[], dropRestsOn: JudgedFinding['dropRestsOn'], dropCheckable: boolean, security?: boolean): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
+  if (!dropRestsOn || !dropCheckable) return undefined;
+  const { premise, row, column: judgeColumn } = dropRestsOn;
+  const column = security || o.tags?.includes(SECURITY_TAG) ? 'normal' : judgeColumn;
+  const cell = { row, column, ...(column !== judgeColumn && { judgeColumn }) };
+  const grade = pendingGrade({ cell, gradeIfConfirmed: cellGrade(row, column) });
+  if (grade !== 'blocker' && grade !== 'warning') return undefined;
+  return { cell, gradeIfConfirmed: grade, doubts: [...named, { premise, decides: 'drop' }] };
 }
 
 /**
@@ -2153,13 +2191,24 @@ function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 're
 }
 
 /**
+ * Returns the drop check of `copy` for a `survivor` the judge dropped without one, so the check `dropCheck` set on any
+ * merged copy survives the merge. The survivor keeps the doubts it named before the copy's. Returns nothing otherwise,
+ * so nothing on a round without a refuter, where no copy has a drop check.
+ */
+function mergedDropCheck(survivor: Finding, copy: Finding): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
+  if (survivor.severity !== 'ignore' || restsOnDrop(survivor) || !restsOnDrop(copy)) return undefined;
+  const doubts = [...(survivor.doubts ?? []).filter(d => !copy.doubts!.some(c => c.premise === d.premise)), ...copy.doubts!];
+  return { cell: copy.cell, gradeIfConfirmed: copy.gradeIfConfirmed, doubts };
+}
+
+/**
  * Merges the duplicate `copy` into `survivor`: its reviewers, its finder grades, its prior-round match and open thread, its
- * fix in words and what it cites. The survivor is a security finding when either one is.
+ * fix in words, what it cites and its `mergedDropCheck`. The survivor is a security finding when either one is.
  */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
   survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
   if (copy.tags?.includes(SECURITY_TAG)) Object.assign(survivor, asSecurity(survivor));
-  Object.assign(survivor, mergedFinderGrades(survivor, copy));
+  Object.assign(survivor, mergedFinderGrades(survivor, copy), mergedDropCheck(survivor, copy));
   survivor.sameAs ??= copy.sameAs;
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
@@ -2374,8 +2423,8 @@ function hasReversalWord(finding: Finding): boolean {
 const mergeKey = (f: Pick<Finding, 'title' | 'file'>): string => `${f.title}::${f.file}`;
 
 /**
- * Keeps the first finding per title and file, with the finder grades `mergedFinderGrades` gives and the first rule a
- * copy quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
+ * Keeps the first finding per title and file, with the finder grades `mergedFinderGrades` gives, the `mergedDropCheck`
+ * and the first rule a copy quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
  * marked so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
@@ -2389,7 +2438,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     }
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...mergedFinderGrades(first, f), ...(f.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, f) });
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...mergedFinderGrades(first, f), ...mergedDropCheck(first, f), ...(f.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, f) });
   }
   return [...kept.values()];
 }

@@ -394,7 +394,8 @@ export interface Finding {
    * finder filed as a blocker, that is no security finding and that restates no earlier blocker needs more: every
    * check confirms the defect and a `consequence` premise. Before its checks, `refuteBlockers` sets `warning` here on
    * such a finding without a `consequence` premise. On a finding that `isRareClaim` it is the grade of
-   * the `normal` column, which no confirmation gives.
+   * the `normal` column, which no confirmation gives. On a finding the judge dropped with a `drop` premise, it is the
+   * grade of the cell the judge stated for when that premise is false.
    */
   gradeIfConfirmed?: FindingSeverity;
   /** The judge's own answer for `gradeIfConfirmed`, on a finding with a doubt. Unset when it stated none. Only for the record. */
@@ -839,13 +840,19 @@ export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 /**
  * A premise the judge doubts, stated as a fact the code can confirm or disprove. It `decides` either whether the defect
  * exists at all, so a disproof drops the finding, or only which cell the finding belongs in, such as whether normal
- * use or outside input produces the state a finding in the `rare` column needs.
+ * use or outside input produces the state a finding in the `rare` column needs. A `drop` premise is the reason the judge
+ * dropped the finding, about code outside the diff, so the finding stands only when a check disproves it.
  */
 export interface Doubt {
   premise: string;
-  decides: 'defect' | 'grade';
+  decides: 'defect' | 'grade' | 'drop';
   /** Set on the `grade` premise about the damage that makes the cell's row a blocker, worded so the blocker needs it true. */
   consequence?: true;
+}
+
+/** Whether the judge dropped `f` on a `drop` premise the refuter checks. */
+export function restsOnDrop(f: Pick<Finding, 'doubts'>): boolean {
+  return !!f.doubts?.some(d => d.decides === 'drop');
 }
 
 /**
@@ -905,6 +912,15 @@ export interface Refutation {
 }
 
 /**
+ * Returns what the answer on premise `p` says about its finding. A `drop` premise is the judge's reason to drop the
+ * finding, so its disproof backs the finding and its confirmation counts against it.
+ */
+export function towardFinding(p: Pick<PremiseCheck, 'outcome' | 'decides'>): RefutationOutcome {
+  if (p.decides !== 'drop' || p.outcome === 'unsettled') return p.outcome;
+  return p.outcome === 'disproved' ? 'confirmed' : 'disproved';
+}
+
+/**
  * Returns what `check` says about its finding. It is `disproved` when the refuter answered that the defect does not
  * exist, whatever its `premises` add up to. Otherwise it is the check's `outcome`.
  */
@@ -915,24 +931,24 @@ export function outcomeOf(check: Refutation): RefutationOutcome {
 /**
  * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
  * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. So no check confirms
- * beside one that disproves, be it the finding, the defect or a premise that only decides the grade.
+ * beside one that disproves, be it the finding, the defect or a premise that only decides the grade, read by `towardFinding`.
  */
 export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
   if (votes.size !== 1) return 'unsettled';
   const [outcome] = votes;
-  return outcome === 'confirmed' && checks.some(r => outcomeOf(r) === 'disproved' || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
+  return outcome === 'confirmed' && checks.some(r => outcomeOf(r) === 'disproved' || r.premises?.some(p => towardFinding(p) === 'disproved')) ? 'unsettled' : outcome;
 }
 
 /**
  * Whether `check` asked whether the defect of `finding` exists and confirmed it. A confirmed premise is no such answer.
- * Neither is a confirmation that left unsettled or disproved a premise that decides whether the defect exists. A
- * premise says what it decided when the check ran. One stored without that is looked up in the doubts of `finding`,
- * and one no doubt names counts as deciding the defect, since nothing shows it only decided the grade.
+ * Neither is a confirmation that left a premise that decides whether the defect exists unsettled or, by `towardFinding`,
+ * disproved. A premise says what it decided when the check ran. One stored without that is looked up in the doubts of
+ * `finding`, and one no doubt names counts as deciding the defect, since nothing shows it only decided the grade.
  */
 export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
   const decides = (p: PremiseCheck): Doubt['decides'] | undefined => p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
-  return check.defect === 'confirmed' && !check.premises?.some(p => p.outcome !== 'confirmed' && decides(p) !== 'grade');
+  return check.defect === 'confirmed' && !check.premises?.some(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade');
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
@@ -943,11 +959,12 @@ export function confirmsAll(checks: readonly Refutation[]): boolean {
 /**
  * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
  * whether the defect exists. Returns none when another check backs the finding, since a confirmation against a
- * disproof settles nothing. A check backs it when it does not disprove it and confirmed the defect or one of the premises.
+ * disproof settles nothing. A check backs it when it does not disprove it and confirmed the defect or, by `towardFinding`,
+ * one of the premises.
  */
 export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): Refutation | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  const backs = (check: Refutation): boolean => outcomeOf(check) !== 'disproved' && (check.defect === 'confirmed' || !!check.premises?.some(p => p.outcome === 'confirmed'));
+  const backs = (check: Refutation): boolean => outcomeOf(check) !== 'disproved' && (check.defect === 'confirmed' || !!check.premises?.some(p => towardFinding(p) === 'confirmed'));
   return checks.some(backs) ? undefined : checks.find(check => outcomeOf(check) === 'disproved');
 }
 
@@ -2326,7 +2343,7 @@ export interface RoundJudgeDrop {
   judgeIfConfirmed?: 'blocker' | 'warning';
   /** Mirrors `Finding.doubts`. */
   doubts?: Doubt[];
-  /** Mirrors `Finding.cell`. A dropped finding has one only when a later stage dropped it. */
+  /** Mirrors `Finding.cell`. A dropped finding has one only when a later stage dropped it, or the judge dropped it with a `drop` premise. */
   cell?: GradeCell;
   /** Mirrors `Finding.rule`. */
   rule?: Finding['rule'];
