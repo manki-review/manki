@@ -588,9 +588,12 @@ describe('sendViaOAuth — error paths', () => {
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps?.map(step => step.tool)).toEqual(['Read', 'mcp__manki__git_history', 'Read', 'mcp__manki__read_file']);
     expect(response.usage).toEqual({ inputTokens: 16_650, outputTokens: 75, cacheReadTokens: 15_000, cacheWriteTokens: 1500, reasoningTokens: 0, largestRequestInputTokens: 5550 });
-    // Requests that do not add up to the `result` leave the largest unknown, since the missing one could be it.
+    // Requests that do not add up to the `result` leave the largest unknown, since the missing one could be it. The largest
+    // one seen is kept as a lower bound.
     setupSpawnMock({ stdout: `${[request(1), request(2), result(200)].map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
-    expect((await client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15, related: undefined } })).usage).not.toHaveProperty('largestRequestInputTokens');
+    const partial = (await client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15, related: undefined } })).usage;
+    expect(partial).not.toHaveProperty('largestRequestInputTokens');
+    expect(partial?.largestSeenRequestInputTokens).toBe(2220);
     // A call with tools whose model called none reports an empty list, which tells it from a client that reports no
     // steps at all. A call without tools reports none.
     setupSpawnMock({ stdout: 'ok' });

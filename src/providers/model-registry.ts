@@ -121,7 +121,8 @@ function priceOf(model: string): ModelPrice | undefined {
  */
 export function assumesShortRequests(model: string, usage: LLMUsage): boolean {
   const limit = priceOf(model)?.longPrompt?.aboveTokens;
-  return limit !== undefined && usage.largestRequestInputTokens === undefined && usage.inputTokens > limit;
+  return limit !== undefined && usage.largestRequestInputTokens === undefined && usage.inputTokens > limit
+    && !((usage.largestSeenRequestInputTokens ?? 0) > limit);
 }
 
 /**
@@ -132,7 +133,8 @@ export function assumesShortRequests(model: string, usage: LLMUsage): boolean {
 export function estimateCostUsd(model: string, usage: LLMUsage): number | null {
   const price = priceOf(model);
   if (!price) return null;
-  const largest = usage.largestRequestInputTokens;
+  // A seen request past the limit proves the long price even when other requests went unseen.
+  const largest = usage.largestRequestInputTokens ?? usage.largestSeenRequestInputTokens;
   const long = price.longPrompt && largest !== undefined && largest > price.longPrompt.aboveTokens ? price.longPrompt : undefined;
   const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
   const oneHourWrites = usage.cacheWrite1hTokens ?? 0;

@@ -13,6 +13,8 @@ export interface LLMUsage {
   cacheWrite1hTokens?: number;
   /** The input tokens of the call's largest request, cache reads and writes included. Unset when only the sum over its requests is known. */
   largestRequestInputTokens?: number;
+  /** The largest request the client saw when it did not see them all, so the largest is at least this. Unset when `largestRequestInputTokens` is known. */
+  largestSeenRequestInputTokens?: number;
 }
 
 export interface LLMResponse {
@@ -72,11 +74,14 @@ export const ZERO_USAGE: LLMUsage = Object.freeze({
 
 /**
  * Returns `usage` with `largestRequestInputTokens` set from `requestInputs`, the input tokens of each request of the call.
- * Leaves it unset unless they add up to `usage.inputTokens`, since a request the client did not see could be the largest.
+ * When they do not add up to `usage.inputTokens`, a request the client did not see could be the largest, so it sets
+ * `largestSeenRequestInputTokens` instead.
  */
 export function withLargestRequest(usage: LLMUsage, requestInputs: readonly number[]): LLMUsage {
   const sum = requestInputs.reduce((total, tokens) => total + tokens, 0);
-  return sum > 0 && sum === usage.inputTokens ? { ...usage, largestRequestInputTokens: Math.max(...requestInputs) } : usage;
+  if (sum <= 0) return usage;
+  const largest = Math.max(...requestInputs);
+  return sum === usage.inputTokens ? { ...usage, largestRequestInputTokens: largest } : { ...usage, largestSeenRequestInputTokens: largest };
 }
 
 /** Returns `usage` of a call that made one request, which is then its largest. */

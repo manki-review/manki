@@ -127,6 +127,14 @@ describe('estimateCostUsd', () => {
     expect(estimateCostUsd('gpt-6.2-sol', usage(1_000_000, 1_000_000, 500_000))).toBeCloseTo(standard);
     expect(assumesShortRequests('gpt-6.2-sol', usage(1_000_000, 1_000_000, 500_000))).toBe(true);
     expect(assumesShortRequests('claude-haiku-5-5-20261001', usage(100_001, 0))).toBe(true);
+    // A request seen past the limit proves the long-prompt price even when not every request was seen.
+    const seenLong = { ...usage(1_000_000, 1_000_000, 500_000), largestSeenRequestInputTokens: 300_000 };
+    expect(estimateCostUsd('gpt-6.2-sol', seenLong)).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
+    expect(assumesShortRequests('gpt-6.2-sol', seenLong)).toBe(false);
+    // A seen request under the limit proves nothing about the unseen ones, so the assumption stays.
+    const seenShort = { ...usage(1_000_000, 1_000_000, 500_000), largestSeenRequestInputTokens: 50_000 };
+    expect(estimateCostUsd('gpt-6.2-sol', seenShort)).toBeCloseTo(standard);
+    expect(assumesShortRequests('gpt-6.2-sol', seenShort)).toBe(true);
     // The assumption matters only when the sum passes the limit, for a model with a long-prompt price.
     expect(assumesShortRequests('gpt-6.2-sol', usage(272_000, 1_000_000))).toBe(false);
     expect(assumesShortRequests('claude-opus-5-5', usage(1_000_000, 0))).toBe(false);
