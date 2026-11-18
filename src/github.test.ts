@@ -2222,9 +2222,22 @@ describe('postReview body lead', () => {
       verdictTrace: { survivingBlockers: [], unresolvedPriors: [{ file: 'src/a.ts', line: 3, title: 'Thread B1', fingerprint: 'kb1', threadId: 'B1' }] },
     }, [blockerThread('B1', 3), blockerThread('B2', 4), { ...warningThread, threadId: 'W2' }]);
     expect(lead(mixed.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 2 still open, plus 1 warning still open from an earlier review\.\n/u);
-    // The prior thread B1 is listed once, although a warning of the round restates it.
+    // The prior thread B1 is listed once, with the warning of the round that restates it under its entry.
     expect(mixed.body.split('Thread B1')).toHaveLength(2);
-    expect(mixed.body).not.toContain('Warning on a listed prior');
+    expect(mixed.body).toMatch(/- `src\/a\.ts:3`: Thread B1\n\n {2}This round names it as:\n\n {2}\*\*Warning\*\*\n {2}\*\*Warning on a listed prior\*\*/);
+    // An open thread found by its finding's place rather than by a thread ID counts and lists the same way.
+    const placed = (threadId: string, title: string, line: number, severity: 'blocker' | 'warning'): PreviousFinding => ({ title, file: 'src/a.ts', line, severity, status: 'open', threadId, markerSlug: titleToSlug(title) });
+    const byPlace = await postedBody({
+      ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined,
+      findings: [blocker, { ...blocker, title: 'Off-line blocker', line: 40 }, { ...warning, title: 'Off-line warning', line: 50 }],
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [{ file: 'src/a.ts', line: 40, title: 'Off-line blocker', fingerprint: 'kf', threadId: 'F1' }] },
+    }, [placed('F1', 'Off-line blocker', 40, 'blocker'), placed('F2', 'Off-line warning', 50, 'warning')]);
+    expect(lead(byPlace.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 1 still open, plus 1 warning still open from an earlier review\.\n/u);
+    expect(byPlace.body.split('Off-line blocker')).toHaveLength(3);
+    expect(byPlace.body).toContain('- `src/a.ts:50`: Off-line warning\n\n  This round names it as:');
+    // A warning with no thread, such as a pre-existing one the body lists, is counted too.
+    const listedWarning = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, findings: [blocker, warning, { ...warning, title: 'Old bug', line: 9, tags: ['pre-existing'] }] });
+    expect(lead(listedWarning.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker, plus 1 warning in threads and 1 warning listed below\.\n/u);
     // A blocker that restates a prior on its open thread is counted and listed as still open.
     const restated = await postedBody({
       ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined,
