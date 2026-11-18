@@ -44,6 +44,9 @@ _execMock.fn = mockExecFileAsync;
 
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
+// A test may point `RUNNER_TEMP` at a folder that does not exist, so the Codex home of this process is made first.
+beforeAll(() => codexEnv({}));
+
 describe('buildOpenAIAuth', () => {
   it('throws when neither token is present', () => {
     expect(() => buildOpenAIAuth('', '', '')).toThrow(
@@ -576,8 +579,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
     const savedEnv = process.env;
     process.env = {
       PATH: '/usr/bin',
-      HOME: '/home/runner',
-      CODEX_HOME: '/home/runner/.codex',
+      HOME: '/runner-home',
+      CODEX_HOME: '/runner-home/.codex',
       GITHUB_API_URL: 'https://api.github.com',
       OPENAI_API_KEY: 'sk-ambient-key',
       OPENAI_OAUTH_TOKEN: 'ambient-login',
@@ -615,7 +618,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     // Codex reads skills, `AGENTS.md` and `config.toml` from both homes, so the runner's own stay out.
     const home = env.CODEX_HOME!;
     expect(env).toEqual({ PATH: '/usr/bin', HOME: home, CODEX_HOME: home, GITHUB_API_URL: 'https://api.github.com', OPENAI_API_KEY: key });
-    expect(home).not.toMatch(/^\/home\/runner/);
+    expect(home).not.toMatch(/^\/runner-home/);
     expect(statSync(home).mode & 0o777).toBe(0o700);
     // Codex gives its tool server only the variables `env_vars` names, so the key stays with Codex.
     const envVars = JSON.parse(args.find(arg => arg.startsWith('mcp_servers.manki.env_vars='))!.slice('mcp_servers.manki.env_vars='.length)) as string[];
@@ -925,7 +928,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     seedAuthFile.mockClear();
     setupSpawnMock('ok\n');
     const savedEnv = process.env;
-    process.env = { ...savedEnv, HOME: '/home/runner', CODEX_HOME: '/home/runner/.codex' };
+    process.env = { ...savedEnv, HOME: '/runner-home', CODEX_HOME: '/runner-home/.codex' };
 
     try {
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gpt-4o' });
@@ -938,7 +941,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     const home = envs[0].CODEX_HOME!;
     // The calls of a run share the home, so a later call reads the tokens an earlier one refreshed.
     expect(envs.map(env => [env.HOME, env.CODEX_HOME])).toEqual([[home, home], [home, home]]);
-    expect(home).not.toMatch(/^\/home\/runner/);
+    expect(home).not.toMatch(/^\/runner-home/);
     expect(seedAuthFile).toHaveBeenCalledWith({
       secret: 'b64-blob',
       inputName: 'openai_oauth_token',
