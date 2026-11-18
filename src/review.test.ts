@@ -34,7 +34,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, RoundNotStarted, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -2674,6 +2674,35 @@ describe('runReview', () => {
       expect(resolved.duplicateMatches).toEqual([doubtTitle, splitTitle].map(title => ({ droppedTitle: title, matchedTitle: title, matchType: 'exact' })));
       // A doubt dedup drops takes no refuter call.
       expect(refuterCalls(clients)).toEqual([]);
+    }, GIT_TEST_TIMEOUT_MS);
+
+    it('keeps a scope thread its answer or a maintainer settled after a push that changes neither the warning nor the PR text, and posts a new thread once one of them changed', async () => {
+      const answer = { doubt: scope.doubt, proof: ['src/x.ts:1'], split: scope.split, purpose: 'purpose-1' };
+      const entry = (title: string) => makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(title) }, severity: 'warning', title, reviewers: ['Scope reader'] });
+      const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: { warning: 2 }, entries: [entry(doubtTitle), entry(splitTitle)] }, scope: { ...answer, warned: true } })];
+      const config = makeConfig({ review: { scope_blocks: true } });
+      // The push changed a file the doubt cites, which would send any other finding on to the judge.
+      const push = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n';
+      const settledBy = (status: 'auto-resolved' | 'resolved', reply?: string) => [doubtTitle, splitTitle].map((title, i) => ({
+        title, file: '', line: 0, severity: 'warning' as const, status, threadId: `T${8 + i}`, detached: true, ...(reply && { answer: reply }),
+      }));
+      const round = async (previousFindings: ReturnType<typeof settledBy>, current: RoundScope = answer) => {
+        jest.mocked(runScopeReader).mockResolvedValue(current);
+        const clients = refutingClients('confirmed');
+        const result = await runReview(clients, { ...options, config, priorRounds, interRoundDiff: push, workspace: root, previousFindings });
+        return { posted: fromScope(result), dropped: result.duplicateMatches?.map(d => d.droppedTitle), calls: refuterCalls(clients).length };
+      };
+
+      for (const settled of [settledBy('auto-resolved', 'Withdrawn. The CLI calls it.'), settledBy('auto-resolved', 'Agreed. A follow-up issue tracks it.'), settledBy('resolved')]) {
+        expect(await round(settled)).toEqual({ posted: [], dropped: [doubtTitle, splitTitle], calls: 0 });
+      }
+      // A new doubt, or a PR whose title or description changed, is a new judgment, posted in a thread of its own.
+      const withdrawn = settledBy('auto-resolved', 'Withdrawn. The CLI calls it.');
+      for (const current of [{ ...answer, doubt: 'Nothing reads the new flag.' }, { ...answer, purpose: 'purpose-2' }]) {
+        const { posted, calls } = await round(withdrawn, current);
+        expect(calls).toBe(1);
+        expect(posted.map(f => [f.title, f.answeredIn, f.threadId])).toEqual(current.purpose === 'purpose-2' ? [[doubtTitle, undefined, undefined], [splitTitle, undefined, undefined]] : [[doubtTitle, undefined, undefined]]);
+      }
     }, GIT_TEST_TIMEOUT_MS);
 
     it('reuses the confirmation of an unchanged doubt on an unchanged diff, and asks the refuter again once the doubt, the diff or the code it read changed', async () => {

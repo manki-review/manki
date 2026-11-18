@@ -742,6 +742,8 @@ export interface RoundScope {
    */
   skipped?: 'trivial' | 'unchanged';
   since?: number;
+  /** SHA-256 over the PR title and description the answer was given for, its stated purpose. */
+  purpose?: string;
   /** Why the call failed or its reply could not be used. */
   failed?: string;
   /** The reader's doubt that the change is useful, kept only with `proof`. With `review.scope_blocks`, also only once the refuter confirms it. */
