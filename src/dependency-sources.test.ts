@@ -207,6 +207,7 @@ describe('dependencyLoader', () => {
   it('refuses a package that a registry setting of the PR may take from another registry', async () => {
     const berryLock = '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"left-pad@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "left-pad@npm:1.2.0"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n';
     const another = 'it may come from another registry than npm, since';
+    const scopedRequired = { 'package.json': JSON.stringify({ dependencies: { '@corp/pad': '^1.0.0' } }) };
     const berry = round({ 'yarn.lock': berryLock, '.yarnrc.yml': 'npmRegistryServer: "https://npm.corp.example"\n' });
     await expect(berry.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: ${another} .yarnrc.yml sets the registry https://npm.corp.example.`);
     expect(dependencyOutcomes(berry.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', version: '1.2.0', status: 'refused' })]);
@@ -215,6 +216,10 @@ describe('dependencyLoader', () => {
     await expect(npmrc.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: ${another} .npmrc sets the registry`);
     expect(dependencyOutcomes(npmrc.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', source: 'requirement', requirement: '^1.0.0', status: 'refused' })]);
     await expect(round({ ...required, 'web/.yarnrc': '"@corp:registry" "https://npm.corp.example"\nregistry "https://npm.corp.example"\n' }).load('npm/left-pad')).rejects.toThrow(`${another} web/.yarnrc sets`);
+    // pnpm reads registries from its workspace settings too.
+    await expect(round({ ...required, 'pnpm-workspace.yaml': 'registry: https://npm.corp.example/\n' }).load('npm/left-pad')).rejects.toThrow(`${another} pnpm-workspace.yaml sets the registry https://npm.corp.example/.`);
+    await expect(round({ ...scopedRequired, 'pnpm-workspace.yaml': 'registries:\n  "@corp": https://npm.corp.example/\n' }).load('npm/@corp/pad')).rejects.toThrow(`${another} pnpm-workspace.yaml sets the registry https://npm.corp.example/ for @corp.`);
+    await expect(round({ ...required, '.npmrc': 'REGISTRY=https://npm.corp.example/\n' }).load('npm/left-pad')).rejects.toThrow(`${another} .npmrc sets the registry`);
     await expect(round({ ...required, '.npmrc': 'x'.repeat(200) }, { maxManifestBytes: 100 }).load('npm/left-pad')).rejects.toThrow('Manki could not read .npmrc, which can change where packages come from, within its size limits.');
     // A line built to make a pattern backtrack is read in linear time.
     for (const file of ['.npmrc', '.yarnrc']) {
@@ -286,11 +291,23 @@ describe('dependencyLoader', () => {
       [{ 'package.json': manifest({ patchedDependencies: { 'left-pad@1.2.0': 'patches/left-pad.patch' } }) }, 'its `patchedDependencies` names it'],
       [{ 'package.json': manifest({ scripts: { prepare: 'husky', postinstall: 'node scripts/fix-modules.js' } }) }, 'its `postinstall` script runs at install and can change any installed package'],
       [{ 'package.json': manifest({}), 'packages/pad/package.json': JSON.stringify({ name: 'left-pad', version: '1.2.0' }) }, 'packages/pad/package.json changes its code for an install: it is a package of the checkout with that name'],
-      [{ 'package.json': manifest({}), '.npmrc': 'package-lock=false\n' }, '.npmrc sets `package-lock`, so Manki cannot tell which lockfile or hook an install uses'],
+      [{ 'package.json': manifest({}), '.npmrc': 'package-lock=false\n' }, '.npmrc sets `package-lock`, so Manki cannot tell which lockfile, hook or package manager an install uses'],
+      [{ 'package.json': manifest({}), '.npmrc': 'Package-Lock = false\n' }, '.npmrc sets `Package-Lock`'],
       [{ 'package.json': manifest({}), '.npmrc': 'pnpmfile = hooks/pnpm.cjs\n' }, '.npmrc sets `pnpmfile`'],
+      [{ 'package.json': manifest({}), '.npmrc': 'lockfile-dir=../shared\n' }, '.npmrc sets `lockfile-dir`'],
       [{ 'package.json': manifest({}), '.yarnrc': '--install.no-lockfile true\n' }, '.yarnrc sets `--install.no-lockfile`'],
-      [{ 'package.json': manifest({}), 'pnpm-workspace.yaml': 'pnpmfile: hooks.cjs\n' }, 'pnpm-workspace.yaml sets a pnpm hook'],
-      [{ 'package.json': manifest({}), '.yarnrc.yml': 'lockfileFilename: other.lock\n' }, '.yarnrc.yml sets another lockfile name'],
+      [{ 'package.json': manifest({}), '.yarnrc': 'yarn-path ".yarn/releases/yarn-1.22.22.cjs"\n' }, '.yarnrc sets `yarn-path`'],
+      [{ 'package.json': manifest({}), 'pnpm-workspace.yaml': 'pnpmfile: hooks.cjs\n' }, 'pnpm-workspace.yaml sets `pnpmfile`'],
+      [{ 'package.json': manifest({}), 'pnpm-workspace.yaml': 'globalPnpmfile: hooks.cjs\n' }, 'pnpm-workspace.yaml sets `globalPnpmfile`'],
+      [{ 'package.json': manifest({}), 'pnpm-workspace.yml': 'overrides:\n  left-pad: 1.0.0\n' }, 'pnpm-workspace.yml overrides or patches it'],
+      [{ 'package.json': manifest({}), '.pnpmfile.js': 'module.exports = {};\n' }, '.pnpmfile.js is a pnpm hook'],
+      [{ 'package.json': manifest({}), '.yarnrc.yml': 'lockfileFilename: other.lock\n' }, '.yarnrc.yml sets `lockfileFilename`'],
+      [{ 'package.json': manifest({}), '.yarnrc.yml': 'yarnPath: .yarn/releases/yarn-4.5.0.cjs\n' }, '.yarnrc.yml sets `yarnPath`'],
+      [{ 'package.json': manifest({ scripts: { 'pnpm:devPreinstall': 'node fix.js' } }) }, 'its `pnpm:devPreinstall` script runs at install'],
+      [{ 'package.json': manifest({}), '.npmrc': 'shrinkwrap=false\n' }, '.npmrc sets `shrinkwrap`'],
+      [{ 'package.json': manifest({}), '.yarnrc.yml': 'cacheFolder: ./vendor/cache\n' }, '.yarnrc.yml sets `cacheFolder`'],
+      [{ 'package.json': manifest({}), 'web/node_modules/left-pad/index.js': 'module.exports = 1;\n', 'web/package.json': manifest({}) }, 'the checkout holds web/node_modules/left-pad, which the project runs in place of the archive npm publishes'],
+      [{ 'package.json': manifest({}), '.yarn/cache/left-pad-npm-1.2.0-abc123-def456.zip': '' }, 'the checkout holds .yarn/cache/left-pad-npm-1.2.0-abc123-def456.zip'],
       [{ 'package.json': manifest({}), '.yarnrc.yml': 'plugins:\n  - path: .yarn/plugins/fetch.cjs\n    spec: "https://example.com/fetch.js"\n' }, 'loads a Yarn plugin other than Yarn\'s own'],
     ] as Array<[Record<string, string>, string]>) {
       await expect(round({ ...files, 'package-lock.json': lock }).load('npm/left-pad')).rejects.toThrow(why);
@@ -303,7 +320,7 @@ describe('dependencyLoader', () => {
     expect((await round({
       'package.json': manifest({ overrides: { 'left-pads': '1' }, resolutions: { 'other/left-pad-x': '1' }, scripts: { prepare: 'is-ci || husky install', postinstall: 'patch-package', test: 'jest' } }),
       'patches/other+1.0.0.patch': '', 'patches/left-pad-extra+1.0.0.patch': '', 'patches/parent++left-pads+1.0.0.patch': '',
-      '.npmrc': 'package-lock=true\n',
+      '.npmrc': 'package-lock=true\n', '.yarn/cache/left-pads-npm-1.0.0-abc.zip': '', 'node_modules/other/index.js': '',
       '.yarnrc.yml': 'plugins:\n  - path: .yarn/plugins/@yarnpkg/plugin-workspace-tools.cjs\n    spec: "@yarnpkg/plugin-workspace-tools"\n',
     }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
 
@@ -320,10 +337,23 @@ describe('dependencyLoader', () => {
       [{ 'Cargo.toml': `${cargo}\n[replace]\n"https://example.com/#1.2.5" = { path = "../x" }\n` }, 'its `[replace]` swaps the crate'],
       [{ 'Cargo.toml': cargo, 'ws/.cargo/config.toml': 'paths = ["../demo"]\n' }, 'ws/.cargo/config.toml sets `paths`, which can change any crate'],
       [{ 'Cargo.toml': cargo, '.cargo/config.toml': 'include = "more.toml"\n' }, '.cargo/config.toml sets `include`'],
+      [{ 'Cargo.toml': cargo, '.cargo/config.toml': '[source.crates-io]\nreplace_with = "mirror"\n' }, '.cargo/config.toml replaces the source of crates'],
+      [{ 'Cargo.toml': cargo, '.cargo/config.toml': '[registry]\nindex = "https://mirror.example/index"\n' }, '.cargo/config.toml sets another index for crates.io'],
+      [{ 'Cargo.toml': cargo, '.cargo/config': '[registries.crates-io]\nindex = "https://mirror.example/index"\n' }, '.cargo/config sets another index for crates.io'],
       [{ 'Cargo.toml': '[workspace]\nmembers = ["a"]\n\n[patch.crates-io]\ndemo = { path = "vendor/demo" }\n', 'a/Cargo.toml': cargo }, 'Cargo.toml changes its code for an install: its `[patch]` swaps the crate'],
+      [{ 'Cargo.toml': '[dependencies]\ndemo = { version = "1.2", registry-index = "https://other.example/index" }\n' }, 'Cargo.toml does not take it from crates.io: its entry for the crate sets `registry-index`'],
+      [{ 'Cargo.toml': '[dev_dependencies]\ndemo = { version = "1.2", registry = "corp" }\n' }, 'its entry for the crate sets `registry`'],
+      [{ 'Cargo.toml': '[workspace.dependencies]\ndemo = { version = "1.2", path = "demo" }\n' }, 'its entry for the crate sets `path`'],
+      [{ 'Cargo.toml': '[build-dependencies.demo]\nversion = "1.2"\nsource-url = "https://other.example"\n' }, 'its entry for the crate has the field `source-url`, which Manki does not know'],
     ] as Array<[Record<string, string>, string]>) {
       await expect(round({ ...files, 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }).load('crates.io/demo')).rejects.toThrow(why);
       await expect(round(files).load('crates.io/demo')).rejects.toThrow(why);
+    }
+    // Cargo's older spellings of the dependency tables count.
+    expect((await round({ 'Cargo.toml': '[build_dependencies]\ndemo = { version = "1.2", default_features = false, features = ["x"] }\n' }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');
+    for (const requirement of ['npm:other-pad@1.2.0', 'file:../pad', 'workspace:*', 'github:x/left-pad', 'latest']) {
+      await expect(round({ 'package.json': JSON.stringify({ dependencies: { 'left-pad': requirement } }), 'package-lock.json': lock }).load('npm/left-pad'))
+        .rejects.toThrow(`package.json does not take it from npm: its requirement \`${requirement}\` names no version from npm`);
     }
     expect((await round({ 'Cargo.toml': `${cargo}\n[patch.crates-io]\nother = { path = "../other" }\n\n[replace]\n"https://example.com/index#other:1.0.0" = { path = "x" }\n` }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');
   });
@@ -331,15 +361,21 @@ describe('dependencyLoader', () => {
   it('refuses a requirement that a lockfile or install setting it does not read decides, and one whose fresh install it cannot predict', async () => {
     const required = (dir = '') => ({ [`${dir}package.json`]: JSON.stringify({ dependencies: { 'left-pad': '^1.0.0' } }) });
     const lock = JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/left-pad': { version: '1.2.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz', integrity: sha512Integrity(PAD) } } });
-    for (const file of ['bun.lock', 'bun.lockb', 'bunfig.toml', 'deno.lock', 'deno.json', 'deno.jsonc', 'shrinkwrap.yaml', 'rush.json']) {
+    for (const file of ['bun.lock', 'bun.lockb', 'bunfig.toml', 'deno.lock', 'deno.json', 'deno.jsonc', 'shrinkwrap.yaml', 'rush.json', 'vlt-lock.json', 'vlt.json', 'package.json5', 'package.yaml']) {
       const refused = round({ ...required('apps/web/'), [file]: '' });
-      await expect(refused.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: apps/web/package.json requires it, and ${file}, which Manki does not read, decides what an install there gets.`);
+      await expect(refused.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: apps/web/package.json requires it, and ${file}, which Manki does not read, can decide what an install there gets.`);
       expect(dependencyOutcomes(refused.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', source: 'requirement', file: 'apps/web/package.json', status: 'refused' })]);
       // Also beside a lockfile Manki reads, since Manki cannot tell which of the two an install uses.
       await expect(round({ ...required(), 'package-lock.json': lock, [file]: '' }).load('npm/left-pad')).rejects.toThrow(`and ${file}, which Manki does not read`);
     }
-    // Such a file in another folder decides nothing for this manifest.
+    // A package only a lockfile names is refused the same way, by such a file beside the lockfile, above it or below it,
+    // since a lockfile above a project locks that project's packages too.
+    for (const files of [{ 'package-lock.json': lock, 'deno.lock': '' }, { 'web/package-lock.json': lock, 'bun.lockb': '' }, { 'package-lock.json': lock, 'apps/api/bun.lock': '' }] as Array<Record<string, string>>) {
+      await expect(round(files).load('npm/left-pad')).rejects.toThrow('which Manki does not read, can decide what an install there gets');
+    }
+    // Such a file in a sibling folder decides nothing for this manifest or lockfile.
     expect((await round({ ...required(), 'tools/bun.lock': '' }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    expect((await round({ 'web/package-lock.json': lock, 'tools/bun.lock': '' }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
 
     // A manifest under a lockfile takes its versions from it, never from a fresh install.
     await expect(round({ ...required('web/'), 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {} }) }).load('npm/left-pad'))
@@ -351,7 +387,7 @@ describe('dependencyLoader', () => {
       .rejects.toThrow('crates/a/Cargo.toml requires it, but its `package.workspace` names a workspace root elsewhere, whose lockfile decides its versions.');
 
     // A setting that changes what a fresh install picks refuses a requirement, and leaves a locked version alone.
-    for (const [file, text] of [['.npmrc', 'before=2020-01-01\n'], ['.npmrc', 'resolution-mode=lowest-direct\n'], ['pnpm-workspace.yaml', 'minimumReleaseAge: 1440\n'], ['.yarnrc.yml', 'npmMinimalAgeGate: 3d\n']]) {
+    for (const [file, text] of [['.npmrc', 'before=2020-01-01\n'], ['.npmrc', 'resolution-mode=lowest-direct\n'], ['.npmrc', 'min-release-age=7\n'], ['.npmrc', 'tag=next\n'], ['.npmrc', 'minimum-release-age=1440\n'], ['pnpm-workspace.yaml', 'minimumReleaseAge: 1440\n'], ['.yarnrc.yml', 'npmMinimalAgeGate: 3d\n']]) {
       await expect(round({ ...required(), [file]: text }).load('npm/left-pad')).rejects.toThrow(`${file} sets \``);
       expect((await round({ ...required(), 'package-lock.json': lock, [file]: text }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
     }

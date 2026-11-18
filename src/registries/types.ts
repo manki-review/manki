@@ -18,6 +18,8 @@ export interface ManifestFacts {
   requirements: Requirement[];
   /** Set, to how, when the manifest changes the package's code for an install, such as through `overrides` or `[patch]`. */
   overridden?: string;
+  /** Set, to how, when the manifest takes the package from somewhere other than the registry, or states it in a way Manki does not read. */
+  otherSource?: string;
   /** Set, to why, when a fresh install may not pick the highest version a requirement allows, such as for Cargo's `rust-version`. */
   freshPick?: string;
   /** Set, to why, when the manifest takes its versions from a lockfile outside its own folder and the folders above it. */
@@ -49,6 +51,11 @@ export interface Registry {
   lockfiles: readonly string[];
   /** The file names of lockfiles and install settings Manki does not read, which decide the packages of the manifests in their folder and below. */
   unreadInstallFiles: readonly string[];
+  /**
+   * Returns the path, relative to the folder `dir`, of a copy of the package `name` that the checkout itself holds,
+   * such as a committed `node_modules` folder, or `undefined`. Such a copy is what the project runs.
+   */
+  installedCopy(dir: string, name: string): string | undefined;
   /** Whether `name` is a valid package name of the registry. No other name reaches a URL. */
   validName(name: string): boolean;
   /** Whether two spellings name the same package, such as `serde_json` and `serde-json` on crates.io. */

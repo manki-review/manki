@@ -12,7 +12,7 @@ Manki handles untrusted PR content and cross-repo tokens. The security model res
   - headers of an archive of any kind, including links, pax headers and long names: 50,000, and the data of a pax or long-name header: 64 KB;
   - a path in an archive: 32 levels deep and 1,024 bytes, each name in it 255 bytes, and never absolute or with a `..` segment;
   - a crate's index file: 20 MB, and an npm package's version list: 30 MB, counted as received after decompression;
-  - the time to resolve and fetch one package: 60 seconds;
+  - the time to resolve one package: 60 seconds, and to fetch its archive another 60 seconds, both within the limit of the tool call;
   - the walk of the PR's checkout for lockfiles, manifests and registry settings: 20,000 such files and 200,000 files and folders visited, where passing either refuses every package, and the bytes read: 20 MB per file and 100 MB per call;
   - packages per round: 10.
 

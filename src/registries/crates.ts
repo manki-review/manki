@@ -19,7 +19,13 @@ const normalize = (name: string): string => name.toLowerCase().replace(/-/g, '_'
 const CARGO_CONFIGS = /(?:^|\/)\.cargo\/config(?:\.toml)?$/;
 
 /** The tables of a manifest that list dependencies, each under one of these names. */
-const DEPENDENCY_TABLES = ['dependencies', 'dev-dependencies', 'build-dependencies'];
+const DEPENDENCY_TABLES = ['dependencies', 'dev-dependencies', 'build-dependencies', 'dev_dependencies', 'build_dependencies'];
+
+/** The fields of a dependency entry that take the crate from somewhere other than crates.io. */
+const OTHER_SOURCES = ['path', 'git', 'registry', 'registry-index', 'registry_index'];
+
+/** The other fields of a dependency entry Manki knows, none of which changes where the crate comes from. */
+const ENTRY_FIELDS = new Set(['version', 'features', 'optional', 'default-features', 'default_features', 'package', 'public', 'artifact', 'lib', 'target', 'branch', 'tag', 'rev']);
 
 /** Returns the path of a crate's file in the crates.io index, which files a crate by the length and start of its name. */
 function indexPath(name: string): string {
@@ -58,16 +64,24 @@ function replacedCrate(spec: string): string | undefined {
 /**
  * Returns what a `Cargo.toml` says of the crate `name`: each requirement it states from crates.io, whether `[patch]`
  * or `[replace]` swaps the crate, whether a `rust-version` can make a fresh install pick an older version, and whether
- * a workspace root elsewhere locks its versions. A dependency from a path, a git repository or another registry has no
- * requirement from crates.io, and one that inherits its entry from `[workspace.dependencies]` is stated there.
+ * a workspace root elsewhere locks its versions. An entry that inherits from `[workspace.dependencies]` is stated
+ * there. One from a path, a git repository or another registry, or with a field Manki does not know, sets `otherSource`.
  */
 function cargoManifest(text: string, name: string): ManifestFacts {
   const manifest = parseTomlSubset(text);
+  let otherSource: string | undefined;
   const requirements = dependencyTables(manifest).flatMap(table => Object.entries(table).flatMap(([key, entry]): Requirement[] => {
     if (normalize(crateOf(key, entry)) !== normalize(name)) return [];
     if (typeof entry === 'string') return [{ name: key, requirement: entry }];
     const fields = tableOf(entry);
-    if (['path', 'git', 'registry', 'workspace'].some(field => Object.hasOwn(fields, field)) || typeof fields.version !== 'string') return [];
+    if (Object.hasOwn(fields, 'workspace')) return [];
+    const source = OTHER_SOURCES.find(field => Object.hasOwn(fields, field));
+    const unknown = Object.keys(fields).find(field => !OTHER_SOURCES.includes(field) && !ENTRY_FIELDS.has(field));
+    if (source || unknown || typeof fields.version !== 'string') {
+      otherSource ??= source ? `its entry for the crate sets \`${source}\``
+        : unknown ? `its entry for the crate has the field \`${shown(unknown)}\`, which Manki does not know` : 'its entry for the crate states no version';
+      return [];
+    }
     return [{ name: crateOf(key, entry), requirement: fields.version }];
   }));
   const patched = Object.values(tableOf(manifest.patch)).some(source => Object.entries(tableOf(source)).some(([key, entry]) => normalize(crateOf(key, entry)) === normalize(name)));
@@ -76,6 +90,7 @@ function cargoManifest(text: string, name: string): ManifestFacts {
   const root = tableOf(manifest.package).workspace;
   return {
     requirements,
+    ...(otherSource && { otherSource }),
     ...((patched || replaced) && { overridden: `its \`[${patched ? 'patch' : 'replace'}]\` swaps the crate` }),
     ...(typeof root === 'string' && { lockedElsewhere: 'its `package.workspace` names a workspace root elsewhere, whose lockfile decides its versions' }),
   };
@@ -130,6 +145,7 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     validName: name => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name),
     sameName: (a, b) => normalize(a) === normalize(b),
     unreadInstallFiles: [],
+    installedCopy: () => undefined,
     isRegistrySource: source => source !== undefined && CRATES_IO_SOURCES.includes(source),
     namesHost: () => true,
     isConfigFile: path => CARGO_CONFIGS.test(path),
@@ -138,7 +154,9 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
       for (const { file, text } of configs) {
         const config = parseTomlSubset(text);
         // A replaced source serves every crate from elsewhere, such as a vendored folder whose files can differ.
-        if (Object.values(tableOf(config.source)).some(source => Object.hasOwn(tableOf(source), 'replace-with'))) return `${shown(file)} replaces the source of crates`;
+        if (Object.values(tableOf(config.source)).some(source => ['replace-with', 'replace_with'].some(k => Object.hasOwn(tableOf(source), k)))) return `${shown(file)} replaces the source of crates`;
+        // `registry.index` and a `crates-io` entry of `[registries]` point crates.io itself at another index.
+        if (Object.hasOwn(tableOf(config.registry), 'index') || Object.hasOwn(tableOf(config.registries), 'crates-io')) return `${shown(file)} sets another index for crates.io`;
         // `paths` builds local copies of any crate they hold, and `include` reads settings from another file.
         const key = ['paths', 'include'].find(k => Object.hasOwn(config, k));
         if (key) return `${shown(file)} sets \`${key}\`, which can change any crate`;

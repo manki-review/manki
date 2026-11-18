@@ -192,6 +192,14 @@ async function resolveDependency(
   }
   const otherRegistry = registry.otherRegistry(name, configs);
 
+  // An install file Manki does not read, such as a `bun.lock`, can decide the packages of its folder tree. A lockfile
+  // above it can lock the packages of that tree too, so it counts for a lockfile in either direction.
+  const unreadInstall = files.filter(f => registry.unreadInstallFiles.includes(posix.basename(f)));
+  for (const dir of new Set(['.', ...files.map(f => posix.dirname(f))])) {
+    const copy = registry.installedCopy(join(root, dir), name);
+    if (copy) refuse(`the checkout holds ${shown(posix.join(dir, copy))}, which the project runs in place of the archive ${registry.id} publishes`);
+  }
+  const unreadIn = (dir: string, below = false) => unreadInstall.find(f => within(dir, posix.dirname(f)) || (below && within(posix.dirname(f), dir)));
   const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)));
   const locked = lockfiles.flatMap(file => {
     const text = read(file, 'lock it');
@@ -203,20 +211,21 @@ async function resolveDependency(
       : !registry.isRegistrySource(p.source, p.name, p.version) ? `${shown(p.file)} locks it from ${shown((p.source ?? 'this repository').slice(0, 200))}, not from ${registry.id}`
         : p.patched ? `${shown(p.file)} locks it with a patch applied, so the PR does not run the code ${registry.id} publishes`
           : !registry.namesHost(p.source) && otherRegistry !== undefined ? `it may come from another registry than ${registry.id}, since ${otherRegistry}`
-            : undefined;
+            : unreadIn(posix.dirname(p.file), true) !== undefined ? `${shown(p.file)} locks it, and ${shown(unreadIn(posix.dirname(p.file), true)!)}, which Manki does not read, can decide what an install there gets`
+              : undefined;
     if (reason) refuse(reason, { ...(VERSION.test(p.version) && { version: p.version }), source: 'lockfile', file: p.file });
   }
 
-  const unreadInstall = files.filter(f => registry.unreadInstallFiles.includes(posix.basename(f)));
   const manifests = files.filter(f => registry.manifests.includes(posix.basename(f))).map((file): RegistryConfig => ({ file, text: read(file, 'require or override it') }));
   const requirements = manifests.flatMap(({ file, text }) => {
-    const { requirements: stated, overridden, lockedElsewhere } = certain(file, text, () => registry.manifest(text, name), { requirements: [] });
+    const { requirements: stated, overridden, otherSource, lockedElsewhere } = certain(file, text, () => registry.manifest(text, name), { requirements: [] });
     if (overridden) refuse(`${shown(file)} changes its code for an install: ${overridden}`, { file });
+    if (otherSource) refuse(`${shown(file)} does not take it from ${registry.id}: ${otherSource}`, { file });
     if (stated.length === 0) return [];
     const dir = posix.dirname(file);
     const origin = { name: stated[0].name, source: 'requirement' as const, file, requirement: stated[0].requirement };
-    const installFile = unreadInstall.find(f => within(dir, posix.dirname(f)));
-    if (installFile) refuse(`${shown(file)} requires it, and ${shown(installFile)}, which Manki does not read, decides what an install there gets`, origin);
+    const installFile = unreadIn(dir);
+    if (installFile) refuse(`${shown(file)} requires it, and ${shown(installFile)}, which Manki does not read, can decide what an install there gets`, origin);
     // A manifest under a lockfile takes its version from that lockfile, which must then lock it.
     const covering = lockfiles.filter(f => within(dir, posix.dirname(f)));
     if (covering.length > 0) {
