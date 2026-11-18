@@ -2355,7 +2355,7 @@ describe('runReview', () => {
     }
   }, GIT_TEST_TIMEOUT_MS);
 
-  it('asks a finder that opened none of the listed files once more, and keeps its first answer when the second ask fails', async () => {
+  it('asks a finder that opened none of the listed files once more, in one call when it reads in slices, and keeps its first answer when the second ask fails', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const fee = (body: string) => `package main\n\nfunc main() {}\n${body}`;
     const functions = ['ComputeFeeA', 'ComputeFeeB', 'ComputeFeeC'];
@@ -2376,15 +2376,17 @@ describe('runReview', () => {
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }]);
     const NOTE = '\n\nYou answered this message before without opening any file outside the changed files that "Uses Outside the Diff" or "In the Reference Repos" lists. ';
     const answer = (title: string) => ({ content: JSON.stringify([{ severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
-    type Asked = { first: { toolSteps?: []; filesRead?: string[] }; second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string };
+    type Reads = { toolSteps?: []; filesRead?: string[] };
+    type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string };
     const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner }: Asked) => {
       const clients = makeClients();
-      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(NOTE) ? second() : { ...answer('First'), ...first }));
+      const reads = (message: string) => (typeof first === 'function' ? first(message) : first);
+      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(NOTE) ? second() : { ...answer('First'), ...reads(message) }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
       const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(workspace.diff), repoContext: '', workspace: workspace.root });
       const messages = sendMessage.mock.calls.filter(([system]) => !isRelatedCheck(system)).map(call => call[1]);
-      return { result, first: messages.filter(m => !m.includes(NOTE)), again: messages.filter(m => m.includes(NOTE)), kept: [...new Set(result.rawFindings?.map(f => f.title))] };
+      return { result, first: messages.filter(m => !m.includes(NOTE)), again: messages.filter(m => m.includes(NOTE)), kept: [...new Set(result.rawFindings?.map(f => f.title))], judged: mockedRunJudgeAgent.mock.calls.at(-1)?.[2].findings ?? [] };
     };
     try {
       // A changed file counts for nothing, also one the lists name, and the second answer replaces the first.
@@ -2413,14 +2415,33 @@ describe('runReview', () => {
       // Nothing is listed, so there is nothing to ask for.
       const empty = await run({ first: { toolSteps: [] }, workspace: unlisted });
       expect([empty.result.usesOutsideDiff?.symbols, empty.result.usesOutsideDiff?.reference, empty.again, empty.result.agentsAskedAgain]).toEqual([undefined, undefined, [], []]);
-      // A finder without tools, one whose client does not report what it read and one that reads the diff in slices are never asked again.
+      // A finder without tools, one whose client does not report what it read and one with a slice whose client does not are never asked again.
       const reads: { toolSteps: [] } = { toolSteps: [] };
-      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: reads, workspace: sliced }]) {
+      const ratesSlice = (message: string) => message.includes('diff --git a/notes/rates.txt');
+      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: (message: string) => (ratesSlice(message) ? {} : reads), workspace: sliced }]) {
         const result = await run(unknown);
         if (unknown.workspace === sliced) expect(result.first.every(message => message.startsWith('## Slice'))).toBe(true);
         expect(result.result.usesOutsideDiff?.symbols).toHaveLength(3);
         expect([result.again, result.result.agentsAskedAgain]).toEqual([[], []]);
       }
+
+      // The slices of a finder count together, so a listed file one slice opened is enough.
+      const oneSlice = await run({ first: (message: string) => (ratesSlice(message) ? { toolSteps: [], filesRead: [listed[0]] } : reads), workspace: sliced });
+      expect([oneSlice.first.length, oneSlice.again, oneSlice.result.agentsAskedAgain]).toEqual([2 * oneSlice.result.agentNames.length, [], []]);
+      // A finder whose slices opened none is asked once, in one call on the slice that declares the listed functions, and keeps its findings of the slices.
+      const slices = await run({ first: reads, workspace: sliced });
+      expect(slices.result.agentsAskedAgain).toEqual(slices.result.agentNames);
+      expect([slices.first.length, slices.again.length]).toEqual([2 * slices.result.agentNames.length, slices.result.agentNames.length]);
+      const feeSlice = slices.first.find(message => !ratesSlice(message))!;
+      for (const message of slices.again) {
+        expect(message.startsWith(feeSlice)).toBe(true);
+        expect(message).toContain('notes/rates.txt');
+        expect(message.endsWith(`Then answer with only the findings you add. Your earlier findings are kept. Reply with only the JSON array the system prompt describes, with no text, markdown or code fence around it.`)).toBe(true);
+      }
+      expect(slices.result.rawFindings?.map(f => [f.reviewers, f.title])).toEqual(slices.result.agentNames.flatMap(name => ['First', 'First', 'Second'].map(title => [[name], title])));
+      // A finding the call repeats goes to the judge as one more copy of the same finder, which the judge folds like two slices' copies.
+      const repeated = await run({ first: reads, workspace: sliced, second: async () => ({ ...answer('First'), toolSteps: [] }) });
+      expect(repeated.judged.map(f => [f.reviewers, f.title])).toEqual(repeated.result.agentNames.flatMap(name => Array(3).fill([[name], 'First'])));
       // Neither is the trivial verifier.
       const trivial = await run({ first: { toolSteps: [] }, workspace: docs, planner: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) });
       expect(trivial.result.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
