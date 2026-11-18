@@ -388,7 +388,7 @@ interface PreviousFinding extends FindingMetadata {
   peakGrade?: FindingSeverity;
   /** Set when a round record could not be read, so the grade it may hold is unknown and the thread stays guarded. */
   gradeUnknown?: boolean;
-  /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
+  /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open, but `llmDeduplicateFindings` drops a repeat of it. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
   fixed?: boolean;
@@ -1320,7 +1320,7 @@ function describeForDedup(f: DedupItem): string {
 }
 
 /**
- * Asks `client` which findings repeat an earlier resolved one, in any wording. A match counts in the same file, or in
+ * Asks `client` which findings repeat an earlier resolved or auto-resolved one, in any wording. A match counts in the same file, or in
  * another file when `acrossFiles` pairs the two. A repeat of a waived finding is dropped, and a repeat of a fixed one
  * goes to the judge with a note. A failed call, or one the round did not start or stopped, keeps every finding.
  */
@@ -1336,7 +1336,8 @@ async function llmDeduplicateFindings(
     const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client, acrossFiles);
     return { unique: [...alerts, ...rest.unique], duplicates: rest.duplicates };
   }
-  const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved');
+  // A thread Manki resolved after a reply was settled by that reply's writer, so it counts as decided like one a person resolved.
+  const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved' || f.status === 'auto-resolved');
   if (findings.length === 0 || resolved.length === 0) {
     return { unique: findings, duplicates: [] };
   }

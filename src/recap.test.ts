@@ -2460,6 +2460,11 @@ describe('llmDeduplicateFindings', () => {
     // Unless the round pairs the two, as by a line both cite.
     const paired = (prev: PreviousFinding, f: Finding) => prev.title === waived.title && f.file === elsewhere.file;
     expect(await llmDeduplicateFindings([elsewhere], [waived], match, paired)).toEqual({ unique: [], duplicates: [{ finding: elsewhere, matchedTitle: waived.title, matchType: 'llm' }] });
+    // A thread Manki resolved after a maintainer's reply was decided too, in its own file and in another.
+    const settledByReply = { ...waived, status: 'auto-resolved' as const };
+    for (const finding of [second, elsewhere]) {
+      expect(await llmDeduplicateFindings([finding], [settledByReply], match, paired)).toEqual({ unique: [], duplicates: [{ finding, matchedTitle: waived.title, matchType: 'llm' }] });
+    }
 
     // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.
     const suggestion = { ...waived, severity: 'note' as const };
