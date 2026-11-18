@@ -1,4 +1,4 @@
-import { estimateCostUsd, modelDisplayName, parseModelSpec } from './model-registry';
+import { assumesShortRequests, estimateCostUsd, modelDisplayName, parseModelSpec } from './model-registry';
 
 describe('parseModelSpec', () => {
   it('parses bare model with known prefix', () => {
@@ -92,6 +92,8 @@ describe('modelDisplayName', () => {
 
 describe('estimateCostUsd', () => {
   const usage = (inputTokens: number, outputTokens: number, cacheReadTokens = 0, cacheWriteTokens = 0) => ({ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens: 0 });
+  /** The usage of a call made of one request. */
+  const one = (inputTokens: number, outputTokens: number, cacheReadTokens = 0) => ({ ...usage(inputTokens, outputTokens, cacheReadTokens), largestRequestInputTokens: inputTokens });
 
   it('prices uncached input, cache reads, cache writes and output separately', () => {
     expect(estimateCostUsd('claude-sonnet-5-5', usage(1_000_000, 1_000_000))).toBeCloseTo(12);
@@ -100,17 +102,35 @@ describe('estimateCostUsd', () => {
     expect(estimateCostUsd('claude-opus-5-5', { ...usage(1_000_000, 0, 500_000, 250_000), cacheWrite1hTokens: 100_000 })).toBeCloseTo(0.25 * 4 + 0.5 * 0.2 + 0.15 * 5 + 0.1 * 8);
   });
 
-  it('uses the long-prompt price above 100,000 input tokens, and the price of a dated id', () => {
-    expect(estimateCostUsd('claude-haiku-5-5', usage(100_000, 0))).toBeCloseTo(0.01);
-    expect(estimateCostUsd('claude-haiku-5-5', usage(200_000, 1_000_000))).toBeCloseTo(0.1 + 2.5);
+  it('uses the long-prompt price when the largest request has more than 100,000 input tokens, and the price of a dated id', () => {
+    expect(estimateCostUsd('claude-haiku-5-5', one(100_000, 0))).toBeCloseTo(0.01);
+    expect(estimateCostUsd('claude-haiku-5-5', one(200_000, 1_000_000))).toBeCloseTo(0.1 + 2.5);
     expect(estimateCostUsd('claude-haiku-4-5-20251001', usage(1_000_000, 0))).toBeCloseTo(1);
   });
 
-  it('prices OpenAI and Gemini models, with the OpenAI long-context tier above 272,000 input tokens', () => {
-    expect(estimateCostUsd('gpt-6.1-sol', usage(272_000, 1_000_000, 100_000))).toBeCloseTo(0.172 * 2 + 0.1 * 0.1 + 10);
-    expect(estimateCostUsd('gpt-6.1-sol', usage(1_000_000, 1_000_000, 500_000))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
-    expect(estimateCostUsd('gpt-6.2-sol', usage(1_000_000, 1_000_000, 500_000))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
-    expect(estimateCostUsd('gemini-3.8-flash', usage(1_000_000, 1_000_000, 200_000))).toBeCloseTo(0.8 * 0.75 + 0.2 * 0.075 + 3.75);
+  it('prices OpenAI and Gemini models, with the OpenAI long-context tier when the largest request has more than 272,000 input tokens', () => {
+    expect(estimateCostUsd('gpt-6.1-sol', one(272_000, 1_000_000, 100_000))).toBeCloseTo(0.172 * 2 + 0.1 * 0.1 + 10);
+    expect(estimateCostUsd('gpt-6.1-sol', one(1_000_000, 1_000_000, 500_000))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
+    expect(estimateCostUsd('gpt-6.2-sol', one(1_000_000, 1_000_000, 500_000))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
+    expect(estimateCostUsd('gemini-3.8-flash', one(1_000_000, 1_000_000, 200_000))).toBeCloseTo(0.8 * 0.75 + 0.2 * 0.075 + 3.75);
+  });
+
+  it('charges the long-prompt price per request, so a call of many short requests pays the standard price', () => {
+    const standard = 0.5 * 2 + 0.5 * 0.1 + 10;
+    // A call with tools whose 20 requests of 50,000 input tokens each add up to 1,000,000.
+    const shortRequests = { ...usage(1_000_000, 1_000_000, 500_000), largestRequestInputTokens: 50_000 };
+    expect(estimateCostUsd('gpt-6.2-sol', shortRequests)).toBeCloseTo(standard);
+    expect(assumesShortRequests('gpt-6.2-sol', shortRequests)).toBe(false);
+    // One request over the limit prices the call at the long-prompt price.
+    expect(estimateCostUsd('gpt-6.2-sol', { ...shortRequests, largestRequestInputTokens: 300_000 })).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
+    // Only the sum is known, so the call gets the standard price and the estimate assumes no request passed the limit.
+    expect(estimateCostUsd('gpt-6.2-sol', usage(1_000_000, 1_000_000, 500_000))).toBeCloseTo(standard);
+    expect(assumesShortRequests('gpt-6.2-sol', usage(1_000_000, 1_000_000, 500_000))).toBe(true);
+    expect(assumesShortRequests('claude-haiku-5-5-20261001', usage(100_001, 0))).toBe(true);
+    // The assumption matters only when the sum passes the limit, for a model with a long-prompt price.
+    expect(assumesShortRequests('gpt-6.2-sol', usage(272_000, 1_000_000))).toBe(false);
+    expect(assumesShortRequests('claude-opus-5-5', usage(1_000_000, 0))).toBe(false);
+    expect(assumesShortRequests('gpt-5.6', usage(1_000_000, 0))).toBe(false);
   });
 
   it('returns null for a model without a known price', () => {

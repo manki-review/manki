@@ -9,7 +9,7 @@ import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse } from '../utils';
 import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
+import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, withLargestRequest, ZERO_USAGE } from './types';
 import { checkLoginFilePath, withLoginFile } from './codex-login-file';
 
 const execFileAsync = promisify(execFile);
@@ -107,6 +107,36 @@ function readSessionLimits(path: string): LimitUsage[] {
     });
   }
   return [];
+}
+
+/**
+ * Returns the input tokens of each request of the Codex session `session` under `codexHome`, from the `token_count` events
+ * of its session file, or none when they do not add up. Each request adds its `last_token_usage` to `total_token_usage`,
+ * and an event that adds nothing repeats the last request.
+ */
+function readCodexRequestInputs(codexHome: string, session: string, since: number): number[] {
+  const file = sessionFolders(codexHome, since).flatMap(dir => listSessionFiles(dir)).find(f => f.path.endsWith(`-${session}.jsonl`));
+  let lines: string[];
+  try {
+    lines = file ? readFileSync(file.path, 'utf8').split('\n') : [];
+  } catch {
+    return [];
+  }
+  const inputs: number[] = [];
+  let total = 0;
+  for (const line of lines) {
+    if (!line.includes('"token_count"')) continue;
+    const payload = (safeJsonParse(line) as { payload?: { type?: unknown; info?: unknown } } | null)?.payload;
+    if (payload?.type !== 'token_count' || !payload.info || typeof payload.info !== 'object') continue;
+    const info = payload.info as { total_token_usage?: { input_tokens?: unknown }; last_token_usage?: { input_tokens?: unknown } };
+    const next = readCount(info.total_token_usage?.input_tokens);
+    if (next === total) continue;
+    const request = readCount(info.last_token_usage?.input_tokens);
+    if (next !== total + request) return [];
+    inputs.push(request);
+    total = next;
+  }
+  return inputs;
 }
 
 const OPENAI_OAUTH_BOOTSTRAP_HINT =
@@ -670,7 +700,7 @@ export class OpenAIClient implements LLMClient {
     return {
       content,
       // Codex counts the whole session in `turn.completed`, so the last run's counts cover the runs it resumed.
-      ...(events.usage && { usage: events.usage }),
+      ...(events.usage && { usage: events.session ? withLargestRequest(events.usage, readCodexRequestInputs(home, events.session, startTime)) : events.usage }),
       latencyMs: Date.now() - startTime,
       model: this.model,
       ...(relatedReads && { relatedReads }),
@@ -730,13 +760,13 @@ export class OpenAIClient implements LLMClient {
       completion_tokens_details?: { reasoning_tokens?: number };
     };
     const usage: LLMUsage = sdkUsage
-      ? {
+      ? oneRequest({
           inputTokens: readCount(sdkUsage.prompt_tokens),
           outputTokens: readCount(sdkUsage.completion_tokens),
           cacheReadTokens: readCount(sdkUsage.prompt_tokens_details?.cached_tokens),
           cacheWriteTokens: 0,
           reasoningTokens: readCount(sdkUsage.completion_tokens_details?.reasoning_tokens),
-        }
+        })
       : { ...ZERO_USAGE };
 
     return { content, usage, latencyMs: Date.now() - startTime, model: this.model, truncated: choice?.finish_reason === 'length' };

@@ -11,6 +11,8 @@ export interface LLMUsage {
   reasoningTokens: number;
   /** The part of `cacheWriteTokens` cached for an hour rather than five minutes. Unset when no call reported the split. */
   cacheWrite1hTokens?: number;
+  /** The input tokens of the call's largest request, cache reads and writes included. Unset when only the sum over its requests is known. */
+  largestRequestInputTokens?: number;
 }
 
 export interface LLMResponse {
@@ -67,6 +69,20 @@ export const ZERO_USAGE: LLMUsage = Object.freeze({
   cacheWriteTokens: 0,
   reasoningTokens: 0,
 });
+
+/**
+ * Returns `usage` with `largestRequestInputTokens` set from `requestInputs`, the input tokens of each request of the call.
+ * Leaves it unset unless they add up to `usage.inputTokens`, since a request the client did not see could be the largest.
+ */
+export function withLargestRequest(usage: LLMUsage, requestInputs: readonly number[]): LLMUsage {
+  const sum = requestInputs.reduce((total, tokens) => total + tokens, 0);
+  return sum > 0 && sum === usage.inputTokens ? { ...usage, largestRequestInputTokens: Math.max(...requestInputs) } : usage;
+}
+
+/** Returns `usage` of a call that made one request, which is then its largest. */
+export function oneRequest(usage: LLMUsage): LLMUsage {
+  return withLargestRequest(usage, [usage.inputTokens]);
+}
 
 export function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
   const reported = a.cacheWrite1hTokens !== undefined || b.cacheWrite1hTokens !== undefined;
@@ -163,6 +179,11 @@ export interface LLMCall extends LLMUsage {
   durationMs: number;
   /** Estimate at public API prices, `null` when the model has no known price or the provider reported no usage. */
   costUsd: number | null;
+  /**
+   * Set when `costUsd` takes the standard price although the model charges more for a long request and the call's input
+   * passes that limit, because only the sum over the call's requests is known.
+   */
+  costAssumesShortRequests?: true;
   /** Tool steps the call took. Empty when it had repository tools and called none. Unset when it had no tools or its client reports no steps. */
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */

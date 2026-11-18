@@ -8,7 +8,7 @@ import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@googl
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, callWithTimeout, cliEnv, cliHome, matchQuotaText, processFolder, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail, withPromptDir } from './cli-utils';
-import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -281,13 +281,13 @@ export class GeminiClient implements LLMClient {
 
     const usageMetadata = response.usageMetadata;
     const usage: LLMUsage = usageMetadata
-      ? {
+      ? oneRequest({
           inputTokens: readCount(usageMetadata.promptTokenCount),
           outputTokens: readCount(usageMetadata.candidatesTokenCount) + readCount(usageMetadata.thoughtsTokenCount),
           cacheReadTokens: readCount(usageMetadata.cachedContentTokenCount),
           cacheWriteTokens: 0,
           reasoningTokens: readCount(usageMetadata.thoughtsTokenCount),
-        }
+        })
       : { ...ZERO_USAGE };
 
     return { content, usage, latencyMs: Date.now() - startTime, model: this.model, truncated };
