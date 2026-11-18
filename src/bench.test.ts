@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
@@ -354,14 +354,21 @@ describe('llmMatcher', () => {
     expect(options).toEqual({ effort: 'high', timeoutMs: 300_000 });
     expect(cache.size).toBe(1);
 
-    // A priced call returns its cost with the decision, and the cache keeps the decision alone, so a repeat costs nothing.
+    // Each model call adds its cost, one whose reply cannot be used too, and a cached answer adds nothing.
     const usage = { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
-    const priced = { sendMessage: jest.fn().mockResolvedValue({ content: '{"verdict": "NONE", "findings": [], "reason": "Not there."}', usage }) } as unknown as LLMClient;
-    const pricedCache = new Map<string, MatchDecision>();
-    const costed = llmMatcher(priced, 'anthropic/claude-sonnet-5-5', pricedCache);
-    expect(await costed(item, findings)).toEqual({ verdict: 'NONE', findings: [], reason: 'Not there.', costUsd: 2 });
-    expect(await costed(item, findings)).toEqual({ verdict: 'NONE', findings: [], reason: 'Not there.' });
-    expect([...pricedCache.values()].every(decision => !('costUsd' in decision))).toBe(true);
+    const priced = { sendMessage: jest.fn().mockResolvedValueOnce({ content: 'not json', usage }).mockResolvedValue({ content: '{"verdict": "NONE", "findings": [], "reason": "Not there."}', usage }) } as unknown as LLMClient;
+    const costed = llmMatcher(priced, 'anthropic/claude-sonnet-5-5', new Map());
+    const spend = { costUsd: 0, unpriced: 0 };
+    await expect(costed(item, findings, spend)).rejects.toThrow('is not a JSON object');
+    expect(await costed(item, findings, spend)).toEqual({ verdict: 'NONE', findings: [], reason: 'Not there.' });
+    expect(await costed(item, findings, spend)).toEqual({ verdict: 'NONE', findings: [], reason: 'Not there.' });
+    expect(spend).toEqual({ costUsd: 4, unpriced: 0 });
+    // A model without a price, a reply without token counts and a call that failed have no known cost.
+    const unknownCost = { costUsd: 0, unpriced: 0 };
+    await llmMatcher(clientAnswering('{"verdict": "NONE", "findings": [], "reason": "x"}'), 'model-a', new Map())(item, findings, unknownCost);
+    await llmMatcher({ sendMessage: jest.fn().mockResolvedValue({ content: '{"verdict": "NONE", "findings": [], "reason": "x"}', usage, model: 'model-without-price' }) } as unknown as LLMClient, 'model-a', new Map())(item, findings, unknownCost);
+    await expect(llmMatcher({ sendMessage: jest.fn().mockRejectedValue(new Error('timed out')) } as unknown as LLMClient, 'model-a', new Map())(item, findings, unknownCost)).rejects.toThrow('timed out');
+    expect(unknownCost).toEqual({ costUsd: 0, unpriced: 3 });
   });
 
   it.each([
@@ -569,7 +576,8 @@ describe('scoreRun', () => {
       unposted: [makeFinding({ ...place('Unproven'), unpostedReason: 'no_proof' }), makeFinding({ ...place('Old code'), tags: [PRE_EXISTING_TAG] }), makeFinding({ ...place('Over the cap'), unpostedReason: 'note_cap' })],
       judge: {
         dropped: [{ ...place('Judged'), reviewers: [], gradePath: step('judge') }, { ...place('Disproved'), reviewers: [], gradePath: step('refutation') }, { ...place('Resolved before'), reviewers: [], gradePath: step('ratchet') }, { ...place('No step'), reviewers: [] }],
-        mergedDuplicates: 1,
+        // One of the twins went into the other, and 'Merged' into another finding.
+        mergedDuplicates: 2,
       },
       memory: { suppressed: [{ ...place('Hidden'), severity: 'warning', suppressionId: 'S1' }] },
       dedup: { duplicateMatches: [{ droppedTitle: 'Seen before', matchedTitle: 'Seen in round 1', matchType: 'exact' }] },
@@ -577,9 +585,10 @@ describe('scoreRun', () => {
     };
     const record = (changes: typeof parts = {}) => rawRecord(raw, [...posted, makeFinding(place('Twin'))], { ...parts, ...changes });
     // The matcher names every finding it is shown for K1 and K2, closest first as given, and each of its calls costs a quarter.
-    const matcher = jest.fn(async (item: KeyItem, findings: unknown[]) => ({
-      ...(item.id === 'N1' ? { verdict: 'NONE' as const, findings: [], reason: 'none' } : { verdict: 'MATCH' as const, findings: findings.map((_, i) => i), reason: 'same' }), costUsd: 0.25,
-    }));
+    const matcher = jest.fn(async (item: KeyItem, findings: unknown[], spend?: MatcherSpend): Promise<MatchDecision> => {
+      if (spend) spend.costUsd += 0.25;
+      return item.id === 'N1' ? { verdict: 'NONE', findings: [], reason: 'none' } : { verdict: 'MATCH', findings: findings.map((_, i) => i), reason: 'same' };
+    });
     const exits = async (changes: typeof parts = {}) => (await scoreRun(benchCase, makeReview('ADDRESS_FIRST', posted, true, record(changes)), matcher)).raw!.findings.map(f => f.exit);
 
     const score = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', posted, true, record()), matcher);
@@ -602,18 +611,23 @@ describe('scoreRun', () => {
     expect(score.raw!.matcherCostUsd).toBe(0.5);
     expect(score.matches.map(m => [m.item, m.verdict])).toEqual([['K1', 'MATCH'], ['K2', 'NONE'], ['N1', 'NONE']]);
 
-    // A finding no stage names is merged only when no step that drops findings without naming them ran, and no more are left than the judge merged.
+    // A finding no stage names is merged only when no step that drops findings without naming them ran, and the judge merged
+    // every finding no stage names, the twin the record holds once among them.
     expect((await exits({ dedup: { ...parts.dedup, testNitSuppressedCount: 1 } }))[11]).toBe('unknown');
-    expect((await exits({ judge: { ...parts.judge, mergedDuplicates: 0 } }))[11]).toBe('unknown');
+    expect((await exits({ judge: { ...parts.judge, mergedDuplicates: 1 } }))[11]).toBe('unknown');
+    // A lead no stage names may be one the sweep's judge left unsettled, which the record keeps nowhere.
+    const unnamedLead = rawRecord([{ title: 'Sweep lead', lead: { checked: '', left: '' } }], [], { judge: { mergedDuplicates: 1 } });
+    expect((await scoreRun(benchCase, makeReview('READY', [], true, unnamedLead), matcher)).raw!.findings.map(f => f.exit)).toEqual(['unknown']);
     const readerFold = rawRecord(raw.slice(11, 12), [...posted, makeFinding({ title: 'Reader blocker', reviewers: [VERDICT_READER_NAME, 'finder-a'] })], { judge: { mergedDuplicates: 1 } });
     expect((await scoreRun(benchCase, makeReview('ADDRESS_FIRST', posted, true, readerFold), matcher)).raw!.findings.map(f => f.exit)).toEqual(['unknown']);
     // The dedup names only the title it dropped, so it counts only while it dropped as many findings with that title as no later stage names.
-    const twoSeen = rawRecord([{ title: 'Seen before' }, { title: 'Seen before', file: 'src/b.rs' }], [], { dedup: parts.dedup, judge: { mergedDuplicates: 1 } });
-    expect((await scoreRun(benchCase, makeReview('READY', [], true, twoSeen), matcher)).raw!.findings.map(f => f.exit)).toEqual(['unknown', 'unknown']);
+    // The finding of the two the dedup did not drop left unnamed too, so a merge the judge made counts for it and not for another finding.
+    const twoSeen = rawRecord([{ title: 'Seen before' }, { title: 'Seen before', file: 'src/b.rs' }, { title: 'Unseen' }], [], { dedup: parts.dedup, judge: { mergedDuplicates: 1 } });
+    expect((await scoreRun(benchCase, makeReview('READY', [], true, twoSeen), matcher)).raw!.findings.map(f => f.exit)).toEqual(['unknown', 'unknown', 'unknown']);
 
     // The report sums the runs: the items a finder found, the ones posted, the lost ones by the exit of the closest finding naming each, and the matcher's cost.
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [score, { ...score, complete: false }] }] }]);
-    expect(report.variants[0].summary.raw).toEqual({ items: 2, found: 2, posted: 1, lost: { judge: 1 }, matcherCostUsd: 0.5 });
+    expect(report.variants[0].summary.raw).toEqual({ items: 2, found: 2, posted: 1, lost: { judge: 1 }, unscored: 0, matcherCostUsd: 0.5 });
     const summary = formatBenchSummary(report);
     expect(summary).toContain('\n    found by a finder and missed by the review: K2 (dropped by the judge, merged by the judge into another finding)\n');
     expect(summary).toContain("\nFinders' findings: 2 of 2 must-catch items found by a finder, 1 found by the review. Missed by the review after a finder found it: dropped by the judge 1. Matcher cost of this scoring $0.50.\n");
@@ -626,8 +640,43 @@ describe('scoreRun', () => {
     const rekeyed = { ...benchCase, keyVersion: benchCase.keyVersion + 1, mustCatch: benchCase.mustCatch.slice(1) };
     const again = (await rescoreReport(report, [rekeyed], matcher)).report.variants[0];
     expect(again.cases[0].runs[0].raw).toEqual({ ...score.raw, matches: score.raw!.matches.slice(1), caught: score.raw!.caught.slice(1), matcherCostUsd: 0.25 });
-    expect(again.summary.raw).toEqual({ items: 1, found: 1, posted: 0, lost: { judge: 1 }, matcherCostUsd: 0.25 });
+    expect(again.summary.raw).toEqual({ items: 1, found: 1, posted: 0, lost: { judge: 1 }, unscored: 0, matcherCostUsd: 0.25 });
     expect(await rescoreReport(older, [rekeyed], matcher).then(r => r.report.variants[0].cases[0].runs[0])).not.toHaveProperty('raw');
+  });
+
+  it("keeps the posted score when the matcher fails on the finders' findings, and counts every matcher call of them", async () => {
+    const posted = [makeFinding({ title: 'Posted', file: 'src/read.rs' })];
+    const record = rawRecord([{ title: 'Posted', file: 'src/read.rs', description: 'Raw text.' }, { title: 'Judged', description: 'Calls `unlock` early.' }], posted, { judge: { dropped: [{ title: 'Judged', file: 'src/other.rs', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'judge' }] }] } });
+    const usage = { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+    // Only the finders' findings name `unlock`, so only their K2 call gets `unusable` replies. Each priced call costs $2.
+    const scored = async (unusable: number, priced = true) => {
+      let left = unusable;
+      const client = {
+        sendMessage: async (_system: string, message: string) => {
+          const content = message.includes('unlock') && left-- > 0 ? 'not json' : '{"verdict": "MATCH", "findings": [1], "reason": "same"}';
+          return { content, ...(priced && { usage }) };
+        },
+      } as unknown as LLMClient;
+      return scoreRun(benchCase, makeReview('ADDRESS_FIRST', posted, true, record), llmMatcher(client, 'claude-sonnet-5-5', new Map()));
+    };
+
+    // The retry reads K1 from the cache, so the first attempt's calls and its failed K2 call count once each: K1, the failed K2 and the K2 that worked.
+    const retried = await scored(1);
+    expect(retried.raw).toMatchObject({ caught: [{ item: 'K1', posted: true }, { item: 'K2', posted: false, exits: ['judge'] }], matcherCostUsd: 6 });
+    expect(retried.raw).not.toHaveProperty('unscored');
+    // A matcher that fails twice on them leaves the run complete with its posted score, and the raw part unscored.
+    const failed = await scored(2);
+    expect(failed).toMatchObject({ complete: true, mustCatchRecall: 0.5, matches: [{ item: 'K1', verdict: 'MATCH' }, { item: 'K2', verdict: 'NONE' }, { item: 'N1', verdict: 'MATCH' }] });
+    expect(failed.raw).toEqual({ findings: retried.raw!.findings, matches: [], caught: [], unscored: true, matcherCostUsd: 6 });
+    const unpriced = await scored(0, false);
+    expect(unpriced.raw!.matcherCostUsd).toBeNull();
+
+    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [retried, failed] }] }]);
+    expect(report.variants[0].summary.raw).toEqual({ items: 2, found: 2, posted: 1, lost: { judge: 1 }, unscored: 1, matcherCostUsd: 12 });
+    expect(formatBenchSummary(report)).toContain(" The matcher failed on the finders' findings of 1 run, which count in none of these. Matcher cost of this scoring $12.00.\n");
+    const withUnpriced = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [retried, unpriced] }] }]);
+    expect(withUnpriced.variants[0].summary.raw!.matcherCostUsd).toBeNull();
+    expect(formatBenchSummary(withUnpriced)).toContain('Matcher cost of this scoring unknown, since a call has no known price.\n');
   });
 });
 
@@ -873,7 +922,7 @@ describe('runBench and buildReport', () => {
       runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), atGradeRecall: 1 / 3, verdictAccuracy: 2 / 3,
       bySeverity: { blocker: { caught: 2, partial: 1, total: 3 }, warning: { caught: 0, partial: 0, total: 3 } },
       falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null,
-      raw: { items: 6, found: 0, posted: 2, lost: {}, matcherCostUsd: 0 }, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
+      raw: { items: 6, found: 0, posted: 2, lost: {}, unscored: 0, matcherCostUsd: 0 }, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
     });
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
     const summary = formatBenchSummary(report);
@@ -1012,7 +1061,7 @@ describe('runBench and buildReport', () => {
       expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
       // What became of the finders' findings shows as the item's id and fixed words, with the finders' names left out.
       expect(printed().split('\nheld-1\n')[1]).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates, files read finder-a 3 (asked again), $1.25\n    found by a finder and missed by the review: K1 (dropped by the judge)\n');
-      expect(printed().split("\nFinders' findings: 1 of 2 must-catch items found by a finder, 0 found by the review. Missed by the review after a finder found it: dropped by the judge 1. Matcher cost of this scoring $0.00.\n")).toHaveLength(3);
+      expect(printed().split("\nFinders' findings: 1 of 2 must-catch items found by a finder, 0 found by the review. Missed by the review after a finder found it: dropped by the judge 1. Matcher cost of this scoring unknown, since a call has no known price.\n")).toHaveLength(3);
       expect(printed()).not.toContain(SECRET);
 
       // Only an explicit request lists hold-out findings, and never in a workflow job, whose log and summary are public.

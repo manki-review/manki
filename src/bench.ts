@@ -300,8 +300,14 @@ export interface MatchDecision {
 /** What the matcher reads of a finding. */
 type MatchedFinding = Pick<Finding, 'severity' | 'title' | 'file' | 'line' | 'description' | 'howToFix' | 'suggestedFix'>;
 
-/** Decides whether one of `findings` reports the defect `item` describes. `costUsd` is what a model call for it cost, unset for a cached decision or an unpriced call. */
-export type Matcher = (item: KeyItem, findings: MatchedFinding[]) => Promise<MatchDecision & { costUsd?: number }>;
+/** What the matcher's model calls cost: the sum of the priced calls, and how many calls have no known cost. */
+export interface MatcherSpend {
+  costUsd: number;
+  unpriced: number;
+}
+
+/** Decides whether one of `findings` reports the defect `item` describes. Each model call it makes is added to `spend`. */
+export type Matcher = (item: KeyItem, findings: MatchedFinding[], spend?: MatcherSpend) => Promise<MatchDecision>;
 
 /** Returns the indexes of the findings in a file `item` names or naming one of its symbols. An item without locations keeps every finding. */
 export function candidateFindings(item: KeyItem, findings: MatchedFinding[]): number[] {
@@ -343,11 +349,22 @@ function matcherKey(model: string, item: KeyItem, findings: MatchedFinding[]): s
 
 /** Returns a matcher that asks `client`, and keeps each decision in `cache` by the prompt, the item and the findings it saw. */
 export function llmMatcher(client: LLMClient, model: string, cache: Map<string, MatchDecision>): Matcher {
-  return async (item, findings) => {
+  return async (item, findings, spend) => {
     const key = matcherKey(model, item, findings);
     const cached = cache.get(key);
     if (cached) return cached;
-    const response = await client.sendMessage(MATCHER_SYSTEM_PROMPT, matcherMessage(item, findings), { effort: 'high', timeoutMs: MATCHER_TIMEOUT_MS });
+    const response = await client.sendMessage(MATCHER_SYSTEM_PROMPT, matcherMessage(item, findings), { effort: 'high', timeoutMs: MATCHER_TIMEOUT_MS }).catch((error: unknown) => {
+      // A call that failed may still have been billed, so its cost is not known.
+      if (spend) spend.unpriced++;
+      throw error;
+    });
+    if (spend) {
+      const { usage } = response;
+      // A path that reports no token counts reports zeros, and no real call uses no tokens.
+      const costUsd = usage && (usage.inputTokens > 0 || usage.outputTokens > 0) ? estimateCostUsd(response.model ?? parseModelSpec(model).model, usage) : null;
+      if (costUsd === null) spend.unpriced++;
+      else spend.costUsd += costUsd;
+    }
     // The reply can quote a finding or the key, and an error is printed, so neither error holds any of the reply.
     let parsed: { verdict?: unknown; findings?: unknown; reason?: unknown };
     try {
@@ -363,8 +380,7 @@ export function llmMatcher(client: LLMClient, model: string, cache: Map<string, 
       ? { verdict: 'NONE', findings: [], reason: parsed.verdict === 'NONE' ? reason : `Named no listed finding: ${reason}` }
       : { verdict: parsed.verdict, findings: indexes, reason };
     cache.set(key, decision);
-    const costUsd = response.usage && estimateCostUsd(response.model ?? parseModelSpec(model).model, response.usage);
-    return typeof costUsd === 'number' ? { ...decision, costUsd } : decision;
+    return decision;
   };
 }
 
@@ -480,8 +496,10 @@ interface RawScore {
   /** One per must-catch item, with indexes into `findings`. */
   matches: ItemMatch[];
   caught: RawCatch[];
-  /** What the matcher calls of this scoring cost. A cached decision costs nothing. */
-  matcherCostUsd: number;
+  /** Set when the matcher failed twice on these findings. `matches` and `caught` are then empty, and the run's posted score stands. */
+  unscored?: true;
+  /** What every matcher call of this scoring cost, a failed attempt's included, or `null` when a call has no known cost. A cached decision costs nothing. */
+  matcherCostUsd: number | null;
 }
 
 /** How a round left one earlier open thread, without any text of the thread or of the review. */
@@ -624,23 +642,23 @@ interface ScoredReview {
 type KeyScore = Pick<RunScore, 'matches' | 'mustCatchRecall' | 'weightedRecall' | 'verdictCorrect' | 'falseBlockers' | 'unexpectedWarnings' | 'extraFindings' | 'duplicates' | 'followUp'>;
 
 /**
- * Matches `item` to `findings`, with what the matcher's call cost. The matcher reads only the findings
+ * Matches `item` to `findings`, and adds each matcher call to `spend`. The matcher reads only the findings
  * `candidateFindings` keeps, and is not asked when there is none.
  */
-async function matchItem(benchCase: BenchCase, item: KeyItem, findings: MatchedFinding[], matcher: Matcher): Promise<{ match: ItemMatch; costUsd: number }> {
+async function matchItem(benchCase: BenchCase, item: KeyItem, findings: MatchedFinding[], matcher: Matcher, spend?: MatcherSpend): Promise<ItemMatch> {
   const candidates = candidateFindings(item, findings);
-  if (candidates.length === 0) return { match: { item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' }, costUsd: 0 };
-  const decision = await quietly(benchCase, () => matcher(item, candidates.map(i => findings[i])));
+  if (candidates.length === 0) return { item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' };
+  const decision = await quietly(benchCase, () => matcher(item, candidates.map(i => findings[i]), spend));
   const named = decision.findings.map(i => candidates[i]);
   const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
-  return { match: { item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason }, costUsd: decision.costUsd ?? 0 };
+  return { item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason };
 }
 
 /** Matches the findings of one review to the case's key and returns the part of its score that the key decides. */
 async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved, threads, foldsStored }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
   const matches: ItemMatch[] = [];
   const repeats = repeatItems(benchCase);
-  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) matches.push((await matchItem(benchCase, item, findings, matcher)).match);
+  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) matches.push(await matchItem(benchCase, item, findings, matcher));
   const isRepeat = (id: string) => repeats.some(item => item.id === id);
   const keyMatches = matches.filter(m => !isRepeat(m.item));
   const restated = restatedFindings(matches.filter(m => isRepeat(m.item)), n => findings[n].foldedInto);
@@ -723,22 +741,30 @@ function laterExit(f: RecordedPlace, context: RoundContext): RawExit | undefined
 
 /**
  * Returns where each finding of `context.reviewers.rawFindings` left the review, by the round record, and `unknown`
- * wherever the record does not say for certain. The dedup records only titles, and the judge's merges and two other
+ * wherever the record does not say for certain. The dedup records only titles, and the judge's merges and a few other
  * drops record no finding at all, so `dedup` and `merged` are given only when the counts leave no other reading.
  */
 function rawExits(context: RoundContext): RawExit[] {
   const raw = context.reviewers.rawFindings ?? [];
   if (raw.length === 0) return [];
   const text = (f: RoundRawFinding) => JSON.stringify([f.severity, f.description, f.howToFix, f.suggestedFix]);
-  const exits = raw.map((f, i): RawExit | undefined => (raw.some((other, j) => j !== i && samePlace(other, f) && text(other) !== text(f)) ? 'unknown' : laterExit(f, context)));
+  const later = raw.map(f => laterExit(f, context));
   const dropped = (title: string) => (context.dedup.duplicateMatches ?? []).filter(m => m.droppedTitle === title).length;
-  const left = (title: string) => raw.filter((f, i) => f.title === title && !exits[i]).length;
-  const byDedup = raw.map((f, i) => !exits[i] && dropped(f.title) > 0 ? dropped(f.title) >= left(f.title) : undefined);
-  const placed = exits.map((exit, i) => exit ?? (byDedup[i] === undefined ? undefined : byDedup[i] ? 'dedup' : 'unknown'));
-  const rest = placed.filter(exit => !exit).length;
-  const merged = !context.judge.skipped && rest <= (context.judge.mergedDuplicates ?? 0) && !context.dedup.testNitSuppressedCount
+  const unnamedWith = (title: string) => raw.filter((f, i) => f.title === title && !later[i]).length;
+  const exits = raw.map((f, i): RawExit | undefined => {
+    // Findings at one place with one title and other text are one finding to the record, so it cannot tell them apart.
+    if (raw.some((other, j) => j !== i && samePlace(other, f) && text(other) !== text(f))) return 'unknown';
+    if (later[i] || dropped(f.title) === 0) return later[i];
+    return dropped(f.title) >= unnamedWith(f.title) ? 'dedup' : 'unknown';
+  });
+  // A place a later stage names stands for one finding, and a dedup drop for one finding of its title. Each other finding left unnamed.
+  const named = raw.filter((f, i) => later[i] && raw.findIndex(other => samePlace(other, f)) === i).length;
+  const deduped = [...new Set(raw.map(f => f.title))].reduce((sum, title) => sum + Math.min(dropped(title), unnamedWith(title)), 0);
+  const unnamed = raw.length - named - deduped;
+  // Besides the judge's merges, only the drop of test notes, the fold into a reader's blocker and an unsettled lead of the sweep's judge leave a finding unnamed.
+  const merged = !context.judge.skipped && unnamed <= (context.judge.mergedDuplicates ?? 0) && !context.dedup.testNitSuppressedCount
     && !context.findings.entries.some(e => e.reviewers?.includes(VERDICT_READER_NAME));
-  return placed.map(exit => exit ?? (merged ? 'merged' : 'unknown'));
+  return exits.map((exit, i) => exit ?? (merged && !raw[i].lead ? 'merged' : 'unknown'));
 }
 
 /** Returns the findings the finders reported in the round `context` records, each with where it left the review. */
@@ -752,16 +778,18 @@ function rawFindings(context: RoundContext): RawFinding[] {
 /**
  * Matches `findings`, the findings the finders reported, to the must-catch items. `posted` holds the matches of the
  * posted findings. For each item a finder's finding matches and no posted finding does, it names the exit of each
- * finder's finding that names the item.
+ * finder's finding that names the item. It never throws, so a matcher that fails on these findings costs the run
+ * nothing of its posted score: the result is then `unscored`.
  */
 async function scoreRaw(benchCase: BenchCase, findings: RawFinding[], posted: ItemMatch[], matcher: Matcher): Promise<RawScore> {
-  const matches: ItemMatch[] = [];
-  let matcherCostUsd = 0;
-  for (const item of benchCase.mustCatch) {
-    const { match, costUsd } = await matchItem(benchCase, item, findings, matcher);
-    matches.push(match);
-    matcherCostUsd += costUsd;
-  }
+  const spend: MatcherSpend = { costUsd: 0, unpriced: 0 };
+  const matches = await twice(async () => {
+    const matches: ItemMatch[] = [];
+    for (const item of benchCase.mustCatch) matches.push(await matchItem(benchCase, item, findings, matcher, spend));
+    return matches;
+  }).catch(() => undefined);
+  const matcherCostUsd = spend.unpriced > 0 ? null : spend.costUsd;
+  if (!matches) return { findings, matches: [], caught: [], unscored: true, matcherCostUsd };
   const caught = matches.filter(m => m.verdict === 'MATCH').map((m): RawCatch => {
     const shown = posted.some(p => p.item === m.item && p.verdict === 'MATCH');
     const named = m.findings.map(n => findings[n]);
@@ -932,7 +960,10 @@ interface RawSummary {
   posted: number;
   /** The ones a finder's finding matched and no posted finding did, by the exit of the closest finding that names each. */
   lost: Partial<Record<RawExit, number>>;
-  matcherCostUsd: number;
+  /** Runs whose findings the matcher failed on, which count in none of the figures above. */
+  unscored: number;
+  /** `null` when a call of a run has no known cost. */
+  matcherCostUsd: number | null;
 }
 
 /** One setup the bench scores: a name and the config it sets on top of each case's own config, or its base `.manki.yml`. */
@@ -1040,8 +1071,10 @@ function summarize(cases: CaseReport[]): VariantSummary {
 }
 
 function rawSummary(cases: CaseReport[]): RawSummary | null {
-  const scored = cases.flatMap(c => c.runs.flatMap(run => (run.complete && run.raw ? [{ items: c.items.filter(item => item.tier === 'must_catch'), run, raw: run.raw }] : [])));
-  if (scored.length === 0) return null;
+  const stored = cases.flatMap(c => c.runs.flatMap(run => (run.complete && run.raw ? [{ items: c.items.filter(item => item.tier === 'must_catch'), run, raw: run.raw }] : [])));
+  if (stored.length === 0) return null;
+  const scored = stored.filter(({ raw }) => !raw.unscored);
+  const costs = stored.map(({ raw }) => raw.matcherCostUsd);
   const lost: RawSummary['lost'] = {};
   for (const missed of scored.flatMap(({ raw }) => raw.caught.filter(c => !c.posted))) {
     const exit = missed.exits?.[0] ?? 'unknown';
@@ -1052,7 +1085,8 @@ function rawSummary(cases: CaseReport[]): RawSummary | null {
     found: scored.reduce((sum, { raw }) => sum + raw.caught.length, 0),
     posted: scored.reduce((sum, { items, run }) => sum + items.filter(item => run.matches.some(m => m.item === item.id && m.verdict === 'MATCH')).length, 0),
     lost,
-    matcherCostUsd: scored.reduce((sum, { raw }) => sum + raw.matcherCostUsd, 0),
+    unscored: stored.length - scored.length,
+    matcherCostUsd: costs.some(cost => cost === null) ? null : costs.reduce<number>((sum, cost) => sum + cost!, 0),
   };
 }
 
@@ -1644,7 +1678,9 @@ export function formatBlockerRoutes(variants: VariantReport[]): string {
 /** Returns one line of counts: the must-catch items the finders found, the ones the review found, the ones it missed by exit, and what matching the finders' findings cost. */
 function formatRawSummary(raw: RawSummary): string {
   const lost = (Object.keys(RAW_EXITS) as RawExit[]).flatMap(exit => (raw.lost[exit] ? [`${RAW_EXITS[exit]} ${raw.lost[exit]}`] : []));
-  return `Finders' findings: ${raw.found} of ${raw.items} must-catch items found by a finder, ${raw.posted} found by the review. Missed by the review after a finder found it: ${lost.join(', ') || 'none'}. Matcher cost of this scoring $${raw.matcherCostUsd.toFixed(2)}.`;
+  const unscored = raw.unscored > 0 ? ` The matcher failed on the finders' findings of ${raw.unscored} ${raw.unscored === 1 ? 'run' : 'runs'}, which count in none of these.` : '';
+  const cost = raw.matcherCostUsd === null ? 'unknown, since a call has no known price' : `$${raw.matcherCostUsd.toFixed(2)}`;
+  return `Finders' findings: ${raw.found} of ${raw.items} must-catch items found by a finder, ${raw.posted} found by the review. Missed by the review after a finder found it: ${lost.join(', ') || 'none'}.${unscored} Matcher cost of this scoring ${cost}.`;
 }
 
 /**
