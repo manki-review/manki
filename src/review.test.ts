@@ -4392,7 +4392,7 @@ describe('runReview', () => {
       ['Old SQL injection', 'blocker', ['security', 'pre-existing']],
     ]);
 
-    // Each of these sits outside every hunk, but something ties it to this PR, so it keeps blocking.
+    // Each of these sits away from the code the PR changes, but something ties it to this PR, so it keeps blocking.
     const checks: Array<Finding['preExistingCheck']> = [];
     for (const tied of [callerProof, callerUnmarked, deleted, excluded, siblingPath]) {
       mockedRunJudgeAgent.mockResolvedValue({ findings: [tied], summary: 'One defect.' });

@@ -377,17 +377,21 @@ interface LineSyntax {
 
 const C_LIKE: LineSyntax = { comments: ['///', '//!', '//'], blockComments: true };
 const syntaxOf = (extensions: string, syntax: LineSyntax) => extensions.split(' ').map(ext => [ext, syntax] as const);
-// A file of any other kind has no line read as a comment, and a change to its indentation is a change to its code.
+// A file of any other kind has no line read as a comment, and a change to its indentation is a change to its code. So
+// Markdown, reStructuredText, AsciiDoc, Sass, Stylus, Pug, Haml, Slim and Makefiles, where indentation has a meaning, stay out.
 const LINE_SYNTAX = new Map<string, LineSyntax>([
-  ...syntaxOf('c h cc cpp cxx hh hpp hxx m mm cs java kt kts scala groovy gradle swift go rs ts tsx mts cts js jsx mjs cjs dart php proto sol scss less', C_LIKE),
+  ...syntaxOf('c h cc cpp cxx hh hpp hxx m mm cs java kt kts groovy gradle swift go rs ts tsx mts cts js jsx mjs cjs dart php proto sol scss less', C_LIKE),
+  ...syntaxOf('scala sc', { ...C_LIKE, indented: true }),
+  ...syntaxOf('fs fsi fsx', { comments: ['///', '//'], indented: true }),
   ...syntaxOf('css', { comments: [], blockComments: true }),
   ...syntaxOf('rb sh bash zsh pl pm r toml tf ex exs jl cmake', { comments: ['#'] }),
-  ...syntaxOf('py pyi yaml yml nim coffee', { comments: ['#'], indented: true }),
+  ...syntaxOf('py pyi pyw pyx bzl star gd mojo yaml yml nim nims coffee', { comments: ['#'], indented: true }),
   ...syntaxOf('sql lua', { comments: ['--'] }),
-  ...syntaxOf('hs elm', { comments: ['--'], indented: true }),
+  ...syntaxOf('hs elm purs', { comments: ['--'], indented: true }),
 ]);
-// A comment a tool reads, such as `# type: ignore`, `# -*- coding: utf-8 -*-`, `/// <reference path="a.ts" />` or `// @ts-ignore`.
-const TOOL_COMMENT = /^(?:[@<+]|-\*-|[a-z][\w.-]*:)/;
+// A comment a tool reads, such as `# type: ignore`, `# -*- coding: utf-8 -*-`, `/// <reference path="a.ts" />`, `// @ts-ignore`,
+// `// eslint-disable-next-line`, `/* istanbul ignore next */`, `# noqa` or `// NOLINT`.
+const TOOL_COMMENT = /^(?:[@<+]|-\*-|[a-z][\w.]*[-:]|(?:eslint|jshint|global|globals|exported|istanbul|c8|v8|noqa|nosec|pragma|shellcheck|hadolint|lgtm|NOLINT\w*|NOSONAR)\b)/;
 
 /** Whether `text`, a comment's text after its mark, is prose. Text right after the mark, as in `//go:build` or `#!/bin/sh`, is for a tool. */
 function isProse(text: string): boolean {
@@ -442,13 +446,30 @@ function pairedInOrder(removed: readonly string[], added: readonly string[]): { 
   return pairs;
 }
 
+/** The lines of the new file where a diff changes code: each added line, and the line where each removed line sat. */
+interface CodeChanges {
+  added: ReadonlySet<number>;
+  removed: ReadonlySet<number>;
+}
+
+const codeChangesOf = new WeakMap<DiffFile, CodeChanges>();
+
 /**
- * Returns the lines of the new file where `file`'s diff changes code: each added line, and the line where each removed
- * line sat. A removed and an added line between the same unchanged lines change no code when they hold the same text and
- * pair up in order, as in a re-indent. A line that moves past another stays a change. A blank or comment line, in a
- * language `LINE_SYNTAX` knows, is no change either.
+ * Returns the lines of the new file where `file`'s diff changes code, worked out once per file. A removed and an added
+ * line between the same unchanged lines change no code when they hold the same text and pair up in order, as in a
+ * re-indent. A line that moves past another stays a change. A blank or comment line, in a language `LINE_SYNTAX` knows,
+ * is no change either, except in a file the diff adds, where every line is new.
  */
-export function codeChanges(file: DiffFile): { added: Set<number>; removed: Set<number> } {
+export function codeChanges(file: DiffFile): CodeChanges {
+  let changes = codeChangesOf.get(file);
+  if (!changes) {
+    changes = file.changeType === 'added' ? { added: new Set(file.hunks.flatMap(hunk => newLineNumbers(hunk)).filter((at): at is number => at !== undefined)), removed: new Set() } : changedCode(file);
+    codeChangesOf.set(file, changes);
+  }
+  return changes;
+}
+
+function changedCode(file: DiffFile): CodeChanges {
   const syntax = LINE_SYNTAX.get(file.path.slice(file.path.lastIndexOf('.') + 1).toLowerCase());
   const textOf = (line: string) => (!syntax ? line : syntax.indented ? line.trimEnd() : line.trim());
   const added = new Set<number>();

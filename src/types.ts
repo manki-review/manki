@@ -219,7 +219,7 @@ export function canLeaveOut(f: Finding): boolean {
   return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
 }
 
-/** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */
+/** Marks a finding away from the code the PR changes, as `nearCodeChange` decides. Unless it is a security finding, it never blocks. */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
 export const UNPROVEN_TAG = 'unproven-blocker' as const;

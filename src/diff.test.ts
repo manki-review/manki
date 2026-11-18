@@ -742,13 +742,18 @@ describe('codeChanges', () => {
     ]);
     // Line 3 only moves into the new block. Line 4 also changes its code, so it and the old line it replaces count.
     expect(changes(wrapped)).toEqual({ added: [2, 4, 5], removed: [2] });
+    expect(codeChanges(wrapped)).toBe(codeChanges(wrapped));
     expect(changes(fileOf('src/a.ts', ['-  run();  ', '+run();', '+run();']))).toEqual({ added: [2], removed: [] });
     // A `free` moved above the use, or two lines that swap, change the order of the code, so the moved lines count.
     expect(changes(fileOf('src/a.c', [' p = get();', '-use(p);', ' free(p);', '+use(p);']))).toEqual({ added: [3], removed: [2] });
     expect(changes(fileOf('src/a.c', ['+    free(p);', ' use(p);', '-free(p);']))).toEqual({ added: [1], removed: [3] });
     expect(changes(fileOf('src/a.ts', ['-a();', '-b();', '+b();', '+a();']))).toEqual({ added: [2], removed: [1] });
-    // Indentation is code in Python, and in a file of a kind not known, so a re-indent there changes it.
-    expect(changes(fileOf('src/a.py', ['-run()', '+    run()']))).toEqual({ added: [1], removed: [1] });
+    // Wherever indentation can change what the code or the text means, and in a file of a kind not known, a re-indent is a change.
+    const indented = [
+      'a.py', 'a.pyi', 'BUILD.bzl', 'a.gd', 'a.yaml', 'a.yml', 'a.scala', 'a.sc', 'a.fs', 'a.fsx', 'a.hs', 'a.elm', 'a.purs', 'a.nim', 'a.coffee',
+      'a.sass', 'a.styl', 'a.pug', 'a.jade', 'a.haml', 'a.slim', 'Makefile', 'a.mk', 'README.md', 'a.rst', 'a.adoc', 'a.unknown',
+    ];
+    expect(indented.filter(path => changes(fileOf(path, ['-run()', '+    run()'])).added.length === 0)).toEqual([]);
     expect(changes(fileOf('docs/a.md', ['-- item', '+  - item']))).toEqual({ added: [1], removed: [1] });
 
     // A line near a change counts as changed code, as a diff shows three lines around one, and a line near only a move does not.
@@ -758,15 +763,20 @@ describe('codeChanges', () => {
     expect([nearCodeChange(moved, 1, 10), nearCodeChange(moved, 1, 11), nearCodeChange(moved, 18, 30)]).toEqual([false, true, false]);
     // Nothing in a file the PR adds existed before, its comments included.
     expect(nearCodeChange({ ...moved, changeType: 'added' }, 4)).toBe(true);
+    expect(changes({ ...fileOf('src/new.ts', ['+// Why.', '+', '+run();']), changeType: 'added' })).toEqual({ added: [1, 2, 3], removed: [] });
   });
 
   it.each([
     ['Rust', 'src/a.rs', ['// Why it waits.', '/// Returns the total.', '//! The crate.', '/* Old. */', ''], ['#[derive(Debug)]', 'let a = 1; // Why.', '//go:build linux']],
-    ['Python', 'src/a.py', ['# Why it waits.', '#', ''], ['#!/usr/bin/env python3', 'x = f()  # type: ignore', '# type: ignore', '# -*- coding: utf-8 -*-', '"""Returns the total."""']],
-    ['TypeScript', 'src/a.ts', ['// Why it waits.', '/**', ' * Returns the total.', ' */', '/* Old. */'], ['// @ts-ignore', '/// <reference path="a.d.ts" />', '/*#__PURE__*/ f();', '/* Old. */ f();', ' * x', 'x * y;']],
+    ['Python', 'src/a.py', ['# Why it waits.', '#', ''], ['#!/usr/bin/env python3', 'x = f()  # type: ignore', '# type: ignore', '# -*- coding: utf-8 -*-', '"""Returns the total."""', '# noqa', '# pragma no cover', '# pylint: disable=W0611']],
+    ['TypeScript', 'src/a.ts', ['// Why it waits.', '/**', ' * Returns the total.', ' */', '/* Old. */'], [
+      '// @ts-ignore', '/// <reference path="a.d.ts" />', '/*#__PURE__*/ f();', '/* Old. */ f();', ' * x', 'x * y;',
+      '// eslint-disable-next-line no-console', '/* eslint no-console: off */', '/* istanbul ignore next */', '// c8 ignore next', '// prettier-ignore', '// biome-ignore lint: x',
+    ]],
     ['Go', 'src/a.go', ['// Why it waits.'], ['//go:build linux', '// +build linux']],
-    ['C', 'src/a.c', ['// Why it waits.'], ['#include <a.h>', '#define A 1']],
-    ['Ruby', 'src/a.rb', ['# Why it waits.'], ['# frozen_string_literal: true']],
+    ['C', 'src/a.c', ['// Why it waits.'], ['#include <a.h>', '#define A 1', '// NOLINT', '// NOLINTNEXTLINE(bugprone-x)', '// clang-format off']],
+    ['Ruby', 'src/a.rb', ['# Why it waits.'], ['# frozen_string_literal: true', '# rubocop:disable Style/Foo']],
+    ['shell', 'src/a.sh', ['# Why it waits.'], ['# shellcheck disable=SC2086']],
     ['a file of a kind not known', 'docs/a.md', [], ['# Title', '', '// Text.']],
   ])('tells the blank and comment lines of %s, which change no code, from a line with code or one a tool reads', (_language, path, comments, code) => {
     const file = fileOf(path, [...comments, ...code].map(l => `+${l}`));

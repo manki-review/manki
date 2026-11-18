@@ -2333,13 +2333,15 @@ describe('runJudgeAgent', () => {
         { id: 13, title: 'New parser misses the old state', row: 'wrong', reasoning: 'r', preExisting: true },
         { id: 14, title: 'Old loop in the re-indented block', row: 'wrong', reasoning: 'r', preExisting: true },
         { id: 15, title: 'Old loop under the new comment', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 16, title: 'Old loop described in the new file', row: 'wrong', reasoning: 'r', preExisting: true },
       ],
     }) });
     // The diff shows lines 1-20 of src/index.ts. It adds code only on line 15, re-indents line 3 and adds a comment on line 5.
     const shown = (i: number) => (i === 2 ? '-    line 3\n+line 3' : i === 4 ? '+// Why the loop waits.' : `${i === 14 ? '+' : ' '}line ${i + 1}`);
     const hunk = makeHunk({ oldLines: 18, content: Array.from({ length: 20 }, (_, i) => shown(i)).join('\n') });
     const off = (line: number) => ({ line, evidence: { checks: [], proof: [] } });
-    const diff = makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]);
+    const added = makeDiffFile({ path: 'src/new.ts', changeType: 'added', hunks: [makeHunk({ oldStart: 0, oldLines: 0, newLines: 2, content: '+// Why the loop waits.\n+run();' })] });
+    const diff = makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] }), added]);
     const input: JudgeInput = {
       findings: [
         makeFinding({ title: 'Unbounded retry', preExisting: old }),
@@ -2361,6 +2363,8 @@ describe('runJudgeAgent', () => {
         // A line the PR only re-indents or a comment it adds changes no code, so the judge sees these claims.
         makeFinding({ title: 'Old loop in the re-indented block', preExisting: old, ...off(3) }),
         makeFinding({ title: 'Old loop under the new comment', preExisting: old, ...off(5), evidence: { checks: [], proof: ['src/index.ts:3-5'] } }),
+        // Every line of a file the PR adds is new, its comments too, so the judge never sees this claim and the code check rejects it.
+        makeFinding({ title: 'Old loop described in the new file', preExisting: old, file: 'src/new.ts', ...off(1) }),
       ],
       diff, preExistingCheck: f => preExistingCheck(f, diff, new Set(['gen/parser.ts'])), rawDiff: '', repoContext: '', agentCount: 2,
     };
@@ -2368,7 +2372,7 @@ describe('runJudgeAgent', () => {
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(mockSendMessage.mock.calls[0][1].split(`- **Pre-existing, the reviewer says**: ${old}`)).toHaveLength(14);
     // The code check agrees: neither touches the diff, while a finding near line 15 does.
-    expect(input.findings.slice(-3).map(f => input.preExistingCheck?.(f))).toEqual(['touches_diff', 'pre_existing', 'pre_existing']);
+    expect(input.findings.slice(-4).map(f => input.preExistingCheck?.(f))).toEqual(['touches_diff', 'pre_existing', 'pre_existing', 'touches_diff']);
     expect(result.findings.map(f => [f.title, f.preExisting])).toEqual([
       ['Unbounded retry', old],
       ['Caller breaks on null', undefined],
@@ -2380,6 +2384,7 @@ describe('runJudgeAgent', () => {
       ['New parser misses the old state', old],
       ['Old loop in the re-indented block', old],
       ['Old loop under the new comment', old],
+      ['Old loop described in the new file', old],
     ]);
   });
 

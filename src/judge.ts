@@ -1170,7 +1170,7 @@ export function buildJudgeUserMessage(
   return parts.join('\n');
 }
 
-/** Hides a reviewer's pre-existing claim on code the PR adds from the judge, since a defect there is the PR's own. */
+/** Hides a reviewer's pre-existing claim on code the PR adds from the judge, since a defect there is the PR's own. Every line of an added file counts. */
 function withoutPreExistingOnAddedLine(finding: Finding, diff: ParsedDiff): Finding {
   const file = finding.preExisting ? diff.files.find(df => df.path === finding.file) : undefined;
   if (!file || !codeChanges(file).added.has(finding.line)) return finding;
