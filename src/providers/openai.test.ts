@@ -14,7 +14,7 @@ import {
   resolveReasoningEffort,
   STALE_TIMEOUT_MS,
 } from './openai';
-import { QuotaError, RefusalError, TimeoutError } from './types';
+import { QuotaError, RefusalError, TimeoutError, UnreachableError } from './types';
 
 // Seeding `$CODEX_HOME/auth.json` is exercised separately in `cli-utils.test.ts`.
 // Stub it out here so the provider tests don't touch the filesystem.
@@ -1404,18 +1404,20 @@ describe('sendViaCLI — extended coverage', () => {
     }
   });
 
-  it('ends a run that shows only that Codex waits for the network for two minutes, and resumes no endpoint session after it', async () => {
+  it('ends a run that shows only that Codex waits for the network for two minutes, as unreachable only when no request reached the model', async () => {
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     jest.spyOn(core, 'info').mockImplementation(() => {});
     const noNetwork = 'ERROR: Reconnecting... waiting for network\n';
-    const header = 'session id: 01a1ea55-c867-71d0-b260-faea7b058ed3\n--------\nuser\nthe prompt\n';
+    // Codex echoes the prompt below its header.
+    const header = 'session id: 01a1ea55-c867-71d0-b260-faea7b058ed3\n--------\nuser\n';
+    const waitedOut = 'Codex CLI was waiting for the network for 120s, so the call ends as a failed connection. stderr: ERROR: Reconnecting... waiting for network';
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const client = new OpenAIClient({ auth: { kind: 'endpoint', key: 'sk-test', baseUrl: 'http://127.0.0.1:1/v1' }, model: 'gpt-4o' });
       const lost = makeProc();
-      const lostPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      const lostPromise = client.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
       await waitForListeners(lost);
-      lost.stderrHandlers['data']?.(Buffer.from(`${header}${noNetwork}`));
+      lost.stderrHandlers['data']?.(Buffer.from(`${header}the prompt\n${noNetwork}`));
       jest.advanceTimersByTime(60_000);
       // A repeat of the line keeps the first one's clock.
       lost.stderrHandlers['data']?.(Buffer.from(noNetwork));
@@ -1425,15 +1427,55 @@ describe('sendViaCLI — extended coverage', () => {
       expect(lost.proc.kill).toHaveBeenCalledWith('SIGTERM');
       lost.procHandlers['close']?.(null, 'SIGTERM');
       const failed = await lostPromise;
-      expect(failed).not.toBeInstanceOf(TimeoutError);
-      expect(failed?.message).toBe('Codex CLI was waiting for the network for 120s, so the call ends as a failed connection. stderr: ERROR: Reconnecting... waiting for network');
+      expect(failed).toBeInstanceOf(UnreachableError);
+      expect(failed).toMatchObject({ message: waitedOut, limit: 'OpenAI endpoint unreachable', credential: undefined });
       expect(mockSpawn).toHaveBeenCalledTimes(1);
+
+      /** Starts a call on `on` whose run prints `stdout` and `stderr` and then waits out the network, and returns its error. */
+      const waitOut = async (stderr: string, stdout = '', on = client): Promise<Error | null> => {
+        const run = makeProc();
+        const call = on.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+        await waitForListeners(run);
+        if (stdout) run.stdoutHandlers['data']?.(Buffer.from(stdout));
+        run.stderrHandlers['data']?.(Buffer.from(stderr));
+        jest.advanceTimersByTime(120_000);
+        run.procHandlers['close']?.(null, 'SIGTERM');
+        return call;
+      };
+      // A ChatGPT login names OpenAI itself.
+      const chatgpt = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+      expect(await waitOut(`${header}the prompt\n${noNetwork}`, '', chatgpt)).toMatchObject({ name: 'UnreachableError', limit: 'OpenAI unreachable' });
+      // The model's text, an answer on stdout, or an echo of another prompt can follow a request the model received.
+      for (const [stderr, stdout] of [
+        [`${header}the prompt\ncodex\nI looked at the diff.\n${noNetwork}`, ''],
+        [`${header}the prompt\n${noNetwork}`, '['],
+        [`${header}another prompt\n${noNetwork}`, ''],
+        [`the prompt\n${noNetwork}`, ''],
+      ]) {
+        const other = await waitOut(stderr, stdout);
+        expect([other?.message, other instanceof QuotaError]).toEqual([waitedOut, false]);
+      }
+
+      // A resumed run follows a run that reached the model, so its wait fails as a plain connection failure.
+      mockSpawn.mockClear();
+      const dropped = makeProc();
+      const resumedPromise = client.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+      await waitForListeners(dropped);
+      dropped.stderrHandlers['data']?.(Buffer.from(`${header}the prompt\nERROR: stream disconnected before completion: stream closed before response.completed\n`));
+      const resumed = makeProc();
+      dropped.procHandlers['close']?.(1, null);
+      await waitForListeners(resumed);
+      resumed.stderrHandlers['data']?.(Buffer.from(`${header}${String(resumed.proc.stdin.write.mock.calls[0]?.[0])}\n${noNetwork}`));
+      jest.advanceTimersByTime(120_000);
+      resumed.procHandlers['close']?.(null, 'SIGTERM');
+      const afterResume = await resumedPromise;
+      expect([mockSpawn.mock.calls.length, afterResume?.message, afterResume instanceof QuotaError]).toEqual([2, waitedOut, false]);
 
       // Any other output in between starts the clock again, and a run that answers keeps its answer.
       const back = makeProc();
-      const backPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 });
+      const backPromise = client.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 });
       await waitForListeners(back);
-      back.stderrHandlers['data']?.(Buffer.from(`${header}${noNetwork}`));
+      back.stderrHandlers['data']?.(Buffer.from(`${header}the prompt\n${noNetwork}`));
       jest.advanceTimersByTime(100_000);
       back.stderrHandlers['data']?.(Buffer.from('codex\nI looked at the diff.\n'));
       back.stderrHandlers['data']?.(Buffer.from(noNetwork));

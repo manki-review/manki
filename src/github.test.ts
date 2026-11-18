@@ -1509,20 +1509,23 @@ describe('postReview with context', () => {
     const readers = ['gemini-3-pro', 'gemini/gemini-3-pro'].map(model => ({ name: 'deep', model, provider: 'gemini' as const }));
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, routing: { ...ctx.routing!, reviewers: readers } }, 60000);
     expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('- Found by `gemini-3-pro`, judged by ');
-    // A finder or judge model that reached its limit is named with the model that answered for it, once. A refuter that moved only
-    // checked, since the judge still graded. A refusal and any other stage are not named.
+    // A finder or judge model that reached its limit or could not be reached is named with the model that answered for it, once.
+    // A refuter that moved only checked, since the judge still graded. A refusal and any other stage are not named.
     const fallbacks: NonNullable<RoundContext['models']['fallbacks']> = [
       { stage: 'reviewer', agent: 'deep', fallbackModel: 'claude-sonnet-5-5', reason: 'Gemini quota exhausted', limit: true },
+      { stage: 'reviewer', agent: 'wide', fallbackModel: 'claude-opus-5-5', reason: 'OpenAI endpoint unreachable', limit: true, unreachable: true },
       { stage: 'judge', fallbackModel: 'gpt-5.5', reason: 'Claude is overloaded', limit: true },
       { stage: 'verdict', fallbackModel: 'gpt-5.5', reason: 'Claude is overloaded', limit: true },
       { stage: 'dedup', fallbackModel: 'gpt-5.5', reason: 'Claude is overloaded', limit: true },
       { stage: 'judge', agent: 'refute', fallbackModel: 'gemini-3-pro', reason: 'refusal (cyber)' },
       { stage: 'judge', agent: 'refute', fallbackModel: 'gemini-3-flash', reason: 'Claude is overloaded', limit: true },
     ];
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, models: { ...ctx.models, fallbacks }, routing: { ...ctx.routing!, reviewers: readers.slice(0, 1) } }, 60000);
+    const wide = { name: 'wide', model: 'gpt-5.5', provider: 'openai' as const };
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, models: { ...ctx.models, fallbacks }, routing: { ...ctx.routing!, reviewers: [readers[0], wide] } }, 60000);
     expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain([
-      '- Found by `gemini-3-pro`, judged by `claude-opus-4-20250514`',
+      '- Found by `gemini-3-pro` and `gpt-5.5`, judged by `claude-opus-4-20250514`',
       '- `gemini-3-pro` reached its limit, so `claude-sonnet-5-5` read in its place',
+      '- `gpt-5.5` could not be reached, so `claude-opus-5-5` read in its place',
       '- `claude-opus-4-20250514` reached its limit, so `gpt-5.5` judged in its place',
       '- `claude-opus-4-20250514` reached its limit, so `gemini-3-flash` checked in its place',
       '- [How Manki reviews]',

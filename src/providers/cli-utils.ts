@@ -12,7 +12,7 @@ import { trackCliProcess } from '../run-diagnostics';
 import { LISTED_FILES_TO_OPEN, STALE_TIMEOUT_MS, STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepoTools } from '../types';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
-import { LLMResponse, RepoTools, SendMessageOptions, TimeoutError } from './types';
+import { LLMResponse, RepoTools, SendMessageOptions, TimeoutError, UnreachableError } from './types';
 
 export { STALE_TIMEOUT_MS };
 export const HARD_TIMEOUT_MS = 1_200_000;
@@ -623,9 +623,10 @@ export interface RunCliOptions {
   signal?: AbortSignal;
   /**
    * Kills the CLI once its stderr has ended on a line that `line` matches for `limitMs`, with no other output since that
-   * line first showed. The run then rejects with an error that says the CLI was `doing`.
+   * line first showed. The run then rejects with an error that says the CLI was `doing`. The error is an `UnreachableError`
+   * when `unreachable` returns its `limit` for the run's stderr, and a plain `Error` otherwise.
    */
-  waiting?: { line: RegExp; limitMs: number; doing: string };
+  waiting?: { line: RegExp; limitMs: number; doing: string; unreachable?: (stderr: string) => string | undefined };
 }
 
 export interface CliExit {
@@ -786,7 +787,8 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       if (waitedOut && opts.waiting) {
         const msg = `${label} CLI was ${opts.waiting.doing} for ${opts.waiting.limitMs / 1000}s, so the call ends as a failed connection. stderr: ${extractCliErrorSnippet(stderr)}`;
         core.warning(msg);
-        reject(new Error(msg));
+        const unreachable = opts.waiting.unreachable?.(stderr);
+        reject(unreachable ? new UnreachableError(msg, unreachable) : new Error(msg));
         return;
       }
       if (timedOut) {

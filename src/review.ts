@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
@@ -726,10 +726,14 @@ export async function runReview(
     const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
     return withSignal(withModelFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
       const limit = error instanceof QuotaError;
+      const unreachable = error instanceof UnreachableError;
       core.warning(limit
-        ? `The ${agent ?? stage} call reached a limit (${error.limit}), so ${fallback!.model} answered in its place`
+        ? `The ${agent ?? stage} call ${unreachable ? 'could not reach its endpoint' : 'reached a limit'} (${error.limit}), so ${fallback!.model} answered in its place`
         : `A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
-      modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: limit ? error.limit : error.reason, ...(limit && { limit: true as const }) });
+      modelFallbacks.push({
+        stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: limit ? error.limit : error.reason,
+        ...(limit && { limit: true as const }), ...(unreachable && { unreachable: true as const }),
+      });
       // A limit already holds its fallback model for the finder.
       if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
     }, movesOnLimit, () => skip({ kind: 'fallback', stage, ...(agent && { agent }), reason: 'the failed call left no time' })), signal, until);

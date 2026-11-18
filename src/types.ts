@@ -1744,7 +1744,7 @@ export interface ReviewMetadata {
     /** Triage answers and where they came from, as one readable line. */
     triage: string;
     teamAgents: string[];
-    /** The lines of `limitFallbackLines`: each model that reached a limit and the model that answered in its place. */
+    /** The lines of `limitFallbackLines`: each model that reached a limit or could not be reached, and the model that answered in its place. */
     limitFallbacks?: string[];
     memoryEnabled: boolean;
     memoryRepo: string;
@@ -2095,6 +2095,8 @@ export interface RoundModelFallback {
   reason: string;
   /** Set when the stage's model reached a limit. Unset after a safety refusal. */
   limit?: true;
+  /** Set, with `limit`, when no request of the call reached the stage's model because its endpoint could not be reached. */
+  unreachable?: true;
 }
 
 /** A retry of a finder, a move to a fallback model or a judge call that the round did not start, and why. */
