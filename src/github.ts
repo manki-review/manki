@@ -1143,18 +1143,15 @@ function formatLimitWarning(limits: readonly LimitUsage[]): string | undefined {
 /**
  * Marks `comment`, the failed progress comment of an earlier run on `headSha`, as superseded by the review that starts
  * now. Its report stays below that line, so which reviewer failed and why stays readable, and its settings block goes.
- * Returns whether the edit went through.
  */
 export async function markFailedProgressSuperseded(
   octokit: Octokit, owner: string, repo: string, comment: { id: number; body: string }, headSha: string,
-): Promise<boolean> {
+): Promise<void> {
   const body = `**Review superseded** by a later review of \`${headSha.slice(0, 7)}\`. This attempt ended as follows.\n\n${stripSettingsBlock(comment.body)}`;
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: comment.id, body });
-    return true;
   } catch (error) {
     core.warning(`Failed to mark the failed progress comment ${comment.id} as superseded: ${error instanceof Error ? error.message : error}`);
-    return false;
   }
 }
 

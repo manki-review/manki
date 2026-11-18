@@ -249,7 +249,7 @@ jest.mock('./github', () => ({
   fetchStandingVerdict: jest.fn().mockResolvedValue(undefined),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
-  markFailedProgressSuperseded: jest.fn().mockResolvedValue(true),
+  markFailedProgressSuperseded: jest.fn().mockResolvedValue(undefined),
   markProgressCommentSuperseded: jest.fn().mockResolvedValue(undefined),
   isFailedProgress: jest.requireActual('./github').isFailedProgress,
   fetchPRComments: jest.fn().mockResolvedValue([]),
@@ -1166,10 +1166,14 @@ describe('handlePullRequest', () => {
       const catchUp = jest.spyOn(dispatchModule, 'startedByCatchUp');
       const own = { full_name: 'test-owner/test-repo' };
       try {
-        for (const [label, pr, modes, retry, retried] of [
+        for (const [label, pr, modes, retry, retried, action = 'synchronize'] of [
           ['a push', {}, [], false, true],
+          ['a PR opened', {}, [], false, true, 'opened'],
           ['a draft', { draft: true }, [], false, false],
           ['a fork\'s head', { head: { sha: 'abc123', repo: { full_name: 'fork/test-repo' } } }, [], false, false],
+          ['a bot\'s PR', { user: { login: 'dependabot[bot]', type: 'Bot' } }, [], false, false],
+          ['a PR reopened', {}, [], false, false, 'reopened'],
+          ['a PR marked ready', {}, [], false, false, 'ready_for_review'],
           ['a ticked box', {}, ['again'], false, false],
           ['the retry itself', {}, [], true, false],
         ] as const) {
@@ -1178,7 +1182,7 @@ describe('handlePullRequest', () => {
           jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(false, [...modes]));
           catchUp.mockReturnValue(retry);
           const payload = prPayload(false);
-          setContext({ eventName: 'pull_request', payload: { ...payload, pull_request: { ...payload.pull_request, head: { sha: 'abc123', repo: own }, base: { ref: 'main', repo: own }, ...pr } } });
+          setContext({ eventName: 'pull_request', payload: { ...payload, action, pull_request: { ...payload.pull_request, user: { login: 'user', type: 'User' }, head: { sha: 'abc123', repo: own }, base: { ref: 'main', repo: own }, ...pr } } });
           await handlePullRequest();
           expect([label, jest.mocked(reviewModule.runReview).mock.calls[0][1].automaticRetry]).toEqual([label, retried]);
           expect([label, jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][4].catchUp]).toEqual([label, retry || undefined]);
@@ -2710,7 +2714,7 @@ describe('runFullReview orchestration', () => {
       expect(authModule.reportPrState).not.toHaveBeenCalled();
     });
 
-    it('marks the failed progress comment of an earlier run on the same head superseded after posting its own, and keeps it', async () => {
+    it('marks the failed progress comment of an earlier run on the same head superseded once its review starts, and keeps it', async () => {
       const failedOn = (head: string) => ({
         ...older, id: 9, updated_at: '2025-01-02T00:00:00Z',
         body: withSettingsBlock('🔴 **Review failed:** boom\n\n<!-- manki -->', view('review failed', { head, lastReviewed: 'ddd2222' })),
@@ -2722,24 +2726,27 @@ describe('runFullReview orchestration', () => {
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failedOn('abc123'), older]);
       await runWith();
       expect(ghUtils.postProgressComment).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, undefined, running);
+      expect(ghUtils.retireSettingsBlocks).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [failedOn('abc123'), older], 1);
       expect(supersede).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', expect.objectContaining({ id: 9, body: failedOn('abc123').body }), 'abc123');
       expect(jest.mocked(ghUtils.postProgressComment).mock.invocationCallOrder[0]).toBeLessThan(supersede.mock.invocationCallOrder[0]);
+      expect(supersede.mock.invocationCallOrder[0]).toBeLessThan(jest.mocked(reviewModule.runReview).mock.invocationCallOrder[0]);
       expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 9 }));
-      expect(ghUtils.retireSettingsBlocks).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [older], 1);
       expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls[0].slice(3, 7)).toEqual([1, 'Review', 'boom', view('review failed', { lastReviewed: 'ddd2222' })]);
 
-      // A failed comment that could not be marked loses its settings block like any older comment.
-      supersede.mockResolvedValueOnce(false);
-      await runWith();
-      expect(ghUtils.retireSettingsBlocks).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [failedOn('abc123'), older], 1);
-
       // A failure on an earlier head stays as it is, and the new head gets its own comment.
-      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failedOn('fff0000'), older]);
       supersede.mockClear();
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failedOn('fff0000'), older]);
       await runWith();
       expect(supersede).not.toHaveBeenCalled();
       expect(ghUtils.retireSettingsBlocks).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [failedOn('fff0000'), older], 1);
       jest.mocked(reviewModule.runReview).mockReset();
+
+      // A run that reviews nothing leaves the failure as it is and gives its settings block back.
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failedOn('abc123'), older]);
+      jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: false, auto_approve: false, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } });
+      await runWith();
+      expect(supersede).not.toHaveBeenCalled();
+      expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 9, view('automatic review off', { lastReviewed: 'ddd2222' }));
     });
 
     it('moves the block back to the comment that had it when the run deletes its progress comment, or posts it once', async () => {

@@ -601,6 +601,15 @@ async function loadEventConfig(octokit: Octokit, owner: string, repo: string, re
   return { config, held: configFailed(source) };
 }
 
+/**
+ * Whether the token service's catch-up reviews the head of `pr` once more when this run's review does not finish. It skips
+ * a fork's head and a bot's PR. A head that was reopened or marked ready can have had its catch-up already, or a skipped
+ * review that counts as handled, so only a PR opened or pushed to gets the promise.
+ */
+function retriedByCatchUp(pr: NonNullable<typeof github.context.payload.pull_request>, action: string | undefined): boolean {
+  return (action === 'opened' || action === 'synchronize') && pr.user?.type !== 'Bot' && pr.head.repo?.full_name === pr.base.repo?.full_name;
+}
+
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -652,9 +661,7 @@ async function handlePullRequest(): Promise<void> {
     draft,
     fullReview,
     deeper,
-    // The token service's catch-up reviews a head once more when its review did not finish, except a draft, a fork's
-    // head and a head it already caught up. A ticked box can review a commit that has a verdict, which it never retries.
-    automaticRetry: !forced && !draft && !trigger.catchUp && pr.head.repo?.full_name === pr.base.repo?.full_name,
+    automaticRetry: !forced && !draft && !trigger.catchUp && retriedByCatchUp(pr, github.context.payload.action),
   });
 }
 
@@ -861,10 +868,13 @@ const runningSettings = (target: RunTarget, progress: RunProgress): SettingsView
 
 /**
  * Posts the run's progress comment, ending with the settings block, which older comments then lose, so only the newest
- * progress comment has one. The failed progress comment of an earlier run on the same head is marked superseded and
- * keeps its report. It is not edited into this run's, since the token service takes only a comment created after the run started.
+ * progress comment has one. Returns its id and the failed progress comment of an earlier run on the same head, which
+ * the run marks superseded once it reviews. A new comment is posted, since the token service takes only a comment created
+ * after the run started.
  */
-async function postRunProgress(target: RunTarget, progress: RunProgress, { settings = NO_SETTINGS, draft = false }: FullReviewOptions): Promise<number> {
+async function postRunProgress(
+  target: RunTarget, progress: RunProgress, { settings = NO_SETTINGS, draft = false }: FullReviewOptions,
+): Promise<{ commentId: number; failed?: { id: number; body: string } }> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   let comments: Awaited<ReturnType<typeof fetchPRComments>> = [];
   try {
@@ -876,12 +886,11 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
   const failed = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest : undefined;
   progress.settings = {
     lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
-    ...(latest && !failed && { previousId: latest.id }),
+    ...(latest && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));
-  const superseded = failed && await markFailedProgressSuperseded(octokit, owner, repo, failed, commitSha);
-  await retireSettingsBlocks(octokit, bot, owner, repo, superseded ? comments.filter(c => c.id !== failed.id) : comments, commentId);
-  return commentId;
+  await retireSettingsBlocks(octokit, bot, owner, repo, comments, commentId);
+  return { commentId, ...(failed && { failed }) };
 }
 
 /**
@@ -2011,7 +2020,7 @@ async function runFullReview(
     const { config, reviewSource, brokenHead } = await loadRunConfig(target);
     if (await skipsRound(target, config, trigger, options, configFailed(reviewSource) || brokenHead !== undefined)) return;
 
-    const commentId = await postRunProgress(target, progress, options);
+    const { commentId, failed } = await postRunProgress(target, progress, options);
     progress.commentId = commentId;
 
     const recap = await loadRecap(target, config, progress, options);
@@ -2118,6 +2127,7 @@ async function runFullReview(
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
+    if (failed) await markFailedProgressSuperseded(octokit, owner, repo, failed, commitSha);
     const stage = await reviewRound(run, clients, {
       checkpoint: async () => {
         stop.signal.throwIfAborted();

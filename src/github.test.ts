@@ -3881,15 +3881,16 @@ describe('updateProgressComment', () => {
     const report = `🔴 **Review failed** in 4m 12s\n\n${buildDashboard({ ...baseDashboard, phase: 'complete' })}\n\n${BOT_MARKER}\n${REVIEW_COMPLETE_MARKER}`;
     const failed = { id: 9, body: withSettingsBlock(report, { head: 'abc1234', status: 'review incomplete', boxes: new Set(['pause', 'again']), ticked: new Set() }) };
 
-    expect(await markFailedProgressSuperseded(mockOctokit, 'owner', 'repo', failed, 'abc1234ffff')).toBe(true);
+    await markFailedProgressSuperseded(mockOctokit, 'owner', 'repo', failed, 'abc1234ffff');
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(mockUpdateComment.mock.calls[0][0].comment_id).toBe(9);
     expect(body).toBe(`**Review superseded** by a later review of \`abc1234\`. This attempt ended as follows.\n\n${report}`);
     // A verdict later marks only a comment that still reads as failed, so this one keeps its report.
     expect(isFailedProgress(body)).toBe(false);
 
+    // A failed edit leaves the comment as it is and does not stop the review.
     mockUpdateComment.mockRejectedValueOnce(new Error('Forbidden'));
-    expect(await markFailedProgressSuperseded(mockOctokit, 'owner', 'repo', failed, 'abc1234ffff')).toBe(false);
+    await expect(markFailedProgressSuperseded(mockOctokit, 'owner', 'repo', failed, 'abc1234ffff')).resolves.toBeUndefined();
   });
 
   it('renders config section in metadata', async () => {
