@@ -1,0 +1,20 @@
+id: django-22137
+repo: django/django
+source: django upstream PR 22137
+base: 904349fcbe0ad4eed097b5e7fb7171954591cb28
+head: 8085ca8170a2838bcd40ea84c7beac56267525b3
+title: "Fixed #37419 -- Included CSP nonces in headers for streaming responses."
+body: |
+  Thank you Michael Codispoti (codispoti) for the report.
+
+  #### Trac ticket number
+
+  ticket-37419
+key_version: 1
+must_catch:
+  - id: K1
+    severity: note
+    mechanism: "`ContentSecurityPolicyMiddleware.process_response` adds its own inline test of whether the CSP config uses a nonce (`CSP.NONCE in ...` over `config.values()`), although the repository already has that test as `_csp_policy_contains_nonce` in `django/core/checks/security/base.py`. The two copies are written differently (the helper tolerates a policy without `values()` and tests membership on any container, while the inline test treats only a list, tuple or set as a container), so the system check and the middleware can disagree on the same setting and drift apart. Move the helper somewhere both can import, such as `django/utils/csp.py`, and call it from the middleware."
+    locations: ["django/middleware/csp.py", "process_response", "django/core/checks/security/base.py", "_csp_policy_contains_nonce"]
+    fix: "18c197c839aaeafde3d0b99e9362b94d9a375dd6"
+nice_to_have: []

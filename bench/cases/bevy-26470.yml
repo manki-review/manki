@@ -1,0 +1,34 @@
+id: bevy-26470
+repo: bevyengine/bevy
+source: bevy upstream PR 26470
+base: 76295a0d268e5a72079e4c2d7ba7db18bcf259ff
+head: 86e151356080b9ae3bd2d28f3ecaad78a579e2e3
+title: "Implement Reflect for annotation types in bevy_reflect"
+body: |
+  # Objective
+
+  Part of bevy issue 23013. Split out of bevy PR 26337, so `bevy_reflect` can use annotations on its own impls, like the glam types.
+
+  `bevy_annotations` depends on `bevy_reflect`, so `bevy_reflect` can't use the annotations itself.
+
+  # Solution
+
+  - `bevy_annotations` has no dependencies now; `bevy_reflect` depends on it and implements `Reflect` for the annotation types
+  - `ValueRange::from_attributes` moves to `CustomAttributes::value_range`
+  - `bevy_remote`, the inspector and the `annotations` example use the new method
+
+  # Testing
+
+  Moved the annotation tests into `bevy_reflect`, and ran the `annotations` example.
+
+  # AI disclosure
+
+  The implementation and tests were written with the help of AI, and I reviewed the changes before using any of the proposed code.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: note
+    mechanism: "Every other crate `bevy_reflect` implements `Reflect` for (`glam`, `hashbrown`, `indexmap`, `petgraph`, `smallvec`, `uuid`, `wgpu-types`) is an optional dependency behind its own feature in the `# Integrations` section of `crates/bevy_reflect/Cargo.toml`, and its module under `impls` in `lib.rs` sits behind `#[cfg(feature = ...)]`. The PR adds `bevy_annotations` as a required dependency and compiles `impls::annotations` unconditionally, so every user of `bevy_reflect` builds it. Make it an optional `annotations` feature like the other integrations, and enable it in the crates that use it."
+    locations: ["crates/bevy_reflect/Cargo.toml", "bevy_annotations", "crates/bevy_reflect/src/lib.rs", "annotations"]
+    fix: "bade419a5e8780672cb6bc344fb50531a3165b32"
+nice_to_have: []
