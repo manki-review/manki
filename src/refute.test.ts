@@ -7,7 +7,7 @@ import * as core from '@actions/core';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -900,7 +900,7 @@ describe('refuteBlockers', () => {
       'Note to warning', 'Second warning to blocker', 'Warning to blocker', 'Warning without proof',
     ]);
     expect(client.messages.find(([, user]) => user.includes(': Warning without proof\n'))![1]).toMatch(/^## Warning no cited line proves: Warning without proof\n/);
-    expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, a finding that rests on premises the judge doubts');
+    expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, a finding that rests on premises the judge doubts');
 
     // Only a check that settled nothing and the limit leave a doubted warning unproven. Where no check could run, the cited lines decide.
     const reasons = (list: Finding[]) => Object.fromEntries(list.filter(f => f.severity === 'warning').map(f => [f.title, unprovenReason(f)]));
@@ -1072,11 +1072,6 @@ describe('refuteBlockers', () => {
       ['Warning no cited line proves, which the judge doubts', {
         severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists, ...noProof,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
-      ['Warning on unchanged code', { severity: 'warning', preExisting: 'The loop predates this PR.' }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
-      // The answer about the reach changes nothing. A check that confirms the defect leaves a warning the review posts, with or without the reach.
-      ['Warning on unchanged code in the rare column', {
-        ...rare, preExisting: 'The loop predates this PR.',
-      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
       ['Security warning the judge doubts', {
         severity: 'warning', tags: ['security'], doubts: exists,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
@@ -1086,7 +1081,7 @@ describe('refuteBlockers', () => {
       const answer = (outcome: string) => ({ outcome, reason: 'r', proof: ['src/math.ts:2'] });
       const reply = (f: Finding) => ({ ...answer(defect), ...(f.doubts && { premises: f.doubts.map(() => answer(premises)) }) });
       const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, f.title.endsWith('the call fails') ? new Error('overloaded') : reply(f)])));
-      const result = await refuteRound(client, findings, { workspace, diff, preExisting: f => !!f.preExisting });
+      const result = await refuteRound(client, findings, { workspace, diff });
       expect(client.calls.map(([title]) => title).sort()).toEqual(kinds.map(([title]) => title).sort());
       // Every check asks about the premises the judge doubts and about the defect, whatever kind of finding it is.
       expect(client.messages.filter(([, user]) => user.includes('Premises the judge doubts')).length).toBe(findings.filter(f => f.doubts).length);
@@ -1106,79 +1101,149 @@ describe('refuteBlockers', () => {
     expect((await ends('confirmed', 'disproved')).statuses).toEqual(premiseOpen.statuses);
     // A warning that rests on such a check alone is kept in the round record. A premise about the grade only leaves the confirmation.
     const left = (title: string) => unprovenReason(premiseOpen.result.find(f => f.title === title)!);
-    expect([left('Warning the judge doubts'), left('Warning on unchanged code in the rare column')]).toEqual(['unsettled_check', undefined]);
+    // The answer about the reach changes nothing. A check that confirms the defect leaves a warning the review posts, with or without the reach.
+    expect([left('Warning the judge doubts'), left('Warning in the rare column')]).toEqual(['unsettled_check', undefined]);
     // The same holds where no check runs at all, as on a round without tools: what a finder did not finish checking is not proven by the lines it cites.
     expect([finding('Lead', lead), finding('Not finished', { severity: 'warning', notChecked: true }), finding('Finished', { severity: 'warning' })].map(checkStatus)).toEqual(['unconfirmed', 'unconfirmed', 'proven']);
   });
 
-  it('checks a warning on code the PR did not change after the unproven ones, those with a doubt first, inside the same limit', async () => {
+  it('takes no check for a warning a later step leaves out, such as a pre-existing one, and checks the rest in order inside the same limit', async () => {
     const doubt = { gradeIfConfirmed: 'warning' as const, doubts: [{ premise: 'Nothing ends the loop', decides: 'defect' as const }] };
     const old = { severity: 'warning' as const, preExisting: 'The loop predates this PR.' };
+    const unproven = Array.from({ length: 5 }, (_, i) => finding(`Unproven ${i + 1}`, { severity: 'warning', evidence: { checks: [], proof: [] } }));
     const findings = [
-      // One nothing proves waits behind the warnings on changed code too, so it never takes a check one of them needs.
       finding('Old without proof', { ...old, evidence: { checks: [], proof: [] } }),
-      finding('Old plain', old),
       finding('Old with a doubt', { ...old, ...doubt }),
-      finding('Old confirmed', { ...old, ...doubt }),
-      // A security warning is posted wherever it sits, so it takes no check.
-      finding('Old security', { ...old, tags: ['security'] }),
-      // No check can run on these two, so nothing confirms them: the call fails, or the refuter cannot read the file.
-      finding('Old and the call fails', { ...old, ...doubt }),
-      finding('Old in a deleted file', { ...old, ...doubt, file: 'src/deleted.ts' }),
-      finding('Proven on changed code', { severity: 'warning' }),
-      ...Array.from({ length: 5 }, (_, i) => finding(`Unproven ${i + 1}`, { severity: 'warning', evidence: { checks: [], proof: [] } })),
+      // A confirmation can make this one a blocker, which the review posts as pre-existing, so it is checked.
+      finding('Old blocker a doubt holds at a warning', { ...old, gradeIfConfirmed: 'blocker', doubts: doubt.doubts }),
+      ...unproven,
     ];
     const answer = (outcome: 'confirmed' | 'unsettled') => ({ outcome, reason: 'r', proof: ['src/math.ts:2'], premises: [{ outcome, reason: 'r', proof: ['src/math.ts:2'] }] });
-    const client = fakeClient({ ...Object.fromEntries(findings.map(f => [f.title, answer('unsettled')])), 'Old confirmed': answer('confirmed'), 'Old and the call fails': new Error('overloaded') });
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, answer('unsettled')])));
 
-    const result = await refuteRound(client, findings, { workspace, diff, preExisting: f => f.title.startsWith('Old') });
+    await refuteRound(client, findings, { workspace, diff, unpostedLater: f => f.title.startsWith('Old') });
 
-    warnSpy.mockRestore();
-    // The five unproven warnings on changed code take the first checks and the three readable ones with a doubt the last, which leaves none for the other two.
-    expect(client.calls.map(([title]) => title).sort()).toEqual(['Old and the call fails', 'Old confirmed', 'Old with a doubt', ...Array.from({ length: 5 }, (_, i) => `Unproven ${i + 1}`)]);
-    expect(client.messages[0][0]).toContain('a warning no cited line proves, a warning on code the pull request did not change, a finding that rests on premises the judge doubts');
-    // Only the confirmed one is `confirmed`, the status that posts a warning on unchanged code.
-    expect(result.slice(0, 7).map(f => [f.title, f.severity, checkStatus(f)])).toEqual([
-      ['Old without proof', 'warning', 'unconfirmed'], ['Old plain', 'warning', 'proven'], ['Old with a doubt', 'warning', 'unconfirmed'], ['Old confirmed', 'warning', 'confirmed'], ['Old security', 'warning', 'proven'],
-      ['Old and the call fails', 'warning', 'unconfirmed'], ['Old in a deleted file', 'warning', 'unconfirmed'],
-    ]);
-    // A check that confirmed its premises without an answer about the defect confirms none.
-    const { defect: _defect, ...premisesOnly } = result[3].refutation!;
-    expect([result[3].refutation?.premises?.map(p => p.outcome), checkStatus({ ...findings[3], refutation: premisesOnly })]).toEqual([['confirmed'], 'unconfirmed']);
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Old blocker a doubt holds at a warning', ...unproven.map(f => f.title)]);
+    expect(client.messages[0][0]).toContain('a warning no cited line proves, a finding that rests on premises the judge doubts');
 
     // A check of a doubted security finding only settles its status, so it runs once every check that decides a posting has its place.
     const doubted = finding('Security with a doubt', { severity: 'warning', tags: ['security'], doubts: [{ premise: 'The copy is never dropped', decides: 'defect' }] });
     const status = fakeClient({ 'Security with a doubt': answer('confirmed'), 'Unproven 1': answer('unsettled') });
-    await refuteRound(status, [doubted, findings.find(f => f.title === 'Unproven 1')!], { workspace, diff, doubtBudget: { left: 1 } });
+    await refuteRound(status, [doubted, unproven[0]], { workspace, diff, doubtBudget: { left: 1 } });
     expect(status.calls.map(([title]) => title)).toEqual(['Unproven 1']);
     const [settled] = await refuteRound(status, [doubted], { workspace, diff });
     expect([status.calls.map(([title]) => title), checkStatus(settled)]).toEqual([['Unproven 1', 'Security with a doubt'], 'confirmed']);
 
-    // The whole order: warnings on changed code, warnings on unchanged code, warnings linked to an earlier finding, then a doubted security finding.
-    const order = ['Unproven 1', 'Old with a doubt', 'Linked on changed code', 'Old and linked', 'Security with a doubt'];
+    // The whole order: warnings on changed code, warnings linked to an earlier finding, then a doubted security finding.
+    const order = ['Unproven 1', 'Linked on changed code', 'Security with a doubt'];
     const listed = [
       doubted,
-      finding('Old and linked', { ...old, ...doubt, variantOf: 'src/math.ts:1:earlier' }),
       finding('Linked on changed code', { severity: 'warning', evidence: { checks: [], proof: [] }, sameAs: 'src/math.ts:1:earlier' }),
-      ...findings.filter(f => order.includes(f.title)),
+      unproven[0],
     ];
     const linked = (f: Finding) => !!(f.sameAs || f.variantOf);
-    for (const left of [1, 2, 3, 4, 5]) {
+    for (const left of [1, 2, 3]) {
       const picking = fakeClient(Object.fromEntries(listed.map(f => [f.title, answer('unsettled')])));
-      await refuteRound(picking, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), restatesEarlier: linked, doubtBudget: { left } });
+      await refuteRound(picking, listed, { workspace, diff, restatesEarlier: linked, doubtBudget: { left } });
       expect(picking.calls.map(([title]) => title).sort()).toEqual(order.slice(0, left).sort());
     }
     // A judge call makes only the checks of the first group, whatever is left of the limit, so a later judge call of the round finds the rest of it.
     const first = fakeClient(Object.fromEntries(listed.map(f => [f.title, answer('unsettled')])));
     const doubtBudget = { left: 8 };
-    await refuteBlockers(first, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), restatesEarlier: linked, doubtBudget });
+    await refuteBlockers(first, listed, { workspace, diff, restatesEarlier: linked, doubtBudget });
     expect([first.calls.map(([title]) => title), doubtBudget]).toEqual([['Unproven 1'], { left: 7 }]);
+  });
 
-    // Without the mark, a warning its cited lines prove takes no check.
-    const unmarked = fakeClient({ 'Old plain': answer('unsettled') });
-    await refuteRound(unmarked, [findings[1]], { workspace, diff });
-    expect(unmarked.calls).toEqual([]);
+  it('asks each blocker whether its failure is the PR\'s own, apart from its outcome, and reuses a stored check only with that answer', async () => {
+    const doubt = { premise: 'Nothing bounds the inputs', decides: 'defect' as const };
+    const same = { outcome: 'disproved', reason: 'The sum overflowed the same way before this PR.', proof: ['src/math.ts:2'] };
+    const confirmed = { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] };
+    const replies = {
+      'Same before': { ...confirmed, base: same },
+      'No answer about the base': confirmed,
+      'Same before without proof': { ...confirmed, base: { ...same, proof: [] } },
+      'Same before by an unrelated file': { ...confirmed, base: { ...same, proof: ['README.md:1'] } },
+      'Pending blocker': { ...confirmed, premises: [confirmed], base: same },
+      'Security': { ...confirmed, base: same },
+      'Plain warning': { ...confirmed, base: same },
+    };
+    const client = fakeClient(replies, 'first-model');
+    const pair = fakeClient(replies, 'pair-model');
+    const findings = [
+      finding('Same before'),
+      finding('No answer about the base'),
+      finding('Same before without proof'),
+      finding('Same before by an unrelated file'),
+      finding('Pending blocker', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [doubt] }),
+      finding('Security', { tags: ['security'] }),
+      finding('Plain warning', { severity: 'warning', evidence: { checks: [], proof: [] } }),
+    ];
+
+    const result = await refuteBlockers(client, findings, { workspace, diff, pair, excludedPaths: ['gen/client.ts'] });
+
+    const message = (title: string) => client.calls.find(([t]) => t === title)![2];
+    const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
+    expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, false]);
+    // A check that asks shows the PR's change to the cited files and names the other files the PR changes.
+    expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
+    expect(message('Pending blocker')).toContain('- **Other files this PR changes**');
+    expect(message('Plain warning')).not.toContain('Other files this PR changes');
+    // The answer never moves the outcome or the grade here. Only an answer with a line of the finding's file or the diff
+    // counts, from both refuters on different models, for a security finding as for any other.
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.base?.outcome, !!sameOnBase(f)])).toEqual([
+      ['Same before', 'blocker', 'confirmed', 'disproved', true],
+      ['No answer about the base', 'blocker', 'confirmed', 'unsettled', false],
+      ['Same before without proof', 'blocker', 'confirmed', 'unsettled', false],
+      ['Same before by an unrelated file', 'blocker', 'confirmed', 'unsettled', false],
+      ['Pending blocker', 'blocker', 'confirmed', 'disproved', true],
+      ['Security', 'blocker', 'confirmed', 'disproved', true],
+      ['Plain warning', 'warning', 'confirmed', undefined, false],
+    ]);
+    expect(result[0].refutation?.base).toEqual({ premise: BASE_QUESTION, outcome: 'disproved', reason: same.reason, proof: ['src/math.ts:2'] });
+    // One refuter, a second call that failed, two on the same model, or a second check that finds the failure the PR's
+    // own or leaves it open, keeps the finding as it is.
+    const [lowered] = result;
+    expect(sameOnBase({ ...lowered, pairRefutation: undefined })).toBeUndefined();
+    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, model: 'first-model' } })).toBeUndefined();
+    expect(sameOnBase({ ...lowered, refutation: { ...lowered.refutation!, model: undefined } })).toBeUndefined();
+    for (const outcome of ['confirmed', 'unsettled'] as const) {
+      expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...lowered.pairRefutation!.base!, outcome } } })).toBeUndefined();
+    }
+    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...lowered.pairRefutation!.base!, proof: undefined } } })).toBeUndefined();
+    const failed = fakeClient({ 'Same before': new Error('timed out') }, 'pair-model');
+    const [alone] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, pair: failed });
+    expect([alone.refutation?.base?.outcome, alone.pairRefutation, sameOnBase(alone)]).toEqual(['disproved', undefined, undefined]);
+
+    // A change the message leaves out looks the same at the base, so an answer under a cut list of changed files, or
+    // under a cut change to the cited file, stays open.
+    const paths = (n: number) => Array.from({ length: n }, (_, i) => `gen/file${i}.ts`);
+    const [named] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(49) });
+    const [cut] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(50) });
+    expect(client.calls.at(-1)![2]).toContain(', and 1 more it does not name');
+    const longChange = (lines: number): ParsedDiff => ({
+      ...diff, files: [...diff.files, { path: 'src/math.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 + lines, content: '+  // note\n'.repeat(lines) }] }],
+    });
+    const [shortChange] = await refuteBlockers(client, [finding('Same before')], { workspace, diff: longChange(10) });
+    const [cutChange] = await refuteBlockers(client, [finding('Same before')], { workspace, diff: longChange(1000) });
+    expect([named, cut, shortChange, cutChange].map(f => f.refutation?.base?.outcome)).toEqual(['disproved', 'unsettled', 'disproved', 'unsettled']);
+
+    // A warning reuses its stored check without the answer about the base, so no stale answer makes it pre-existing.
+    const stored = (refutation: Refutation) => [{ findings: { entries: [{ title: 'Same before', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation }] }, judge: {} }] as unknown as RoundContext[];
+    const again = fakeClient({ 'Same before': { ...confirmed, base: same } });
+    const [warning] = await refuteBlockers(again, [finding('Same before', { severity: 'warning', evidence: { checks: [], proof: [] } })], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    expect([again.calls.length, warning.refutation?.outcome, warning.refutation?.base]).toEqual([0, 'confirmed', undefined]);
+    // A blocker's stored check that found the same failure before this PR is never reused, since a push to any file can
+    // make the failure the PR's own: it is asked again with the code unchanged, after a push to another file, and after
+    // a push to a cited file. One whose answer about the base lowers nothing is reused while its files are unchanged.
+    const open = { ...result[1].refutation!, codeDigest: result[0].refutation!.codeDigest, files: result[0].refutation!.files };
+    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(open) });
+    expect(again.calls).toHaveLength(0);
+    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    writeFileSync(join(workspace, 'src', 'api.ts'), 'export const total = add(Number.MAX_SAFE_INTEGER, 1);\n');
+    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    writeFileSync(join(workspace, 'src', 'math.ts'), 'export function add(a: number, b: number) {\n  return a + b + 1;\n}\n');
+    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    expect(again.calls).toHaveLength(3);
   });
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {
@@ -1435,10 +1500,10 @@ describe('refuteBlockers', () => {
     expect([dropped.calls.map(([title]) => title).sort(), overLimit(hiding)]).toEqual([eight, []]);
 
     // A stored check says itself whether the defect exists, so it stays a confirmation whichever doubts a later round's judge names.
-    const old = (premise?: string) => finding('Old copy leaks', { severity: 'warning', preExisting: 'The copy predates this PR.', ...(premise && { doubts: [{ premise, decides: 'defect' as const }] }) });
+    const old = (premise?: string) => finding('Old copy leaks', { severity: 'warning', evidence: { checks: [], proof: [] }, ...(premise && { doubts: [{ premise, decides: 'defect' as const }] }) });
     const confirmed = { outcome: 'confirmed', reason: 'Nothing drops it.', proof: ['src/math.ts:2'] };
     const confirming = fakeClient({ 'Old copy leaks': { ...confirmed, premises: [confirmed] } });
-    const onUnchanged = { workspace, diff, preExisting: () => true };
+    const onUnchanged = { workspace, diff };
     const [doubted] = await refuteRound(confirming, [old('The copy is never dropped')], onUnchanged);
     const roundsWith = (refutation: unknown) => [{ findings: { entries: [{ title: 'Old copy leaks', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation }] }, judge: {} }] as unknown as RoundContext[];
     for (const premise of ['Nothing frees the copy', undefined]) {
@@ -1454,7 +1519,7 @@ describe('refuteBlockers', () => {
     expect([confirming.calls.length, outcomeOf(contradicted.refutation!), checkStatus(contradicted)]).toEqual([3, 'confirmed', 'confirmed']);
     // A stored check that left open the premise that decided the defect when it ran confirms nothing, whichever doubts a later judge names.
     const open = { ...doubted.refutation!, outcome: 'unsettled', premises: doubted.refutation!.premises!.map(p => ({ ...p, outcome: 'unsettled' as const })) };
-    const asGrade = (premise: string) => finding('Old copy leaks', { severity: 'warning', preExisting: 'The copy predates this PR.', doubts: [{ premise, decides: 'grade' }] });
+    const asGrade = (premise: string) => finding('Old copy leaks', { severity: 'warning', evidence: { checks: [], proof: [] }, doubts: [{ premise, decides: 'grade' }] });
     const statusLater = async (refutation: unknown, later: Finding) => checkStatus((await refuteRound(confirming, [later], { ...onUnchanged, priorRounds: roundsWith(refutation) }))[0]);
     const stillOpen = [old('The copy is never dropped'), old('Nothing frees the copy'), old(), asGrade('The copy is never dropped')];
     expect(await Promise.all(stillOpen.map(later => statusLater(open, later)))).toEqual(['unconfirmed', 'unconfirmed', 'unconfirmed', 'unconfirmed']);

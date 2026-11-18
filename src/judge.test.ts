@@ -321,6 +321,9 @@ describe('buildJudgeSystemPrompt', () => {
     // The defect a PR fixes in one path and leaves in a sibling path is the PR's own, in test 1 and under Pre-existing Findings.
     expect(prompt).toContain('When this PR fixes a defect in one path, the same defect in a sibling path it leaves alone is part of the change, since the fix is incomplete: a PR that adds an auth check to `POST /items` but leaves `PUT /items/:id` open ships the open route as its own defect. State its cell like any defect of this PR, and cite the line of the fix in `proof` beside the sibling\'s own line.');
     expect(prompt).toContain('only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing. Neither is the defect this PR fixes in one path and leaves in a sibling path: that fix is incomplete, so the defect is part of the change.');
+    // The grade the judge states is the one the PR would own, and only the checks settle the base.
+    expect(prompt).toContain('State the cell the finding earns as if this PR had caused it, and never lower it because you think the code before this PR already had the defect.');
+    expect(prompt).toContain('Whether the code before this PR fails the same way is for Manki\'s checks with tools to settle.');
     expect(prompt).toContain('**The damage is serious.** The failure is in one of the serious categories below. Manki settles this test from the cell you state, and for a finding you doubt also from its `gradeIfConfirmed`.');
     expect(prompt).toContain('## Grade Stability');
     expect(prompt).toContain('keeps the `row` and `column` it had. A prior finding listed with a grade but no `row` has no cell to keep: state a cell that gives that grade. Change the cell only when the code at that spot changed or you have evidence the earlier round did not have');
@@ -4635,6 +4638,32 @@ describe('mapJudgedToFindings', () => {
     expect(result[1].gradePath).toEqual([{ from: 'blocker', to: 'warning', by: 'unproven', reason: 'it cites no lines that prove the failure' }]);
     expect(result[0].gradePath).toBeUndefined();
     expect(result[2].evidence).toEqual({ checks: ['read it'], proof: ['src/index.ts:12'] });
+  });
+
+  it('never lowers a grade for the judge\'s pre-existing call, with or without a refuter, so the finding keeps the cell it earns as the PR\'s own', () => {
+    const proven = (title: string, extra: Partial<Finding> = {}) => makeFinding({ title, severity: 'blocker', evidence: { checks: [], proof: ['src/a.ts:1'] }, ...extra });
+    const doubt = { premise: 'The handler is public', decides: 'defect' as const };
+    const originals = [
+      proven('Called pre-existing'), proven('Called pre-existing with a doubt'), proven('Security called pre-existing', { tags: ['security'] }),
+      proven('Raised by the judge', { severity: 'warning' }), proven('Warning called pre-existing'), proven('On unchanged code', { preExisting: 'It predates this PR.' }),
+    ];
+    const judged: JudgedFinding[] = originals.map((f, i) => ({
+      id: i + 1, title: f.title, row: f.title.startsWith('Warning') ? 'degraded' : 'severe', reasoning: 'r', preExisting: true,
+      ...(f.title.endsWith('with a doubt') && { doubts: [doubt] }),
+    }));
+
+    for (const refuter of [false, true]) {
+      const result = mapJudgedToFindings(originals, judged, [], f => f.title === 'On unchanged code', refuter);
+      expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual([
+        ['Called pre-existing', 'blocker', undefined, undefined],
+        // Only the judge's own doubt holds it down, as it would on any finding.
+        ['Called pre-existing with a doubt', 'warning', 'blocker', [doubt]],
+        ['Security called pre-existing', 'blocker', undefined, undefined],
+        ['Raised by the judge', 'blocker', undefined, undefined],
+        ['Warning called pre-existing', 'warning', undefined, undefined],
+        ['On unchanged code', 'blocker', undefined, undefined],
+      ]);
+    }
   });
 
   it('works out each grade from the cell the judge states, and holds a blocker cell with a doubt at warning unless it is a security finding or a tool alert', () => {

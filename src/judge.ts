@@ -19,7 +19,7 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, restatesEarlier, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
@@ -593,7 +593,7 @@ If you can show the attacker gains no capability they do not already have, for e
 
 ## Pre-existing Findings
 
-A reviewer marks a finding pre-existing when it says the defect sits on code this PR did not change and the code before this PR already had it. Set \`preExisting\` to true only on such a finding, and only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing. Neither is the defect this PR fixes in one path and leaves in a sibling path: that fix is incomplete, so the defect is part of the change. An unchanged caller that breaks because this PR changed what a function returns or takes is caused by this PR. Set it to false on every other finding. A pre-existing finding is posted as one, and it never blocks unless it is a security defect.
+A reviewer marks a finding pre-existing when it says the defect sits on code this PR did not change and the code before this PR already had it. Set \`preExisting\` to true only on such a finding, and only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing. Neither is the defect this PR fixes in one path and leaves in a sibling path: that fix is incomplete, so the defect is part of the change. An unchanged caller that breaks because this PR changed what a function returns or takes is caused by this PR. Set it to false on every other finding. State the cell the finding earns as if this PR had caused it, and never lower it because you think the code before this PR already had the defect. A marked finding on code this PR did not change is posted as pre-existing. Whether the code before this PR fails the same way is for Manki's checks with tools to settle.
 
 ## When You Are Unsure
 
@@ -1779,10 +1779,9 @@ export async function runJudgeAgent(
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
   };
   // Each step after the refuter that keeps a warning out of the review whatever a check says belongs here: the
-  // suppressions above, which drop it or make it a note, and the memory suppressions. `markPreExisting` is none, since
-  // it posts a warning a check confirmed.
+  // suppressions above, which drop it or make it a note, the memory suppressions, and `markPreExisting`.
   const unpostedLater = (finding: Finding): boolean => suppress([finding], true).findings[0].severity !== finding.severity
-    || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0;
+    || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0 || (staysPreExisting(finding) && !postedWhenPreExisting(finding));
   const earlier = earlierFindings(priorRounds ?? [], openThreads ?? input.evaluatedThreads?.openThreads ?? [], crossRoundOptions.threadEvaluations);
   const kept = mapped.filter(f => f.severity !== 'ignore').length;
   input.onGraded?.({ kept, dropped: mapped.length - kept, merged: findings.length - mapped.length });
@@ -1794,7 +1793,7 @@ export async function runJudgeAgent(
     unpostedLater,
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
     restatesEarlier: finding => restatesEarlier(earlier, finding),
-    preExisting: staysPreExisting, rules: config.review?.rules,
+    rules: config.review?.rules, excludedPaths: input.excludedPaths,
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(f => withoutRuleDoubt(f, config.review?.rules)));
 
