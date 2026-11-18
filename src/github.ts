@@ -474,6 +474,12 @@ export async function fetchCommitDiff(octokit: Octokit, owner: string, repo: str
   return data as unknown as string;
 }
 
+/** Returns the sha of the merge base of `base` and `head`: the commit the PR's diff starts from. */
+export async function fetchMergeBase(octokit: Octokit, owner: string, repo: string, base: string, head: string): Promise<string> {
+  const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base, head, per_page: 1 });
+  return data.merge_base_commit.sha;
+}
+
 /**
  * Returns the full blob sha of each file `head` changes against its merge base with `base`, by path. GitHub lists at most
  * 300 files for a comparison, so a path past that is missing from the map.

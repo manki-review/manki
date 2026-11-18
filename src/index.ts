@@ -81,6 +81,7 @@ import {
   hasBotReviewOnCommit,
   findBotReviewOnCommit,
   fetchApprovalHold,
+  fetchMergeBase,
   REVIEW_STATE_VERDICTS,
   fetchPRComments,
   fetchReviewThreadNodes,
@@ -999,8 +1000,7 @@ async function changesConfig(target: RunTarget, headContent: string | null | und
   if (headContent === undefined) return true;
   const { octokit, owner, repo, commitSha, baseRef } = target;
   try {
-    const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base: baseRef, head: commitSha, per_page: 1 });
-    return await readConfigFile(octokit, owner, repo, data.merge_base_commit.sha, CONFIG_PATH) !== headContent;
+    return await readConfigFile(octokit, owner, repo, await fetchMergeBase(octokit, owner, repo, baseRef, commitSha), CONFIG_PATH) !== headContent;
   } catch (error) {
     core.warning(`Could not read ${CONFIG_PATH} at the merge base, so the PR counts as changing it: ${failureReason(error)}`);
     return true;

@@ -201,6 +201,7 @@ jest.mock('./github', () => ({
   wasEdited: jest.fn().mockResolvedValue(false),
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
+  fetchMergeBase: jest.requireActual('./github').fetchMergeBase,
   githubRepoFiles: jest.fn(() => ({ read: jest.fn().mockResolvedValue(null), list: jest.fn().mockResolvedValue([]) })),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
   editedKeys: jest.requireActual('./github').editedKeys,
