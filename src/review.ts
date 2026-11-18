@@ -10,7 +10,7 @@ import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
 import { canLeaveOut, CheckProgress, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
+import { countChangedLines, MAX_LINE_CHARS, MAX_SLICE_CHARS, nearCodeChange, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -36,24 +36,25 @@ export function parseLocation(at: string): { file: string; start: number; end: n
   return file ? { file, start: Number(start), end: Number(end ?? start) } : undefined;
 }
 
-/** Whether the `file:line` or `file:start-end` location `at` cites a line inside a hunk of `diff`. */
+/** Whether the `file:line` or `file:start-end` location `at` cites a line near code `diff` changes. */
 function citesChangedLine(at: string, diff: ParsedDiff): boolean {
   const location = parseLocation(at);
   const diffFile = location && diff.files.find(df => df.path === location.file);
-  return !!diffFile && isLineInDiff(diffFile, location.start, location.end);
+  return !!diffFile && nearCodeChange(diffFile, location.start, location.end);
 }
 
-/** Whether `f` sits inside a hunk of `diff`, or cites a line inside one as proof. */
+/** Whether `f` sits near code `diff` changes, or cites a line near it as proof. */
 function touchesChangedCode(f: Finding, diff: ParsedDiff): boolean {
   const diffFile = f.file ? diff.files.find(df => df.path === f.file) : undefined;
-  if (diffFile && f.line > 0 && isLineInDiff(diffFile, f.line)) return true;
+  if (diffFile && f.line > 0 && nearCodeChange(diffFile, f.line)) return true;
   return (f.evidence?.proof ?? []).some(at => citesChangedLine(at, diff));
 }
 
 /**
  * Whether `f` is about code this PR did not change. Each of these must hold, so no model's answer alone can lower a
- * blocker: the reviewer said the defect exists without this PR and the judge kept that, the finding sits outside every
- * hunk, no line it cites as proof is in the diff, and the PR neither deletes its file nor left it out by `exclude_paths`.
+ * blocker: the reviewer said the defect exists without this PR and the judge kept that, neither the finding nor a line
+ * it cites as proof sits near code the PR changes (`nearCodeChange`), and the PR neither deletes its file nor left it out
+ * by `exclude_paths`.
  */
 export function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): PreExistingCheck | undefined {
   if (!f.preExisting) return undefined;

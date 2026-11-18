@@ -14,7 +14,7 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { addedLines, isLineInDiff, newLineNumbers, orderDiffSections, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { codeChanges, isLineInDiff, newLineNumbers, orderDiffSections, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
@@ -1170,10 +1170,10 @@ export function buildJudgeUserMessage(
   return parts.join('\n');
 }
 
-/** Hides a reviewer's pre-existing claim on a line the PR adds from the judge, since a defect there is the PR's own. */
+/** Hides a reviewer's pre-existing claim on code the PR adds from the judge, since a defect there is the PR's own. */
 function withoutPreExistingOnAddedLine(finding: Finding, diff: ParsedDiff): Finding {
   const file = finding.preExisting ? diff.files.find(df => df.path === finding.file) : undefined;
-  if (!file || !addedLines(file).has(finding.line)) return finding;
+  if (!file || !codeChanges(file).added.has(finding.line)) return finding;
   const { preExisting: _preExisting, ...claimDropped } = finding;
   return claimDropped;
 }

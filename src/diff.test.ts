@@ -1,6 +1,7 @@
 import {
   addCodeContext,
   changeDigest,
+  codeChanges,
   onlyCommitChanging,
   parsePRDiff,
   filterDiff,
@@ -16,6 +17,7 @@ import {
   MAX_SLICE_CHARS,
   rebuildRawDiff,
   listedFilesDiff,
+  nearCodeChange,
   tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
@@ -721,6 +723,52 @@ describe('isLineInDiff', () => {
     expect(isLineInDiff(file, 8, 30)).toBe(true);
     expect(isLineInDiff(file, 1, 40)).toBe(true);
     expect(isLineInDiff(file, 9, 20)).toBe(false);
+  });
+});
+
+describe('codeChanges', () => {
+  const fileOf = (path: string, lines: string[]): DiffFile => {
+    const counts = `-1,${lines.filter(l => !l.startsWith('+')).length} +1,${lines.filter(l => !l.startsWith('-')).length}`;
+    return parsePRDiff(`diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ ${counts} @@\n${lines.join('\n')}\n`).files[0];
+  };
+  const changes = (file: DiffFile) => {
+    const { added, removed } = codeChanges(file);
+    return { added: [...added], removed: [...removed] };
+  };
+
+  it('counts a re-indented or moved line as no change unless its code changed too, and keeps indentation where it is code', () => {
+    const wrapped = fileOf('src/main.rs', [
+      ' fn main() {', '-    let x = load();', '-    use_it(x);', '+    if ready {', '+        let x = load();', '+        use_it(x + 1);', '+    }', ' }',
+    ]);
+    // Line 3 only moves into the new block. Line 4 also changes its code, so it and the old line it replaces count.
+    expect(changes(wrapped)).toEqual({ added: [2, 4, 5], removed: [2] });
+    expect(changes(fileOf('src/a.ts', ['-a();', ' b();', '+a();', '+a();']))).toEqual({ added: [3], removed: [] });
+    expect(changes(fileOf('src/a.ts', ['-  run();  ', '+run();']))).toEqual({ added: [], removed: [] });
+    // Indentation is code in Python, and in a file of a kind not known, so a re-indent there changes it.
+    expect(changes(fileOf('src/a.py', ['-run()', '+    run()']))).toEqual({ added: [1], removed: [1] });
+    expect(changes(fileOf('docs/a.md', ['-- item', '+  - item']))).toEqual({ added: [1], removed: [1] });
+
+    // A line near a change counts as changed code, as a diff shows three lines around one, and a line near only a move does not.
+    const lines = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => ` line ${from + i}`);
+    const moved = fileOf('src/a.ts', [...lines(1, 3), '-    old();', '+old();', '+// Says why.', ...lines(6, 13), '+next();', ...lines(15, 22)]);
+    expect([4, 5, 10, 11, 17, 18].map(line => nearCodeChange(moved, line))).toEqual([false, false, false, true, true, false]);
+    expect([nearCodeChange(moved, 1, 10), nearCodeChange(moved, 1, 11), nearCodeChange(moved, 18, 30)]).toEqual([false, true, false]);
+    // Nothing in a file the PR adds existed before, its comments included.
+    expect(nearCodeChange({ ...moved, changeType: 'added' }, 4)).toBe(true);
+  });
+
+  it.each([
+    ['Rust', 'src/a.rs', ['// Why it waits.', '/// Returns the total.', '//! The crate.', '/* Old. */', ''], ['#[derive(Debug)]', 'let a = 1; // Why.', '//go:build linux']],
+    ['Python', 'src/a.py', ['# Why it waits.', '#', ''], ['#!/usr/bin/env python3', 'x = f()  # type: ignore', '# type: ignore', '# -*- coding: utf-8 -*-', '"""Returns the total."""']],
+    ['TypeScript', 'src/a.ts', ['// Why it waits.', '/**', ' * Returns the total.', ' */', '/* Old. */'], ['// @ts-ignore', '/// <reference path="a.d.ts" />', '/*#__PURE__*/ f();', '/* Old. */ f();', ' * x', 'x * y;']],
+    ['Go', 'src/a.go', ['// Why it waits.'], ['//go:build linux', '// +build linux']],
+    ['C', 'src/a.c', ['// Why it waits.'], ['#include <a.h>', '#define A 1']],
+    ['Ruby', 'src/a.rb', ['# Why it waits.'], ['# frozen_string_literal: true']],
+    ['a file of a kind not known', 'docs/a.md', [], ['# Title', '', '// Text.']],
+  ])('tells the blank and comment lines of %s, which change no code, from a line with code or one a tool reads', (_language, path, comments, code) => {
+    const file = fileOf(path, [...comments, ...code].map(l => `+${l}`));
+    expect(changes(file)).toEqual({ added: code.map((_, i) => comments.length + i + 1), removed: [] });
+    expect(changes(fileOf(path, [' keep();', ...comments.map(l => `-${l}`)]))).toEqual({ added: [], removed: [] });
   });
 });
 

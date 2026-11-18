@@ -368,6 +368,100 @@ function takeText(counts: Map<string, number>, text: string): boolean {
   return left > 0;
 }
 
+/** The comment marks of a language, and whether a line's indentation is part of its code, as in Python. */
+interface LineSyntax {
+  comments: readonly string[];
+  blockComments?: true;
+  indented?: true;
+}
+
+const C_LIKE: LineSyntax = { comments: ['///', '//!', '//'], blockComments: true };
+const syntaxOf = (extensions: string, syntax: LineSyntax) => extensions.split(' ').map(ext => [ext, syntax] as const);
+// A file of any other kind has no line read as a comment, and a change to its indentation is a change to its code.
+const LINE_SYNTAX = new Map<string, LineSyntax>([
+  ...syntaxOf('c h cc cpp cxx hh hpp hxx m mm cs java kt kts scala groovy gradle swift go rs ts tsx mts cts js jsx mjs cjs dart php proto sol scss less', C_LIKE),
+  ...syntaxOf('css', { comments: [], blockComments: true }),
+  ...syntaxOf('rb sh bash zsh pl pm r toml tf ex exs jl cmake', { comments: ['#'] }),
+  ...syntaxOf('py pyi yaml yml nim coffee', { comments: ['#'], indented: true }),
+  ...syntaxOf('sql lua', { comments: ['--'] }),
+  ...syntaxOf('hs elm', { comments: ['--'], indented: true }),
+]);
+// A comment a tool reads, such as `# type: ignore`, `# -*- coding: utf-8 -*-`, `/// <reference path="a.ts" />` or `// @ts-ignore`.
+const TOOL_COMMENT = /^(?:[@<+]|-\*-|[a-z][\w.-]*:)/;
+
+/** Whether `text`, a comment's text after its mark, is prose. Text right after the mark, as in `//go:build` or `#!/bin/sh`, is for a tool. */
+function isProse(text: string): boolean {
+  return (text === '' || /^\s/.test(text)) && !TOOL_COMMENT.test(text.trim());
+}
+
+/** Returns, for each of `lines`, whether it holds no code: it is blank or a prose comment. A block comment counts from the line that opens it. */
+function codeFreeLines(lines: readonly string[], syntax: LineSyntax): boolean[] {
+  let inBlock = false;
+  return lines.map(raw => {
+    const line = raw.trim();
+    if (inBlock) {
+      const end = line.indexOf('*/');
+      inBlock = end === -1;
+      return (end === -1 || line.slice(end + 2).trim() === '') && !TOOL_COMMENT.test(line.slice(0, end === -1 ? undefined : end).replace(/^\*+/, '').trim());
+    }
+    if (line === '') return true;
+    const mark = syntax.comments.find(m => line.startsWith(m));
+    if (mark) return isProse(line.slice(mark.length));
+    if (!syntax.blockComments || !line.startsWith('/*')) return false;
+    const end = line.indexOf('*/', 2);
+    inBlock = end === -1;
+    return (end === -1 || line.slice(end + 2).trim() === '') && isProse(line.slice(2, end === -1 ? undefined : end).replace(/^\*+/, ''));
+  });
+}
+
+/**
+ * Returns the lines of the new file where `file`'s diff changes code: each added line, and the line where each removed
+ * line sat. An added and a removed line of one hunk with the same text change no code, so a move or a re-indent does
+ * not count. Nor does a blank or comment line, in a language `LINE_SYNTAX` knows.
+ */
+export function codeChanges(file: DiffFile): { added: Set<number>; removed: Set<number> } {
+  const syntax = LINE_SYNTAX.get(file.path.slice(file.path.lastIndexOf('.') + 1).toLowerCase());
+  const textOf = (line: string) => (!syntax ? line : syntax.indented ? line.trimEnd() : line.trim());
+  const added = new Set<number>();
+  const removed = new Set<number>();
+  for (const hunk of file.hunks) {
+    const lines = hunk.content.split('\n').filter(l => !l.startsWith('\\'));
+    const freeNew = syntax ? codeFreeLines(lines.filter(l => !l.startsWith('-')).map(l => l.slice(1)), syntax) : [];
+    const freeOld = syntax ? codeFreeLines(lines.filter(l => !l.startsWith('+')).map(l => l.slice(1)), syntax) : [];
+    const adds: Array<[number, string]> = [];
+    const removes: Array<[number, string]> = [];
+    let line = hunk.newStart;
+    let newIndex = 0;
+    let oldIndex = 0;
+    for (const content of lines) {
+      if (content.startsWith('-')) {
+        if (!freeOld[oldIndex]) removes.push([line, textOf(content.slice(1))]);
+        oldIndex++;
+        continue;
+      }
+      if (content.startsWith('+')) {
+        if (!freeNew[newIndex]) adds.push([line, textOf(content.slice(1))]);
+      } else {
+        oldIndex++;
+      }
+      newIndex++;
+      line++;
+    }
+    const removedTexts = countTexts(removes.map(([, text]) => text));
+    const addedTexts = countTexts(adds.map(([, text]) => text));
+    for (const [at, text] of adds) if (!takeText(removedTexts, text)) added.add(at);
+    for (const [at, text] of removes) if (!takeText(addedTexts, text)) removed.add(at);
+  }
+  return { added, removed };
+}
+
+/** Whether a line from `line` to `end` lies within `NEW_CODE_WINDOW` lines of a line where `file`'s diff changes code. A file the diff adds is all new. */
+export function nearCodeChange(file: DiffFile, line: number, end = line): boolean {
+  if (file.changeType === 'added') return true;
+  const { added, removed } = codeChanges(file);
+  return [...added, ...removed].some(at => at >= line - NEW_CODE_WINDOW && at <= end + NEW_CODE_WINDOW);
+}
+
 /**
  * Returns, per file, the lines of the new file where the PR changed its code since `prior`: a line `current`
  * adds or removes that `prior` did not, a line `prior` added or removed that `current` no longer does, and a

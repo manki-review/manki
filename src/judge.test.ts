@@ -2313,7 +2313,7 @@ describe('runJudgeAgent', () => {
     ]);
   });
 
-  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged copy is marked and off the diff, and hides one on a line the PR adds from the judge', async () => {
+  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged copy is marked and off the diff, and hides one on code the PR adds from the judge', async () => {
     const old = 'The loop had no bound before this PR.';
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'Old defects.',
@@ -2331,10 +2331,13 @@ describe('runJudgeAgent', () => {
         { id: 11, title: 'Old buffer reuse', row: 'wrong', reasoning: 'r', preExisting: true },
         { id: 12, title: 'Old buffer reuse in the removed module', row: 'wrong', reasoning: 'r', preExisting: true, duplicateOf: 11 },
         { id: 13, title: 'New parser misses the old state', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 14, title: 'Old loop in the re-indented block', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 15, title: 'Old loop under the new comment', row: 'wrong', reasoning: 'r', preExisting: true },
       ],
     }) });
-    // The diff shows lines 1-20 of src/index.ts and adds only line 15.
-    const hunk = makeHunk({ oldLines: 19, content: Array.from({ length: 20 }, (_, i) => `${i === 14 ? '+' : ' '}line ${i + 1}`).join('\n') });
+    // The diff shows lines 1-20 of src/index.ts. It adds code only on line 15, re-indents line 3 and adds a comment on line 5.
+    const shown = (i: number) => (i === 2 ? '-    line 3\n+line 3' : i === 4 ? '+// Why the loop waits.' : `${i === 14 ? '+' : ' '}line ${i + 1}`);
+    const hunk = makeHunk({ oldLines: 18, content: Array.from({ length: 20 }, (_, i) => shown(i)).join('\n') });
     const off = (line: number) => ({ line, evidence: { checks: [], proof: [] } });
     const diff = makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]);
     const input: JudgeInput = {
@@ -2355,12 +2358,17 @@ describe('runJudgeAgent', () => {
         makeFinding({ title: 'Old buffer reuse in the removed module', preExisting: old, file: 'src/legacy.ts', ...off(5) }),
         // A defect in a line the PR adds is its own, so the judge never sees the claim, but the finding keeps it for the record.
         makeFinding({ title: 'New parser misses the old state', preExisting: old, ...off(15) }),
+        // A line the PR only re-indents or a comment it adds changes no code, so the judge sees these claims.
+        makeFinding({ title: 'Old loop in the re-indented block', preExisting: old, ...off(3) }),
+        makeFinding({ title: 'Old loop under the new comment', preExisting: old, ...off(5), evidence: { checks: [], proof: ['src/index.ts:3-5'] } }),
       ],
       diff, preExistingCheck: f => preExistingCheck(f, diff, new Set(['gen/parser.ts'])), rawDiff: '', repoContext: '', agentCount: 2,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(mockSendMessage.mock.calls[0][1].split(`- **Pre-existing, the reviewer says**: ${old}`)).toHaveLength(12);
+    expect(mockSendMessage.mock.calls[0][1].split(`- **Pre-existing, the reviewer says**: ${old}`)).toHaveLength(14);
+    // The code check agrees: neither touches the diff, while a finding near line 15 does.
+    expect(input.findings.slice(-3).map(f => input.preExistingCheck?.(f))).toEqual(['touches_diff', 'pre_existing', 'pre_existing']);
     expect(result.findings.map(f => [f.title, f.preExisting])).toEqual([
       ['Unbounded retry', old],
       ['Caller breaks on null', undefined],
@@ -2370,6 +2378,8 @@ describe('runJudgeAgent', () => {
       ['Old parser leak', undefined],
       ['Old buffer reuse', undefined],
       ['New parser misses the old state', old],
+      ['Old loop in the re-indented block', old],
+      ['Old loop under the new comment', old],
     ]);
   });
 
@@ -5316,7 +5326,7 @@ describe('deduplicateFindings', () => {
     expect([withProof('confirmed'), withProof('not_broken')]).toEqual([['src/a.ts:10', 'src/a.ts:20'], ['src/a.ts:10']]);
 
     // A dropped copy on a changed line, or citing one as proof, ties the finding to this PR, so the mark goes.
-    const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: '' }] })]);
+    const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: ' a\n b\n-c\n+d\n e\n f' }] })]);
     const marked = { ...findings[1], preExisting: 'Old code.' };
     const stays = (copy: Finding) => preExistingCheck(copy, diff, new Set()) === 'pre_existing';
     expect(deduplicateFindings([findings[0], marked], stays)[0].preExisting).toBeUndefined();

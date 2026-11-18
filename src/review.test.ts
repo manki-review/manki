@@ -4334,7 +4334,7 @@ describe('runReview', () => {
   it('posts a non-security blocker on code the PR did not change as a pre-existing warning, while a security one still blocks', async () => {
     const diff = makeDiff({
       files: [
-        { path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 5, newStart: 10, newLines: 5, content: '' }] },
+        { path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 5, newStart: 10, newLines: 5, content: ' a\n b\n-c\n+d\n e\n f' }] },
         { path: 'src/legacy.ts', changeType: 'deleted', hunks: [{ oldStart: 1, oldLines: 30, newStart: 0, newLines: 0, content: '' }] },
       ],
       totalAdditions: 5, totalDeletions: 35,
