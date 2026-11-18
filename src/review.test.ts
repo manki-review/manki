@@ -3446,6 +3446,8 @@ describe('runReview', () => {
     const nearCited = { ...elsewhere, title: 'Shard key misses the region', line: 72, evidence: ['src/search.ts:72 builds the key'], proof: ['src/search.ts:72'] };
     const dropped = { severity: 'note', title: 'Rename the helper', file: 'src/retry.ts', line: 9, description: 'd', evidence: ['src/retry.ts:9 names it'], proof: ['src/search.ts:80'] };
     const citedByDropped = { ...elsewhere, title: 'Page key misses the region', line: 80, evidence: ['src/search.ts:80 builds the key'], proof: ['src/search.ts:80'] };
+    // Anchored in another file on the line of a judged finding, which the dedup model calls the same defect.
+    const crossFile = { ...elsewhere, title: 'The reason is lost on retry', file: 'src/queue.ts', line: 30, evidence: ['src/retry.ts:5 drops the reason'], proof: ['src/queue.ts:30', 'src/retry.ts:5'] };
     const sweeping = (system: string) => system.startsWith('A code review reported the finding');
     const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
     const evaluation: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'r' };
@@ -3460,12 +3462,16 @@ describe('runReview', () => {
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
         const reply = sweeping(system) ? await late?.on('sweep', options) : undefined;
         return {
-          content: typeof reply === 'string' ? reply : sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped] }) : JSON.stringify([original, other, dropped]),
+          content: typeof reply === 'string' ? reply : sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped, crossFile] }) : JSON.stringify([original, other, dropped]),
         };
       });
-      clients.dedup = { sendMessage: jest.fn().mockImplementation(async () => {
+      // The dedup model calls the reworded and the cross-file place the same defect as the judged finding they are paired with.
+      const dedupPairs: string[][] = [];
+      clients.dedup = { sendMessage: jest.fn().mockImplementation(async (_system: string, user: string) => {
         late?.on('dedup');
-        return { content: '[{"pair": 1, "sameDefect": true}]' };
+        const pairs = [...user.matchAll(/A: "([^"]*)".*\n\s*B: "([^"]*)"/g)].map(([, a, b]) => [a, b]);
+        dedupPairs.push(...pairs);
+        return { content: JSON.stringify(pairs.map(([, b], i) => ({ pair: i + 1, sameDefect: [reworded.title, crossFile.title].includes(b) }))) };
       }) } as unknown as import('./providers').LLMClient;
       mockedRunJudgeAgent.mockClear();
       // The sweep's judge call grades one finding as a note and ranks it first of its own notes.
@@ -3489,7 +3495,7 @@ describe('runReview', () => {
       });
       return {
         result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])), dedupCalls: jest.mocked(clients.dedup.sendMessage).mock.calls.length,
-        judgeCalls: mockedRunJudgeAgent.mock.calls.length,
+        dedupPairs, judgeCalls: mockedRunJudgeAgent.mock.calls.length,
       };
     };
 
@@ -3501,7 +3507,7 @@ describe('runReview', () => {
     // With `warnings`, the warning its cited lines prove starts one too, after the blocker's.
     expect((await run('warnings')).result.sweeps?.map(s => [s.reviewer, s.source, s.severity])).toEqual([['Sweep 1', 'src/cache.ts:10', 'blocker'], ['Sweep 2', 'src/retry.ts:5', 'warning']]);
 
-    const { result, sweeps } = await run('blockers');
+    const { result, sweeps, dedupPairs } = await run('blockers');
     const reviewer = 'Sweep 1';
     expect(sweeps).toHaveLength(1);
     // A place the round already judged is not judged twice, and the rest gets a judge call of its own, without the open threads.
@@ -3520,7 +3526,10 @@ describe('runReview', () => {
     // A rank from the sweep's judge call is on another scale, so only the first call's ranks stay.
     expect(result.findings.map(f => [f.severity, f.noteRank])).toEqual([['blocker', 1], ['warning', 1], ['blocker', undefined], ['note', undefined], ['blocker', undefined]]);
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
-    expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+    expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 7 }]);
+    // The dedup model gets each place near a judged finding in its file, or sharing a line it cites in any file, kept or
+    // dropped. A place two lines off a cited line shares none.
+    expect(dedupPairs).toEqual([[original.title, reworded.title], [dropped.title, citedByDropped.title], [other.title, crossFile.title]]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
     // The dedup call on the places near a judged finding names the sweep as its agent, so its cost counts as the sweep's.
     expect(result.llmCalls?.filter(c => c.agent === 'sweep').map(c => c.stage)).toEqual(['dedup']);
@@ -3532,7 +3541,7 @@ describe('runReview', () => {
       expect([failed.outcome, failed.verdict, failed.reviewComplete, failed.findings]).toEqual(['INCOMPLETE', 'COMMENT', false, []]);
       expect(failed.summary).toEqual(summary);
       expect(failed.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
-      expect(failed.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+      expect(failed.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 7 }]);
       // The record also keeps the places the sweep found, which the judge did not get to grade.
       expect(failed.rawFindings?.map(f => f.title)).toEqual(expect.arrayContaining([elsewhere.title, nearCited.title, citedByDropped.title]));
     }
@@ -3546,7 +3555,7 @@ describe('runReview', () => {
     // The places the sweep found that the round records as raw findings, after the dedup with the judged findings
     // near them, or without it when that dedup call did not start.
     const deduped = [elsewhere.title, nearCited.title, citedByDropped.title];
-    const undeduped = [elsewhere.title, reworded.title, nearCited.title, citedByDropped.title];
+    const undeduped = [elsewhere.title, reworded.title, nearCited.title, citedByDropped.title, crossFile.title];
     const cases = [
       ['judge', 1, 90_000, undefined, notStartedRound({ stage: 'sweep', agent: reviewer }, 'sweep call'), 0, undefined, []],
       ['sweep', 1, 20_000, undefined, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 0, 'answered', undeduped],

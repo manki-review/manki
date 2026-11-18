@@ -24,7 +24,7 @@ import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal
 import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
-import { citedBy, runSweeps, startsSweep } from './sweep';
+import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -1564,8 +1564,8 @@ export async function runReview(
       if (cited) core.info(`Sweep place ${s.file}:${s.line} is already cited by "${cited.title}", so it is not judged again`);
       return !cited;
     });
-    // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
-    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
+    // A sweep finding near one the round judged, or sharing a line it cites in any file, can say the same in other words, so the dedup model checks those pairs.
+    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) || sharesCitedLine(f, s) ? [{ i, f }] : []));
     const dedupClient = clients.dedup && lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));

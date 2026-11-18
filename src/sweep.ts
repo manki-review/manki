@@ -113,6 +113,12 @@ export function citedBy(cited: Finding, f: Finding, tolerance = OWN_LINE_TOLERAN
   return citedSpans(cited).some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
 }
 
+/** Whether `a` and `b` share a line in the spans `citedSpans` returns for each, in any file. */
+export function sharesCitedLine(a: Finding, b: Finding): boolean {
+  const other = citedSpans(b);
+  return citedSpans(a).some(x => other.some(y => x.file === y.file && x.start <= y.end && y.start <= x.end));
+}
+
 /** Returns `f`'s own line and the lines it cites in its proof or evidence, in spans no wider than `citedBy` reads. */
 function citedSpans(f: Finding): Array<{ file: string; start: number; end: number }> {
   return [`${f.file}:${f.line}`, ...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)]
