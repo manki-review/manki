@@ -10,6 +10,7 @@ import * as core from '@actions/core';
 import { registerSecret, safeJsonParse } from '../utils';
 import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
+import { checkLoginFilePath, withLoginFile } from './codex-login-file';
 
 const execFileAsync = promisify(execFile);
 
@@ -125,10 +126,11 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
-export function buildOpenAIAuth(oauthToken: string, apiKey: string, baseUrl: string): OpenAIAuth {
+export function buildOpenAIAuth(oauthToken: string, apiKey: string, baseUrl: string, oauthFile = ''): OpenAIAuth {
+  if (oauthToken && oauthFile) throw new Error('openai_oauth_token and openai_oauth_file are both set. Set only one of them: the file on a self-hosted runner, the token anywhere else.');
   if (baseUrl) {
-    if (oauthToken) {
-      throw new Error('openai_base_url cannot be used with openai_oauth_token: a ChatGPT login works only on the servers of OpenAI. Remove openai_oauth_token and set openai_api_key to the key of that endpoint.');
+    for (const [name, value] of [['openai_oauth_token', oauthToken], ['openai_oauth_file', oauthFile]]) {
+      if (value) throw new Error(`openai_base_url cannot be used with ${name}: a ChatGPT login works only on the servers of OpenAI. Remove ${name} and set openai_api_key to the key of that endpoint.`);
     }
     if (!apiKey) throw new Error('openai_base_url is set but openai_api_key is missing. Set openai_api_key to the key of that endpoint.');
     // A URL can carry a password, so the message leaves the value out.
@@ -136,8 +138,12 @@ export function buildOpenAIAuth(oauthToken: string, apiKey: string, baseUrl: str
     return { kind: 'endpoint', key: apiKey, baseUrl };
   }
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
+  if (oauthFile) {
+    checkLoginFilePath(oauthFile);
+    return { kind: 'oauthFile', path: oauthFile };
+  }
   if (apiKey) return { kind: 'apiKey', key: apiKey };
-  throw new Error('Either openai_oauth_token or openai_api_key must be provided');
+  throw new Error('Either openai_oauth_token, openai_oauth_file or openai_api_key must be provided');
 }
 
 type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -580,7 +586,7 @@ export class OpenAIClient implements LLMClient {
     // The stdout of the run that runs now, or ran last.
     let output = '';
     const unreachableLimit = endpoint ? 'OpenAI endpoint unreachable' : 'OpenAI unreachable';
-    const { code, signal, stderr, lastStdoutChunk, events, relatedReads } = await withPromptDir(async (promptDir) => {
+    const call = () => withPromptDir(async (promptDir) => {
       // Manki's instructions replace Codex's own, so stdin carries only the untrusted content.
       const instructionsPath = join(promptDir, 'instructions.md');
       writeFileSync(instructionsPath, instructions, { mode: 0o600 });
@@ -633,7 +639,12 @@ export class OpenAIClient implements LLMClient {
         });
       }
       return { ...exit, relatedReads: reads() };
-    }).catch((error: unknown) => {
+    });
+    const loginFile = this.auth.kind === 'oauthFile' ? this.auth.path : undefined;
+    const { code, signal, stderr, lastStdoutChunk, events, relatedReads } = await (loginFile
+      ? withLoginFile(loginFile, join(home, 'auth.json'), { limitMs, signal: options?.signal }, call)
+      : call()
+    ).catch((error: unknown) => {
       warnReplyTail('Codex CLI', readCodexEvents(output).reply ?? '');
       throw error;
     }).finally(() => registerAuthFileSecrets(join(home, 'auth.json')));

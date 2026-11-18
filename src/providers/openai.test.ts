@@ -64,7 +64,7 @@ beforeAll(() => cliHome('codex'));
 describe('buildOpenAIAuth', () => {
   it('throws when neither token is present', () => {
     expect(() => buildOpenAIAuth('', '', '')).toThrow(
-      'Either openai_oauth_token or openai_api_key must be provided',
+      'Either openai_oauth_token, openai_oauth_file or openai_api_key must be provided',
     );
   });
 
@@ -91,8 +91,13 @@ describe('buildOpenAIAuth', () => {
     ['has no scheme', '', 'sk-key', 'llm.example/v1', 'openai_base_url must be an http or https URL, such as https://host/v1'],
     ['has another scheme', '', 'sk-key', 'ftp://llm.example/v1', 'openai_base_url must be an http or https URL'],
     ['is no URL', '', 'sk-key', 'not a url', 'openai_base_url must be an http or https URL'],
-  ])('throws when the base URL %s', (_case, oauthToken, apiKey, baseUrl, message) => {
-    expect(() => buildOpenAIAuth(oauthToken, apiKey, baseUrl)).toThrow(message);
+    ['comes with a login file', '', 'sk-key', 'https://llm.example/v1', 'openai_base_url cannot be used with openai_oauth_file: a ChatGPT login works only on the servers of OpenAI. Remove openai_oauth_file', '/runner/login/auth.json'],
+  ])('throws when the base URL %s', (_case, oauthToken, apiKey, baseUrl, message, oauthFile = '') => {
+    expect(() => buildOpenAIAuth(oauthToken, apiKey, baseUrl, oauthFile)).toThrow(message);
+  });
+
+  it('throws when the OAuth token comes with a login file', () => {
+    expect(() => buildOpenAIAuth('oauth-tok', 'sk-key', '', '/runner/login/auth.json')).toThrow('openai_oauth_token and openai_oauth_file are both set. Set only one of them');
   });
 });
 

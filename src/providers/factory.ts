@@ -5,8 +5,8 @@ import { LLMClient, ProviderAuth, ProviderName } from './types';
 
 export function createLLMClient(provider: ProviderName, model: string, auth: ProviderAuth): LLMClient {
   if (provider === 'openai') return new OpenAIClient({ auth, model });
-  // Only `OpenAIAuth` has the `endpoint` kind.
-  if (auth.kind === 'endpoint') throw new Error(`The ${provider} provider cannot use the OpenAI endpoint`);
+  // Only `OpenAIAuth` has the `endpoint` and `oauthFile` kinds.
+  if (auth.kind === 'endpoint' || auth.kind === 'oauthFile') throw new Error(`The ${provider} provider cannot use the OpenAI endpoint`);
   switch (provider) {
     case 'anthropic':
       return new AnthropicClient({ auth, model });

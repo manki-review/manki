@@ -138,6 +138,7 @@ function readProviderInputs(): ProviderInputs {
     anthropicOauthToken: core.getInput('claude_code_oauth_token'),
     anthropicApiKey: core.getInput('anthropic_api_key'),
     openaiOauthToken: core.getInput('openai_oauth_token'),
+    openaiOauthFile: core.getInput('openai_oauth_file'),
     openaiApiKey: core.getInput('openai_api_key'),
     openaiBaseUrl: core.getInput('openai_base_url'),
     geminiOauthToken: core.getInput('gemini_oauth_token'),
@@ -1995,7 +1996,7 @@ async function runFullReview(
   const providerInputs = readProviderInputs();
 
   if (!hasAnyProviderCredentials(providerInputs)) {
-    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key');
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_oauth_file, openai_api_key, gemini_oauth_token, or gemini_api_key');
     return;
   }
 
@@ -2299,7 +2300,7 @@ async function handleInteraction(): Promise<void> {
   const providerInputs = readProviderInputs();
 
   if (!hasAnyProviderCredentials(providerInputs)) {
-    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key');
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_oauth_file, openai_api_key, gemini_oauth_token, or gemini_api_key');
     return;
   }
 
@@ -2381,7 +2382,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const providerInputs = readProviderInputs();
 
   if (!hasAnyProviderCredentials(providerInputs)) {
-    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key');
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_oauth_file, openai_api_key, gemini_oauth_token, or gemini_api_key');
     return;
   }
 

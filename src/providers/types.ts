@@ -249,6 +249,8 @@ export type AnthropicAuth =
 
 export type OpenAIAuth =
   | { kind: 'oauth'; token: string }
+  /** A ChatGPT login kept in a file on a self-hosted runner, which Manki writes back to when Codex renews it. */
+  | { kind: 'oauthFile'; path: string }
   | { kind: 'apiKey'; key: string }
   /** An OpenAI-compatible endpoint other than OpenAI's own servers, with the key it takes. */
   | { kind: 'endpoint'; key: string; baseUrl: string };
