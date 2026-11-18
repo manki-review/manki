@@ -1554,6 +1554,7 @@ class Parser {
   baseSkipped = 0;
   private baseFiles = 0;
   private baseBytes = 0;
+  private readonly baseCache = new Map<string, ParsedFile | undefined>();
 
   /** `reliedOn` asks for the names each changed file calls or reads outside tests. */
   constructor(private readonly workspace: string, private readonly api?: AstGrepApi, private readonly reliedOn = false) {}
@@ -1590,6 +1591,11 @@ class Parser {
    * here, the budget is spent or the diff does not match the head.
    */
   parseBase(file: DiffFile): ParsedFile | undefined {
+    if (!this.baseCache.has(file.path)) this.baseCache.set(file.path, this.loadBase(file));
+    return this.baseCache.get(file.path);
+  }
+
+  private loadBase(file: DiffFile): ParsedFile | undefined {
     const language = languageOf(file.path);
     if (!language || !this.api) return undefined;
     try {
