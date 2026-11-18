@@ -293,6 +293,13 @@ export function addedLines(file: DiffFile): Map<number, string> {
   return added;
 }
 
+/** Returns the first line the diff adds to the file, or else the first line its hunks show of the new file. A review can comment on either. */
+export function firstCommentableLine(file: DiffFile): number | undefined {
+  let first: number | undefined;
+  for (const line of addedLines(file).keys()) if (first === undefined || line < first) first = line;
+  return first ?? file.hunks.find(h => h.newLines > 0)?.newStart;
+}
+
 /**
  * Check if a line number, or any line from `line` to `end`, is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.

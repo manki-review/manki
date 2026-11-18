@@ -7,6 +7,7 @@ import {
   filterFilesWithAttribution,
   filterRawDiff,
   isLineInDiff,
+  firstCommentableLine,
   sliceDiff,
   compareChanges,
   orderDiffSections,
@@ -721,6 +722,18 @@ describe('isLineInDiff', () => {
     expect(isLineInDiff(file, 8, 30)).toBe(true);
     expect(isLineInDiff(file, 1, 40)).toBe(true);
     expect(isLineInDiff(file, 9, 20)).toBe(false);
+  });
+
+  it('names the first added line as the one a file-level thread goes on, else the first line a hunk shows, else none', () => {
+    const edited: DiffFile = { ...file, hunks: [{ oldStart: 5, oldLines: 3, newStart: 5, newLines: 3, content: ' a\n-b\n+c\n d' }, { oldStart: 20, oldLines: 1, newStart: 20, newLines: 2, content: '+e\n f' }] };
+    expect(firstCommentableLine(edited)).toBe(6);
+    expect(isLineInDiff(edited, firstCommentableLine(edited)!)).toBe(true);
+    expect(firstCommentableLine(file)).toBe(5);
+    expect(firstCommentableLine({ ...file, hunks: [{ oldStart: 1, oldLines: 2, newStart: 0, newLines: 0, content: '-a\n-b' }] })).toBeUndefined();
+    expect(firstCommentableLine({ ...file, changeType: 'renamed', hunks: [] })).toBeUndefined();
+    // More added lines than a call can take as arguments.
+    const added = 500_000;
+    expect(firstCommentableLine({ ...file, hunks: [{ oldStart: 0, oldLines: 0, newStart: 3, newLines: added, content: '+x\n'.repeat(added) }] })).toBe(3);
   });
 });
 

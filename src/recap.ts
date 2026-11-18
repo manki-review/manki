@@ -29,7 +29,7 @@ function severityMarker(body: string): RegExpMatchArray | null {
 
 /**
  * `detached` marks a thread posted on another file than its finding's, where `file` and `line` name the finding's own
- * place. `lineNote` marks a thread on the file of its finding that opens with a link to the finding's line.
+ * place. `lineNote` marks a thread off its finding's line on the finding's file, which opens with a link to that line or says the finding concerns the whole file.
  * `evidenceFiles` are the other files the finding cited, without `file`.
  */
 export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean; lineNote?: boolean; evidenceFiles?: string[] } | undefined {

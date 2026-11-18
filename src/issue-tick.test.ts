@@ -136,7 +136,7 @@ describe('handleIssueBoxTick', () => {
     const onFile = formatFindingComment(finding({ severity: 'blocker', line: 30 }), TEST_LINKS, 'file').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(onFile), original_line: 1 });
     const onFileIssue: string = jest.mocked(octokit.rest.issues.create).mock.calls[5][0].body;
-    expect(onFile).toContain('**Retry has no limit**\n\nThis is on [line 30](https://github.com/o/r/blob/sha/src/net.ts#L30). A comment on that line is not possible, so the thread is on the file.\n\n');
+    expect(onFile).toContain('**Retry has no limit**\n\nThis is on [line 30](https://github.com/o/r/blob/sha/src/net.ts#L30). A comment on that line is not possible, so the thread is elsewhere in the file.\n\n');
     expect(onFileIssue).toMatch(/^\S+ \*\*Blocker\*\*[^\n]*\n\n\*\*Retry has no limit\*\*\n\n\*\*What goes wrong:\*\* It retries forever\./);
     expect(onFileIssue).toContain('Found by Manki in #5 at [`src/net.ts:30`](https://github.com/o/r/blob/abc123/src/net.ts#L30).');
     expect(onFileIssue).not.toContain('thread is');

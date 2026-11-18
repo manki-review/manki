@@ -11,7 +11,8 @@ import { parsePRDiff } from './diff';
 import { extractReviewRecords, formatApprovalRecord, hasOwnMarker } from './review-record';
 import { withoutFences } from './issue-box';
 import { scopeWarnings } from './scope';
-import { isSecurityThread, parseFindingData, parseFindingFromComment, threadMarkerSlug, threadSeverity, type PreviousFinding } from './recap';
+import { findingPlace, isSecurityThread, parseFindingData, parseFindingFromComment, threadMarkerSlug, threadSeverity, type PreviousFinding } from './recap';
+import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
 const PAT_BOT: BotIdentity = { logins: [...TEST_BOT.logins, 'review-user'] };
@@ -227,12 +228,15 @@ describe('formatFindingComment', () => {
       expect(offLine).toContain('**How to fix it**\n```ts\nif (value != null) { use(value); }\n```\n\n**Checked in the code**\nOn the flagged line: Reads `value` unchecked');
       expect(parseFindingData(offLine)).toEqual(expect.objectContaining({ fix: 'if (value != null) { use(value); }', ...(place === 'detached' ? { detached: true } : { lineNote: true }) }));
     }
-    // A thread on the finding's file shows no line of its own, so it opens with a link to the finding's line at the
-    // reviewed commit. A finding that names no line gets no such link, and neither does a thread on the line or on another file.
-    const lineNote = `**${baseFinding.title}**\n\nThis is on [line 42](https://github.com/o/r/blob/sha/src/main.ts#L42). A comment on that line is not possible, so the thread is on the file.\n\n**What goes wrong:**`;
+    // A thread off the finding's line on its file opens with a link to the finding's line at the reviewed commit, or says
+    // the finding concerns the whole file when it names no line. A thread on the line or on another file opens with neither.
+    const lineNote = `**${baseFinding.title}**\n\nThis is on [line 42](https://github.com/o/r/blob/sha/src/main.ts#L42). A comment on that line is not possible, so the thread is elsewhere in the file.\n\n**What goes wrong:**`;
     expect(formatFindingComment(baseFinding, links, 'file')).toContain(lineNote);
     expect(formatFindingComment(baseFinding, { ...links, linkTo: () => undefined }, 'file')).toContain(`**${baseFinding.title}**\n\nThis is on line 42. A comment`);
-    for (const elsewhere of [formatFindingComment({ ...baseFinding, line: 0 }, links, 'file'), render(baseFinding), formatFindingComment(baseFinding, links, 'detached')]) {
+    const wholeFile = formatFindingComment({ ...baseFinding, line: 0 }, links, 'file');
+    expect(wholeFile).toContain(`**${baseFinding.title}**\n\nThis concerns the whole file, not one line of it.\n\n**What goes wrong:**`);
+    expect(parseFindingData(wholeFile)).toHaveProperty('lineNote', true);
+    for (const elsewhere of [render(baseFinding), formatFindingComment(baseFinding, links, 'detached')]) {
       expect(elsewhere).not.toContain('This is on');
       expect(parseFindingData(elsewhere)).not.toHaveProperty('lineNote');
     }
@@ -1813,8 +1817,8 @@ describe('postReview body lead', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings }, diff, ctx, 1000);
     const { body, comments } = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ body: string }> };
     const record = JSON.parse(extractReviewRecords(body).records[0]);
-    // The three line comments come first, then the file-level comment of the blocker without a line.
-    expect(record.output.commentLengths.slice(0, 3)).toEqual(comments.map(c => c.body.length));
+    // Every comment is a line comment, the blocker without a line among them on the first changed line.
+    expect(record.output.commentLengths).toEqual(comments.map(c => c.body.length));
     expect(record.output.commentLengths).toHaveLength(4);
     expect(body.slice(record.output.bodyLength)).toMatch(/^\n\n<!-- manki-stats: /);
     // Each entry says where its finding went: a thread, also for a blocker without a line and a suggestion, or an earlier thread.
@@ -1954,9 +1958,11 @@ describe('postReview body lead', () => {
     expect(all.body.split('\n')[0]).toBe('\u26A0\uFE0F **8 warnings to address.** Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. Manki approves once every warning is handled.');
     // With only new warnings, each in its own thread, nothing is listed under the line.
     expect(all.body).not.toContain('Still open from earlier reviews');
-    const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number }> };
-    expect(comments.map(c => c.line)).toEqual([5, 10, 11, 12, 13, 14, 15]);
-    expect(mockCreateReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.split('\n\n')[1]])).toEqual([['src/a.ts', 'file', '**Off the changed lines**']]);
+    const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
+    // The warning off the changed lines gets its thread in the same review, on the first changed line of its file.
+    expect(comments.map(c => c.line)).toEqual([5, 10, 11, 12, 13, 14, 15, 1]);
+    expect(comments.at(-1)!.body.split('\n\n')[1]).toBe('**Off the changed lines**');
+    expect(mockCreateReviewComment).not.toHaveBeenCalled();
     expect(all.body).not.toContain('Warning on 15');
     // With no changed file to hold a thread, the body lists the warning, which still holds, and says what clears it.
     const nowhere = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Nowhere', 0, { file: '' })] }, { files: [], totalAdditions: 0, totalDeletions: 0 });
@@ -2456,12 +2462,12 @@ describe('postReview body lead', () => {
         { severity: 'warning', title: 'Tagged both ways', file: 'src/gone.ts', line: 41, description: 'd', reviewers: ['r'], tags: ['follow-up', 'security'] },
       ],
     });
-    const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
-    expect(comments.map(c => c.line)).toEqual([5]);
-    // A warning in no changed file gets its thread on the first changed file, which says where the warning is.
-    const fileLevel = mockCreateReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
-    expect(fileLevel.map(c => [c.path, c.subject_type, c.body.split('\n\n')[1]])).toEqual([['src/a.ts', 'file', '**Unbounded retry**'], ['src/a.ts', 'file', '**Tagged both ways**']]);
-    expect(fileLevel[1].body).toContain('This is in [`src/gone.ts:41`](https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41), not in the file this thread is on.');
+    const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ path: string; line: number; body: string }> };
+    // A warning off the changed lines, or in no changed file, gets its thread in the same review on the first changed line
+    // of its file or of the first changed file. The thread on another file says where the warning is.
+    expect(comments.map(c => [c.path, c.line, c.body.split('\n\n')[1]])).toEqual([['src/a.ts', 1, '**Unbounded retry**'], ['src/a.ts', 5, `**${blocker.title}**`], ['src/a.ts', 1, '**Tagged both ways**']]);
+    expect(mockCreateReviewComment).not.toHaveBeenCalled();
+    expect(comments[2].body).toContain('This is in [`src/gone.ts:41`](https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41), not in the file this thread is on.');
     expect(body).toContain('**Warnings not on a changed file:**\n\n- `src/gone.ts:41`: Tagged both ways\n\nComments are only possible on changed files, so the thread of each is on `src/a.ts`.');
     expect(body).not.toContain('Blockers not on a changed file');
     expect(body).not.toContain('### Findings');
@@ -4957,7 +4963,6 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff, context);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
     // The body names each blocker with its own place and the file its thread is on.
     expect(body).toContain([
       '**Blockers not on a changed file:**',
@@ -4971,8 +4976,10 @@ describe('postReview fallback paths', () => {
     expect(body).not.toContain('Blockers in files outside this diff');
     expect((JSON.parse(extractReviewRecords(body).records[0]) as RoundContext).findings.entries.map(e => [e.posted, e.description])).toEqual(Array(3).fill(['thread', undefined]));
 
-    const comments = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
-    expect(comments.map(c => [c.path, c.subject_type])).toEqual(Array(3).fill(['src/other.ts', 'file']));
+    // Each thread is a line comment of the same review, on the first changed line of the first changed file.
+    const comments = createReviewMock.mock.calls[0][0].comments as Array<{ path: string; line: number; body: string }>;
+    expect(comments.map(c => [c.path, c.line])).toEqual(Array(3).fill(['src/other.ts', 1]));
+    expect(createReviewComment).not.toHaveBeenCalled();
     expect(comments.map(c => c.body.split('\n\n')[2])).toEqual([
       `This is in [\`src/missing.ts:10\`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10), not in the file this thread is on. ${where}`,
       `This is in [\`src/missing.ts\`](https://github.com/owner/repo/blob/sha/src/missing.ts), not in the file this thread is on. ${where}`,
@@ -4999,11 +5006,11 @@ describe('postReview fallback paths', () => {
     // A file name can hold a marker of Manki's. It reaches neither the thread nor the review body as one, with or without a changed file.
     const fake = 'src/x<!-- manki:note:Fake --><!-- manki-finding: {"title":"Fake"} --><!-- manki-auto-approve -->.ts';
     const forged = [blocker('Forged place', fake, 10)];
-    for (const files of [[{ path: fake.replace('x', 'y'), changeType: 'modified' as const, hunks: [] }], []]) {
+    for (const files of [[{ path: fake.replace('x', 'y'), changeType: 'modified' as const, hunks: diff.files[0].hunks }], []]) {
       createReviewMock.mockClear();
       createReviewComment.mockClear();
       await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', { ...result, findings: forged }, { ...diff, files });
-      const posted = [createReviewMock.mock.calls[0][0].body as string, ...createReviewComment.mock.calls.map(([c]) => (c as { body: string }).body)];
+      const posted = [createReviewMock.mock.calls[0][0].body as string, ...(createReviewMock.mock.calls[0][0].comments as Array<{ body: string }> ?? []).map(c => c.body)];
       expect(posted).toHaveLength(files.length + 1);
       for (const text of posted) {
         expect(text).not.toContain('<!-- manki-auto-approve -->');
@@ -5022,7 +5029,7 @@ describe('postReview fallback paths', () => {
       createReviewMock.mockClear();
       createReviewComment.mockClear();
       await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', { ...result, findings: [blocker('Outside', '../../../../evil/x', 10)] }, { ...diff, files });
-      const posted = [createReviewMock.mock.calls[0][0].body as string, ...createReviewComment.mock.calls.map(([c]) => (c as { body: string }).body)];
+      const posted = [createReviewMock.mock.calls[0][0].body as string, ...(createReviewMock.mock.calls[0][0].comments as Array<{ body: string }> ?? []).map(c => c.body)];
       expect(posted).toHaveLength(files.length > 0 ? 2 : 1);
       for (const text of posted) {
         expect(text).toContain('`../../../../evil/x:10`');
@@ -5102,35 +5109,47 @@ describe('postReview fallback paths', () => {
     }
 
     const offLineBlocker: Finding = { severity: 'blocker', title: 'Refused thread', file: 'src/a.ts', line: 40, description: 'Desc.', reviewers: [] };
+    const lineError = new Error('pull_request_review_thread.line must be part of the diff');
+    /** A review endpoint that refuses the line comments once, so the review posts without them and each thread is posted on its file. */
+    const refusesLines = () => jest.fn().mockRejectedValueOnce(lineError).mockResolvedValue({ data: { id: 7 } });
 
-    it('posts blockers outside the hunks as file-level comments with the finding marker', async () => {
+    it('posts a blocker off the changed lines inside the review on the first changed line of its file, which a later round finds again', async () => {
       const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const { octokit, createReview } = makeOctokit(createReviewComment);
 
       await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
         { severity: 'blocker', title: 'Unchanged line bug', file: 'src/a.ts', line: 40, description: 'Desc.', suggestedFix: 'use(value);', reviewers: [] },
+        { severity: 'warning', title: 'Whole file', file: 'src/a.ts', line: 0, description: 'Desc.', reviewers: [] },
         { severity: 'warning', title: 'Rename only', file: 'src/renamed.ts', line: 0, description: 'Desc.', reviewers: [] },
         { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', suggestedFix: 'use(value);', reviewers: [] },
       ]), diff);
 
-      expect(createReviewComment).toHaveBeenCalledTimes(2);
-      expect(createReviewComment.mock.calls[0][0]).toEqual(expect.objectContaining({
-        pull_number: 1, commit_id: 'sha', path: 'src/a.ts', subject_type: 'file',
-      }));
-      expect(createReviewComment.mock.calls[0][0]).not.toHaveProperty('line');
-      expect(createReviewComment.mock.calls[0][0].body).toContain('<!-- manki:blocker:Unchanged-line-bug -->');
-      expect(createReviewComment.mock.calls[1][0]).toEqual(expect.objectContaining({ path: 'src/renamed.ts', subject_type: 'file' }));
-      expect(createReviewComment.mock.calls[1][0].body).toContain('<!-- manki:warning:Rename-only -->');
-
       const review = createReview.mock.calls[0][0];
-      expect(review.comments).toHaveLength(1);
-      expect(review.comments[0]).toEqual(expect.objectContaining({ path: 'src/a.ts', line: 2 }));
-      expect(review.comments[0].body).toContain('<!-- manki:blocker:On-changed-line -->');
-      expect(review.body).not.toContain('Findings (not on changed lines)');
-      // Only the thread on the finding's own line offers the fix to commit.
-      expect(review.comments[0].body).toContain('```suggestion\nuse(value);\n```');
-      expect(createReviewComment.mock.calls[0][0].body).toContain('```ts\nuse(value);\n```');
-      expect(createReviewComment.mock.calls[0][0].body).not.toContain('```suggestion');
+      expect(review.comments.map((c: { path: string; line: number }) => [c.path, c.line])).toEqual([['src/a.ts', 1], ['src/a.ts', 1], ['src/a.ts', 2]]);
+      const [offLine, wholeFile, onLine] = review.comments as Array<{ path: string; line: number; body: string }>;
+      expect(offLine.body).toContain('This is on [line 40](https://github.com/owner/repo/blob/sha/src/a.ts#L40). A comment on that line is not possible, so the thread is elsewhere in the file.');
+      expect(offLine.body).toContain('<!-- manki:blocker:Unchanged-line-bug -->');
+      expect(wholeFile.body).toContain('**Whole file**\n\nThis concerns the whole file, not one line of it.');
+      expect(onLine.body).toContain('<!-- manki:blocker:On-changed-line -->');
+      // Only the thread on the finding's own line offers the fix to commit, since committing writes over the commented line.
+      expect(onLine.body).toContain('```suggestion\nuse(value);\n```');
+      expect(offLine.body).toContain('```ts\nuse(value);\n```');
+      expect(offLine.body).not.toContain('```suggestion');
+      // A file with no line a comment can go on takes a file-level thread of its own, and only that file does.
+      expect(createReviewComment).toHaveBeenCalledTimes(1);
+      const renamed = createReviewComment.mock.calls[0][0];
+      expect(renamed).toMatchObject({ path: 'src/renamed.ts', subject_type: 'file' });
+      expect(renamed.body).toContain('**Rename only**\n\nThis concerns the whole file, not one line of it.');
+      expect(review.body).not.toContain('Rename only');
+
+      // A later round reads each thread at its finding's place, so it matches the finding again and carries it there.
+      const threads = [[offLine, 40, 'Unchanged-line-bug'], [wholeFile, 0, 'Whole-file'], [{ ...renamed, line: undefined }, 0, 'Rename-only']] as const;
+      for (const [thread, line, slug] of threads) {
+        const place = findingPlace(thread.body, thread.path, thread.line, thread.line);
+        expect(currentFindingLine(place)).toBe(line);
+        expect(findPriorThreadId({ file: thread.path, lineStart: line, lineEnd: line, slug }, [{ ...place, threadId: 'T', markerSlug: slug }])).toBe('T');
+        expect(parseFindingFromComment(thread.body).description).toBe('Desc.');
+      }
     });
 
     it('posts no file-level comment when creating the review fails', async () => {
@@ -5163,16 +5182,18 @@ describe('postReview fallback paths', () => {
           thread('Nearby line thread', 37, 'replied'),
           thread('Resolved thread', 0, 'resolved'),
           thread('Far line thread', 10, 'open'),
-          thread('Other file', 0, 'open'),
+          { ...thread('Other file', 0, 'open'), file: 'src/renamed.ts' },
         ],
       });
 
-      const posted = createReviewComment.mock.calls.map(c => (c[0].body as string).match(/<!-- manki:blocker:(.+?) -->/)?.[1]);
-      expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file', 'File-thread']);
+      // The blocker in a file with no changed line keeps its open thread, as every other finding does.
+      const posted = createReview.mock.calls[0][0].comments.map((c: { body: string }) => c.body.match(/<!-- manki:blocker:(.+?) -->/)?.[1]);
+      expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'File-thread']);
+      expect(createReviewComment).not.toHaveBeenCalled();
       // The record names the open thread each skipped blocker was left to, so resolving that thread can lift the block.
       const record = JSON.parse(extractReviewRecords(createReview.mock.calls[0][0].body as string).records[0]) as RoundContext;
       expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([
-        ['earlier_thread', 'T-File thread'], ['earlier_thread', 'T-Nearby line thread'], ['thread', undefined], ['thread', undefined], ['thread', undefined], ['thread', undefined],
+        ['earlier_thread', 'T-File thread'], ['earlier_thread', 'T-Nearby line thread'], ['thread', undefined], ['thread', undefined], ['earlier_thread', 'T-Other file'], ['thread', undefined],
       ]);
     });
 
@@ -5198,7 +5219,7 @@ describe('postReview fallback paths', () => {
       }
       expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  **What goes wrong:** Desc.');
       // A thread graded below the blocker never carries it, even when the judge links them, so the blocker gets a thread
-      // of its own and counts as new. One off the diff's lines gets a file-level comment. Its record entry names no
+      // of its own and counts as new. One off the diff's lines gets a comment on the first changed line. Its record entry names no
       // thread, which would make the lower thread block next round.
       const lower = [{ severity: 'warning' as const }, { severity: 'note' as const }];
       for (const grade of lower) {
@@ -5212,7 +5233,7 @@ describe('postReview fallback paths', () => {
           });
           const [review] = createReview.mock.calls[0];
           const posted = [...review.comments, ...createReviewComment.mock.calls.map(([c]) => c)];
-          expect(posted.map((c: { line?: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[finding.line === 2 ? 2 : undefined, '\u{1F6AB} **Blocker**']]);
+          expect(posted.map((c: { line?: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[finding.line === 2 ? 2 : 1, '\u{1F6AB} **Blocker**']]);
           expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker\./u);
           const [recorded] = (JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext).findings.entries;
           expect([recorded.posted, recorded.threadId]).toEqual(['thread', undefined]);
@@ -5235,11 +5256,11 @@ describe('postReview fallback paths', () => {
       ['a 5xx', 502],
     ])('adds a file-level comment GitHub refuses with %s to the posted review body', async (_label, status) => {
       const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status }));
-      const { octokit, createReview, updateReview } = makeOctokit(createReviewComment);
+      const { octokit, createReview, updateReview } = makeOctokit(createReviewComment, refusesLines());
 
       await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff);
 
-      const review = createReview.mock.calls[0][0];
+      const review = createReview.mock.calls[1][0];
       expect(review.event).toBe('REQUEST_CHANGES');
       expect(review.comments).toEqual([]);
       expect(updateReview).toHaveBeenCalledTimes(1);
@@ -5268,16 +5289,16 @@ describe('postReview fallback paths', () => {
       };
       const taken = () => jest.fn().mockResolvedValue({ data: { id: 1 } });
       const refusedOnce = (error: Error) => jest.fn().mockRejectedValueOnce(error).mockResolvedValue({ data: { id: 7 } });
-      const lineError = new Error('pull_request_review_thread.line must be part of the diff');
       const eventError = Object.assign(new Error('Unprocessable'), { status: 422 });
 
       const all = ['thread', 'thread', 'thread'];
-      // Nothing refused: each blocker has a thread, the one in a file outside the diff on the first changed file.
+      // Nothing refused: each blocker has a thread in the review, the one off its line and the one in a file outside the
+      // diff on the first changed line.
       const fileComments = taken();
-      expect(await post(taken(), fileComments)).toEqual([all]);
-      expect(fileComments.mock.calls.map(([c]) => c.path)).toEqual(['src/a.ts', 'src/a.ts']);
-      // The file-level comments are refused after the review posted, so the review is updated with a corrected record.
-      expect(await post(taken(), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([all, ['thread', 'body', 'body']]);
+      const review = taken();
+      expect(await post(review, fileComments)).toEqual([all]);
+      expect(fileComments).not.toHaveBeenCalled();
+      expect(review.mock.calls[0][0].comments.map((c: { path: string; line: number }) => [c.path, c.line])).toEqual([['src/a.ts', 2], ['src/a.ts', 1], ['src/a.ts', 1]]);
       // The line comments are refused: the first attempt never posts, and the blocker gets a file-level thread on its file.
       const retried = taken();
       const refusedLines = refusedOnce(lineError);
@@ -5300,7 +5321,7 @@ describe('postReview fallback paths', () => {
         if (parseFindingData(body)?.detached) throw new Error('refused');
         return { data: { id: 1 } };
       });
-      expect(await post(taken(), onlyOwnFile)).toEqual([all, ['thread', 'thread', 'body']]);
+      expect(await post(refusedOnce(lineError), onlyOwnFile)).toEqual([all, all, ['thread', 'thread', 'body']]);
       // GitHub refuses the review event, and the comment posted instead carries no line comment, so the blocker gets a file-level thread too.
       expect((await post(refusedOnce(eventError), taken())).at(-1)).toEqual(all);
       expect(lastBody).not.toContain('could not');
@@ -5308,7 +5329,7 @@ describe('postReview fallback paths', () => {
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
       const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
-      const { octokit, updateReview } = makeOctokit(createReviewComment);
+      const { octokit, updateReview } = makeOctokit(createReviewComment, refusesLines());
       const result = { ...buildResult([{ ...offLineBlocker, cell: { row: 'severe', column: 'normal' } }]), summary: 'word '.repeat(11990) };
       const context = makeContext();
 
@@ -5323,7 +5344,7 @@ describe('postReview fallback paths', () => {
 
     it('fails the run naming the findings when they cannot fit in the review body', async () => {
       const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
-      const { octokit, updateReview } = makeOctokit(createReviewComment);
+      const { octokit, updateReview } = makeOctokit(createReviewComment, refusesLines());
       const huge: Finding = { ...offLineBlocker, title: 'Huge '.repeat(12000) };
 
       await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([huge]), diff)).rejects.toThrow('(src/a.ts)');
@@ -5333,7 +5354,7 @@ describe('postReview fallback paths', () => {
     it('fails the run naming the finding when the refused comment cannot be added to the review either', async () => {
       const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
       const updateReview = jest.fn().mockRejectedValue(new Error('update down'));
-      const { octokit } = makeOctokit(createReviewComment, undefined, updateReview);
+      const { octokit } = makeOctokit(createReviewComment, refusesLines(), updateReview);
 
       // The review itself was created before the failure, and `onPosted` says so.
       const onPosted = jest.fn();
@@ -5385,8 +5406,8 @@ describe('postReview non-blocking findings', () => {
 
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', result, diff);
     const { body, comments } = createReview.mock.calls[0][0];
-    expect(comments).toHaveLength(2);
-    expect(createReviewComment).toHaveBeenCalledTimes(1);
+    expect(comments).toHaveLength(3);
+    expect(createReviewComment).not.toHaveBeenCalled();
     // Each finding has its thread under the review, so the body only counts them, and needs no update to link them.
     expect(body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 2 blockers, plus 1 warning in threads\.\n\n\*\*What blocks:\*\* It breaks\./u);
     for (const f of [blocking, fileLevel, inline]) expect(body).not.toContain(f.title);
@@ -5821,8 +5842,8 @@ describe('postReview non-blocking findings', () => {
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning**']]);
-    expect(createReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type, c.body.split('\n')[0]])).toEqual([['src/a.ts', 'file', '\u{1F6AB} **Blocker**']]);
+    expect(review.comments.map((c: { line: number; body: string }) => [c.line, c.body.split('\n')[0]])).toEqual([[9, '\u26A0\uFE0F **Warning**'], [1, '\u{1F6AB} **Blocker**']]);
+    expect(createReviewComment).not.toHaveBeenCalled();
     const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
     expect(visible).not.toContain('Extract helper');
     expect(visible).not.toContain('Fallback line');
@@ -5926,13 +5947,13 @@ describe('postReview non-blocking findings', () => {
     const warnings = scopeWarnings(scope).map(f => ({ ...f, tags: ['follow-up'] }));
     await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult(warnings), scope: { ...scope, warned: true } }, diff);
     for (const call of createReview.mock.calls.slice(1)) expect(call[0].body).not.toContain('**Scope:**');
-    // Each warning is a thread tied to no file that holds the approval, posted on the first changed file. The doubt lists the lines it cites.
+    // Each warning is a thread tied to no file that holds the approval, posted in the review on the first changed line. The doubt lists the lines it cites.
     const held = createReview.mock.calls[2][0];
     expect(held.event).toBe('COMMENT');
-    expect(held.comments).toEqual([]);
-    const threads = createReviewComment.mock.calls.map(call => call[0]);
+    expect(createReviewComment).not.toHaveBeenCalled();
+    const threads = held.comments as Array<{ path: string; line: number; body: string }>;
     expect(threads).toEqual([0, 1].map(() => expect.objectContaining({
-      path: 'src/a.ts', subject_type: 'file', body: expect.stringContaining('This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.'),
+      path: 'src/a.ts', line: 1, body: expect.stringContaining('This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.'),
     })));
     expect(threads[0].body).toContain('**This change may not be useful as it stands**');
     expect(threads[0].body).toContain('**Checked in the code**\nhttps://github.com/owner/repo/blob/sha/src/a.ts#L2-L9');
@@ -5998,14 +6019,15 @@ describe('postReview non-blocking findings', () => {
     // A warning on reviewed code gets its thread like one on new code, and says under its title why it comes late. Each
     // note is posted as written, so the next round reads the description without them.
     const threads: string[] = review.comments.map((c: { body: string }) => c.body);
-    expect(threads.map(body => body.split('\n')[2])).toEqual(['**On new code**', '**On old code**', '**Old blocker**']);
+    expect(threads.map(body => body.split('\n')[2])).toEqual(['**On new code**', '**On old code**', '**Old code off the diff**', '**Old blocker**']);
     expect(threads[1].startsWith(`\u26A0\uFE0F **Warning**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
     expect(parseFindingFromComment(threads[1]).description).toBe('It goes wrong. Second sentence. Third sentence.');
-    expect([threads[0], threads[2]].join('\n')).not.toContain('An earlier round');
-    // A late warning off the changed lines gets a file-level thread with the same notes.
-    const [offDiff] = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
-    expect([offDiff.path, offDiff.subject_type]).toEqual(['src/a.ts', 'file']);
-    const lineNote = 'This is on [line 40](https://github.com/owner/repo/blob/sha/src/a.ts#L40). A comment on that line is not possible, so the thread is on the file.';
+    expect([threads[0], threads[3]].join('\n')).not.toContain('An earlier round');
+    // A late warning off the changed lines gets its thread in the review on the first changed line, with the same notes.
+    const offDiff = review.comments[2] as { path: string; line: number; body: string };
+    expect([offDiff.path, offDiff.line]).toEqual(['src/a.ts', 1]);
+    expect(createReviewComment).not.toHaveBeenCalled();
+    const lineNote = 'This is on [line 40](https://github.com/owner/repo/blob/sha/src/a.ts#L40). A comment on that line is not possible, so the thread is elsewhere in the file.';
     expect(offDiff.body.startsWith(`\u26A0\uFE0F **Warning**\n\n**Old code off the diff**\n\n${lineNote}\n\n${unconfirmedNote}\n\n${missedNote}\n\n`)).toBe(true);
     expect(review.body).not.toContain('Old code off the diff');
     // Each origin gets its section with exact counts, and the sections follow each other under rules. A security note on
