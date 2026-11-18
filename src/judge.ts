@@ -1562,6 +1562,13 @@ export function synthesizeMissingThreadEvaluations(
   return [...(existing ?? []), ...synthesized];
 }
 
+/** A judge call whose refuter had no time to start a check. It carries what the judge graded, which no check confirmed. */
+export class RefuterNotStartedError extends NotStartedError {
+  constructor(message: string, readonly graded: Finding[]) {
+    super(message);
+  }
+}
+
 export async function runJudgeAgent(
   client: LLMClient,
   config: ReviewConfig,
@@ -1775,6 +1782,8 @@ export async function runJudgeAgent(
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
     restatesEarlier: finding => restatesEarlier(earlier, finding),
     preExisting: staysPreExisting, rules: config.review?.rules,
+  }).catch((error: unknown) => {
+    throw error instanceof NotStartedError ? new RefuterNotStartedError(error.message, mapped) : error;
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(f => withoutRuleDoubt(f, config.review?.rules)));
 

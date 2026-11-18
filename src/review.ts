@@ -6,7 +6,7 @@ import { minimatch } from 'minimatch';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
 import { formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
-import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
+import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, RefuterNotStartedError, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
@@ -744,6 +744,9 @@ async function reviewRound(
   };
   // The summary of the incomplete round, set once a call after the finders could not start. No later call starts then.
   let stopped: string | undefined;
+  // Aborted with `stopped`, so the late calls still running stop. The record ends with the calls that ended before.
+  const stopLate = new AbortController();
+  let recordedAtStop: { calls: number; fallbacks: number } | undefined;
   // Records `call` as not started and returns `stopped`, when the round has less time left than the call starts with.
   const noTimeFor = (call: Pick<RoundNotStarted, 'stage' | 'agent'>): string | undefined => {
     if (stopped) return stopped;
@@ -753,6 +756,8 @@ async function reviewRound(
     const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });
     stopped = `A ${lateCallName(call)} was not started, since ${reason}. ${RETRY_HINT}`;
+    recordedAtStop = { calls: llmCalls.length, fallbacks: modelFallbacks.length };
+    stopLate.abort();
     return stopped;
   };
   // Every call ends by `until`, and a fallback gets only what the failed call left of that.
@@ -773,15 +778,24 @@ async function reviewRound(
       if (stage === 'reviewer' && !limit) addReader(modelIdentity(fallback!.model), 1);
     }, movesOnLimit, () => skip({ kind: 'fallback', stage, ...(agent && { agent }), reason: 'the failed call left no time' })), signal, until);
   };
-  // A call `noTimeFor` stops throws a `NotStartedError` before any wrapper records it, which ends the round.
-  const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>): LLMClient => ({
-    ...client,
-    sendMessage: async (...args) => {
-      const late = noTimeFor(call);
-      if (late) throw new NotStartedError(late);
-      return client.sendMessage(...args);
-    },
-  });
+  // A call `noTimeFor` stops throws a `NotStartedError` before any wrapper records it, which ends the round. So does a
+  // call still running then, whatever it returns, so no stage reads it.
+  const startsInTime = (client: LLMClient, call: Pick<RoundNotStarted, 'stage' | 'agent'>): LLMClient => {
+    // Without a deadline no call is stopped.
+    const stoppable = deadline === undefined ? client : withSignal(client, stopLate.signal);
+    return {
+      ...stoppable,
+      sendMessage: async (...args) => {
+        const late = noTimeFor(call);
+        if (late) throw new NotStartedError(late);
+        const reply = await stoppable.sendMessage(...args).catch((error: unknown) => {
+          throw stopped ? new NotStartedError(stopped) : error;
+        });
+        if (stopped) throw new NotStartedError(stopped);
+        return reply;
+      },
+    };
+  };
   const lateFallback = (stageClient: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
     startsInTime(withFallback(stageClient, stage, agent), { stage, ...(agent && { agent }) });
   // A refused call adds nothing to the usage totals, so it counts as no attempt.
@@ -889,13 +903,16 @@ async function reviewRound(
   const agentFailureReasons = new Map<string, string>();
   let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims'> = {};
   // Related work is left out: the posted incomplete review would render it.
-  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
-    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
-    agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
-    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-    ...(modelFallbacks.length > 0 && { modelFallbacks }), ...(notStarted.length > 0 && { notStarted }), llmCalls, ...finderContext, ...relatedRecord(),
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
-  });
+  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => {
+    const fallbacks = modelFallbacks.slice(0, recordedAtStop?.fallbacks);
+    return {
+      verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
+      agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
+      ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+      ...(fallbacks.length > 0 && { modelFallbacks: fallbacks }), ...(notStarted.length > 0 && { notStarted }), llmCalls: llmCalls.slice(0, recordedAtStop?.calls),
+      ...finderContext, ...relatedRecord(), ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
+    };
+  };
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
   if (related && unread) return incomplete(unread);
@@ -1401,6 +1418,7 @@ async function reviewRound(
       return incomplete(error instanceof NotStartedError ? error.message : judgeFailureSummary(error), {
         // The failed attempts count too, since the judge ended on one.
         judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
+        ...(error instanceof RefuterNotStartedError && { allJudgedFindings: error.graded }),
       });
     }
   }
@@ -1470,6 +1488,7 @@ async function reviewRound(
         openLeads.push(...unsettled);
         finalFindings = [...finalFindings, ...kept.filter(f => !unsettled.includes(f))];
       } catch (error) {
+        if (error instanceof RefuterNotStartedError) allJudgedFindings = [...(allJudgedFindings ?? []), ...error.graded.map(({ noteRank: _, ...f }): Finding => f)];
         if (error instanceof NotStartedError) throw error;
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
