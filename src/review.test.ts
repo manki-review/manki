@@ -4186,16 +4186,22 @@ describe('runReview', () => {
     expect(far.calls).toHaveLength(0);
     expect(far.result.findings.map(f => f.title)).toEqual(['Connection leaked on the error path', 'Close is skipped after an early return']);
 
-    // A finding in another file that cites the blocker's line goes to the dedup model too. One that cites a line two off it shares no line.
+    // A finding in another file that cites the blocker's line goes to the dedup model too. One that cites a line two off it
+    // shares no line. A fold takes the code fix of a finding on the blocker's line only in the blocker's file, since the
+    // fix replaces the line the blocker's comment sits on.
+    const fix = 'handle.close();';
+    const sameLine = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}]' }), [{ ...nearbyFindings[0], line: 40, suggestedFix: fix }]);
+    expect(sameLine.result.findings).toEqual([expect.objectContaining({ title: 'Close is skipped after an early return', suggestedFix: fix })]);
     const elsewhere = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}]' }), [
-      { ...nearbyFindings[0], title: 'Caller never closes the handle', file: 'src/b.ts', line: 5, evidence: { checks: [], proof: ['src/b.ts:5', 'src/a.ts:40'] } },
+      { ...nearbyFindings[0], title: 'Caller never closes the handle', file: 'src/b.ts', line: 40, suggestedFix: fix, evidence: { checks: [], proof: ['src/b.ts:40', 'src/a.ts:40'] } },
       { ...nearbyFindings[1], file: 'src/b.ts', line: 9, evidence: { checks: [], proof: ['src/b.ts:9', 'src/a.ts:42'] } },
     ]);
     expect(elsewhere.calls).toHaveLength(1);
-    expect(elsewhere.calls[0][1]).toBe('## Pairs:\n1.\n   A: "Close is skipped after an early return" (src/a.ts:40): "The handle stays open."\n   B: "Caller never closes the handle" (src/b.ts:5): "Leaks a socket."');
+    expect(elsewhere.calls[0][1]).toBe('## Pairs:\n1.\n   A: "Close is skipped after an early return" (src/a.ts:40): "The handle stays open."\n   B: "Caller never closes the handle" (src/b.ts:40): "Leaks a socket."');
     expect(elsewhere.result.findings.map(f => [f.title, f.description])).toEqual([
       ['Buffer is never flushed', 'Loses data.'], ['Close is skipped after an early return', 'The handle stays open.\n\nAlso reported as: Caller never closes the handle'],
     ]);
+    expect(elsewhere.result.findings[1]).not.toHaveProperty('suggestedFix');
 
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason closes the fold under the finding, after the fix and the checks.

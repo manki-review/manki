@@ -2953,8 +2953,8 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
  * thread. A pair `sameProblem` does not settle but that `mayRestate` pairs is folded when `dedup` says both describe
  * the same defect, asked in one call for the whole round. The blocker keeps its grade and takes what `foldInto` merges.
- * It takes the finding's code fix only when it has none and both sit on one line, since a one-line fix replaces the line
- * its comment sits on. A title the blocker's does not contain is added to its description, so a second defect folded
+ * It takes the finding's code fix only when it has none and both sit on one line of one file, since a one-line fix
+ * replaces the line its comment sits on. A title the blocker's does not contain is added to its description, so a second defect folded
  * in by mistake still shows.
  */
 async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined): Promise<{ findings: Finding[]; blockers: Finding[] }> {
@@ -2962,7 +2962,7 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
   // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
   const matched = findings.map(f => blockers.findIndex(b => sameProblem(b, f)));
   const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => mayRestate(b, f) ? [{ i, j }] : []) : []);
-  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} nearby finding pairs stay apart unchecked, since the round has no dedup model`);
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} finding pairs that may restate each other stay apart unchecked, since the round has no dedup model`);
   const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [blockers[j], findings[i]]), dedup) : [];
   pairs.forEach(({ i, j }, k) => {
     if (answers[k] && matched[i] === -1) matched[i] = j;
@@ -2974,7 +2974,7 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     const overlap = titleOverlapType(blocker.title, f.title);
     if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
     foldInto(blocker, f);
-    if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
+    if (!blocker.suggestedFix && f.suggestedFix && f.file === blocker.file && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
     return false;
   });
@@ -3079,7 +3079,7 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
     if (same) links[i] = { earlier: same, variant: false };
   });
   const pairs = findings.flatMap((f, i) => candidates(f, links[i]).flatMap(e => mayRestate(e.finding, f) ? [{ i, e }] : []));
-  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} findings near an earlier finding stay apart unchecked, since the round has no dedup model`);
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} findings that may restate an earlier finding stay apart unchecked, since the round has no dedup model`);
   const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, e }) => [e.finding, findings[i]]), dedup) : [];
   pairs.forEach(({ i, e }, k) => {
     if (answers[k] && (!links[i] || links[i]?.variant)) links[i] = { earlier: e, variant: false };
