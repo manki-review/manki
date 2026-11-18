@@ -2368,6 +2368,8 @@ describe('runReview', () => {
     // The same change with a file long enough that the diff is read in slices, which comes first.
     const rates = { 'assets/rates.txt': 'rate\n'.repeat(1600) };
     const sliced = gitWorkspace(base, { ...head, ...rates });
+    // The sliced change with a changed line in the large file that names one of the new functions.
+    const mentioned = gitWorkspace(base, { ...head, 'assets/rates.txt': `${rates['assets/rates.txt']}ComputeFeeC\n` });
     // A sliced change whose new function only a reference repo line uses.
     const referenceOnly = gitWorkspace({ 'cmd/fee.go': fee('') }, { 'cmd/fee.go': fee('\nfunc ComputeFeeA(n int) int { return n }\n'), ...rates });
     // No other file and no reference line holds what this change adds, so both lists are empty.
@@ -2455,6 +2457,16 @@ describe('runReview', () => {
       const untied = await run({ first: reads, workspace: sliced, leaveOut: 'cmd/fee.go' });
       expect(untied.result.usesOutsideDiff?.symbols).toHaveLength(3);
       expect([untied.first.length, untied.again, untied.result.agentsAskedAgain]).toEqual([2 * untied.result.agentNames.length, [], []]);
+      // The note names the files that use the names of the chosen slice first, then the rest up to the cap.
+      const tied = await run({ first: reads, workspace: mentioned, leaveOut: 'cmd/fee.go' });
+      expect(tied.again.length).toBe(tied.result.agentNames.length);
+      const own = listed.filter(file => file.startsWith('cmd/computefeec_'));
+      expect(own).toHaveLength(3);
+      for (const message of tied.again) {
+        expect(message.startsWith(tied.first.find(ratesSlice)!)).toBe(true);
+        const [, files] = /```\n([^`]*)\n```/.exec(message.slice(message.indexOf('Open the files below')))!;
+        expect(files.split('\n')).toEqual([...own, ...listed.filter(file => !own.includes(file))].slice(0, 8));
+      }
       expect(slices.result.rawFindings?.map(f => [f.reviewers, f.title])).toEqual(slices.result.agentNames.flatMap(name => ['First', 'First', 'Second'].map(title => [[name], title])));
       // A finding the call repeats goes to the judge as one more copy of the same finder, which the judge folds like two slices' copies.
       const repeated = await run({ first: reads, workspace: sliced, second: async () => ({ ...answer('First'), toolSteps: [] }) });
@@ -2482,7 +2494,7 @@ describe('runReview', () => {
     } finally {
       fetchSpy.mockRestore();
       warnSpy.mockRestore();
-      for (const dir of [change.root, sliced.root, referenceOnly.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [change.root, sliced.root, mentioned.root, referenceOnly.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
     }
   }, 4 * GIT_TEST_TIMEOUT_MS);
 

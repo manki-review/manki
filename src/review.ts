@@ -214,19 +214,25 @@ function unreadFilesNote(files: string[], slices = false): string {
 
 /**
  * Returns the slice of `slices` a second ask reads: the one that holds the most changed names the `listed` files use,
- * by the file that declares a name or a changed line that names it. Undefined when no slice holds any of them.
+ * by the file that declares a name or a changed line that names it. Its `files` are `listed` with the files that use
+ * those names first. Undefined when no slice holds any of the names.
  */
-function askAgainSlice(slices: Array<{ raw: string; paths?: Set<string> }>, uses: RoundUses | undefined, listed: string[]): number | undefined {
-  const lists = (locations: string[]) => locations.some(location => listed.includes(fileOf(location)));
+function askAgainSlice(slices: Array<{ raw: string; paths?: Set<string> }>, uses: RoundUses | undefined, listed: string[]): { index: number; files: string[] } | undefined {
   const symbols = uses?.symbols ?? [];
-  const names = [...new Set([...symbols.filter(s => lists(s.uses)), ...(uses?.reference ?? []).filter(r => lists(r.lines))].map(use => use.name))];
+  const usedBy = new Map<string, Set<string>>();
+  for (const { name, at } of [...symbols.map(s => ({ name: s.name, at: s.uses })), ...(uses?.reference ?? []).map(r => ({ name: r.name, at: r.lines }))]) {
+    for (const file of at.map(fileOf).filter(file => listed.includes(file))) usedBy.set(name, (usedBy.get(name) ?? new Set<string>()).add(file));
+  }
   const declared = new Map(symbols.map(s => [s.name, fileOf(s.declared)]));
   const held = slices.map(({ raw, paths }) => {
     const changed = parsePRDiff(raw).files.flatMap(f => f.hunks.flatMap(h => h.content.split('\n').filter(line => line.startsWith('+') || line.startsWith('-')))).join('\n');
-    return names.filter(name => paths?.has(declared.get(name) ?? '') || new RegExp(`(?<![\\w$])${escapeRegExp(name)}(?![\\w$])`).test(changed)).length;
+    return [...usedBy.keys()].filter(name => paths?.has(declared.get(name) ?? '') || new RegExp(`(?<![\\w$])${escapeRegExp(name)}(?![\\w$])`).test(changed));
   });
-  const most = Math.max(...held);
-  return most > 0 ? held.indexOf(most) : undefined;
+  const most = Math.max(...held.map(names => names.length));
+  if (most === 0) return undefined;
+  const index = held.findIndex(names => names.length === most);
+  const own = new Set(held[index].flatMap(name => [...usedBy.get(name)!]));
+  return { index, files: [...listed.filter(file => own.has(file)), ...listed.filter(file => !own.has(file))] };
 }
 
 class PlannerTimeoutError extends Error {
@@ -1034,7 +1040,7 @@ export async function runReview(
     const slices = diffSlices(rawDiff);
     const sliced = slices.length > 1;
     const oneSlice = sliced ? askAgainSlice(slices, usesRecord, listed) : undefined;
-    if (sliced && oneSlice === undefined) {
+    if (sliced && !oneSlice) {
       core.info(`${finder.name} opened none of the ${listed.length} listed files, but no slice holds a name they use, so it is not asked again`);
       return first;
     }
@@ -1042,7 +1048,7 @@ export async function runReview(
     core.info(`${finder.name} opened none of the ${listed.length} listed files, so it is asked once more`);
     try {
       const second = await runReviewerAgent(finderClients.get(finder.name)!, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues,
-        finderOptions(finder, unreadFilesNote(listed, sliced), oneSlice));
+        finderOptions(finder, unreadFilesNote(oneSlice?.files ?? listed, sliced), oneSlice?.index));
       const usage = addUsage(first.usage, second.usage);
       const latencyMs = first.latencyMs + second.latencyMs;
       if (!sliced) return { ...second, usage, latencyMs };
