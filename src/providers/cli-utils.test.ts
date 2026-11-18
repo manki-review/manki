@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, pause, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cliHome, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, pause, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 import { TimeoutError } from './types';
@@ -79,6 +79,19 @@ describe('sanitizeLogOutput', () => {
 });
 
 describe('cliEnv', () => {
+  // The private home every call gets, which the first test checks. The others look at what else passes.
+  const HOME_NAMES = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME'];
+  const passed = (...args: Parameters<typeof cliEnv>): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(cliEnv(...args)).filter(([name]) => !HOME_NAMES.includes(name)));
+
+  it('points `HOME` and the CLI\'s own folder at a private folder of the run, whatever the runner or the call sets', () => {
+    const env = { PATH: '/usr/bin', HOME: '/runner-home', CODEX_HOME: '/runner-home/.codex' };
+    const home = cliHome('codex');
+    expect(cliEnv('codex', { HOME: '/call-home', CODEX_HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: home, CODEX_HOME: home });
+    expect(home).not.toMatch(/^\/(?:runner|call)-home/);
+    expect(statSync(home).mode & 0o777).toBe(0o700);
+    expect(cliHome('codex')).toBe(home);
+  });
+
   it('keeps only the variables a CLI needs, so a secret under any name stays out', () => {
     const env = {
       PATH: '/usr/bin',
@@ -111,13 +124,12 @@ describe('cliEnv', () => {
     };
     const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     for (const provider of ['claude', 'claude', 'gemini'] as const) {
-      expect(Object.keys(cliEnv(provider, {}, undefined, env))).toEqual(Object.keys(cliEnv('codex', {}, undefined, env)));
+      expect(Object.keys(passed(provider, {}, undefined, env))).toEqual(Object.keys(passed('codex', {}, undefined, env)));
     }
     expect(warning.mock.calls).toEqual([[expect.stringMatching(/^ANTHROPIC_CUSTOM_HEADERS is not passed to the Claude CLI/)]]);
     warning.mockRestore();
-    expect(cliEnv('codex', {}, undefined, env)).toEqual({
+    expect(passed('codex', {}, undefined, env)).toEqual({
       PATH: '/usr/bin',
-      HOME: '/home/runner',
       USER: 'runner',
       LOGNAME: 'runner',
       LANG: 'C.UTF-8',
@@ -133,7 +145,7 @@ describe('cliEnv', () => {
 
   it('keeps the Windows variables a CLI needs whatever their case', () => {
     const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe', DEPLOY_PEM: 'pem' };
-    expect(cliEnv('codex', {}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe' });
+    expect(passed('codex', {}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe' });
   });
 
   it('gives each provider only its own configuration, and none of its keys or tokens', () => {
@@ -166,7 +178,7 @@ describe('cliEnv', () => {
       GOOGLE_CLOUD_PROJECT: 'manki-project',
       GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp.json',
     };
-    expect(cliEnv('claude', {}, undefined, env)).toEqual({
+    expect(passed('claude', {}, undefined, env)).toEqual({
       ANTHROPIC_BASE_URL: 'https://gateway.example',
       ANTHROPIC_AUTH_TOKEN: 'gateway-token',
       CLAUDE_CODE_USE_BEDROCK: '1',
@@ -180,13 +192,12 @@ describe('cliEnv', () => {
       AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials',
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       DISABLE_TELEMETRY: '1',
-      CLAUDE_CONFIG_DIR: '/home/runner/.claude',
       API_TIMEOUT_MS: '600000',
       CLOUD_ML_REGION: 'us-east5',
       VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1',
     });
-    expect(cliEnv('codex', {}, undefined, env)).toEqual({ OPENAI_BASE_URL: 'https://openai.example', CODEX_CA_CERTIFICATE: '/etc/ssl/codex.pem' });
-    expect(cliEnv('gemini', {}, undefined, env)).toEqual({ GEMINI_MODEL: 'gemini-3', GOOGLE_CLOUD_PROJECT: 'manki-project', VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1' });
+    expect(passed('codex', {}, undefined, env)).toEqual({ OPENAI_BASE_URL: 'https://openai.example', CODEX_CA_CERTIFICATE: '/etc/ssl/codex.pem' });
+    expect(passed('gemini', {}, undefined, env)).toEqual({ GEMINI_MODEL: 'gemini-3', GOOGLE_CLOUD_PROJECT: 'manki-project', VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1' });
   });
 
   it('gives Claude the credentials of a Bedrock, Vertex or gateway setup only while it is on, and redacts them', () => {
@@ -199,15 +210,15 @@ describe('cliEnv', () => {
       ANTHROPIC_AUTH_TOKEN: 'gateway-auth-token',
       ANTHROPIC_CUSTOM_HEADERS: 'X-Gateway-Key: gateway-header-key\nAuthorization: Bearer bare-gateway-bearer',
     };
-    expect(cliEnv('claude', {}, undefined, credentials)).toEqual({});
+    expect(passed('claude', {}, undefined, credentials)).toEqual({});
 
     const on = { ...credentials, CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: 'true', ANTHROPIC_BASE_URL: 'https://gateway.example' };
-    expect(cliEnv('claude', {}, undefined, on)).toEqual(on);
-    expect(cliEnv('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
+    expect(passed('claude', {}, undefined, on)).toEqual(on);
+    expect(passed('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
     expect(redactSecrets('aws-secret-access-key gateway-auth-token gateway-header-key bare-gateway-bearer')).toBe('[REDACTED] [REDACTED] [REDACTED] [REDACTED]');
     // A Bedrock or Vertex gateway gets the headers too, but not the Anthropic gateway token.
     for (const url of ['ANTHROPIC_BEDROCK_BASE_URL', 'ANTHROPIC_VERTEX_BASE_URL']) {
-      expect(cliEnv('claude', {}, undefined, { ...credentials, [url]: 'https://gateway.example' }))
+      expect(passed('claude', {}, undefined, { ...credentials, [url]: 'https://gateway.example' }))
         .toEqual({ [url]: 'https://gateway.example', ANTHROPIC_CUSTOM_HEADERS: credentials.ANTHROPIC_CUSTOM_HEADERS });
     }
     const keyFile = join(mkdtempSync(join(tmpdir(), 'manki-gcp-')), 'key.json');
@@ -223,16 +234,16 @@ describe('cliEnv', () => {
     cliEnv('claude', {}, undefined, { CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: keyFile });
     expect(redactSecrets('Bearer oidc-request-token-xyz https://pipelines.actions.example/oidc')).toBe('[REDACTED] https://pipelines.actions.example/oidc');
     for (const provider of ['codex', 'gemini'] as const) {
-      expect(Object.keys(cliEnv(provider, {}, undefined, on))).not.toEqual(expect.arrayContaining(['AWS_SECRET_ACCESS_KEY']));
-      expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
-      expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('AWS_ACCESS_KEY_ID');
+      expect(Object.keys(passed(provider, {}, undefined, on))).not.toEqual(expect.arrayContaining(['AWS_SECRET_ACCESS_KEY']));
+      expect(passed(provider, {}, undefined, on)).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+      expect(passed(provider, {}, undefined, on)).not.toHaveProperty('AWS_ACCESS_KEY_ID');
     }
-    expect(cliEnv('gemini', {}, undefined, on)).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
+    expect(passed('gemini', {}, undefined, on)).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
   });
 
   it('adds the provider variables, and of those named like a secret only the credential', () => {
     const vars = { CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768', GITHUB_TOKEN: 'ghs_workflow' };
-    expect(cliEnv('claude', vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
+    expect(passed('claude', vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
       PATH: '/usr/bin',
       CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',

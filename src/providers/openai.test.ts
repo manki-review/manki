@@ -9,11 +9,11 @@ import {
   buildOpenAIAuth,
   OpenAIClient,
   readCodexLimits,
-  codexEnv,
   resetCLIInstallPromise,
   resolveReasoningEffort,
   STALE_TIMEOUT_MS,
 } from './openai';
+import { cliHome } from './cli-utils';
 import { QuotaError, RefusalError, TimeoutError, UnreachableError } from './types';
 
 // Seeding `$CODEX_HOME/auth.json` is exercised separately in `cli-utils.test.ts`.
@@ -45,7 +45,7 @@ _execMock.fn = mockExecFileAsync;
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
 // A test may point `RUNNER_TEMP` at a folder that does not exist, so the Codex home of this process is made first.
-beforeAll(() => codexEnv({}));
+beforeAll(() => cliHome('codex'));
 
 describe('buildOpenAIAuth', () => {
   it('throws when neither token is present', () => {
@@ -1029,7 +1029,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     jest.spyOn(core, 'info').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
     // The session Codex wrote before it stopped records the limit that ran out.
-    const home = codexEnv({}).CODEX_HOME!;
+    const home = cliHome('codex');
     const today = new Date();
     const folder = join(home, 'sessions', String(today.getFullYear()), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0'));
     const session = join(folder, 'rollout.jsonl');

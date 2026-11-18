@@ -32,7 +32,8 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, STEPS_FLAG } from '../src/mcp-server';
-import { CODEX_CLI_VERSION, codexEnv, codexExecArgs, codexToolServerArgs } from '../src/providers/openai';
+import { cliEnv } from '../src/providers/cli-utils';
+import { CODEX_CLI_VERSION, codexExecArgs, codexToolServerArgs } from '../src/providers/openai';
 
 /** What Codex offers one model. */
 export interface OfferedTools {
@@ -318,7 +319,7 @@ async function checkRun({ model, login, runnerHome }: CodexRun, repo: string, sc
       HTTPS_PROXY: standIn.url, HTTP_PROXY: standIn.url, ALL_PROXY: standIn.url, NO_PROXY: '127.0.0.1',
     };
     const key = login ? {} : { OPENAI_API_KEY: 'stand-in' };
-    const env = runnerHome ? { ...runnerEnv, ...key } : codexEnv(key, login ? undefined : 'OPENAI_API_KEY', runnerEnv);
+    const env = runnerHome ? { ...runnerEnv, ...key } : cliEnv('codex', key, login ? undefined : 'OPENAI_API_KEY', runnerEnv);
     const authFile = join(env.CODEX_HOME!, 'auth.json');
     if (login) writeFileSync(authFile, standInLogin(), { mode: 0o600 });
     const args = [
@@ -382,7 +383,7 @@ async function main(): Promise<number> {
       runs.push(...controlProblems(label, control.run, loginRun));
     }
     for (const problem of runs) console.log(`::error::${problem}`);
-    if (runs.length > 0) console.log('Find the Codex setting or the folder it came from, keep it out in `codexExecArgs` or `codexEnv`, and update docs/security.md.');
+    if (runs.length > 0) console.log('Find the Codex setting or the folder it came from, keep it out in `codexExecArgs` or `cliEnv`, and update docs/security.md.');
     if (process.argv.includes('--write')) {
       writeFileSync(fixture, `${JSON.stringify(actual, null, 2)}\n`);
       return runs.length === 0 ? 0 : 1;

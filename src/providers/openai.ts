@@ -7,28 +7,14 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { makeScratchDir } from '../tool-install';
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, processFolder, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
 // Re-export for existing test imports.
 export { STALE_TIMEOUT_MS };
-
-/**
- * Returns the private folder this process's Codex runs use as their home. Codex reads skills, `AGENTS.md`,
- * `config.toml` and `.env` from its home and skills from `~/.agents`, so a runner's own setup would reach a review. The
- * calls of a run share the folder, because Codex writes a login's refreshed tokens and the sessions a call resumes into it.
- */
-const codexHome = processFolder(() => makeScratchDir('codex-home'));
-
-/** Returns the environment of a Codex run, the `cliEnv` of `vars` with `HOME` and `CODEX_HOME` set to `codexHome`. */
-export function codexEnv(vars: NodeJS.ProcessEnv, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const home = codexHome();
-  return cliEnv('codex', { ...vars, HOME: home, CODEX_HOME: home }, credential, env);
-}
 
 /** Names a Codex window by its length: `5-hour`, `weekly`, or its hours or days. */
 function codexWindowName(minutes: number): string {
@@ -447,7 +433,7 @@ export class OpenAIClient implements LLMClient {
     const repoTools = options?.repoTools;
     const toolsPrompt = repoTools ? `\n\n${repoToolsPrompt(repoTools, '`read_file`, `grep` and `glob`')}` : '';
     const instructions = `${systemPrompt}${toolsPrompt}`;
-    const home = codexHome();
+    const home = cliHome('codex');
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const endpoint = this.auth.kind === 'endpoint' ? this.auth : undefined;
     const model = this.model;
@@ -482,7 +468,7 @@ export class OpenAIClient implements LLMClient {
 
     // The GitHub API URL is for the tool server's `repo_info`, which Codex starts with names from this environment.
     const apiUrl = process.env.GITHUB_API_URL;
-    const env = codexEnv({
+    const env = cliEnv('codex', {
       ...(repoTools && apiUrl && { GITHUB_API_URL: apiUrl }),
       ...(endpoint && { [ENDPOINT_KEY_ENV]: endpoint.key }),
     }, endpoint && ENDPOINT_KEY_ENV);

@@ -9,6 +9,7 @@ import * as core from '@actions/core';
 import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV } from '../utils';
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_DIR_FLAG, STEPS_FLAG } from '../mcp-server';
 import { trackCliProcess } from '../run-diagnostics';
+import { makeScratchDir } from '../tool-install';
 import { LISTED_FILES_TO_OPEN, STALE_TIMEOUT_MS, STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepoTools } from '../types';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
@@ -403,10 +404,27 @@ const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names:
 
 let warnedDroppedHeaders = false;
 
+// The variables that point a CLI at its own folder, which a runner can set to a folder of its user.
+const HOME_VARS: Partial<Record<CliProvider, (home: string) => NodeJS.ProcessEnv>> = {
+  codex: home => ({ CODEX_HOME: home }),
+};
+
+const cliHomes = Object.fromEntries(Object.keys(HOME_VARS).map(provider => [provider, processFolder(() => makeScratchDir(`${provider}-home`))]));
+
+/**
+ * Returns the private folder this process's `provider` runs use as their home. A CLI reads its user's setup, such as
+ * skills, MCP servers and settings, from the home, so a runner's own setup would reach a review. The calls of a run
+ * share the folder, because a CLI writes into it the tokens it refreshes and the sessions a later call resumes.
+ */
+export function cliHome(provider: CliProvider): string {
+  return cliHomes[provider]();
+}
+
 /**
  * Returns the environment for the `provider` CLI: the variables of `env` any CLI needs to run, the provider's own
  * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY_PROD`, passes, except `credential`
  * and, for Claude, the credentials of a Bedrock, Vertex or gateway setup that is on. Those are registered as secrets.
+ * `HOME` and the CLI's own folder variable point at `cliHome`, whatever `env` and `vars` say.
  */
 export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const modeCredentials = provider === 'claude' ? CLAUDE_MODE_CREDENTIALS.filter(mode => mode.on(env)).flatMap(mode => mode.names) : [];
@@ -416,7 +434,9 @@ export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, cred
   }
   const credentials = new Set([...(credential ? [credential] : []), ...modeCredentials]);
   const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name) || modeCredentials.includes(name));
-  const result = Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => credentials.has(name) || !isSecretName(name)));
+  const homeVars = HOME_VARS[provider];
+  const home: NodeJS.ProcessEnv = homeVars ? { HOME: cliHome(provider), ...homeVars(cliHome(provider)) } : {};
+  const result = Object.fromEntries([...needed, ...Object.entries(vars), ...Object.entries(home)].filter(([name]) => credentials.has(name) || !isSecretName(name)));
   for (const name of modeCredentials) {
     const value = result[name];
     if (!value) continue;
