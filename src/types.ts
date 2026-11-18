@@ -919,9 +919,13 @@ export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome 
   return outcome === 'confirmed' && checks.some(r => outcomeOf(r) === 'disproved' || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
 }
 
-/** Whether `check` asked whether the defect exists and confirmed it. A confirmed premise is no such answer. */
-export function confirmsDefect(check: Refutation): boolean {
-  return check.defect === 'confirmed';
+/**
+ * Whether `check` asked whether the defect of `finding` exists and confirmed it. A confirmed premise is no such answer.
+ * Neither is a confirmation that left unsettled or disproved a premise the judge said decides whether the defect exists.
+ */
+export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
+  const deciding = new Set(finding.doubts?.filter(d => d.decides === 'defect').map(d => d.premise));
+  return check.defect === 'confirmed' && !check.premises?.some(p => deciding.has(p.premise) && p.outcome !== 'confirmed');
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */

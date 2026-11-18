@@ -449,7 +449,7 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     // A check that left the consequence or the defect open abstains in `agreedOutcome`, and here it holds the blocker back.
     const restored = needsConsequence(finding, restates) && !confirmsAll(checks) ? undefined : confirmedGrade(finding);
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
-    const proving = checks.filter(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r)));
+    const proving = checks.filter(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r, finding)));
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
       ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: withProof(finding.evidence, proving),
@@ -523,15 +523,15 @@ function doubtsToCheck(
 }
 
 /**
- * Returns why nothing proves the warning `finding`, or undefined when something does. One check that confirms the
- * defect proves it, whatever a second check says. A doubt of the judge whether the defect exists leaves a warning
+ * Returns why nothing proves the warning `finding`, or undefined when something does. One check that `confirmsDefect`
+ * proves it, whatever a second check says. A doubt of the judge whether the defect exists leaves a warning
  * unproven in two cases only: a check ran and did not settle it, or the warning is `overCheckLimit`. In every other
  * case no check could decide, as on a round without tools, a file the refuter cannot read or a call that failed, so
  * the cited lines decide. A blocker posted as a warning for want of proof stays unproven until a check confirms it.
  */
 export function unprovenReason(finding: Finding): UnprovenReason | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  if (checks.some(confirmsDefect)) return undefined;
+  if (checks.some(check => confirmsDefect(check, finding))) return undefined;
   const lacksProof = citesNoProof(finding) || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
   const open = lacksProof || doubtsDefect(finding);
   if (checks.length > 0) return open ? 'unsettled_check' : undefined;
@@ -551,7 +551,7 @@ export function checkStatus(finding: Finding): CheckStatus {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   const refused = !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag)) || isUnconfirmedBuildClaim(finding)
     || checks.some(check => outcomeOf(check) === 'disproved');
-  const confirmed = !refused && checks.some(confirmsDefect);
+  const confirmed = !refused && checks.some(check => confirmsDefect(check, finding));
   const unfinished = checks.length > 0 || !!finding.lead || !!finding.notChecked || doubtsDefect(finding);
   const proven = !refused && !unfinished && !citesNoProof(finding);
   return confirmed ? 'confirmed' : proven ? 'proven' : 'unconfirmed';

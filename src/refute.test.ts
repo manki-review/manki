@@ -7,7 +7,7 @@ import * as core from '@actions/core';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RoundContext, RulesMode, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -644,8 +644,8 @@ describe('refuteBlockers', () => {
       // A disproved consequence keeps the finding as a warning, since the defect stands.
       ['Defect confirmed, consequence disproved', 'warning', 'blocker', 'unsettled', 2, 'confirmed'],
       ['Premises confirmed, defect open', 'warning', 'blocker', 'confirmed', 2, 'unconfirmed'],
-      // The reply contradicts itself, so it raises nothing.
-      ['Consequence confirmed, defect premise disproved', 'warning', 'blocker', 'unsettled', 2, 'confirmed'],
+      // The reply contradicts itself, so it raises and confirms nothing.
+      ['Consequence confirmed, defect premise disproved', 'warning', 'blocker', 'unsettled', 2, 'unconfirmed'],
       ['Finder blocker with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
       ['Security with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
     ]);
@@ -723,7 +723,7 @@ describe('refuteBlockers', () => {
     });
     const pair = fakeClient({
       'Both say no defect': noDefect(open),
-      'Split on the defect': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [open] },
+      'Split on the defect': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [holds] },
       // The second refuter confirms the premise the defect rests on and cannot tell about the reach, so its own outcome is unsettled.
       'Premise confirmed beside': { reason: 'No caller bounds it.', premises: [{ outcome: 'confirmed', reason: 'No caller bounds it.', proof: ['src/api.ts:4'] }, open] },
       'Split with the reach confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [holds] },
@@ -746,14 +746,15 @@ describe('refuteBlockers', () => {
       // Both refuters confirm the reach, and the finding still does not rise while one of them says the defect does not exist.
       ['Split with the reach confirmed', 'warning', 'confirmed', 'disproved', 'confirmed', false, 'unconfirmed'],
       // A check that confirms the defect and disproves a premise it rests on settles nothing and still backs the finding, so no disproof beside it drops it.
+      // It confirms nothing either, beside a disproof or beside an open check.
       ['Contradiction beside a disproof', 'warning', 'unsettled', 'confirmed', 'disproved', false, 'unconfirmed'],
-      ['Contradiction beside an open check', 'warning', 'unsettled', 'confirmed', 'unsettled', false, 'confirmed'],
+      ['Contradiction beside an open check', 'warning', 'unsettled', 'confirmed', 'unsettled', false, 'unconfirmed'],
     ]);
     expect(paired.map(f => [f.pairRefutation?.outcome, f.cell?.column])).toEqual([
-      ['unsettled', undefined], ['unsettled', undefined], ['unsettled', 'normal'], ['confirmed', 'rare'], ['unsettled', undefined], ['unsettled', undefined],
+      ['unsettled', undefined], ['confirmed', undefined], ['unsettled', 'normal'], ['confirmed', 'rare'], ['unsettled', undefined], ['unsettled', undefined],
     ]);
-    // The check that confirmed the defect keeps a split warning posted.
-    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check', undefined, undefined, undefined]);
+    // The check that confirmed the defect keeps a split warning posted. A contradiction leaves its warning in the round record.
+    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check', undefined, 'unsettled_check', 'unsettled_check']);
   });
 
   it('checks every finding a doubt holds below its conditional grade, and at most eight warnings nothing proves yet', async () => {
@@ -950,7 +951,7 @@ describe('refuteBlockers', () => {
     // One row per kind: the finding, then its grade and status after a check that confirms the defect and every premise, and
     // after one that settles nothing. A kind with doubts has two more pairs: after a check that confirms every premise and
     // cannot tell whether the defect exists, and after one that confirms the defect and no premise. The premises decide
-    // the grade, and only the defect answer confirms.
+    // the grade, and only the defect answer confirms. It does not confirm when a premise that decides the defect is left open.
     type Ends = [string, string];
     const rare = { severity: 'warning' as const, gradeIfConfirmed: 'blocker' as const, cell: { row: 'wrong' as const, column: 'rare' as const }, doubts: [REACH_DOUBT] };
     const kinds: Array<[string, Partial<Finding>, Ends, Ends, Ends?, Ends?]> = [
@@ -962,11 +963,11 @@ describe('refuteBlockers', () => {
       ['Blocker the finder did not finish checking', { notChecked: true }, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
       ['Blocker a doubt holds at a warning', {
         severity: 'warning', gradeIfConfirmed: 'blocker', doubts: exists,
-      }, ['blocker', 'confirmed'], ['warning', 'unconfirmed'], ['blocker', 'unconfirmed'], ['warning', 'confirmed']],
+      }, ['blocker', 'confirmed'], ['warning', 'unconfirmed'], ['blocker', 'unconfirmed'], ['warning', 'unconfirmed']],
       // No finder filed it as a blocker, so no answer raises it. It is checked like the blocker cell the judge keeps at a warning.
       ['Blocker cell a doubt holds at a warning, which no finder filed as a blocker', {
         severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: exists,
-      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
+      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
       ['Blocker capped for want of proof', { severity: 'warning', tags: ['unproven-blocker'], ...noProof }, ['blocker', 'confirmed'], ['warning', 'unconfirmed']],
       // No answer raises a finding out of the `rare` column, and only the defect answer confirms it.
       ['Warning in the rare column', rare, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
@@ -985,15 +986,15 @@ describe('refuteBlockers', () => {
       }, ['blocker', 'confirmed'], ['warning', 'unconfirmed'], ['blocker', 'unconfirmed'], ['warning', 'confirmed']],
       ['Warning the judge doubts', {
         severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists,
-      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
+      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
       // The judge stated `warning` as the grade this blocker cell earns once the doubt holds, so no answer raises it.
       ['Blocker cell the judge keeps at a warning', {
         severity: 'warning', gradeIfConfirmed: 'warning', cell: { row: 'wrong', column: 'normal' }, doubts: exists,
-      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
+      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
       ['Warning no cited line proves', { severity: 'warning', ...noProof }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
       ['Warning no cited line proves, which the judge doubts', {
         severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists, ...noProof,
-      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
+      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
       ['Warning on unchanged code', { severity: 'warning', preExisting: 'The loop predates this PR.' }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
       // The answer about the reach changes nothing. A check that confirms the defect leaves a warning the review posts, with or without the reach.
       ['Warning on unchanged code in the rare column', {
@@ -1001,10 +1002,10 @@ describe('refuteBlockers', () => {
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
       ['Security warning the judge doubts', {
         severity: 'warning', tags: ['security'], doubts: exists,
-      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
+      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
     ];
     const findings = kinds.map(([title, more]) => finding(title, more));
-    const ends = async (defect: 'confirmed' | 'unsettled', premises = defect) => {
+    const ends = async (defect: 'confirmed' | 'unsettled', premises: RefutationOutcome = defect) => {
       const answer = (outcome: string) => ({ outcome, reason: 'r', proof: ['src/math.ts:2'] });
       const reply = (f: Finding) => ({ ...answer(defect), ...(f.doubts && { premises: f.doubts.map(() => answer(premises)) }) });
       const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, f.title.endsWith('the call fails') ? new Error('overloaded') : reply(f)])));
@@ -1022,7 +1023,13 @@ describe('refuteBlockers', () => {
     // Lines that confirmed only a premise never make a warning proven, so the review does not post it for them.
     const unproven = premisesOnly.result.find(f => f.title === 'Warning no cited line proves, which the judge doubts')!;
     expect([unproven.evidence?.proof, unprovenReason(unproven)]).toEqual([[], 'unsettled_check']);
-    expect((await ends('confirmed', 'unsettled')).statuses).toEqual(kinds.map(([title, more, confirmed, , , defect]) => [title, more.doubts ? defect : confirmed]));
+    const premiseOpen = await ends('confirmed', 'unsettled');
+    expect(premiseOpen.statuses).toEqual(kinds.map(([title, more, confirmed, , , defect]) => [title, more.doubts ? defect : confirmed]));
+    // A premise that decides the defect and comes back disproved leaves the check as open as an unsettled one.
+    expect((await ends('confirmed', 'disproved')).statuses).toEqual(premiseOpen.statuses);
+    // A warning that rests on such a check alone is kept in the round record. A premise about the grade only leaves the confirmation.
+    const left = (title: string) => unprovenReason(premiseOpen.result.find(f => f.title === title)!);
+    expect([left('Warning the judge doubts'), left('Warning on unchanged code in the rare column')]).toEqual(['unsettled_check', undefined]);
     // The same holds where no check runs at all, as on a round without tools: what a finder did not finish checking is not proven by the lines it cites.
     expect([finding('Lead', lead), finding('Not finished', { severity: 'warning', notChecked: true }), finding('Finished', { severity: 'warning' })].map(checkStatus)).toEqual(['unconfirmed', 'unconfirmed', 'proven']);
   });

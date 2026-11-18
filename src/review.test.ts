@@ -34,7 +34,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -3873,6 +3873,10 @@ describe('runReview', () => {
     const diff = { ...diffChanging('src/a.ts', 'src/b.ts'), totalAdditions: 10, totalDeletions: 5 };
     const doubts = [{ premise: 'The caller holds no lock', decides: 'defect' as const }];
     const checked = (outcome: 'confirmed' | 'unsettled') => ({ refutation: { outcome, defect: outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' } });
+    /** A check that confirmed the defect and answered the doubt that decides it with `premise`. */
+    const premised = (premise: RefutationOutcome) => ({
+      refutation: { ...checked(premise === 'confirmed' ? 'confirmed' : 'unsettled').refutation, defect: 'confirmed' as const, premises: [{ premise: doubts[0].premise, outcome: premise, reason: `It is ${premise}.` }] },
+    });
     const proof = { evidence: { checks: [], proof: ['src/a.ts:1'] } };
     /** Runs a round whose judge returns one finding per entry of `judged`, by title, with or without repository tools. */
     const review = async (judged: Record<string, Partial<Finding>>, tools: boolean) => {
@@ -3890,6 +3894,10 @@ describe('runReview', () => {
       const result = await review({
         'Cited lines show it': proof,
         'The check confirmed the doubt': { ...proof, doubts, ...checked('confirmed') },
+        'The check confirmed the defect and the premise that decides it': { ...proof, doubts, ...premised('confirmed') },
+        // A confirmed defect earns nothing while the premise that decides it is open or disproved.
+        'The check left the premise that decides the defect open': { ...proof, doubts, ...premised('unsettled') },
+        'The check disproved the premise that decides the defect': { ...proof, doubts, ...premised('disproved') },
         'The check confirmed it without cited lines': checked('confirmed'),
         'The check settled nothing': { ...proof, doubts, ...checked('unsettled') },
         'Doubted and past the limit of checks': { ...proof, doubts, overCheckLimit: true },
@@ -3904,11 +3912,14 @@ describe('runReview', () => {
       }, true);
 
       expect(shown(result)).toEqual([
-        ['Cited lines show it', 'proven'], ['The check confirmed the doubt', 'confirmed'], ['The check confirmed it without cited lines', 'confirmed'],
+        ['Cited lines show it', 'proven'], ['The check confirmed the doubt', 'confirmed'], ['The check confirmed the defect and the premise that decides it', 'confirmed'],
+        ['The check confirmed it without cited lines', 'confirmed'],
         // Only a blocker or a warning says how it was checked. A doubt no check could settle leaves a posted warning unconfirmed.
         ['Doubted and no check could run', 'unconfirmed'], ['A doubted note', undefined], ['A blocker', 'proven'],
       ]);
       expect(recordedOnly(result)).toEqual([
+        ['The check left the premise that decides the defect open', 'warning', 'unsettled_check'],
+        ['The check disproved the premise that decides the defect', 'warning', 'unsettled_check'],
         ['The check settled nothing', 'warning', 'unsettled_check'],
         ['Doubted and past the limit of checks', 'warning', 'not_checked'],
         ['No cited lines and no check could run', 'warning', 'no_proof'],

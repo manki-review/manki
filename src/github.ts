@@ -3311,7 +3311,7 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
   const { refutation, pairRefutation } = finding;
   // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked `unconfirmed`.
   const shown = (check: Refutation): RefutationOutcome =>
-    (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && !confirmsDefect(check) ? 'unsettled' : outcomeOf(check));
+    (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && !confirmsDefect(check, finding) ? 'unsettled' : outcomeOf(check));
   const pairLead = pairRefutation && REFUTATION_SUMMARY[shown(pairRefutation)];
   // A blocker two disproofs lowered says so on its first check, and its rule only set how far it went down.
   const keptByRule = !isDisprovedRaise(finding) && !!overruledDisproof(finding, links.rules);
