@@ -112,6 +112,16 @@ const makeMemory = (overrides: Partial<RepoMemory> = {}): RepoMemory => ({
 // The row whose `normal` cell gives each grade.
 const ROW_OF = { blocker: 'wrong', warning: 'degraded', note: 'improvement', ignore: 'none' } as const;
 
+// The live replays against a real model run with RUN_JUDGE_LIVE_FIXTURES=1, so CI skips them. The Claude CLI runs with a
+// home of its own and cannot see the local login, so they sign in with the token `claude setup-token` prints.
+const LIVE_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
+const LIVE_MODEL = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
+if (process.env.RUN_JUDGE_LIVE_FIXTURES === '1' && !LIVE_TOKEN) {
+  console.warn('Skipping the live judge replays: set CLAUDE_CODE_OAUTH_TOKEN to the token `claude setup-token` prints.');
+}
+const liveIt = process.env.RUN_JUDGE_LIVE_FIXTURES === '1' && LIVE_TOKEN ? it : it.skip;
+const liveClient = (): AnthropicClient => new AnthropicClient({ auth: { kind: 'oauth', token: LIVE_TOKEN }, model: LIVE_MODEL });
+
 describe('buildJudgeSystemPrompt', () => {
   it('contains severity definitions', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
@@ -6375,15 +6385,10 @@ describe('judge thread-evaluation fixture corpus', () => {
     ]));
   });
 
-  // Live-replay against a real LLM. Gated on RUN_JUDGE_LIVE_FIXTURES=1 so CI
-  // (which has no API key) skips this block. Local maintainers run it to
-  // confirm judge accuracy when prompt or model versions change. Uses the
-  // OAuth path with an empty token so the locally-logged-in `claude` CLI
-  // authenticates via its own keychain credentials.
-  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
-  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
-  (runLive ? it : it.skip).each(fixtures)('live judge returns expected status for $name', async (fixture) => {
-    const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+  // Live replay against a real LLM, see `liveIt`. Local maintainers run it to confirm judge accuracy when prompt or
+  // model versions change.
+  liveIt.each(fixtures)('live judge returns expected status for $name', async (fixture) => {
+    const client = liveClient();
 
     const priorRound = roundContextFromLegacy({
       round: 1,
@@ -6525,11 +6530,9 @@ describe('judge grading fixture corpus', () => {
     expect(appliesFix).toBe(fixture.case.startsWith('own-proposal-'));
   });
 
-  // Live replay against a real LLM, gated like the thread-evaluation corpus above.
-  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
-  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
-  (runLive ? it : it.skip).each(fixtures)('live judge grades $name within its allowed grades', async (fixture) => {
-    const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+  // Live replay against a real LLM, see `liveIt`.
+  liveIt.each(fixtures)('live judge grades $name within its allowed grades', async (fixture) => {
+    const client = liveClient();
     const priorRounds = gradingPriorRounds(fixture);
 
     const result = await runJudgeAgent(client, makeConfig(), {
@@ -6578,11 +6581,9 @@ describe('judge note order fixture corpus', () => {
     expect(fixture.findings.map(f => f.title)).toEqual(expect.arrayContaining([fixture.formatting, ...fixture.noteOrWarning ?? []]));
   });
 
-  // Live replay against a real LLM, gated like the thread-evaluation corpus above.
-  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
-  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
-  (runLive ? it : it.skip).each(fixtures)('live judge names every note of $name once in `noteOrder`, with the formatting point last', async (fixture) => {
-    const model = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+  // Live replay against a real LLM, see `liveIt`.
+  liveIt.each(fixtures)('live judge names every note of $name once in `noteOrder`, with the formatting point last', async (fixture) => {
+    const model = liveClient();
     const replies: string[] = [];
     const client: LLMClient = {
       sendMessage: async (...args) => {
@@ -6647,11 +6648,9 @@ describe('judge rule finding fixture corpus', () => {
     expect(expected.map(e => e.verdicts[0])).toEqual(expect.arrayContaining(['no_requirement', 'not_broken']));
   });
 
-  // Live replay against a real LLM, gated like the thread-evaluation corpus above.
-  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
-  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
-  (runLive ? it : it.skip).each(fixtures)('live judge answers the two rule questions of $name as expected', async (fixture) => {
-    const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+  // Live replay against a real LLM, see `liveIt`.
+  liveIt.each(fixtures)('live judge answers the two rule questions of $name as expected', async (fixture) => {
+    const client = liveClient();
     const result = await runJudgeAgent(client, makeConfig({ review: { rules: fixture.rules } }), {
       findings: fixture.findings,
       diff: parsePRDiff(fixture.prDiff),

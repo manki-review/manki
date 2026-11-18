@@ -10,7 +10,7 @@ The judge is shown the diff of a file only when the finding sits on it or cites 
 
 The four doubted fixtures set `ifConfirmed`. Each finding rests on code the diff does not show, so without tools the judge holds it at a `warning` and lists the unseen code as a doubt. `ifConfirmed` is the grade the finding earns once a check confirms that doubt. With `blocker` the judge must leave the finding able to rise: a wrong invoice total and lost data are serious damage. With `warning` it must not: a wrong figure in a heading or a status text is a real defect that damages nothing else, so the judge states `warning` as its `gradeIfConfirmed`, or a cell that gives no blocker.
 
-`judge.test.ts` checks that the corpus covers every case once and that each finding points at a line of its diff. A live replay, gated on `RUN_JUDGE_LIVE_FIXTURES=1`, sends each fixture through `runJudgeAgent` against a real model and checks the grade is allowed. CI does not run it. Run it after changing the judge prompt or model.
+`judge.test.ts` checks that the corpus covers every case once and that each finding points at a line of its diff. A live replay, gated on `RUN_JUDGE_LIVE_FIXTURES=1` and signed in with `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, sends each fixture through `runJudgeAgent` against a real model and checks the grade is allowed. CI does not run it. Run it after changing the judge prompt or model.
 
 ## Coverage
 
