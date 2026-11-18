@@ -300,7 +300,8 @@ function quotaSummary(error: QuotaError, readers: readonly string[] = [], automa
 /**
  * The end of a round that the limits in `groups` stopped, one sentence group per limit and then the sentences `also`,
  * with the latest reset time the limits name. With `automatic`, one closing sentence says when the token service retries,
- * unless the latest reset is too far off for its retry. Each limit then says how to retry as without it.
+ * but only when every limit names a reset time that reads for certain and is not too far off for its retry. Otherwise each
+ * limit says how to retry as without `automatic`, since a retry before the limit lifts meets it again.
  */
 function limitEnd(groups: ReadonlyArray<{ error: QuotaError; readers: string[] }>, automatic: boolean, also: readonly string[] = []): RoundEnd {
   const resets = groups.flatMap(({ error }) => {
@@ -308,7 +309,7 @@ function limitEnd(groups: ReadonlyArray<{ error: QuotaError; readers: string[] }
     return at === undefined ? [] : [at];
   });
   const resetAt = resets.length > 0 ? Math.max(...resets) : undefined;
-  const retries = automatic && (resetAt === undefined || resetAt - Date.now() <= AUTOMATIC_RETRY_WINDOW_MS);
+  const retries = automatic && resetAt !== undefined && resets.length === groups.length && resetAt - Date.now() <= AUTOMATIC_RETRY_WINDOW_MS;
   const credentials = [...new Set(groups.flatMap(({ error }) => (error.credential ? [error.credential] : [])))];
   const other = credentials.length > 0 ? `, or use another ${credentials.join(' or ')}` : '';
   return {

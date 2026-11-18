@@ -6940,7 +6940,8 @@ describe('runReview', () => {
       { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', automaticRetry: true },
     );
     const later = 'If that one does not finish either, retry with /manki review';
-    expect((await retrying(limit, new Error('Timeout'))).summary).toBe(`Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Claude Opus 5.5 · high also failed after retries. Manki starts one more review of this commit on its own within a few minutes. ${later}, or use another token.`);
+    // A limit whose reset time does not read for certain gets no promise, since a retry before it lifts meets it again.
+    expect((await retrying(limit, new Error('Timeout'))).summary).toBe((await run(new Error('Timeout'))).summary);
     expect((await retrying(new Error('Timeout'), new Error('Timeout'))).summary).toBe(`All reviewers failed. Manki starts one more review of this commit on its own within a few minutes. ${later}.`);
 
     // A limit that lifts at a time Manki reads holds the retry until then, and the round records the latest such time.
@@ -6953,6 +6954,12 @@ describe('runReview', () => {
       const both = await retrying(soon, usedUp);
       expect(both.retryAfter).toBe('2026-11-18T16:00:00.000Z');
       expect(both.summary).toBe(`OpenAI endpoint limit reached for Claude Sonnet 5.5 · high. It resets in 29m30s. Claude subscription limit reached for Claude Opus 5.5 · high. It resets 4pm (Europe/Berlin). Manki starts one more review of this commit on its own after 2026-11-18 16:00 UTC. ${later}, or use another key or token.`);
+      // One limit without a time that reads makes the latest time unsure, so that round gets no promise either.
+      const unsure = await retrying(soon, limit);
+      expect([unsure.retryAfter, unsure.summary]).toEqual([
+        '2026-11-18T15:29:30.000Z',
+        'OpenAI endpoint limit reached for Claude Sonnet 5.5 · high. It resets in 29m30s. Retry with /manki review after that, or use another key. Claude subscription limit reached for Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token.',
+      ]);
       // A limit that lifts too late for the token service's retry gets only the command, as without the retry.
       const weekly = new QuotaError('quota exceeded', 'OpenAI endpoint limit reached', 'at 2026-11-20T09:00:00Z', 'key');
       const far = await retrying(weekly, weekly);
