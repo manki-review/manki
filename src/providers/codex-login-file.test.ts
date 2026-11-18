@@ -5,6 +5,8 @@ import { AddressInfo } from 'net';
 import { hostname, tmpdir } from 'os';
 import { join, resolve } from 'path';
 
+import * as core from '@actions/core';
+
 import { buildOpenAIAuth, OpenAIClient } from './openai';
 
 // Jest gives a test its own `process.env`, which `execFile` does not read, so `which codex` would find the Codex CLI
@@ -18,9 +20,32 @@ jest.mock('util', () => {
 
 /**
  * A stand-in for the ChatGPT login server: it issues fake tokens, renews them once per refresh token and refuses a
- * refresh token used before, and answers a model request only with the access token it issued last. It also records
- * when each Codex run started, by the message the run was sent.
+ * refresh token used before, and answers a model request only with the access token it issued last. It records what
+ * happened in order in `events`, and names each Codex run by the message it was sent.
  */
+/**
+ * Lets requests through once `count` of them arrived. A gate that is never filled opens after 15 seconds, so a test
+ * whose code took turns fails on what happened in what order rather than on a timeout.
+ */
+class Gate {
+  private arrived = 0;
+  private open!: () => void;
+  private readonly opened = new Promise<void>(done => { this.open = done; });
+
+  constructor(private readonly count: number) {
+    setTimeout(() => this.open(), 15_000).unref();
+  }
+
+  arrive(): Promise<void> {
+    if (++this.arrived >= this.count) this.open();
+    return this.opened;
+  }
+
+  passed(): Promise<void> {
+    return this.opened;
+  }
+}
+
 class StandIn {
   gen = 0;
   access = '';
@@ -30,8 +55,15 @@ class StandIn {
   answered: string[] = [];
   homes = new Set<string>();
   started: Record<string, number> = {};
+  events: string[] = [];
   /** Runs when the stand-in renews, before Codex gets the new tokens. */
   onRenew?: () => void;
+  /** Holds back the start of each Codex run until this many runs started. */
+  startsTogether?: Gate;
+  /** Holds back each refused model request until this many were refused. */
+  refusalsTogether?: Gate;
+  /** Holds back the answer to a renewal until another renewal was refused. */
+  renewalAfterRefusal?: Gate;
   private server?: Server;
   url = '';
 
@@ -65,28 +97,34 @@ class StandIn {
         this.homes.add(String(req.headers['x-codex-home']));
         if (req.url === '/start') {
           this.started[raw] = Date.now();
-          res.writeHead(200).end();
+          this.events.push(`start ${raw}`);
+          void (this.startsTogether?.arrive() ?? Promise.resolve()).then(() => res.writeHead(200).end());
           return;
         }
         if (req.url === '/token') {
           const { refresh_token: given, refresh_reason: reason } = JSON.parse(raw) as { refresh_token: string; refresh_reason: string };
           if (given !== this.refresh) {
             this.refused.push(given);
+            this.events.push('refuse');
+            void this.renewalAfterRefusal?.arrive();
             res.writeHead(401).end();
             return;
           }
           this.renewals.push({ given, reason });
+          this.events.push('renew');
           this.onRenew?.();
           this.issue();
-          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ access_token: this.access, id_token: this.access, refresh_token: this.refresh }));
+          const body = JSON.stringify({ access_token: this.access, id_token: this.access, refresh_token: this.refresh });
+          void (this.renewalAfterRefusal?.passed() ?? Promise.resolve()).then(() => res.writeHead(200, { 'content-type': 'application/json' }).end(body));
           return;
         }
         const token = String(req.headers.authorization).replace('Bearer ', '');
         if (token !== this.access) {
-          res.writeHead(401).end();
+          void (this.refusalsTogether?.arrive() ?? Promise.resolve()).then(() => res.writeHead(401).end());
           return;
         }
         this.answered.push(token);
+        this.events.push('answer');
         res.writeHead(200).end('OK');
       });
     });
@@ -103,9 +141,10 @@ class StandIn {
  * A stand-in for the Codex CLI 0.166.0 on the ChatGPT login, as measured. `codex exec` reads the login when it starts,
  * and renews it before its request when the access token expires within 5 minutes, or after a refused request, unless
  * the login file changed meanwhile. `codex app-server` renews it when `account/read` asks to refresh the token. A
- * renewal is written into `auth.json` in place, and a refused one leaves it. A refused renewal ends `codex exec` with
- * Codex's error. `CODEX_STANDIN_DELAY_MS` is the time `exec` works before its request, `CODEX_STANDIN_ASK_AT` the
- * time it sends it at, and `CODEX_STANDIN_RENEW_MS` the time the app server takes to renew. `CODEX_STANDIN_NO_APP_RENEWAL` makes it renew nothing.
+ * renewal is written into `auth.json` in place, and a refused one leaves it. `codex exec` prints its answer as `--json`
+ * events, and a refused renewal ends it with Codex's error. `CODEX_STANDIN_DELAY_MS` is the time `exec` works before its request, `CODEX_STANDIN_LINGER_MS` the
+ * time it works after the answer, `CODEX_STANDIN_RENEW_MS` the
+ * time the app server takes to renew, and `CODEX_STANDIN_NO_APP_RENEWAL` makes it renew nothing.
  */
 const FAKE_CODEX = `
 const fs = require('fs');
@@ -116,7 +155,10 @@ const headers = { 'x-codex-home': process.env.CODEX_HOME };
 const read = () => JSON.parse(fs.readFileSync(file, 'utf8'));
 const expiry = token => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).exp * 1000;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
-const fail = text => { process.stderr.write('ERROR: ' + text + '\\n'); process.exit(1); };
+const SESSION = '01a1e7b6-908c-7750-8dcd-e6fdb23319de';
+const print = (...events) => process.stdout.write(events.map(event => JSON.stringify(event) + '\\n').join(''));
+const begin = () => print({ type: 'thread.started', thread_id: SESSION }, { type: 'turn.started' });
+const fail = text => { print({ type: 'error', message: text }, { type: 'turn.failed', error: { message: text } }); process.exit(1); };
 async function renew(login, reason) {
   const res = await fetch(url + '/token', { method: 'POST', headers, body: JSON.stringify({ refresh_token: login.tokens.refresh_token, refresh_reason: reason }) });
   if (!res.ok) return undefined;
@@ -134,9 +176,9 @@ const current = login => {
 };
 async function exec(prompt) {
   await fetch(url + '/start', { method: 'POST', headers, body: prompt });
+  begin();
   let login = read();
-  const askAt = Number(process.env.CODEX_STANDIN_ASK_AT || 0);
-  await sleep(askAt ? askAt - Date.now() : Number(process.env.CODEX_STANDIN_DELAY_MS || 0));
+  await sleep(Number(process.env.CODEX_STANDIN_DELAY_MS || 0));
   if (expiry(login.tokens.access_token) - Date.now() < 300000) login = current(login) ?? await renew(login, 'proactive_expiry') ?? fail(used);
   let res = await ask(login);
   if (res.status === 401) {
@@ -144,7 +186,8 @@ async function exec(prompt) {
     res = await ask(login);
   }
   if (!res.ok) fail('unauthorized');
-  process.stdout.write('OK\\n');
+  await sleep(Number(process.env.CODEX_STANDIN_LINGER_MS || 0));
+  print({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'OK' } }, { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } });
 }
 let input = '';
 process.stdin.on('data', data => {
@@ -261,12 +304,11 @@ describe('openai_oauth_file', () => {
   it('runs the calls of a run one at a time with the lock held when Codex does not renew the login before them', async () => {
     await start(2 * MINUTE);
     process.env.CODEX_STANDIN_NO_APP_RENEWAL = '1';
-    process.env.CODEX_STANDIN_DELAY_MS = '1000';
     const calls = await Promise.all([timedCall('a'), timedCall('b')]);
 
     expect(calls.map(c => c.result)).toEqual(['OK', 'OK']);
-    expect(Math.abs(standIn.started.a - standIn.started.b)).toBeGreaterThanOrEqual(1000);
-    // The first call renews during its run, and the second one starts from the renewed login.
+    // The first call renews during its run, and the second one starts from the renewed login once the first ended.
+    expect(standIn.events.map(e => e.replace(/ [ab]$/, ''))).toEqual(['start', 'renew', 'answer', 'start', 'answer']);
     expect(standIn.renewals).toEqual([{ given: 'refresh-1', reason: 'proactive_expiry' }]);
     expect(standIn.refused).toEqual([]);
     expect(fileLogin().tokens.refresh_token).toBe('refresh-2');
@@ -275,34 +317,25 @@ describe('openai_oauth_file', () => {
 
   it('runs two runs side by side without any wait while no renewal is due', async () => {
     await start(DAY);
-    process.env.CODEX_STANDIN_DELAY_MS = '3000';
-    const other = otherRun();
-    // The other process takes a few seconds to start, so this run starts once its Codex runs.
-    while (!standIn.started.other) await new Promise(done => setTimeout(done, 50));
-    const own = await timedCall('own');
-    const theirs = await other;
+    // Each Codex run starts its request only once both runs started, so two runs that took turns would start apart.
+    standIn.startsTogether = new Gate(2);
+    const [own, theirs] = await Promise.all([timedCall('own'), otherRun()]);
 
     expect([own.result, theirs.result]).toEqual(['OK', 'OK']);
-    // Each Codex works 3 seconds before its request, so two runs that took turns would start 3 seconds apart.
-    expect(Math.abs(standIn.started.own - standIn.started.other)).toBeLessThan(1500);
-    expect(standIn.started.own - own.at).toBeLessThan(1500);
+    expect(standIn.events.slice(0, 2).sort()).toEqual(['start other', 'start own']);
     expect(standIn.renewals).toEqual([]);
     expect(readdirSync(folder)).toEqual(['auth.json']);
   }, 60_000);
 
   it('lets one run renew a login due within the call, and the other wait for that renewal only and read the file again', async () => {
     await start(2 * MINUTE);
-    process.env.CODEX_STANDIN_RENEW_MS = '6000';
-    const other = otherRun();
-    const own = await timedCall('own');
-    const theirs = await other;
+    process.env.CODEX_STANDIN_RENEW_MS = '3000';
+    const [own, theirs] = await Promise.all([timedCall('own'), otherRun()]);
 
     expect([own.result, theirs.result]).toEqual(['OK', 'OK']);
     expect(standIn.renewals).toEqual([{ given: 'refresh-1', reason: 'forced' }]);
     expect(standIn.refused).toEqual([]);
-    // The other run started its call while this one renewed, and its Codex started once the renewal was done.
-    expect(theirs.at).toBeLessThan(own.at + 6000);
-    expect(standIn.started.other).toBeGreaterThanOrEqual(standIn.started.own);
+    expect(standIn.events[0]).toBe('renew');
     expect(fileLogin().tokens.refresh_token).toBe('refresh-2');
     expect(readdirSync(folder)).toEqual(['auth.json']);
   }, 60_000);
@@ -313,7 +346,9 @@ describe('openai_oauth_file', () => {
   ])('lets one of %s win when both renew after a refused request, and never leaves a used refresh token in the file', async (_case, twoRuns) => {
     await start(DAY);
     standIn.revoke();
-    process.env.CODEX_STANDIN_ASK_AT = String(Date.now() + (twoRuns ? 8000 : 1500));
+    // Both requests are refused at once, and the renewal that wins is answered once the other one was refused.
+    standIn.refusalsTogether = new Gate(2);
+    standIn.renewalAfterRefusal = new Gate(1);
     const results = await Promise.all(twoRuns ? [timedCall('own').then(r => r.result), otherRun().then(r => r.result)] : [timedCall('a').then(r => r.result), timedCall('b').then(r => r.result)]);
 
     expect(standIn.renewals).toEqual([{ given: 'refresh-1', reason: 'unauthorized_recovery' }]);
@@ -323,7 +358,6 @@ describe('openai_oauth_file', () => {
     expect(fileLogin().tokens.refresh_token).toBe(standIn.refresh);
     expect(readdirSync(folder)).toEqual(['auth.json']);
 
-    delete process.env.CODEX_STANDIN_ASK_AT;
     expect(await client().sendMessage('sys', 'after')).toMatchObject({ content: 'OK' });
     expect(standIn.renewals).toHaveLength(1);
   }, 60_000);
@@ -350,9 +384,17 @@ describe('openai_oauth_file', () => {
       expect(await client().sendMessage('sys', 'user')).toMatchObject({ content: 'OK' });
 
       writeFileSync(file, (() => { standIn.issue(2 * MINUTE); return standIn.login(); })());
-      await expect(client().sendMessage('sys', 'user', { timeoutMs: 1200 })).rejects.toThrow(`waited 1.2s for the lock ${lock} of openai_oauth_file, held by process ${running.pid}`);
+      const lockError = new RegExp(`waited \\d+s for the lock ${lock} of openai_oauth_file, held by process ${running.pid}`);
+      // A call that stops waiting stops the renewal no other call waits for, and the next call starts a new one.
+      await expect(client().sendMessage('sys', 'user', { timeoutMs: 1200 })).rejects.toThrow(lockError);
+
+      // A call that runs out of time or is cancelled stops waiting, and the renewal goes on for the call still waiting.
       const waiting = client().sendMessage('sys', 'user');
-      await new Promise(done => setTimeout(done, 700));
+      const cancel = new AbortController();
+      const cancelled = client().sendMessage('sys', 'user', { signal: cancel.signal });
+      cancel.abort(new Error('cancelled'));
+      await expect(cancelled).rejects.toThrow('cancelled');
+      await expect(client().sendMessage('sys', 'user', { timeoutMs: 1200 })).rejects.toThrow(lockError);
       running.kill();
       expect(await waiting).toMatchObject({ content: 'OK' });
     } finally {
@@ -360,6 +402,24 @@ describe('openai_oauth_file', () => {
     }
     expect(standIn.renewals).toHaveLength(2);
   }, 20_000);
+
+  it('counts the wait for the lock against the time limit of the call', async () => {
+    await start(2 * MINUTE);
+    const lock = `${file}.lock`;
+    const ns = existsSync('/proc/self/ns/pid') ? readlinkSync('/proc/self/ns/pid') : '';
+    const running = spawn('sleep', ['30']);
+    try {
+      writeFileSync(lock, JSON.stringify({ host: hostname(), ns, pid: running.pid, id: 'other' }));
+      process.env.CODEX_STANDIN_DELAY_MS = '2000';
+      const call = client().sendMessage('sys', 'user', { timeoutMs: 3000 });
+      setTimeout(() => running.kill(), 1500);
+      // The renewal ends about 1.5 seconds into the call, which leaves its Codex run too little time for 2 seconds of work.
+      await expect(call).rejects.toMatchObject({ name: 'TimeoutError' });
+    } finally {
+      running.kill();
+    }
+    expect(standIn.renewals).toHaveLength(1);
+  });
 
   it('does not write a renewal over a file that changed outside Manki during the call', async () => {
     await start(DAY);
@@ -371,23 +431,34 @@ describe('openai_oauth_file', () => {
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(relogin);
   });
 
-  it('keeps a renewal in the home while writing it back fails, and writes it once the file can be written again', async () => {
+  it('keeps a renewal in the home while writing it back fails, writes it once the file can be written again, and warns once per cause', async () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => undefined);
+    const warnings = (text: string) => warning.mock.calls.filter(([w]) => String(w).includes(text));
     await start(DAY);
     standIn.revoke();
-    process.env.CODEX_STANDIN_DELAY_MS = '1500';
+    // Codex works on for a few looks at the home after it renewed.
+    process.env.CODEX_STANDIN_LINGER_MS = '3500';
     // The folder takes no new file, so the write through a new file and a rename fails.
     standIn.onRenew = () => chmodSync(folder, 0o500);
-    const call = client().sendMessage('sys', 'user');
-    expect(await call).toMatchObject({ content: 'OK' });
+    expect(await client().sendMessage('sys', 'user')).toMatchObject({ content: 'OK' });
     expect(fileLogin().tokens.refresh_token).toBe('refresh-1');
+    expect(warnings('could not write it back')).toHaveLength(1);
 
     chmodSync(folder, 0o700);
-    delete process.env.CODEX_STANDIN_DELAY_MS;
     expect(await client().sendMessage('sys', 'user')).toMatchObject({ content: 'OK' });
     expect(fileLogin().tokens.refresh_token).toBe('refresh-2');
     expect(standIn.renewals).toHaveLength(1);
     expect(standIn.refused).toEqual([]);
-  });
+
+    // A file that others can read from now on fails every look during the call, and warns once.
+    standIn.onRenew = undefined;
+    process.env.CODEX_STANDIN_DELAY_MS = '500';
+    const call = client().sendMessage('sys', 'user');
+    setTimeout(() => chmodSync(file, 0o644), 300);
+    expect(await call).toMatchObject({ content: 'OK' });
+    expect(warnings('Could not compare')).toHaveLength(1);
+    warning.mockRestore();
+  }, 20_000);
 
   it('checks the file again before each call, and refuses one that is no Codex login', async () => {
     await start(DAY);

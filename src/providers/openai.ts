@@ -608,7 +608,8 @@ export class OpenAIClient implements LLMClient {
           env,
           input,
           hardTimeoutMs: limitMs,
-          usedMs,
+          // Waiting for the lock of a login file counts against the limit too.
+          usedMs: usedMs ?? Date.now() - startTime,
           signal: options?.signal,
           waiting: {
             since: () => waitingSince(output), note: WAITING_NOTE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network',
