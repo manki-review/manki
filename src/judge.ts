@@ -1770,7 +1770,7 @@ export async function runJudgeAgent(
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
   // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
-  const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting)
+  const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting, !!refutation)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
     .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules));
@@ -1868,12 +1868,14 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
  * Applies the judge's entries to the findings they name by `id`, then folds the findings the judge marked as
  * duplicates, and then the copies `deduplicateFindings` merges by title and file. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
+ * A drop gets a `dropCheck` only with `dropsChecked`, set when a refuter checks the round, so no record shows a check that cannot run.
  */
 export function mapJudgedToFindings(
   original: Finding[],
   judged: JudgedFinding[],
   priorFindings: PriorFinding[] = [],
   staysPreExisting?: (copy: Finding) => boolean,
+  dropsChecked = false,
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
   const roots = duplicateRoots(aligned);
@@ -1882,13 +1884,13 @@ export function mapJudgedToFindings(
   const copies = (i: number): Finding[] => original.filter((_, j) => groups[j] === groups[i]);
   const filedBlocker = (i: number): boolean => copies(i).every(f => finderGrade(f, 'lowest') === 'blocker');
   // A drop is checked when any finder filed a copy as a blocker, whichever copy the merge keeps.
-  const anyFiledBlocker = (i: number): boolean => copies(i).some(f => finderGrade(f) === 'blocker');
+  const dropCheckable = (i: number): boolean => dropsChecked && copies(i).some(f => finderGrade(f) === 'blocker');
   const graded = original.map((o, i) => {
     const finding = { ...o };
     const match = aligned[i];
     if (!match) throw new Error(`Finding ${i + 1} "${safeTruncate(o.title, 80)}" has no judge entry`);
     if (!match.preExisting) delete finding.preExisting;
-    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), anyFiledBlocker(i)));
+    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), dropCheckable(i)));
     if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
     finding.judgeNotes = match.reasoning;
     if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
@@ -1924,9 +1926,9 @@ export function mapJudgedToFindings(
  * has no `pendingGrade`: no answer raises it. A tool
  * alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean, anyFiledBlocker: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean, dropCheckable: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
-  if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, anyFiledBlocker, security) ?? (named.length > 0 && { doubts: named }))) };
+  if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, dropCheckable, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
   if (security && row !== 'severe') core.warning(`The judge marked "${o.title}" a security finding on the \`${row}\` row, not \`severe\``);
   // An attacker chooses the input, so how rarely the state occurs is no discount on a security finding.
@@ -1952,12 +1954,12 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
 /**
  * Returns the fields that let the refuter check a drop the judge rests on code outside the diff: its `dropRestsOn`
  * premise as a `drop` doubt after the doubts it `named`, and the cell it stated for when that premise is false, whose
- * grade becomes the `gradeIfConfirmed`. Only a finding a finder filed as a blocker, in this copy or one merged with it
- * (`anyFiledBlocker`), gets them, and only when that grade is one a check can give: a `warning` or a `blocker`. A
- * security finding takes the `normal` column, as in `gradeByCell`.
+ * grade becomes the `gradeIfConfirmed`. Only a finding that is `dropCheckable` gets them: a refuter checks the round, and
+ * a finder filed it as a blocker, in this copy or one merged with it. That grade must also be one a check can give: a
+ * `warning` or a `blocker`. A security finding takes the `normal` column, as in `gradeByCell`.
  */
-function dropCheck(o: Finding, named: Doubt[], dropRestsOn: JudgedFinding['dropRestsOn'], anyFiledBlocker: boolean, security?: boolean): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
-  if (!dropRestsOn || !anyFiledBlocker) return undefined;
+function dropCheck(o: Finding, named: Doubt[], dropRestsOn: JudgedFinding['dropRestsOn'], dropCheckable: boolean, security?: boolean): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
+  if (!dropRestsOn || !dropCheckable) return undefined;
   const { premise, row, column: judgeColumn } = dropRestsOn;
   const column = security || o.tags?.includes(SECURITY_TAG) ? 'normal' : judgeColumn;
   const cell = { row, column, ...(column !== judgeColumn && { judgeColumn }) };
@@ -2190,7 +2192,8 @@ function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 're
 
 /**
  * Returns the drop check of `copy` for a `survivor` the judge dropped without one, so the check `dropCheck` set on any
- * merged copy survives the merge. The survivor keeps the doubts it named before the copy's. Returns nothing otherwise.
+ * merged copy survives the merge. The survivor keeps the doubts it named before the copy's. Returns nothing otherwise,
+ * so nothing on a round without a refuter, where no copy has a drop check.
  */
 function mergedDropCheck(survivor: Finding, copy: Finding): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
   if (survivor.severity !== 'ignore' || restsOnDrop(survivor) || !restsOnDrop(copy)) return undefined;

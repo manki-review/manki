@@ -2345,6 +2345,14 @@ describe('runJudgeAgent', () => {
       const asking = asked.length;
       expect(await mergedDrop('duplicateOf', ['warning', 'warning'], 1)).toEqual([['ignore', 'warning', undefined]]);
       expect(asked.length).toBe(asking);
+
+      // A round without a refuter checks no drop, so neither the dropped finding nor a merge records a check that cannot run.
+      const blockers = [makeFinding({ title: 'Merged drop', line: 3, severity: 'blocker' }), makeFinding({ title: 'Merged drop', line: 3, severity: 'warning', reviewers: ['R2'] })];
+      mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({
+        summary: 's', findings: blockers.map((f, i) => ({ id: i + 1, title: f.title, row: 'ignore', reasoning: 'ignore. The caller takes the lock.', dropRestsOn: restsOn('severe') })),
+      }) });
+      const untooled = await runJudgeAgent(mockClient, makeConfig(), { findings: blockers, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1 });
+      expect(untooled.findings.map(f => [f.severity, f.cell, f.gradeIfConfirmed, f.doubts])).toEqual([['ignore', undefined, undefined, undefined]]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
