@@ -1887,7 +1887,7 @@ export function mapJudgedToFindings(
     if (variantOf) finding.variantOf = variantOf;
     return finding;
   });
-  return foldDuplicates(graded, aligned, staysPreExisting).map(capUnconfirmedBuildClaim).map(capUnprovenBlocker);
+  return foldDuplicates(graded, duplicateRoots(aligned), staysPreExisting).map(capUnconfirmedBuildClaim).map(capUnprovenBlocker);
 }
 
 /**
@@ -2101,11 +2101,11 @@ function closestTitle(title: string, candidates: Array<string | undefined>): num
 }
 
 /**
- * Removes each finding the judge marked as `duplicateOf` an earlier one and adds its reviewers to that earlier finding.
- * `findings[i]` is "Finding i + 1" and `judged[i]` is the judge's entry for it. A self-reference, a forward pointer or an
- * out-of-range pointer is ignored. A duplicate of a finding graded `ignore` is removed while that finding stays `ignore`.
+ * Returns, for each of the judge's entries, the number of the finding it is kept under: the first one its `duplicateOf`
+ * chain leads to, or its own. `judged[i]` is the entry for "Finding i + 1". A self-reference, a forward pointer or an
+ * out-of-range pointer ends the chain.
  */
-function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undefined>, staysPreExisting?: (copy: Finding) => boolean): Finding[] {
+function duplicateRoots(judged: Array<JudgedFinding | undefined>): number[] {
   const rootOf = (n: number): number => {
     let node = n;
     for (;;) {
@@ -2114,11 +2114,19 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
       node = to;
     }
   };
+  return judged.map((_, i) => rootOf(i + 1));
+}
 
+/**
+ * Removes each finding whose entry in `roots`, from `duplicateRoots`, names an earlier finding and adds its reviewers to
+ * that earlier finding. `findings[i]` is "Finding i + 1". A duplicate of a finding graded `ignore` is removed while that
+ * finding stays `ignore`.
+ */
+function foldDuplicates(findings: Finding[], roots: number[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const result = findings.map(f => ({ ...f }));
   const folded = new Set<number>();
   for (let i = 0; i < findings.length; i++) {
-    const root = rootOf(i + 1);
+    const root = roots[i];
     if (root === i + 1) continue;
     folded.add(i);
     foldInto(result[root - 1], findings[i], staysPreExisting);
