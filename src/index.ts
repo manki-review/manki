@@ -565,7 +565,7 @@ async function answerAlreadyReviewed(
   target: RunTarget, prAuthorLogin: string | undefined, { config, held }: { config: ReviewConfig; held: boolean }, settings: PrState,
 ): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
-  const parts = [`\`${commitSha.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.`];
+  const parts = [`\`${commitSha.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking the review box in the settings block reviews this commit again.`];
   try {
     // Without the config or the coordinator's state, nothing says how many rounds the cap allows or whether the Pause box is ticked.
     if (!held && settings !== NO_SETTINGS) {
@@ -771,7 +771,7 @@ function failureReason(error: unknown, retryHint = FAILED_RUN_HINT): string {
 }
 
 /** How to retry a run that failed. The review command starts nothing on a commit whose newest review gave a verdict, as after a failed box run, so the hint names the box too. */
-const FAILED_RUN_HINT = `${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
+const FAILED_RUN_HINT = `${RETRY_HINT} If that shows the commit as up to date, tick the review box in the settings block.`;
 /** How to retry a failed run that only checks the approval. The check command does the same without a review round. */
 const CHECK_HINT = 'Retry with /manki check.';
 /** How to retry a failed run that a comment, a reply or a tick of a box started. */
@@ -886,7 +886,8 @@ async function postRunProgress(
   const latest = latestSettings(comments, bot);
   const failed = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest : undefined;
   progress.settings = {
-    lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
+    // The block keeps the commit it named when the coordinator holds none, as after its storage was cleared.
+    lastReviewed: settings.lastReviewed ?? latest?.settings.lastReviewed, draft, ticked: tickedBoxes(settings),
     ...(latest && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));
@@ -2078,12 +2079,12 @@ async function runFullReview(
     }
     if (lineCount > autoLimit && !forceReview && !skipCap) {
       core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
-      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick Review again to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick the review box in the settings block to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
     if (charCount > MAX_AUTO_REVIEW_CHARS && !forceReview && !skipCap) {
       core.info(`No automatic review: ${charCount} reviewable characters > ${MAX_AUTO_REVIEW_CHARS}`);
-      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${charCount} characters of reviewable diff, above the limit of ${MAX_AUTO_REVIEW_CHARS} for automatic review. Split it into smaller PRs, or tick Review again to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${charCount} characters of reviewable diff, above the limit of ${MAX_AUTO_REVIEW_CHARS} for automatic review. Split it into smaller PRs, or tick the review box in the settings block to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 

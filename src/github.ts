@@ -299,7 +299,7 @@ export function withheldSummary(summary: string): string {
   return text ? `**Summary:** ${asSentence(text)}` : '';
 }
 
-/** Ends a line that sends someone to the Review again box while `auto_approve` is off. */
+/** Ends a line that sends someone to the review box while `auto_approve` is off. */
 const ROUND_APPROVES_LINE = '`auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
 
 /** Ends a line that tells someone to push for a review. A push starts none while automatic review is off or paused. */
@@ -307,12 +307,12 @@ export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic
 
 /**
  * Returns the line that says why Manki does not approve. `autoApprove` is the `auto_approve` setting. With it off the
- * approval check approves nothing, so the lines for a draft and for warnings name the Review again box and promise no
+ * approval check approves nothing, so the lines for a draft and for warnings name the review box and promise no
  * approval for marking the PR ready or for an accepted answer in a thread.
  */
 export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string {
   if (hold.reason === 'draft') {
-    if (!autoApprove) return `**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+    if (!autoApprove) return `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. ${ROUND_APPROVES_LINE}`;
     // "Nothing else" covers only what the PR shows, such as an open thread or a conflict. For every other case, in which
     // nothing follows, the check command names the reason.
     return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
@@ -326,7 +326,7 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
   if (hold.reason === 'warnings') {
     if (hold.count === undefined) {
       const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
-      return autoApprove ? `${line} Comment \`/manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+      return autoApprove ? `${line} Comment \`/manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick the review box in the settings block. ${ROUND_APPROVES_LINE}`;
     }
     const lead = `**${countOf(hold.count, 'warning')} to address.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
     // A warning without a thread can only be fixed, and holds until a later round no longer finds it.
@@ -343,7 +343,7 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       : unthreaded > 0 ? `or ${explain}` : `${explain}, or tick \`${ISSUE_BOX_LABEL}\` to track it for later`;
     const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve its thread.' : '';
     const line = `${lead}, ${ways}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
-    return autoApprove ? line : `${line} Once every warning is handled, tick Review again in the settings block. ${ROUND_APPROVES_LINE}`;
+    return autoApprove ? line : `${line} Once every warning is handled, tick the review box in the settings block. ${ROUND_APPROVES_LINE}`;
   }
   return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
 }
@@ -2592,7 +2592,7 @@ function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' |
 
 function formatNeedsHuman(result: ReviewResult, restart?: string): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
-  return `Automatic review is paused. To get the next round, tick **Review again** in the settings block, or push and then comment \`/manki review\`.${restart ? ` ${restart}` : ''}\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
+  return `Automatic review is paused. To get the next round, tick the review box in the settings block, or push and then comment \`/manki review\`.${restart ? ` ${restart}` : ''}\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
 }
 
 /** Returns `text` for a link label on one line, with the backslashes and brackets that would end the label escaped. */

@@ -46,7 +46,7 @@ exclude_paths:
 # Review size limits, in reviewable lines after `exclude_paths`, read from the
 # base branch only. A PR up to `auto_review_max_lines` (default: 8000) is
 # reviewed automatically. A larger one gets a comment asking to split it, with
-# Review again in its settings block, and no review: a request for changes stays, and Manki's
+# the review box in its settings block, and no review: a request for changes stays, and Manki's
 # earlier approvals are dismissed. A forced review covers
 # the whole PR up to `max_diff_lines` (default: 15000). Above that Manki never
 # reviews, even when forced. Each finder reads a diff over 1500 changed lines
@@ -137,7 +137,7 @@ memory:
 | `skip_authors` | list of strings | none | PRs by any of these authors, such as `dependabot[bot]`, get no automatic review. Compared case-insensitively, and read from the base branch. |
 | `skip_branches` | list of globs | none | PRs whose head branch in the repo itself matches, such as `dependabot/**`, get no automatic review. Never matches a fork's branch. Read from the base branch. |
 | `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, `review` reviews it automatically. A draft review never approves and does not count toward `max_auto_rounds`. |
-| `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with Review again in its settings block. Read from the base branch. |
+| `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with the review box in its settings block. Read from the base branch. |
 | `max_diff_lines` | positive integer | `15000` | Reviewable lines above which Manki never reviews a PR, even when forced. Read from the base branch. |
 | `models` | map | see below | The model of each stage. The finders are not here: `review.groups` says who reviews. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
 | `models.planner` | model id | `claude-haiku-5-5` | The planner, a fast pass that triages the change before the review. |

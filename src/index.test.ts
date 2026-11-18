@@ -1404,7 +1404,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       await handleCommentTrigger(tick);
       return createComment.mock.calls;
     };
-    const noRound = '`def4567` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.';
+    const noRound = '`def4567` already has a review, so this command started no new round. The command starts one after a push, and ticking the review box in the settings block reviews this commit again.';
     // Each command gets a new comment with the marker of Manki's other command answers.
     const answer = (...parts: string[]) => [[{ owner: 'test-owner', repo: 'test-repo', issue_number: 1, body: `${[noRound, ...parts].join('\n\n')}\n\n<!-- manki -->` }]];
 
@@ -2757,6 +2757,9 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 1 }));
       expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'ddd2222' }));
       expect(ghUtils.showSettings).not.toHaveBeenCalled();
+      // A coordinator without a last reviewed commit leaves the one the block named, and never writes Not reviewed yet over it.
+      await runWith({ settings: settingsState(true) });
+      expect(ghUtils.setSettingsBlock).toHaveBeenLastCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'fff0000' }));
 
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
       await runWith();
@@ -2960,9 +2963,10 @@ describe('runFullReview orchestration', () => {
     });
   });
 
-  const offerLines = /^\*\*Too big for automatic review\*\* at `abc123`: this PR has 10000 reviewable lines, above the limit of 8000 for automatic review\. Split it into smaller PRs, or tick Review again to review it in full\.\n/;
+  // Before any review the message names the box by its role, and the block labels it Review now.
+  const offerLines = /^\*\*Too big for automatic review\*\* at `abc123`: this PR has 10000 reviewable lines, above the limit of 8000 for automatic review\. Split it into smaller PRs, or tick the review box in the settings block to review it in full\.\n[\s\S]*\n- \[ \] Review now <!-- manki-box:again -->\n/;
   const refuseLines = /^\*\*Too big to review\*\* at `abc123`: this PR has 15001 reviewable lines, above the limit of 15000 that Manki reviews\. Split it into smaller PRs to get a review\.\n/;
-  const offerChars = /^\*\*Too big for automatic review\*\* at `abc123`: this PR has \d+ characters of reviewable diff, above the limit of 2000000 for automatic review\. Split it into smaller PRs, or tick Review again to review it in full\.\n/;
+  const offerChars = /^\*\*Too big for automatic review\*\* at `abc123`: this PR has \d+ characters of reviewable diff, above the limit of 2000000 for automatic review\. Split it into smaller PRs, or tick the review box in the settings block to review it in full\.\n/;
   const refuseChars = /^\*\*Too big to review\*\* at `abc123`: this PR has \d+ characters of reviewable diff, above the limit of 4000000 that Manki reviews\. Split it into smaller PRs to get a review\.\n/;
   it.each([
     ['an automatic review of 10,000 lines', 10_000, 1, false, offerLines],
@@ -3926,7 +3930,7 @@ describe('runFullReview orchestration', () => {
     ['an empty message', new Error(''), 'Error with no message'],
     ['a blank string', ' ', 'A string with no message'],
     ['an empty GitHub 404', githubError(404, ''), 'GitHub returned 404 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234).'],
-    ['a GitHub 502', githubError(502, '<html>Bad gateway</html>'), `GitHub returned 502 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234). ${reviewModule.RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`],
+    ['a GitHub 502', githubError(502, '<html>Bad gateway</html>'), `GitHub returned 502 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234). ${reviewModule.RETRY_HINT} If that shows the commit as up to date, tick the review box in the settings block.`],
   ])('fails the job, keeps previous reviews and puts the reason in the progress comment when the review throws %s', async (_case, thrown, reason) => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
@@ -7283,7 +7287,8 @@ describe('runFullReview orchestration', () => {
       });
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-      await callRunFullReview();
+      // The coordinator knows the last reviewed commit, so the block labels the box Review again.
+      await runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { settings: { ...settingsState(), lastReviewed: 'f00d123' } });
 
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
       const capBody = pauseNotice();

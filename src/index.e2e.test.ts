@@ -522,7 +522,7 @@ function reviewCommand(command = '/manki review'): Promise<void> {
 
 const SLASH_HINT = 'Next time, write `/manki` instead of `@manki`. `@manki` is the login of an unrelated GitHub user, who gets a notification each time.';
 const DRAFT_HOLD = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
-const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. Mark it ready for review, then tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
+const DRAFT_HOLD_WITHOUT_AUTO_APPROVE = '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.';
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
 /** What a "Fixed." on the blocker thread says about the push a review needs to confirm the fix. */
 const FIX_NEEDS_PUSH = 'A review confirms the fix only after a push changes the thread\'s file `src/math.ts`.';
@@ -976,7 +976,7 @@ describe('runFullReview end to end', () => {
       const commands = mockGitHub.comments.filter(c => c.user.login === 'alice');
       const answers = () => mankiComments().slice(comments).map(c => c.body);
       const answered = commands.slice(1).map(command =>
-        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking **Review again** in the settings block reviews this commit again.${command.body.startsWith('@manki') ? `\n\n${SLASH_HINT}` : ''}\n\n<!-- manki -->\n<!-- manki-answered:${command.id} -->`);
+        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking the review box in the settings block reviews this commit again.${command.body.startsWith('@manki') ? `\n\n${SLASH_HINT}` : ''}\n\n<!-- manki -->\n<!-- manki-answered:${command.id} -->`);
       expect(commands).toHaveLength(3);
       expect(answers()).toEqual(answered);
 
@@ -1580,7 +1580,7 @@ describe('runFullReview end to end', () => {
     });
 
     // What a failed run is repeated with decides the hint, so no hint sends the reader to a review round for less.
-    const REVIEW_HINT = ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
+    const REVIEW_HINT = ` ${RETRY_HINT} If that shows the commit as up to date, tick the review box in the settings block.`;
     const CHECK_HINT = ' Retry with /manki check.';
     const REPEAT_HINT = ' Repeat the comment or the tick that started this run.';
     it.each<[string, Record<string, string>, string]>([

@@ -33,12 +33,13 @@ function isSettingsBox(name: string): name is SettingsBox {
 
 const short = (sha: string): string => sha.slice(0, 7);
 
-/** Renders the block: a rule, the status line, one line per applicable box and `SETTINGS_MARKER`. */
+/** Renders the block: a rule, the status line, one line per applicable box and `SETTINGS_MARKER`. Before any review the `again` box reads Review now. */
 export function renderSettingsBlock(view: SettingsView): string {
   const reviewed = view.lastReviewed ? `Last reviewed \`${short(view.lastReviewed)}\`` : 'Not reviewed yet';
+  const label = (box: SettingsBox): string => (box === 'again' && !view.lastReviewed ? 'Review now' : BOX_LABELS[box]);
   const boxes = (Object.keys(BOX_LABELS) as SettingsBox[])
     .filter(box => view.boxes.has(box))
-    .map(box => `- [${view.ticked.has(box) ? 'x' : ' '}] ${BOX_LABELS[box]} <!-- manki-box:${box} -->`);
+    .map(box => `- [${view.ticked.has(box) ? 'x' : ' '}] ${label(box)} <!-- manki-box:${box} -->`);
   return ['---', `${reviewed} · head \`${short(view.head)}\` · ${view.status}`, ...boxes, SETTINGS_MARKER].join('\n');
 }
 
