@@ -1,11 +1,10 @@
-import { readFileSync, rmSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 
 import { outcomeReport } from './check-run';
 import { loadConfig } from './config';
 import { CHECKS_MARKER, CodeLinks, formatFindingBlock, relatedCommits, roundSummary } from './github';
 import { LocalReview, reviewLocal } from './local-review';
 import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv, removeSeededAuthFiles } from './providers';
-import { makeScratchDir } from './tool-install';
 import { runGit } from './workspace';
 
 export const REVIEW_COMMAND = 'review';
@@ -130,20 +129,11 @@ export async function runCliCommand(name: string, body: (out: (text: string) => 
   // `@actions/core` logs to stdout, which here carries only the result. Its `::add-mask::` lines hold secret values,
   // which only an Actions runner hides, so they are dropped.
   process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => (typeof chunk === 'string' && chunk.startsWith('::add-mask::') ? true : log(chunk, ...rest))) as typeof process.stdout.write;
-  // Codex reads its config and MCP servers from `CODEX_HOME`, so the command gives it an empty one, not the user's.
-  const codexHome = process.env.CODEX_HOME ? undefined : makeScratchDir('codex-home');
-  if (codexHome) process.env.CODEX_HOME = codexHome;
-  const cleanUp = (): void => {
-    removeSeededAuthFiles();
-    if (!codexHome) return;
-    rmSync(codexHome, { recursive: true, force: true });
-    delete process.env.CODEX_HOME;
-  };
   const cancel = new AbortController();
   // The first Ctrl-C stops the command at its next step. A second one exits at once.
   const onSignal = (): void => {
     if (!cancel.signal.aborted) return cancel.abort(new Error('Interrupted'));
-    cleanUp();
+    removeSeededAuthFiles();
     process.exit(130);
   };
   process.on('SIGINT', onSignal);
@@ -154,7 +144,7 @@ export async function runCliCommand(name: string, body: (out: (text: string) => 
     return 2;
   } finally {
     process.off('SIGINT', onSignal);
-    cleanUp();
+    removeSeededAuthFiles();
     process.stdout.write = write;
   }
 }

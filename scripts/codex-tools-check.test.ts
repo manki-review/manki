@@ -1,4 +1,8 @@
-import { compareTools, heldTools, heldToolsCall, offeredTools, runProblems, searchSources } from './codex-tools-check';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { compareTools, controlProblems, heldTools, heldToolsCall, offeredTools, plantRunnerSetup, runProblems, searchSources, StandInRun } from './codex-tools-check';
 
 describe('offeredTools', () => {
   it('names the tools of the request and of an `additional_tools` item, a namespace\'s as `namespace.name`', () => {
@@ -71,19 +75,63 @@ describe('compareTools', () => {
   });
 });
 
-describe('runProblems', () => {
+describe('runProblems and controlProblems', () => {
   const message = (role: string, ...texts: string[]) => ({ type: 'message', role, content: texts.map(text => ({ type: 'input_text', text })) });
+  const run = (over: Partial<StandInRun> = {}): StandInRun => ({ bodies: [], hosts: [], paths: ['/v1/responses'], keys: ['Bearer stand-in'], hookRan: false, ...over });
 
   it('passes a run whose requests carry no skill text and that tried no other host', () => {
     const body = { input: [message('developer', 'Review the diff.', '<permissions instructions>\nRead-only.'), message('user', 'Mentions <skill> and $imagegen in passing.')] };
-    expect(runProblems('gpt-a', [body, body], [])).toEqual([]);
+    expect(runProblems('gpt-a', run({ bodies: [body, body] }))).toEqual([]);
   });
 
-  it('reports the skill catalog, a skill added in full, and each host once', () => {
+  it('reports the skill catalog, a skill added in full, and each host once, except the hosts it may reach', () => {
     const catalog = { input: [message('developer', 'Review the diff.', '<skills_instructions>\n## Skills')] };
     const skill = { input: [message('user', '<skill>\n<name>imagegen</name>')] };
     const problems = ['gpt-a: a request carries Codex\'s skill text', 'gpt-a: tried to reach ab.chatgpt.com:443'];
-    expect(runProblems('gpt-a', [{}, catalog], ['ab.chatgpt.com:443', 'ab.chatgpt.com:443'])).toEqual(problems);
-    expect(runProblems('gpt-a', [skill], ['ab.chatgpt.com:443'])).toEqual(problems);
+    expect(runProblems('gpt-a', run({ bodies: [{}, catalog], hosts: ['ab.chatgpt.com:443', 'ab.chatgpt.com:443'] }))).toEqual(problems);
+    expect(runProblems('gpt-a', run({ bodies: [skill], hosts: ['ab.chatgpt.com:443', 'chatgpt.com:443'] }), ['chatgpt.com:443'])).toEqual(problems);
+  });
+
+  it('reports each part of the runner\'s planted setup that reached Codex, and a control run that misses one', () => {
+    const home = mkdtempSync(join(tmpdir(), 'manki-runner-home-'));
+    try {
+      plantRunnerSetup(home, { command: '/usr/bin/node', args: ['server.js'] }, 'http://127.0.0.1:9', join(home, 'hook-ran'));
+      const files = ['.codex/skills/runner-codex-skill/SKILL.md', '.agents/skills/runner-agents-skill/SKILL.md', '.codex/AGENTS.md', '.codex/.env', '.codex/config.toml'];
+      const [codexSkill, agentsSkill, agentsMd, dotenv, config] = files.map(file => readFileSync(join(home, file), 'utf8'));
+      expect(dotenv).toBe('OPENAI_API_KEY=runner-dotenv-key\n');
+      expect(config).toContain('[mcp_servers.runner_mcp_server]\ncommand = "/usr/bin/node"\nargs = ["server.js"]\n');
+      expect(config).toContain('base_url = "http://127.0.0.1:9/runner-provider/v1"');
+      expect(config).toMatch(/\[hooks\.state\."[^"]+\/\.codex\/hooks\.json:session_start:0:0"\]\ntrusted_hash = "sha256:[0-9a-f]{64}"/);
+      const body = {
+        tools: [{ type: 'namespace', name: 'mcp__runner_mcp_server', tools: [] }],
+        input: [message('developer', codexSkill, agentsSkill), message('user', agentsMd)],
+      };
+      const reached = run({ bodies: [{}, body], keys: ['Bearer runner-dotenv-key'], hosts: ['runner-otel.invalid:4318'], hookRan: true });
+      expect(runProblems('gpt-a', reached)).toEqual([
+        'gpt-a: the runner\'s skill in ~/.codex/skills reached Codex',
+        'gpt-a: the runner\'s skill in ~/.agents/skills reached Codex',
+        'gpt-a: the runner\'s MCP server in ~/.codex/config.toml reached Codex',
+        'gpt-a: the runner\'s AGENTS.md in ~/.codex reached Codex',
+        'gpt-a: the runner\'s OPENAI_API_KEY in ~/.codex/.env reached Codex',
+        'gpt-a: the runner\'s otel exporter in ~/.codex/config.toml reached Codex',
+        'gpt-a: the runner\'s trusted hook in ~/.codex/hooks.json reached Codex',
+        'gpt-a: tried to reach runner-otel.invalid:4318',
+      ]);
+      expect(controlProblems('control', reached, false)).toEqual([]);
+      expect(controlProblems('control', run({ bodies: [body] }), false)).toEqual([
+        'control: the runner\'s OPENAI_API_KEY in ~/.codex/.env no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+        'control: the runner\'s otel exporter in ~/.codex/config.toml no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+        'control: the runner\'s trusted hook in ~/.codex/hooks.json no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+      ]);
+
+      const redirected = run({ paths: ['/runner-chatgpt/api/codex/accounts/check', '/runner-provider/v1/responses'], hosts: ['chatgpt.com:443'] });
+      expect(runProblems('login', redirected, ['chatgpt.com:443'])).toEqual(['login: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml reached Codex']);
+      expect(controlProblems('login control', redirected, true)).toEqual([]);
+      expect(controlProblems('login control', run(), true)).toEqual([
+        'login control: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

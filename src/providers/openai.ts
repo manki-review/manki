@@ -7,8 +7,9 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
+import { makeScratchDir } from '../tool-install';
 import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, processFolder, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -16,16 +17,17 @@ const execFileAsync = promisify(execFile);
 // Re-export for existing test imports.
 export { STALE_TIMEOUT_MS };
 
-export function resolveCodexHome(): string {
-  const explicit = process.env.CODEX_HOME;
-  if (explicit) return explicit;
-  const home = process.env.HOME;
-  if (!home) {
-    throw new Error(
-      'Cannot resolve CODEX_HOME: neither $CODEX_HOME nor $HOME is set in the environment.',
-    );
-  }
-  return join(home, '.codex');
+/**
+ * Returns the private folder this process's Codex runs use as their home. Codex reads skills, `AGENTS.md`,
+ * `config.toml` and `.env` from its home and skills from `~/.agents`, so a runner's own setup would reach a review. The
+ * calls of a run share the folder, because Codex writes a login's refreshed tokens and the sessions a call resumes into it.
+ */
+const codexHome = processFolder(() => makeScratchDir('codex-home'));
+
+/** Returns the environment of a Codex run, the `cliEnv` of `vars` with `HOME` and `CODEX_HOME` set to `codexHome`. */
+export function codexEnv(vars: NodeJS.ProcessEnv, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const home = codexHome();
+  return cliEnv('codex', { ...vars, HOME: home, CODEX_HOME: home }, credential, env);
 }
 
 /** Names a Codex window by its length: `5-hour`, `weekly`, or its hours or days. */
@@ -326,13 +328,15 @@ export function codexExecArgs(model: string, baseUrl?: string): string[] {
  * approval. Codex starts the server with a few default variables only, so `env_vars` names the rest of the CLI's own
  * environment, such as the runner temp folder, the proxy settings and the GitHub API URL `repo_info` needs. Codex reads
  * their values from its own environment, so none of them, such as a proxy password, lands on the command line.
- * `ENDPOINT_KEY_ENV` is not named, so the server never gets an endpoint's key.
+ * `ENDPOINT_KEY_ENV` is not named, so the server never gets an endpoint's key. Codex waits for a required server
+ * before its first request, so a server that starts slowly still has its tools in it, and one that fails ends the run.
  */
 export function codexToolServerArgs({ command, args }: MankiCommand, env: NodeJS.ProcessEnv): string[] {
   return [
     '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
     '-c', `mcp_servers.manki.args=${JSON.stringify(args)}`,
     '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
+    '-c', 'mcp_servers.manki.required=true',
     '-c', `mcp_servers.manki.env_vars=${JSON.stringify(Object.keys(env).filter(name => name !== 'CODEX_HOME' && name !== ENDPOINT_KEY_ENV))}`,
   ];
 }
@@ -430,7 +434,7 @@ export class OpenAIClient implements LLMClient {
     const repoTools = options?.repoTools;
     const toolsPrompt = repoTools ? `\n\n${repoToolsPrompt(repoTools, '`read_file`, `grep` and `glob`')}` : '';
     const instructions = `${systemPrompt}${toolsPrompt}`;
-    const codexHome = resolveCodexHome();
+    const home = codexHome();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const endpoint = this.auth.kind === 'endpoint' ? this.auth : undefined;
     const model = this.model;
@@ -438,20 +442,17 @@ export class OpenAIClient implements LLMClient {
       seedAuthFile({
         secret: oauthToken,
         inputName: 'openai_oauth_token',
-        targetPath: join(codexHome, 'auth.json'),
+        targetPath: join(home, 'auth.json'),
         requiredFields: ['tokens.access_token', 'tokens.refresh_token'],
         bootstrapHint: OPENAI_OAUTH_BOOTSTRAP_HINT,
       });
-    } else {
-      // Codex exits when its home does not exist, and only the login path creates it, by writing `auth.json`.
-      mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     }
     const cliPath = await this.ensureCLI();
     const startTime = Date.now();
     const limitMs = options?.timeoutMs ?? HARD_TIMEOUT_MS;
     // A failed run keeps the readings too, since a used-up limit is when they matter most.
     const limitReadings = () => {
-      const limits = readCodexLimits(codexHome, startTime);
+      const limits = readCodexLimits(home, startTime);
       return limits.length > 0 ? { limits } : {};
     };
 
@@ -468,8 +469,7 @@ export class OpenAIClient implements LLMClient {
 
     // The GitHub API URL is for the tool server's `repo_info`, which Codex starts with names from this environment.
     const apiUrl = process.env.GITHUB_API_URL;
-    const env = cliEnv('codex', {
-      CODEX_HOME: codexHome,
+    const env = codexEnv({
       ...(repoTools && apiUrl && { GITHUB_API_URL: apiUrl }),
       ...(endpoint && { [ENDPOINT_KEY_ENV]: endpoint.key }),
     }, endpoint && ENDPOINT_KEY_ENV);
@@ -522,7 +522,7 @@ export class OpenAIClient implements LLMClient {
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
       throw error;
-    }).finally(() => registerAuthFileSecrets(join(codexHome, 'auth.json')));
+    }).finally(() => registerAuthFileSecrets(join(home, 'auth.json')));
 
     const limits = limitReadings();
     if (code !== 0) {

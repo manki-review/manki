@@ -9,8 +9,8 @@ import {
   buildOpenAIAuth,
   OpenAIClient,
   readCodexLimits,
+  codexEnv,
   resetCLIInstallPromise,
-  resolveCodexHome,
   resolveReasoningEffort,
   STALE_TIMEOUT_MS,
 } from './openai';
@@ -43,6 +43,9 @@ const mockExecFileAsync = jest.fn().mockResolvedValue({ stdout: '/usr/bin/codex'
 _execMock.fn = mockExecFileAsync;
 
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
+
+// A test may point `RUNNER_TEMP` at a folder that does not exist, so the Codex home of this process is made first.
+beforeAll(() => codexEnv({}));
 
 describe('buildOpenAIAuth', () => {
   it('throws when neither token is present', () => {
@@ -438,11 +441,7 @@ describe('sendMessage (API path)', () => {
 });
 
 describe('sendViaCLI (Codex CLI path)', () => {
-  let savedCodexHome: string | undefined;
-
   beforeEach(() => {
-    savedCodexHome = process.env.CODEX_HOME;
-    process.env.CODEX_HOME = '/tmp/manki-test-codex';
     mockSpawn.mockReset();
     resetCLIInstallPromise();
     mockExecFileAsync.mockReset();
@@ -452,9 +451,6 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   afterEach(() => {
-    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-    else process.env.CODEX_HOME = savedCodexHome;
-    rmSync('/tmp/manki-test-codex', { recursive: true, force: true });
     jest.restoreAllMocks();
   });
 
@@ -557,6 +553,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
       `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
+      '-c mcp_servers.manki.required=true',
     ].join(' '));
     // The server gets the CLI's own environment by name, so no value, such as a proxy password, is on the command line.
     const envVars = JSON.parse(withTools.find(arg => arg.startsWith('mcp_servers.manki.env_vars='))!.slice('mcp_servers.manki.env_vars='.length)) as string[];
@@ -575,7 +572,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     expect(stdin.mock.calls.map(c => String(c[0]))).toEqual(['the diff', 'the diff']);
   });
 
-  it('runs an endpoint call with Manki\'s own model provider and the key in the CLI\'s environment only, without a login file', async () => {
+  it('runs an endpoint call with Manki\'s own model provider, home and key, without the runner\'s home or a login file', async () => {
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     const setSecret = jest.spyOn(core, 'setSecret').mockImplementation(() => {});
     setupSpawnMock('[]\n');
@@ -583,8 +580,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
     const savedEnv = process.env;
     process.env = {
       PATH: '/usr/bin',
-      HOME: '/home/runner',
-      CODEX_HOME: '/tmp/manki-test-codex',
+      HOME: '/runner-home',
+      CODEX_HOME: '/runner-home/.codex',
       GITHUB_API_URL: 'https://api.github.com',
       OPENAI_API_KEY: 'sk-ambient-key',
       OPENAI_OAUTH_TOKEN: 'ambient-login',
@@ -593,14 +590,10 @@ describe('sendViaCLI (Codex CLI path)', () => {
     try {
       const client = new OpenAIClient({ auth: { kind: 'endpoint', key, baseUrl: 'https://llm.example/v1' }, model: 'gpt-5.5' });
       expect(client.repoTools).toBe(true);
-      expect(existsSync('/tmp/manki-test-codex')).toBe(false);
       await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related: undefined } });
     } finally {
       process.env = savedEnv;
     }
-    // Codex exits when its home is missing, and a fresh runner has none.
-    expect(statSync('/tmp/manki-test-codex').isDirectory()).toBe(true);
-
     const [, args, { env }] = mockSpawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
     expect(args).toEqual([
       'exec', '--skip-git-repo-check', '--model=gpt-5.5', '--sandbox', 'read-only', '-c', 'approval_policy=never',
@@ -619,11 +612,16 @@ describe('sendViaCLI (Codex CLI path)', () => {
       // The tool server counts its steps in the call's own folder, so the server of a resumed run counts on.
       '-c', `mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15', '--steps-dir', join(dirname(instructionsPath(args)), 'steps')])}`,
       '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
+      '-c', 'mcp_servers.manki.required=true',
       '-c', expect.stringMatching(/^mcp_servers\.manki\.env_vars=/),
       '-c', expect.stringMatching(/^model_instructions_file=".*\/instructions\.md"$/), '-',
     ]);
     expect(args.join(' ')).not.toContain(key);
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/runner', CODEX_HOME: '/tmp/manki-test-codex', GITHUB_API_URL: 'https://api.github.com', OPENAI_API_KEY: key });
+    // Codex reads skills, `AGENTS.md` and `config.toml` from both homes, so the runner's own stay out.
+    const home = env.CODEX_HOME!;
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: home, CODEX_HOME: home, GITHUB_API_URL: 'https://api.github.com', OPENAI_API_KEY: key });
+    expect(home).not.toMatch(/^\/runner-home/);
+    expect(statSync(home).mode & 0o777).toBe(0o700);
     // Codex gives its tool server only the variables `env_vars` names, so the key stays with Codex.
     const envVars = JSON.parse(args.find(arg => arg.startsWith('mcp_servers.manki.env_vars='))!.slice('mcp_servers.manki.env_vars='.length)) as string[];
     expect(envVars.sort()).toEqual(['GITHUB_API_URL', 'HOME', 'PATH']);
@@ -888,7 +886,6 @@ describe('sendViaCLI (Codex CLI path)', () => {
     const savedKey = process.env.OPENAI_API_KEY;
     const savedOauthToken = process.env.OPENAI_OAUTH_TOKEN;
     const savedCodexOauth = process.env.CODEX_OAUTH_TOKEN;
-    const savedCodexHome = process.env.CODEX_HOME;
     const savedInputOpenAI = process.env.INPUT_OPENAI_API_KEY;
     const savedInputGemini = process.env.INPUT_GEMINI_API_KEY;
     const savedActionsRuntime = process.env.ACTIONS_RUNTIME_TOKEN;
@@ -897,7 +894,6 @@ describe('sendViaCLI (Codex CLI path)', () => {
     process.env.OPENAI_API_KEY = 'sk-ambient-key';
     process.env.OPENAI_OAUTH_TOKEN = 'legacy-oauth-blob';
     process.env.CODEX_OAUTH_TOKEN = 'legacy-codex-blob';
-    process.env.CODEX_HOME = '/tmp/manki-codex-fixture';
     process.env.INPUT_OPENAI_API_KEY = 'input-openai';
     process.env.INPUT_GEMINI_API_KEY = 'input-gemini';
     process.env.ACTIONS_RUNTIME_TOKEN = 'art';
@@ -917,12 +913,10 @@ describe('sendViaCLI (Codex CLI path)', () => {
       expect(spawnOpts.env.ACTIONS_RUNTIME_TOKEN).toBeUndefined();
       expect(spawnOpts.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBeUndefined();
       expect(spawnOpts.env.ACTIONS_RESULTS_URL).toBeUndefined();
-      expect(spawnOpts.env.CODEX_HOME).toBe('/tmp/manki-codex-fixture');
     } finally {
       if (savedKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = savedKey;
       if (savedOauthToken === undefined) delete process.env.OPENAI_OAUTH_TOKEN; else process.env.OPENAI_OAUTH_TOKEN = savedOauthToken;
       if (savedCodexOauth === undefined) delete process.env.CODEX_OAUTH_TOKEN; else process.env.CODEX_OAUTH_TOKEN = savedCodexOauth;
-      if (savedCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedCodexHome;
       if (savedInputOpenAI === undefined) delete process.env.INPUT_OPENAI_API_KEY; else process.env.INPUT_OPENAI_API_KEY = savedInputOpenAI;
       if (savedInputGemini === undefined) delete process.env.INPUT_GEMINI_API_KEY; else process.env.INPUT_GEMINI_API_KEY = savedInputGemini;
       if (savedActionsRuntime === undefined) delete process.env.ACTIONS_RUNTIME_TOKEN; else process.env.ACTIONS_RUNTIME_TOKEN = savedActionsRuntime;
@@ -931,71 +925,33 @@ describe('sendViaCLI (Codex CLI path)', () => {
     }
   });
 
-  it('seeds `$CODEX_HOME/auth.json` from the OAuth secret before invoking the CLI, and registers its tokens again after', async () => {
+  it('seeds `auth.json` in Manki\'s own Codex home, whatever `CODEX_HOME` and `HOME` say, and registers its tokens again after', async () => {
     const { seedAuthFile, registerAuthFileSecrets } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock; registerAuthFileSecrets: jest.Mock };
     seedAuthFile.mockClear();
     setupSpawnMock('ok\n');
-    const savedCodexHome = process.env.CODEX_HOME;
-    process.env.CODEX_HOME = '/tmp/manki-codex-seed-fixture';
+    const savedEnv = process.env;
+    process.env = { ...savedEnv, HOME: '/runner-home', CODEX_HOME: '/runner-home/.codex' };
 
     try {
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gpt-4o' });
       await client.sendMessage('sys', 'user');
-
-      expect(seedAuthFile).toHaveBeenCalledWith({
-        secret: 'b64-blob',
-        inputName: 'openai_oauth_token',
-        targetPath: '/tmp/manki-codex-seed-fixture/auth.json',
-        requiredFields: ['tokens.access_token', 'tokens.refresh_token'],
-        bootstrapHint: expect.stringContaining('codex login'),
-      });
-      expect(registerAuthFileSecrets).toHaveBeenCalledWith('/tmp/manki-codex-seed-fixture/auth.json');
-    } finally {
-      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = savedCodexHome;
-    }
-  });
-
-  it('defaults `$CODEX_HOME` to `$HOME/.codex` when CODEX_HOME is unset', async () => {
-    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
-    seedAuthFile.mockClear();
-    setupSpawnMock('ok\n');
-    const savedHome = process.env.HOME;
-    const savedCodexHome = process.env.CODEX_HOME;
-    delete process.env.CODEX_HOME;
-    process.env.HOME = '/tmp/manki-home-fixture';
-
-    try {
-      const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gpt-4o' });
       await client.sendMessage('sys', 'user');
-
-      expect(seedAuthFile).toHaveBeenCalledWith(
-        expect.objectContaining({ targetPath: '/tmp/manki-home-fixture/.codex/auth.json' }),
-      );
-      const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
-      expect(spawnOpts.env.CODEX_HOME).toBe('/tmp/manki-home-fixture/.codex');
     } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome; else delete process.env.HOME;
-      if (savedCodexHome !== undefined) process.env.CODEX_HOME = savedCodexHome;
+      process.env = savedEnv;
     }
-  });
-
-  it('throws a clear error when neither $CODEX_HOME nor $HOME is set', async () => {
-    setupSpawnMock('ok\n');
-    const savedHome = process.env.HOME;
-    const savedCodexHome = process.env.CODEX_HOME;
-    delete process.env.CODEX_HOME;
-    delete process.env.HOME;
-
-    try {
-      const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gpt-4o' });
-      await expect(client.sendMessage('sys', 'user')).rejects.toThrow(
-        /Cannot resolve CODEX_HOME.*neither \$CODEX_HOME nor \$HOME is set/,
-      );
-    } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      if (savedCodexHome !== undefined) process.env.CODEX_HOME = savedCodexHome;
-    }
+    const envs = mockSpawn.mock.calls.map(call => (call[2] as { env: NodeJS.ProcessEnv }).env);
+    const home = envs[0].CODEX_HOME!;
+    // The calls of a run share the home, so a later call reads the tokens an earlier one refreshed.
+    expect(envs.map(env => [env.HOME, env.CODEX_HOME])).toEqual([[home, home], [home, home]]);
+    expect(home).not.toMatch(/^\/runner-home/);
+    expect(seedAuthFile).toHaveBeenCalledWith({
+      secret: 'b64-blob',
+      inputName: 'openai_oauth_token',
+      targetPath: join(home, 'auth.json'),
+      requiredFields: ['tokens.access_token', 'tokens.refresh_token'],
+      bootstrapHint: expect.stringContaining('codex login'),
+    });
+    expect(registerAuthFileSecrets).toHaveBeenCalledWith(join(home, 'auth.json'));
   });
 
   it('propagates seedAuthFile errors (e.g. legacy single-token shape) to the caller', async () => {
@@ -1073,9 +1029,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     jest.spyOn(core, 'info').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
     // The session Codex wrote before it stopped records the limit that ran out.
-    const savedCodexHome = process.env.CODEX_HOME;
-    const home = mkdtempSync(join(tmpdir(), 'manki-codex-quota-'));
-    process.env.CODEX_HOME = home;
+    const home = codexEnv({}).CODEX_HOME!;
     const today = new Date();
     const folder = join(home, 'sessions', String(today.getFullYear()), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0'));
     const session = join(folder, 'rollout.jsonl');
@@ -1085,9 +1039,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     utimesSync(session, later, later);
 
     const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e).finally(() => {
-      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = savedCodexHome;
-      rmSync(home, { recursive: true, force: true });
+      rmSync(join(home, 'sessions'), { recursive: true, force: true });
     });
     expect(error).toBeInstanceOf(QuotaError);
     expect(error).toMatchObject({ limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' });
@@ -1228,11 +1180,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
 });
 
 describe('sendViaCLI — extended coverage', () => {
-  let savedCodexHome: string | undefined;
-
   beforeEach(() => {
-    savedCodexHome = process.env.CODEX_HOME;
-    process.env.CODEX_HOME = '/tmp/manki-test-codex';
     mockSpawn.mockReset();
     resetCLIInstallPromise();
     mockExecFileAsync.mockReset();
@@ -1242,8 +1190,6 @@ describe('sendViaCLI — extended coverage', () => {
   });
 
   afterEach(() => {
-    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-    else process.env.CODEX_HOME = savedCodexHome;
     jest.restoreAllMocks();
   });
 
@@ -1537,21 +1483,12 @@ describe('sendViaCLI — extended coverage', () => {
 });
 
 describe('ensureCLI auto-install', () => {
-  let savedCodexHome: string | undefined;
-
   beforeEach(() => {
-    savedCodexHome = process.env.CODEX_HOME;
-    process.env.CODEX_HOME = '/tmp/manki-test-codex';
     mockSpawn.mockReset();
     resetCLIInstallPromise();
     mockExecFileAsync.mockReset();
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     seedAuthFile.mockReset();
-  });
-
-  afterEach(() => {
-    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-    else process.env.CODEX_HOME = savedCodexHome;
   });
 
   function setupSpawnSuccess(): void {
@@ -1646,39 +1583,5 @@ describe('ensureCLI auto-install', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('ok');
-  });
-});
-
-describe('resolveCodexHome', () => {
-  let savedCodexHome: string | undefined;
-  let savedHome: string | undefined;
-
-  beforeEach(() => {
-    savedCodexHome = process.env.CODEX_HOME;
-    savedHome = process.env.HOME;
-  });
-
-  afterEach(() => {
-    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-    else process.env.CODEX_HOME = savedCodexHome;
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-  });
-
-  it('returns CODEX_HOME when set', () => {
-    process.env.CODEX_HOME = '/explicit';
-    expect(resolveCodexHome()).toBe('/explicit');
-  });
-
-  it('returns $HOME/.codex when CODEX_HOME is unset', () => {
-    delete process.env.CODEX_HOME;
-    process.env.HOME = '/h';
-    expect(resolveCodexHome()).toBe('/h/.codex');
-  });
-
-  it('throws when neither CODEX_HOME nor HOME is set', () => {
-    delete process.env.CODEX_HOME;
-    delete process.env.HOME;
-    expect(() => resolveCodexHome()).toThrow(/neither \$CODEX_HOME nor \$HOME/);
   });
 });
