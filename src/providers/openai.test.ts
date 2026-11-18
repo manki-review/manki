@@ -44,6 +44,20 @@ _execMock.fn = mockExecFileAsync;
 
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
+// Codex's `--json` events as Codex 0.166.0 printed them on stdout against a stand-in endpoint, one JSON object per line.
+const SESSION = '01a1e7b6-908c-7750-8dcd-e6fdb23319de';
+const started = (session = SESSION) => ({ type: 'thread.started', thread_id: session });
+const TURN = { type: 'turn.started' };
+const message = (text: string, id = 'item_0') => ({ type: 'item.completed', item: { id, type: 'agent_message', text } });
+const COMPLETED = { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0 } };
+const error = (text: string) => ({ type: 'error', message: text });
+const failed = (text: string) => ({ type: 'turn.failed', error: { message: text } });
+const jsonl = (...events: object[]): string => events.map(event => `${JSON.stringify(event)}\n`).join('');
+/** The stdout of a turn that completed with `text` as its last message, after the events `before`. */
+const answered = (text: string, ...before: object[]): string => jsonl(started(), TURN, ...before, message(text), COMPLETED);
+/** The stdout of a turn Codex failed with its error `text`, after the events `before`. Codex prints the error twice. */
+const failedTurn = (text: string, ...before: object[]): string => jsonl(started(), TURN, ...before, error(text), failed(text));
+
 // A test may point `RUNNER_TEMP` at a folder that does not exist, so the Codex home of this process is made first.
 beforeAll(() => cliHome('codex'));
 
@@ -497,14 +511,14 @@ describe('sendViaCLI (Codex CLI path)', () => {
   }
 
   it('runs `codex exec` read-only with every built-in tool it can switch off turned off, no analytics, no built-in skills and Manki\'s instructions in a file, in an empty temp directory', async () => {
-    const { stdin, instructions } = setupSpawnMock('hello\n');
+    const { stdin, instructions } = setupSpawnMock(answered('hello'));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
     await client.sendMessage('sys', 'user');
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     expect(spawnArgs).toEqual([
-      'exec', '--skip-git-repo-check', '--model=o3', '--sandbox', 'read-only', '-c', 'approval_policy=never',
+      'exec', '--json', '--skip-git-repo-check', '--model=o3', '--sandbox', 'read-only', '-c', 'approval_policy=never',
       '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
       '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
@@ -521,7 +535,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   it('gives Codex Manki\'s tool server with the file tools, and tells it about them, only when asked', async () => {
-    const { stdin, instructions } = setupSpawnMock('[]\n');
+    const { stdin, instructions } = setupSpawnMock(answered('[]'));
     const savedRunnerTemp = process.env.RUNNER_TEMP;
     const savedApiUrl = process.env.GITHUB_API_URL;
     const savedProxy = process.env.HTTPS_PROXY;
@@ -575,7 +589,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   it('runs an endpoint call with Manki\'s own model provider, home and key, without the runner\'s home or a login file', async () => {
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     const setSecret = jest.spyOn(core, 'setSecret').mockImplementation(() => {});
-    setupSpawnMock('[]\n');
+    setupSpawnMock(answered('[]'));
     const key = 'sk-endpoint-key-for-codex-only';
     const savedEnv = process.env;
     process.env = {
@@ -596,7 +610,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     }
     const [, args, { env }] = mockSpawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
     expect(args).toEqual([
-      'exec', '--skip-git-repo-check', '--model=gpt-5.5', '--sandbox', 'read-only', '-c', 'approval_policy=never',
+      'exec', '--json', '--skip-git-repo-check', '--model=gpt-5.5', '--sandbox', 'read-only', '-c', 'approval_policy=never',
       '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
       '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
@@ -631,18 +645,14 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   describe('an endpoint call whose stream failed', () => {
-    const SESSION = '01a1e7b6-908c-7750-8dcd-e6fdb23319de';
     const RESUME = 'The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
-    // Codex prints its header before the prompt it echoes, which here imitates the header's session line, and its error twice.
-    const stderrOf = (error: string, session = `session id: ${SESSION}\n`): string =>
-      `OpenAI Codex v0.166.0\n--------\nsandbox: read-only\n${session}--------\nuser\nthe diff\nsession id: 11111111-2222-3333-4444-555555555555\n--------\nuser\n\nERROR: ${error}\nERROR: ${error}\n`;
-    // Once a request of the run used tokens, their count follows the error.
-    const failed = (error: string, tokens = ''): CodexRun => ({ exitCode: 1, stderr: `${stderrOf(error)}${tokens}` });
-    const TOKENS = 'tokens used\n48,203\n';
+    // A run that got a part of the answer before its stream failed printed that part as a message first.
+    const failedRun = (text: string, ...before: object[]): CodexRun => ({ exitCode: 1, stdout: failedTurn(text, ...before) });
+    const PART = message('ERROR: half an answer');
     const CAPACITY = 'Selected model is at capacity. Please try a different model.';
     const DROPPED = 'stream disconnected before completion: stream closed before response.completed';
     const RATE_LIMIT = 'rate limit exceeded: Rate limit reached for gpt-5.5 on tokens per min (TPM): Limit 30000, Used 29500, Requested 2000.';
-    const answer: CodexRun = { stdout: '[]\n' };
+    const answer: CodexRun = { stdout: answered('[]') };
     const tools = { repoTools: { root: '/work/repo', steps: 15, related: undefined } };
     let endpoint: OpenAIClient;
     let info: jest.SpyInstance;
@@ -669,13 +679,13 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
     it('resumes the session after a pause that fits the reason, and returns the resumed run\'s answer', async () => {
       const [first, ...resumed] = [
-        failed(CAPACITY), failed(CAPACITY, TOKENS), failed(DROPPED, TOKENS),
-        failed('stream disconnected before completion: Transport error: network error: error decoding response body'),
-        failed('stream disconnected before completion: idle timeout waiting for SSE'),
-        failed(`${RATE_LIMIT} Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.`, TOKENS),
-        failed(`${RATE_LIMIT} Please try again in 1m0.5s.`),
+        failedRun(CAPACITY), failedRun(CAPACITY, PART), failedRun(DROPPED, PART),
+        failedRun('stream disconnected before completion: Transport error: network error: error decoding response body', PART),
+        failedRun('stream disconnected before completion: idle timeout waiting for SSE'),
+        failedRun(`${RATE_LIMIT} Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.`, PART),
+        failedRun(`${RATE_LIMIT} Please try again in 1m0.5s.`),
         // Codex gave up on a request the endpoint kept answering with 429, and the endpoint named no wait.
-        failed('exceeded retry limit, last status: 429 Too Many Requests', TOKENS), answer,
+        failedRun('exceeded retry limit, last status: 429 Too Many Requests'), answer,
       ];
       const { stdin, instructions, starts } = setupSpawnMock('', first, ...resumed);
 
@@ -700,24 +710,24 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
     it('fails with the last run\'s error once the resumes or the time limit are used up, and ends a pause when the run is cancelled', async () => {
       // Eight resumes: pauses of 15 s, 30 s and six of 60 s.
-      let mock = setupSpawnMock('', failed(CAPACITY));
+      let mock = setupSpawnMock('', failedRun(CAPACITY));
       let outcome = await settle(endpoint.sendMessage('sys', 'the diff'));
       expect(outcome.error).toBeInstanceOf(QuotaError);
-      expect(outcome.error).toMatchObject({ message: `OpenAI model at capacity: ERROR: ${CAPACITY}`, limit: 'OpenAI model at capacity' });
+      expect(outcome.error).toMatchObject({ message: `OpenAI model at capacity: ${CAPACITY}`, limit: 'OpenAI model at capacity' });
       expect(mock.starts).toHaveLength(9);
       expect(outcome.tookMs).toBe(350_000 + 9 * RUN_MS);
 
       // The third pause of 30 s would leave the resumed run under 30 s of a limit of 60 s, so the call fails when the third run does.
-      mock = setupSpawnMock('', failed(CAPACITY));
+      mock = setupSpawnMock('', failedRun(CAPACITY));
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
       expect(outcome.error).toMatchObject({ limit: 'OpenAI model at capacity' });
       expect(mock.starts).toHaveLength(3);
       expect(outcome.tookMs).toBe(20_000 + 3 * RUN_MS);
 
       // An advised wait is not sat out when it is longer than the time left, or leaves the resumed run under 30 s.
-      const wait58 = failed(`${RATE_LIMIT} Please try again in 58s.`);
+      const wait58 = failedRun(`${RATE_LIMIT} Please try again in 58s.`);
       for (const [run, timeoutMs, resetsAt] of [
-        [failed(`${RATE_LIMIT} Please try again in 3s.`), 2_000, 'in 3s'],
+        [failedRun(`${RATE_LIMIT} Please try again in 3s.`), 2_000, 'in 3s'],
         [{ ...wait58, ms: 57_900 }, 60_000, 'in 58s'],
         [wait58, 60_000, 'in 58s'],
       ] as const) {
@@ -730,39 +740,40 @@ describe('sendViaCLI (Codex CLI path)', () => {
       }
 
       // A resume with no pause needs the same 30 s: with exactly that left it starts, with less the call fails.
-      mock = setupSpawnMock('', { ...failed(DROPPED), ms: 30_000 }, answer);
+      mock = setupSpawnMock('', { ...failedRun(DROPPED), ms: 30_000 }, answer);
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
       expect(outcome.value?.content).toBe('[]');
       expect(mock.starts).toHaveLength(2);
       for (const ms of [30_001, 57_900]) {
-        mock = setupSpawnMock('', { ...failed(DROPPED), ms }, answer);
+        mock = setupSpawnMock('', { ...failedRun(DROPPED), ms }, answer);
         outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
         expect(outcome.error).not.toBeInstanceOf(QuotaError);
-        expect(outcome.error?.message).toContain(`Codex CLI invocation failed (exit 1: ERROR: ${DROPPED} [`);
+        expect(outcome.error?.message).toContain(`Codex CLI invocation failed (exit 1: <empty stderr> [`);
+        expect(outcome.error?.message).toContain(`result.text=${JSON.stringify(DROPPED)}`);
         expect(mock.starts).toHaveLength(1);
         expect(outcome.tookMs).toBe(ms);
       }
 
       // A resumed run has only the time the call has left. When it runs out, the call fails as the limit that made it
       // resume, and the timeout it carries names the call's whole limit.
-      mock = setupSpawnMock('', failed(CAPACITY), { hangs: true });
+      mock = setupSpawnMock('', failedRun(CAPACITY), { hangs: true });
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
       expect(outcome.error).toBeInstanceOf(QuotaError);
-      expect(outcome.error).toMatchObject({ message: `OpenAI model at capacity: ERROR: ${CAPACITY}`, limit: 'OpenAI model at capacity' });
+      expect(outcome.error).toMatchObject({ message: `OpenAI model at capacity: ${CAPACITY}`, limit: 'OpenAI model at capacity' });
       expect(outcome.error?.cause).toBeInstanceOf(TimeoutError);
       expect((outcome.error?.cause as Error).message).toContain('Codex CLI timed out after 60s');
       expect(mock.starts).toHaveLength(2);
       expect(outcome.tookMs).toBe(60_000);
 
       // A dropped connection is no limit, so the timeout stays the error.
-      mock = setupSpawnMock('', failed(DROPPED), { hangs: true });
+      mock = setupSpawnMock('', failedRun(DROPPED), { hangs: true });
       outcome = await settle(endpoint.sendMessage('sys', 'the diff', { timeoutMs: 60_000 }));
       expect(outcome.error).toBeInstanceOf(TimeoutError);
       expect(outcome.error?.message).toContain('Codex CLI timed out after 60s');
       expect(mock.starts).toHaveLength(2);
       expect(outcome.tookMs).toBe(60_000);
 
-      mock = setupSpawnMock('', failed(CAPACITY), answer);
+      mock = setupSpawnMock('', failedRun(CAPACITY), answer);
       const controller = new AbortController();
       const cancelled = settle(endpoint.sendMessage('sys', 'the diff', { signal: controller.signal }));
       setTimeout(() => controller.abort(new Error('run cancelled')), 5_000);
@@ -774,21 +785,26 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
     it('resumes no other failure, and never a ChatGPT login call', async () => {
       const others: CodexRun[] = [
-        failed('unexpected status 401 Unauthorized: Incorrect API key provided., url: https://llm.example/v1/responses'),
-        failed('The model `gpt-5.5` does not exist or you do not have access to it.'),
-        // A content filter and an error the endpoint words itself read like a dropped connection.
-        failed('stream disconnected before completion: Incomplete response returned, reason: content_filter'),
-        failed('stream disconnected before completion: Your request was rejected by the safety system.'),
-        failed('Quota exceeded. Check your plan and billing details.'),
-        failed(`${RATE_LIMIT} Visit https://platform.openai.com/account/rate-limits to learn more.`),
-        failed("You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29."),
-        // Without Codex's session line there is no session to resume, whatever the prompt it echoes says.
-        { exitCode: 1, stderr: stderrOf(CAPACITY, '') },
-        // Only an `ERROR:` line of Codex names a failed stream, never the prompt it echoes.
-        { exitCode: 1, stderr: `session id: ${SESSION}\n--------\nuser\nthe diff: ${CAPACITY}\n` },
-        // Codex's own error ends a run that exited with a code and printed no answer, so no other run is resumed.
-        { ...failed(CAPACITY), signal: 'SIGTERM' },
-        { ...failed(CAPACITY, TOKENS), stdout: 'half an answer' },
+        failedRun('unexpected status 401 Unauthorized: Incorrect API key provided., url: https://llm.example/v1/responses'),
+        failedRun('The model `gpt-5.5` does not exist or you do not have access to it.'),
+        failedRun("Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."),
+        // A content filter, an error the endpoint words itself and a request the endpoint reset read like a dropped connection.
+        failedRun('stream disconnected before completion: Incomplete response returned, reason: content_filter', message('partial answer')),
+        failedRun('stream disconnected before completion: Your request was rejected by the safety system.'),
+        failedRun('stream disconnected before completion: error sending request'),
+        failedRun('Quota exceeded. Check your plan and billing details.'),
+        failedRun(`${RATE_LIMIT} Visit https://platform.openai.com/account/rate-limits to learn more.`),
+        failedRun('You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 1:13 PM.'),
+        failedRun('We’re currently experiencing high demand, which may cause temporary errors.'),
+        // Without `thread.started`, or with an id in another form, there is no session to resume.
+        { exitCode: 1, stdout: jsonl(TURN, error(CAPACITY), failed(CAPACITY)) },
+        { exitCode: 1, stdout: jsonl(started('--last'), TURN, error(CAPACITY), failed(CAPACITY)) },
+        // Only Codex's own error in a sequence it was measured to print names a failed stream, never the model's text.
+        { exitCode: 1, stdout: jsonl(started(), TURN, message(`ERROR: ${CAPACITY}`)) },
+        { exitCode: 1, stdout: `${failedTurn(CAPACITY)}ERROR: ${CAPACITY}\n` },
+        { exitCode: 1, stdout: jsonl(started(), TURN, error(CAPACITY), failed(CAPACITY), message('more')) },
+        { exitCode: 2, stdout: failedTurn(CAPACITY) },
+        { ...failedRun(CAPACITY), signal: 'SIGTERM' },
       ];
       for (const run of others) {
         const { starts } = setupSpawnMock('', run, answer);
@@ -797,7 +813,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       }
 
       const login = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
-      for (const run of [failed(CAPACITY), failed(DROPPED), failed(`${RATE_LIMIT} Please try again in 3s.`)]) {
+      for (const run of [failedRun(CAPACITY), failedRun(DROPPED), failedRun(`${RATE_LIMIT} Please try again in 3s.`)]) {
         const { starts } = setupSpawnMock('', run, answer);
         const { error, tookMs } = await settle(login.sendMessage('sys', 'the diff', tools));
         expect(error).toBeInstanceOf(Error);
@@ -812,7 +828,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   it('reads back how often the tool server read each related repo, and passes no reads file without related repos', async () => {
-    setupSpawnMock('[]\n');
+    setupSpawnMock(answered('[]'));
     const spawnFromHelper = mockSpawn.getMockImplementation()!;
     mockSpawn.mockImplementation((...spawnArgs: Parameters<typeof spawnFromHelper>) => {
       const serverArgs = JSON.parse((spawnArgs[1] as string[]).find(arg => arg.startsWith('mcp_servers.manki.args='))!.slice('mcp_servers.manki.args='.length)) as string[];
@@ -843,7 +859,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
     await client.sendMessage('sys', 'user', { effort: 'high' });
@@ -856,7 +872,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
   it('warns and skips reasoning override on non-reasoning models', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
 
     await client.sendMessage('sys', 'user', { effort: 'high' });
@@ -870,7 +886,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
   it('warns and skips reasoning override for non-high effort on non-reasoning models', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
 
     await client.sendMessage('sys', 'user', { effort: 'low' });
@@ -883,7 +899,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   it('does not pass the OAuth secret as a CLI env var (auth flows via $CODEX_HOME/auth.json)', async () => {
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const savedKey = process.env.OPENAI_API_KEY;
     const savedOauthToken = process.env.OPENAI_OAUTH_TOKEN;
     const savedCodexOauth = process.env.CODEX_OAUTH_TOKEN;
@@ -929,7 +945,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   it('seeds `auth.json` in Manki\'s own Codex home, whatever `CODEX_HOME` and `HOME` say, and registers its tokens again after', async () => {
     const { seedAuthFile, registerAuthFileSecrets } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock; registerAuthFileSecrets: jest.Mock };
     seedAuthFile.mockClear();
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const savedEnv = process.env;
     process.env = { ...savedEnv, HOME: '/runner-home', CODEX_HOME: '/runner-home/.codex' };
 
@@ -960,7 +976,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     seedAuthFile.mockImplementationOnce(() => {
       throw new Error('openai_oauth_token did not decode to JSON. Bootstrap with `codex login` ...');
     });
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
 
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'sk-legacy' }, model: 'gpt-4o' });
     await expect(client.sendMessage('sys', 'user')).rejects.toThrow(
@@ -969,7 +985,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   it('maps low effort to model_reasoning_effort=low on o-series CLI invocation', async () => {
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
     await client.sendMessage('sys', 'user', { effort: 'low' });
@@ -981,7 +997,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   it('maps medium effort to model_reasoning_effort=medium on o-series CLI invocation', async () => {
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
     await client.sendMessage('sys', 'user', { effort: 'medium' });
@@ -993,7 +1009,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
   });
 
   it('maps max effort to the highest model_reasoning_effort the model accepts on CLI invocation', async () => {
-    setupSpawnMock('ok\n');
+    setupSpawnMock(answered('ok'));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.4' });
 
     await client.sendMessage('sys', 'user', { effort: 'max' });
@@ -1003,14 +1019,32 @@ describe('sendViaCLI (Codex CLI path)', () => {
     expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=xhigh');
   });
 
-  it('returns trimmed stdout content on success', async () => {
-    setupSpawnMock('  hello world  \n');
+  it('returns the trimmed text of the last message of a completed turn', async () => {
+    setupSpawnMock(answered('  hello world  '));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('hello world');
     expect(result.usage).toBeUndefined();
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+
+    // Codex printed the last message of the turn on stdout before `--json`, so earlier messages, reasoning, a tool call
+    // and its result, and a warning before the turn are not the answer. A turn without a message answers nothing.
+    const toolCall = { id: 'item_2', type: 'mcp_tool_call', server: 'manki', tool: 'read_file', arguments: { path: 'README.md' }, error: null };
+    for (const [stdout, content] of [
+      [answered('second message', message('first message')), 'second message'],
+      [answered('after reasoning', { type: 'item.completed', item: { id: 'item_0', type: 'reasoning', text: 'ERROR: thinking' } }), 'after reasoning'],
+      [jsonl(
+        started(), { type: 'item.completed', item: { id: 'item_0', type: 'error', message: 'Model metadata for `gpt-5.4` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.' } },
+        TURN, message('Let me read a file.', 'item_1'), { type: 'item.started', item: { ...toolCall, result: null, status: 'in_progress' } },
+        { type: 'item.completed', item: { ...toolCall, result: { content: [{ type: 'text', text: '1\tERROR: a line of the file' }] }, status: 'completed' } },
+        message('[]', 'item_3'), COMPLETED,
+      ), '[]'],
+      [jsonl(started(), TURN, COMPLETED), ''],
+    ]) {
+      setupSpawnMock(stdout);
+      expect((await client.sendMessage('sys', 'user')).content).toBe(content);
+    }
   });
 
   it('rejects on non-zero exit code with rich diagnostics', async () => {
@@ -1022,10 +1056,9 @@ describe('sendViaCLI (Codex CLI path)', () => {
     );
   });
 
-  it('throws a `QuotaError` on a usage limit or a model at capacity, reading only the `ERROR:` line that ends stderr', async () => {
-    const usageLimit = "ERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.";
-    const stderr = `user\nreview this: rate limit reached\n${usageLimit}\n`;
-    setupSpawnMock('', { exitCode: 1, stderr });
+  it('throws a `QuotaError` on a usage limit or a model at capacity, reading only Codex\'s own error from its `turn.failed` event', async () => {
+    const usageLimit = 'You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 1:13 PM.';
+    setupSpawnMock('', { exitCode: 1, stdout: failedTurn(usageLimit) });
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     jest.spyOn(core, 'info').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
@@ -1039,111 +1072,87 @@ describe('sendViaCLI (Codex CLI path)', () => {
     const later = Date.now() / 1000 + 60;
     utimesSync(session, later, later);
 
-    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e).finally(() => {
+    const limited = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e).finally(() => {
       rmSync(join(home, 'sessions'), { recursive: true, force: true });
     });
-    expect(error).toBeInstanceOf(QuotaError);
-    expect(error).toMatchObject({ limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' });
-    expect(error).toMatchObject({ limits: [{ account: 'ChatGPT subscription', window: 'weekly', usedPercent: 100 }] });
-
-    // Codex writes the prompt and the model's text to stderr too, so a limit counts only on the `ERROR:` line that ends it.
-    for (const elsewhere of [
-      'user\nreview this: rate limit reached\nERROR: stream disconnected\n',
-      `user\n${usageLimit}\nERROR: stream disconnected before completion\n`,
-      `user\n${usageLimit}\ncodex\nan answer\ntokens used\n2\n`,
-      `user\nreview this\n  ${usageLimit}\n`,
-    ]) {
-      setupSpawnMock('', { exitCode: 1, stderr: elsewhere });
-      const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
-      expect(other).not.toBeInstanceOf(QuotaError);
-      expect(other?.message).toContain('Codex CLI invocation failed (exit 1: ');
-    }
-
-    // An endpoint has no ChatGPT subscription behind it, so the limit is named as the endpoint's.
-    jest.spyOn(core, 'setSecret').mockImplementation(() => {});
-    setupSpawnMock('', { exitCode: 1, stderr: 'ERROR: exceeded retry limit, last status: 429 Too Many Requests\n' });
-    const endpoint = new OpenAIClient({ auth: { kind: 'endpoint', key: 'sk-endpoint-key', baseUrl: 'https://llm.example/v1' }, model: 'gpt-5.5' });
-    const limited = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
     expect(limited).toBeInstanceOf(QuotaError);
-    expect(limited).toMatchObject({
-      message: 'OpenAI endpoint limit reached: ERROR: exceeded retry limit, last status: 429 Too Many Requests',
-      limit: 'OpenAI endpoint limit reached',
-      credential: 'key',
-    });
+    expect(limited).toMatchObject({ message: `ChatGPT subscription limit reached: ${usageLimit}`, limit: 'ChatGPT subscription limit reached', resetsAt: 'at 1:13 PM', credential: 'token' });
+    expect(limited).toMatchObject({ limits: [{ account: 'ChatGPT subscription', window: 'weekly', usedPercent: 100 }] });
 
-    // What Codex 0.166.0 writes to stderr when the provider reports an overload: the capacity line ends it, twice.
-    const capacity = 'ERROR: Selected model is at capacity. Please try a different model.';
-    const codexStderr = (...lines: string[]): string => [
-      'Reading additional input from stdin...', 'OpenAI Codex v0.166.0', '--------', 'workdir: /tmp/manki-cli-1', 'model: gpt-5.5', 'provider: manki',
-      'approval: never', 'sandbox: read-only', 'reasoning effort: none', 'reasoning summaries: none', 'session id: 01a1e7a6-1a3a-7f72-a92d-693618c25506',
-      '--------', 'user', ...lines, '',
-    ].join('\n');
-    // No other credential helps, so the error names none. The time limit leaves no room for the pause before a resume.
-    for (const busy of [client, endpoint]) {
-      setupSpawnMock('', { exitCode: 1, stderr: codexStderr('review this', capacity, capacity) });
-      const full = await busy.sendMessage('sys', 'user', { timeoutMs: 10_000 }).then(() => null, (e: Error) => e);
+    // An endpoint has no ChatGPT subscription behind it, so the limit is named as the endpoint's. The time limit leaves
+    // no room for the pause before a resume.
+    jest.spyOn(core, 'setSecret').mockImplementation(() => {});
+    const endpoint = new OpenAIClient({ auth: { kind: 'endpoint', key: 'sk-endpoint-key', baseUrl: 'https://llm.example/v1' }, model: 'gpt-5.5' });
+    const capacity = 'Selected model is at capacity. Please try a different model.';
+    const rateLimit = 'rate limit exceeded: Rate limit reached for gpt-5.5 on tokens per min (TPM): Limit 30000, Used 29500, Requested 2000. Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.';
+    // A reply and a tool call can come before the error.
+    const toolCall = { type: 'item.completed', item: { id: 'item_1', type: 'mcp_tool_call', server: 'manki', tool: 'read_file', arguments: { path: 'README.md' }, result: { content: [] }, error: null, status: 'completed' } };
+    const capacityTyped = { limit: 'OpenAI model at capacity', resetsAt: undefined, credential: undefined };
+    for (const [busy, stdout, text, typed] of [
+      [endpoint, failedTurn('exceeded retry limit, last status: 429 Too Many Requests'), 'exceeded retry limit, last status: 429 Too Many Requests', { limit: 'OpenAI endpoint limit reached', credential: 'key' }],
+      [endpoint, failedTurn('Quota exceeded. Check your plan and billing details.'), 'Quota exceeded. Check your plan and billing details.', { limit: 'OpenAI endpoint limit reached', credential: 'key' }],
+      [endpoint, failedTurn(rateLimit, message('ERROR: half an answer')), rateLimit, { limit: 'OpenAI endpoint limit reached', resetsAt: 'in 3s', credential: 'key' }],
+      // No other credential gets past a model at capacity, so the error names none.
+      [client, failedTurn(capacity), capacity, capacityTyped],
+      [endpoint, failedTurn(capacity), capacity, capacityTyped],
+      [client, failedTurn(capacity, message('Let me read a file.'), toolCall), capacity, capacityTyped],
+    ] as const) {
+      setupSpawnMock('', { exitCode: 1, stdout });
+      const full = await busy.sendMessage('sys', 'user', { timeoutMs: 1_000 }).then(() => null, (e: Error) => e);
       expect(full).toBeInstanceOf(QuotaError);
-      expect(full).toMatchObject({ message: `OpenAI model at capacity: ${capacity}`, limit: 'OpenAI model at capacity', resetsAt: undefined, credential: undefined });
+      expect(full).toMatchObject({ message: `${typed.limit}: ${text}`, ...typed });
     }
 
-    // Once a request of the run has used tokens, Codex 0.166.0 ends stderr with its error twice, then `tokens used` and the count.
-    // The time limit leaves no room for the pause before a resume here either.
-    const rateLimit = 'ERROR: rate limit exceeded: Rate limit reached for gpt-5.5 in organization org-test on tokens per min (TPM): Limit 30000, Used 29500, Requested 2000. Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.';
-    for (const [busy, line, typed] of [
-      [client, capacity, { limit: 'OpenAI model at capacity', credential: undefined }],
-      [endpoint, capacity, { limit: 'OpenAI model at capacity', credential: undefined }],
-      [endpoint, rateLimit, { limit: 'OpenAI endpoint limit reached', resetsAt: 'in 3s', credential: 'key' }],
-      [client, usageLimit, { limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' }],
+    // The model's text arrives inside a JSON string, so a reply made of `ERROR:` lines is never a limit, whatever the
+    // exit. A completed turn returns it as the answer.
+    const reply = ['I looked at the diff.', `ERROR: ${capacity}`, `ERROR: ${usageLimit}`, 'ERROR: exceeded retry limit, last status: 429 Too Many Requests', `ERROR: ${capacity}`].join('\n');
+    for (const busy of [client, endpoint]) {
+      setupSpawnMock(answered(reply));
+      expect((await busy.sendMessage('sys', 'user')).content).toBe(reply);
+    }
+    const dropped = 'stream disconnected before completion: Transport error: network error: error decoding response body';
+    for (const [run, exit] of [
+      // The turn failed after the reply on an error that is no limit.
+      [{ exitCode: 1, stdout: failedTurn(dropped, message(reply)) }, 'exit 1'],
+      // A signal or Manki ended the run, maybe in the middle of a line.
+      [{ signal: 'SIGTERM', stdout: jsonl(started(), TURN, message(reply)) }, 'exit null, signal SIGTERM'],
+      [{ signal: 'SIGKILL', stdout: `${jsonl(started(), TURN, message(reply))}{"type":"error","message":"${capacity}` }, 'exit null, signal SIGKILL'],
+      // Codex exited without an event that ends the turn.
+      [{ exitCode: 1, stdout: jsonl(started(), TURN, message(reply)) }, 'exit 1'],
     ] as const) {
-      setupSpawnMock('', { exitCode: 1, stderr: codexStderr('review this', '', line, line, 'tokens used', '1,011') });
-      const afterTokens = await busy.sendMessage('sys', 'user', { timeoutMs: 1_000 }).then(() => null, (e: Error) => e);
-      expect(afterTokens).toBeInstanceOf(QuotaError);
-      expect(afterTokens).toMatchObject({ message: `${typed.limit}: ${line}`, ...typed });
+      setupSpawnMock('', run);
+      const plain = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+      expect(plain).not.toBeInstanceOf(QuotaError);
+      expect(plain?.message).toContain(`Codex CLI invocation failed (${exit}: <empty stderr> [`);
     }
 
-    // Only that exact line at the end of stderr counts, or twice above the token count. The same words in the prompt,
-    // in the model's text, inside another error or above anything else stay a plain error.
-    for (const [elsewhere, shown] of [
-      [codexStderr(capacity, 'ERROR: stream disconnected before completion: stream closed before response.completed'), 'ERROR: stream disconnected before completion: stream closed before response.completed'],
-      [codexStderr('review this', 'codex', capacity, 'tokens used', '2'), capacity],
-      [codexStderr('review this', capacity, `${capacity} Or wait.`, 'tokens used', '2'), `${capacity} Or wait.`],
-      [codexStderr('review this', capacity, capacity, 'tokens used', 'many'), capacity],
-      [codexStderr('review this', capacity, capacity, 'tokens used', '2', 'codex'), capacity],
-      [codexStderr('review this', capacity, capacity, 'tokens spent', '2'), capacity],
-      [codexStderr('review this', ` ${capacity}`), capacity],
-      [codexStderr('review this', `${capacity} Or wait.`), `${capacity} Or wait.`],
-      [codexStderr('review this', 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'), 'ERROR: unexpected status 503 Service Unavailable: the upstream is overloaded'],
-    ]) {
-      setupSpawnMock('', { exitCode: 1, stderr: elsewhere });
+    // Codex's own error counts only in the sequence it was measured to print. A line that is no event, another exit, or
+    // events missing, doubled, out of order or unknown leave a plain failure, and no answer either.
+    for (const [stdout, exitCode] of [
+      [`${failedTurn(capacity)}ERROR: ${capacity}\n`, 1],
+      [`ERROR: ${capacity}\n${failedTurn(capacity)}`, 1],
+      [`${failedTurn(capacity)}\n`, 1],
+      [failedTurn(capacity), 2],
+      [failedTurn(capacity), 0],
+      [failedTurn(capacity).slice(0, -1), 1],
+      [jsonl(TURN, error(capacity), failed(capacity)), 1],
+      [jsonl(started(), error(capacity), failed(capacity)), 1],
+      [jsonl(started(), TURN, TURN, error(capacity), failed(capacity)), 1],
+      [jsonl(started(), TURN, failed(capacity), error(capacity)), 1],
+      [jsonl(started(), TURN, error(capacity), failed(capacity), failed(capacity)), 1],
+      [jsonl(started(), TURN, error(capacity), failed(capacity), { type: 'turn.diff' }), 1],
+      [jsonl(started(), TURN, message(reply), COMPLETED, failed(capacity)), 1],
+      [`${answered(reply)}done\n`, 0],
+      [answered(reply), 1],
+      [jsonl(started(), TURN, message(reply)), 0],
+      [jsonl(started(), TURN, message(reply), COMPLETED, COMPLETED), 0],
+    ] as const) {
+      setupSpawnMock('', { exitCode, stdout });
       const plain = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
       expect(plain).not.toBeInstanceOf(QuotaError);
-      expect(plain?.message).toContain(`Codex CLI invocation failed (exit 1: ${shown} [`);
+      expect(plain?.message).toContain(`Codex CLI invocation failed (exit ${exitCode}: <empty stderr> [`);
+      expect(plain?.message).toContain('<no result event>');
     }
-
-    // The model's text, which Codex 0.166.0 prints below a `codex` line, can end in those lines too. An interrupted
-    // run prints `turn interrupted` below it.
-    const reply = ['codex', 'I looked at the diff.', capacity, capacity];
-    const counted = [...reply, 'tokens used', '1,011'];
-    for (const [stdout, run, exit] of [
-      // A signal ended the run, so stderr stops on the model's text.
-      ['', { signal: 'SIGTERM', stderr: codexStderr('review this', ...reply) }, 'exit null, signal SIGTERM'],
-      ['', { signal: 'SIGKILL', stderr: codexStderr('review this', ...reply) }, 'exit null, signal SIGKILL'],
-      ['', { signal: 'SIGHUP', stderr: codexStderr('review this', ...counted) }, 'exit null, signal SIGHUP'],
-      ['', { exitCode: 1, stderr: codexStderr('review this', ...reply, 'turn interrupted') }, 'exit 1'],
-      ['', { exitCode: 1, stderr: codexStderr('review this', ...reply, 'turn interrupted', 'tokens used', '1,011') }, 'exit 1'],
-      // Codex prints the answer on stdout once the turn completed, so its own error did not end this run.
-      [`${reply.slice(1).join('\n')}\n`, { exitCode: 1, stderr: codexStderr('review this', ...counted) }, 'exit 1'],
-      [`${reply.slice(1).join('\n')}\n`, { exitCode: 1, stderr: codexStderr('review this', ...reply) }, 'exit 1'],
-    ] as const) {
-      setupSpawnMock(stdout, run);
-      const plain = await endpoint.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
-      expect(plain).not.toBeInstanceOf(QuotaError);
-      expect(plain?.message).toContain(`Codex CLI invocation failed (${exit}: ${capacity} [`);
-    }
-
-    // A completed turn ends stderr the same way, and its stdout is the answer.
-    setupSpawnMock(`${reply.slice(1).join('\n')}\n`, { stderr: codexStderr('review this', ...counted) });
-    expect((await endpoint.sendMessage('sys', 'user')).content).toBe(reply.slice(1).join('\n'));
   });
 
   it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {
@@ -1265,7 +1274,7 @@ describe('sendViaCLI — extended coverage', () => {
       wiring.stderrHandlers['data']?.(Buffer.from('reasoning effort: high\n'));
       jest.advanceTimersByTime(STALE_TIMEOUT_MS * 5);
       expect(wiring.proc.kill).not.toHaveBeenCalled();
-      wiring.stdoutHandlers['data']?.(Buffer.from('late answer'));
+      wiring.stdoutHandlers['data']?.(Buffer.from(answered('late answer')));
       wiring.procHandlers['close']?.(0, null);
 
       expect((await promise).content).toContain('late answer');
@@ -1326,6 +1335,7 @@ describe('sendViaCLI — extended coverage', () => {
 
     await waitForListeners(wiring);
     wiring.stdinHandlers['error']?.(new Error('EPIPE'));
+    wiring.stdoutHandlers['data']?.(Buffer.from(answered('ok')));
     wiring.procHandlers['close']?.(0, null);
 
     await promise;
@@ -1357,23 +1367,24 @@ describe('sendViaCLI — extended coverage', () => {
     wiring.stdinHandlers['drain']?.();
     expect(wiring.proc.stdin.end).toHaveBeenCalled();
 
+    wiring.stdoutHandlers['data']?.(Buffer.from(answered('ok')));
     wiring.procHandlers['close']?.(0, null);
     await promise;
   });
 
-  it('accumulates multi-chunk stdout and returns trimmed content on success', async () => {
+  it('reads events that arrive in chunks split anywhere, also inside a character', async () => {
     const wiring = makeProc();
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
     const promise = client.sendMessage('sys', 'user');
     promise.catch(() => {});
 
     await waitForListeners(wiring);
-    // Small chunk exercises the < 500 branch; large chunk exercises the >= 500 branch.
-    wiring.stdoutHandlers['data']?.(Buffer.from('short '));
-    wiring.stdoutHandlers['data']?.(Buffer.from('A'.repeat(600)));
+    const text = `short ${'A'.repeat(600)} ✓`;
+    const stdout = Buffer.from(answered(text));
+    const cuts = [10, stdout.indexOf('✓') + 1, stdout.length - 3];
+    [0, ...cuts].forEach((from, i) => wiring.stdoutHandlers['data']?.(stdout.subarray(from, cuts[i])));
     wiring.procHandlers['close']?.(0, null);
-    const result = await promise;
-    expect(result.content).toContain('A');
+    expect((await promise).content).toBe(text);
   });
 
   it('includes last 500 bytes of stdout, or that Codex was reconnecting, in the timeout error message', async () => {
@@ -1395,11 +1406,27 @@ describe('sendViaCLI — extended coverage', () => {
       const waitingPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 });
       waitingPromise.catch(() => {});
       await waitForListeners(waiting);
-      waiting.stderrHandlers['data']?.(Buffer.from('user\nthe prompt\nERROR: Reconnecting... 1/30\nERROR: Reconnecting... 2/30\n'));
+      const retry = (n: number) => error(`Reconnecting... ${n}/5 (stream disconnected before completion: idle timeout waiting for SSE)`);
+      waiting.stdoutHandlers['data']?.(Buffer.from(jsonl(started(), TURN, retry(1), retry(2))));
       jest.advanceTimersByTime(900_000 + 100);
       waiting.procHandlers['close']?.(null, 'SIGTERM');
 
-      await expect(waitingPromise).rejects.toThrow('Codex CLI timed out after 900s. The CLI was waiting on the provider and retrying a failed request (retry 2 of 30). stderr: ERROR: Reconnecting... 2/30');
+      await expect(waitingPromise).rejects.toThrow(`. The CLI was waiting on the provider and retrying a failed request (${retry(2).message})`);
+
+      // A retry that an event or the model's text followed, or that a line cut short follows, is no wait at the end.
+      for (const stdout of [
+        jsonl(started(), TURN, retry(1), message('back')),
+        jsonl(started(), TURN, message(`ERROR: ${retry(1).message}`), message(retry(2).message)),
+        `${jsonl(started(), TURN, retry(1))}{"type":"item.comp`,
+      ]) {
+        const after = makeProc();
+        const afterPromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
+        await waitForListeners(after);
+        after.stdoutHandlers['data']?.(Buffer.from(stdout));
+        jest.advanceTimersByTime(900_000 + 100);
+        after.procHandlers['close']?.(null, 'SIGTERM');
+        expect((await afterPromise)?.message).not.toContain('retrying a failed request');
+      }
     } finally {
       jest.useRealTimers();
     }
@@ -1408,80 +1435,103 @@ describe('sendViaCLI — extended coverage', () => {
   it('ends a run that shows only that Codex waits for the network for two minutes, as unreachable only when no request reached the model', async () => {
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     jest.spyOn(core, 'info').mockImplementation(() => {});
-    const noNetwork = 'ERROR: Reconnecting... waiting for network\n';
-    // Codex echoes the prompt below its header.
-    const header = 'session id: 01a1ea55-c867-71d0-b260-faea7b058ed3\n--------\nuser\n';
-    const waitedOut = 'Codex CLI was waiting for the network for 120s, so the call ends as a failed connection. stderr: ERROR: Reconnecting... waiting for network';
+    // What Codex 0.166.0 printed when the connection to the endpoint was refused, its host did not resolve or TLS failed.
+    const noNetwork = error('Reconnecting... waiting for network (Connection failed: error sending request)');
+    const waitedOut = 'Codex CLI was waiting for the network for 120s, so the call ends as a failed connection: Reconnecting... waiting for network';
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const client = new OpenAIClient({ auth: { kind: 'endpoint', key: 'sk-test', baseUrl: 'http://127.0.0.1:1/v1' }, model: 'gpt-4o' });
       const lost = makeProc();
       const lostPromise = client.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
       await waitForListeners(lost);
-      lost.stderrHandlers['data']?.(Buffer.from(`${header}the prompt\n${noNetwork}`));
+      lost.stdoutHandlers['data']?.(Buffer.from(jsonl(started(), TURN, noNetwork)));
       jest.advanceTimersByTime(60_000);
-      // A repeat of the line keeps the first one's clock.
-      lost.stderrHandlers['data']?.(Buffer.from(noNetwork));
+      // A repeat of the note keeps the first one's clock, and so does Codex's log on stderr.
+      lost.stdoutHandlers['data']?.(Buffer.from(jsonl(noNetwork)));
+      lost.stderrHandlers['data']?.(Buffer.from('2026-11-18T02:14:40.709531Z ERROR codex_models_manager::manager: failed to refresh available models\n'));
       jest.advanceTimersByTime(59_000);
       expect(lost.proc.kill).not.toHaveBeenCalled();
       jest.advanceTimersByTime(1_000);
       expect(lost.proc.kill).toHaveBeenCalledWith('SIGTERM');
       lost.procHandlers['close']?.(null, 'SIGTERM');
-      const failed = await lostPromise;
-      expect(failed).toBeInstanceOf(UnreachableError);
-      expect(failed).toMatchObject({ message: waitedOut, limit: 'OpenAI endpoint unreachable', credential: undefined });
+      const failure = await lostPromise;
+      expect(failure).toBeInstanceOf(UnreachableError);
+      expect(failure).toMatchObject({ message: waitedOut, limit: 'OpenAI endpoint unreachable', credential: undefined });
       expect(mockSpawn).toHaveBeenCalledTimes(1);
 
-      /** Starts a call on `on` whose run prints `stdout` and `stderr` and then waits out the network, and returns its error. */
-      const waitOut = async (stderr: string, stdout = '', on = client): Promise<Error | null> => {
+      /** Starts a call on `on` whose run prints `stdout` and then waits out the network, and returns its error. */
+      const waitOut = async (stdout: string, on = client): Promise<Error | null> => {
         const run = makeProc();
         const call = on.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
         await waitForListeners(run);
-        if (stdout) run.stdoutHandlers['data']?.(Buffer.from(stdout));
-        run.stderrHandlers['data']?.(Buffer.from(stderr));
+        run.stdoutHandlers['data']?.(Buffer.from(stdout));
         jest.advanceTimersByTime(120_000);
         run.procHandlers['close']?.(null, 'SIGTERM');
         return call;
       };
-      // A ChatGPT login names OpenAI itself.
-      const chatgpt = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
-      expect(await waitOut(`${header}the prompt\n${noNetwork}`, '', chatgpt)).toMatchObject({ name: 'UnreachableError', limit: 'OpenAI unreachable' });
-      // The model's text, an answer on stdout, or an echo of another prompt can follow a request the model received.
-      for (const [stderr, stdout] of [
-        [`${header}the prompt\ncodex\nI looked at the diff.\n${noNetwork}`, ''],
-        [`${header}the prompt\n${noNetwork}`, '['],
-        [`${header}another prompt\n${noNetwork}`, ''],
-        [`the prompt\n${noNetwork}`, ''],
+      // A ChatGPT login names OpenAI itself. A model Codex has no metadata for adds a warning before the turn, and Codex
+      // can word the cause of a failed connect otherwise. A known model has no warning.
+      const chatgpt = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
+      expect(await waitOut(jsonl(started(), TURN, noNetwork, noNetwork), chatgpt)).toMatchObject({ name: 'UnreachableError', limit: 'OpenAI unreachable' });
+      const noMetadata = (model: string, text = 'not found. Defaulting to fallback metadata; this can degrade performance and cause issues.') =>
+        ({ type: 'item.completed', item: { id: 'item_0', type: 'error', message: `Model metadata for \`${model}\` ${text}` } });
+      for (const stdout of [
+        jsonl(started(), noMetadata('gpt-4o'), TURN, noNetwork),
+        jsonl(started(), TURN, error('Reconnecting... waiting for network (Connection failed: error sending request for url (http://127.0.0.1:1/v1/responses))'), noNetwork),
       ]) {
-        const other = await waitOut(stderr, stdout);
+        expect(await waitOut(stdout)).toMatchObject({ name: 'UnreachableError', limit: 'OpenAI endpoint unreachable', message: waitedOut });
+      }
+      // Any other event, such as a message, a retry of a request, another warning or one in another place, can follow a
+      // request the provider received. A server that received the request can make Codex print the retries over
+      // WebSocket that a refused login connection prints, the fallback to HTTPS too.
+      const refused = 'stream disconnected before completion: Connection refused (os error 61)';
+      const fallback = { type: 'item.completed', item: { id: 'item_0', type: 'error', message: `Falling back from WebSockets to HTTPS transport. ${refused}` } };
+      const waits = (event: object) => [event, noNetwork];
+      for (const [stdout, on] of [
+        [jsonl(started(), TURN, message('I looked at the diff.'), noNetwork), client],
+        [jsonl(started(), TURN, error(`Reconnecting... 2/5 (${refused})`), noNetwork), client],
+        [jsonl(started(), TURN, error(`Reconnecting... 2/5 (${refused})`), error(`Reconnecting... 5/5 (${refused})`), ...waits(fallback)), chatgpt],
+        [jsonl(started(), noMetadata('gpt-4o', 'not found.'), TURN, noNetwork), client],
+        [jsonl(started(), noMetadata('gpt-4o'), noMetadata('gpt-4o'), TURN, noNetwork), client],
+        [jsonl(started(), TURN, noMetadata('gpt-4o'), noNetwork), client],
+        [jsonl(noMetadata('gpt-4o'), started(), TURN, noNetwork), client],
+        [jsonl(started(), TURN, error('Reconnecting... waiting for network (Transport error)'), noNetwork), client],
+        [jsonl(TURN, noNetwork), client],
+        [`${jsonl(started(), TURN)}ERROR: Reconnecting... waiting for network\n${jsonl(noNetwork)}`, client],
+        [jsonl(started(), TURN, message(noNetwork.message), noNetwork), client],
+      ] as const) {
+        const other = await waitOut(stdout, on);
         expect([other?.message, other instanceof QuotaError]).toEqual([waitedOut, false]);
       }
+      // A wait whose cause Codex words otherwise still ends after 2 minutes, as a plain failed connection.
+      expect(await waitOut(jsonl(started(), TURN, error('Reconnecting... waiting for network (dns error)')))).toMatchObject({ name: 'Error', message: waitedOut });
 
       // A resumed run follows a run that reached the model, so its wait fails as a plain connection failure.
       mockSpawn.mockClear();
       const dropped = makeProc();
       const resumedPromise = client.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
       await waitForListeners(dropped);
-      dropped.stderrHandlers['data']?.(Buffer.from(`${header}the prompt\nERROR: stream disconnected before completion: stream closed before response.completed\n`));
+      dropped.stdoutHandlers['data']?.(Buffer.from(failedTurn('stream disconnected before completion: stream closed before response.completed')));
       const resumed = makeProc();
       dropped.procHandlers['close']?.(1, null);
       await waitForListeners(resumed);
-      resumed.stderrHandlers['data']?.(Buffer.from(`${header}${String(resumed.proc.stdin.write.mock.calls[0]?.[0])}\n${noNetwork}`));
+      resumed.stdoutHandlers['data']?.(Buffer.from(jsonl(started(), TURN, noNetwork)));
       jest.advanceTimersByTime(120_000);
       resumed.procHandlers['close']?.(null, 'SIGTERM');
       const afterResume = await resumedPromise;
       expect([mockSpawn.mock.calls.length, afterResume?.message, afterResume instanceof QuotaError]).toEqual([2, waitedOut, false]);
 
-      // Any other output in between starts the clock again, and a run that answers keeps its answer.
+      // Any other output in between starts the clock again, a line cut short too, and a run that answers keeps its answer.
       const back = makeProc();
       const backPromise = client.sendMessage('sys', 'the prompt', { timeoutMs: 900_000 });
       await waitForListeners(back);
-      back.stderrHandlers['data']?.(Buffer.from(`${header}the prompt\n${noNetwork}`));
+      back.stdoutHandlers['data']?.(Buffer.from(jsonl(started(), TURN, noNetwork)));
       jest.advanceTimersByTime(100_000);
-      back.stderrHandlers['data']?.(Buffer.from('codex\nI looked at the diff.\n'));
-      back.stderrHandlers['data']?.(Buffer.from(noNetwork));
+      back.stdoutHandlers['data']?.(Buffer.from(jsonl(message('I looked at the diff.'), noNetwork)));
       jest.advanceTimersByTime(100_000);
-      back.stdoutHandlers['data']?.(Buffer.from('[]'));
+      back.stdoutHandlers['data']?.(Buffer.from('{"type":"item.comp'));
+      jest.advanceTimersByTime(100_000);
+      back.stdoutHandlers['data']?.(Buffer.from(`leted","item":${JSON.stringify(message('[]').item)}}\n${jsonl(COMPLETED)}`));
       jest.advanceTimersByTime(100_000);
       expect(back.proc.kill).not.toHaveBeenCalled();
       back.procHandlers['close']?.(0, null);
@@ -1491,23 +1541,24 @@ describe('sendViaCLI — extended coverage', () => {
     }
   });
 
-  it('fails a call Manki ended itself on the time limit or the abort reason, whatever stderr ends on', async () => {
+  it('fails a call Manki ended itself on the time limit or the abort reason, whatever the run printed', async () => {
     jest.spyOn(core, 'warning').mockImplementation(() => {});
-    const capacity = 'ERROR: Selected model is at capacity. Please try a different model.';
-    const stderr = Buffer.from(`user\nthe prompt\ncodex\nI looked at the diff.\n${capacity}\n${capacity}\n`);
+    const capacity = 'Selected model is at capacity. Please try a different model.';
+    const stdout = Buffer.from(failedTurn(capacity, message(`ERROR: ${capacity}`)));
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const late = makeProc();
       const latePromise = client.sendMessage('sys', 'user', { timeoutMs: 900_000 }).then(() => null, (e: Error) => e);
       await waitForListeners(late);
-      late.stderrHandlers['data']?.(stderr);
+      late.stdoutHandlers['data']?.(stdout);
       jest.advanceTimersByTime(900_000 + 100);
       expect(late.proc.kill).toHaveBeenCalledWith('SIGTERM');
       late.procHandlers['close']?.(null, 'SIGTERM');
       const timedOut = await latePromise;
       expect(timedOut).not.toBeInstanceOf(QuotaError);
-      expect(timedOut?.message).toBe(`Codex CLI timed out after 900s. stderr: ${capacity}`);
+      expect(timedOut).toBeInstanceOf(TimeoutError);
+      expect(timedOut?.message).toMatch(/^Codex CLI timed out after 900s\. Last stdout: .*"turn\.failed"/s);
     } finally {
       jest.useRealTimers();
     }
@@ -1517,7 +1568,7 @@ describe('sendViaCLI — extended coverage', () => {
     const reason = new Error('run cancelled');
     const cancelledPromise = client.sendMessage('sys', 'user', { signal: controller.signal }).then(() => null, (e: Error) => e);
     await waitForListeners(cancelled);
-    cancelled.stderrHandlers['data']?.(stderr);
+    cancelled.stdoutHandlers['data']?.(stdout);
     controller.abort(reason);
     expect(cancelled.proc.kill).toHaveBeenCalledWith('SIGTERM');
     cancelled.procHandlers['close']?.(null, 'SIGTERM');
@@ -1543,7 +1594,7 @@ describe('ensureCLI auto-install', () => {
       kill: jest.fn(),
     };
     proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
-      if (event === 'data') setTimeout(() => cb(Buffer.from('ok\n')), 0);
+      if (event === 'data') setTimeout(() => cb(Buffer.from(answered('ok'))), 0);
     });
     proc.stderr.on.mockImplementation(() => {});
     proc.on.mockImplementation((event: string, cb: (...a: unknown[]) => void) => {

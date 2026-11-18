@@ -221,13 +221,16 @@ function answerCodex(run: StandInRun): Answer {
   };
 }
 
-function runCodex(args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; stderr: string }> {
+/** Runs Codex and returns its exit code and output. With `--json` Codex prints its events, its errors too, on stdout. */
+function runCodex(args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; output: string }> {
   return new Promise((done, fail) => {
-    const child = spawn('codex', args, { cwd, env, stdio: ['pipe', 'ignore', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+    const child = spawn('codex', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = '';
+    const keep = (data: Buffer) => { output += data.toString(); };
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
     child.on('error', fail);
-    child.on('close', code => done({ code, stderr }));
+    child.on('close', code => done({ code, output }));
     child.stdin.end('Reply with OK.');
   });
 }
@@ -254,9 +257,9 @@ interface CodexRun {
 
 /**
  * Runs Codex on `model` the way Manki runs a reviewer with repository tools, against a stand-in endpoint, on a runner
- * whose home holds its own Codex setup. Returns what the stand-in saw, and Codex's exit code and stderr.
+ * whose home holds its own Codex setup. Returns what the stand-in saw, and Codex's exit code and output.
  */
-async function checkRun({ model, login, runnerHome }: CodexRun, repo: string, scratch: string): Promise<{ run: StandInRun; code: number | null; stderr: string }> {
+async function checkRun({ model, login, runnerHome }: CodexRun, repo: string, scratch: string): Promise<{ run: StandInRun; code: number | null; output: string }> {
   const run = newRun();
   const standIn = await startStandIn(run, answerCodex(run));
   try {
@@ -280,9 +283,9 @@ async function checkRun({ model, login, runnerHome }: CodexRun, repo: string, sc
       '-c', `model_instructions_file=${JSON.stringify(instructions)}`, '-',
     ];
     try {
-      const { code, stderr } = await runCodex(args, env, cwd);
+      const { code, output } = await runCodex(args, env, cwd);
       if (existsSync(hookFlag)) run.ran.push(HOOK_FLAG);
-      return { run, code, stderr };
+      return { run, code, output };
     } finally {
       rmSync(authFile, { force: true });
     }
@@ -318,8 +321,8 @@ async function main(): Promise<number> {
     const runs: string[] = [];
     const models = Object.keys(expected);
     for (const model of models) {
-      const { run, code, stderr } = await checkRun({ model, login: false, runnerHome: false }, repo, scratch);
-      if (code !== 0 || run.bodies.length === 0) throw new Error(`Codex exited with ${code} on ${model}:\n${stderr.slice(-2000)}`);
+      const { run, code, output } = await checkRun({ model, login: false, runnerHome: false }, repo, scratch);
+      if (code !== 0 || run.bodies.length === 0) throw new Error(`Codex exited with ${code} on ${model}:\n${output.slice(-2000)}`);
       const offered = offeredTools(run.bodies[0]);
       const tools = { offered, held: heldToolsCall(offered) && run.bodies[1] ? heldTools(run.bodies[1]) : [], sources: searchSources(run.bodies[0]) };
       actual[model] = tools;

@@ -122,26 +122,16 @@ export async function callWithTimeout<T>(label: string, { timeoutMs, signal }: S
   }
 }
 
-/** Returns the last non-empty line of `text` as written, without any leading whitespace cut. */
-export function lastLine(text: string): string {
-  const ended = text.trimEnd();
-  return ended.slice(ended.lastIndexOf('\n') + 1);
-}
-
-// The Codex CLI prints this line when the provider failed a request, and then waits before it sends the request again.
-const RECONNECTING_LINE = /^ERROR:\s+Reconnecting\.\.\. (\d+)\/(\d+)/;
-
 /**
- * Build diagnostic snippets for timeout/stale error messages. When stderr ends on a `RECONNECTING_LINE`, the
- * snippet says the CLI was waiting on the provider, ahead of the line.
+ * Build diagnostic snippets for timeout/stale error messages. `retrying` is the CLI's own note that it was retrying a
+ * failed request when it was ended, and the snippet says so ahead of stderr.
  */
-export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
+export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string, retrying?: string): string {
   const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
   const stderrSnippet = extractCliErrorSnippet(stderrText);
-  const reconnecting = RECONNECTING_LINE.exec(lastLine(stderrText));
   const parts: string[] = [];
   if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
-  if (reconnecting) parts.push(`The CLI was waiting on the provider and retrying a failed request (retry ${reconnecting[1]} of ${reconnecting[2]})`);
+  if (retrying) parts.push(`The CLI was waiting on the provider and retrying a failed request (${sanitizeLogOutput(retrying).slice(0, 500)})`);
   if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
   return parts.join('. ');
 }
@@ -744,11 +734,14 @@ export interface RunCliOptions {
   /** Kills the CLI once it aborts. The run then rejects with the signal's reason. */
   signal?: AbortSignal;
   /**
-   * Kills the CLI once its stderr has ended on a line that `line` matches for `limitMs`, with no other output since that
-   * line first showed. The run then rejects with an error that says the CLI was `doing`. The error is an `UnreachableError`
-   * when `unreachable` returns its `limit` for the run's stderr, and a plain `Error` otherwise.
+   * Kills the CLI once its stdout has ended on the CLI's `note` that it waits for `limitMs`. After each stdout chunk,
+   * `since` returns where the notes that end stdout start, or `undefined` when it does not end on one. The run then
+   * rejects with an error that says the CLI was `doing` and gives the note. The error is an `UnreachableError` when
+   * `unreachable` returns its `limit`, and a plain `Error` otherwise.
    */
-  waiting?: { line: RegExp; limitMs: number; doing: string; unreachable?: (stderr: string) => string | undefined };
+  waiting?: { since: () => number | undefined; note: string; limitMs: number; doing: string; unreachable?: () => string | undefined };
+  /** Returns the CLI's own note that it is retrying a failed request, for the message of a run that ran out of time. */
+  retrying?: () => string | undefined;
 }
 
 export interface CliExit {
@@ -826,16 +819,16 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     resetStaleTimer();
 
     let waitTimer: NodeJS.Timeout | undefined;
-    const stopWaitTimer = (): void => {
-      clearTimeout(waitTimer);
-      waitTimer = undefined;
-    };
+    let waitSince: number | undefined;
     const watchWaiting = (): void => {
       if (!opts.waiting) return;
-      if (!opts.waiting.line.test(lastLine(stderr))) {
-        stopWaitTimer();
-        return;
+      const since = opts.waiting.since();
+      if (since !== waitSince) {
+        clearTimeout(waitTimer);
+        waitTimer = undefined;
       }
+      waitSince = since;
+      if (since === undefined) return;
       waitTimer ??= setTimeout(() => {
         if (outputExceeded || timedOut || stale || aborted) return;
         waitedOut = true;
@@ -877,14 +870,13 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     child.stdout.on('data', (data: Buffer) => {
       if (outputExceeded || settled || stale || timedOut || aborted) return;
       resetStaleTimer();
-      stopWaitTimer();
       if (!countBytes(data.length)) return;
       takeStdout(stdoutDecoder.write(data));
+      watchWaiting();
     });
     child.stderr.on('data', (data: Buffer) => {
       if (outputExceeded || settled) return;
       stderr += stderrDecoder.write(data);
-      watchWaiting();
       countBytes(data.length);
     });
 
@@ -900,21 +892,21 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
         return;
       }
       if (stale && staleTimeoutMs !== undefined) {
-        const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+        const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr, opts.retrying?.());
         const msg = `${label} CLI stale — no output for ${staleTimeoutMs / 1000}s${details ? `. ${details}` : ''}`;
         core.warning(msg);
         reject(new Error(msg));
         return;
       }
       if (waitedOut && opts.waiting) {
-        const msg = `${label} CLI was ${opts.waiting.doing} for ${opts.waiting.limitMs / 1000}s, so the call ends as a failed connection. stderr: ${extractCliErrorSnippet(stderr)}`;
+        const msg = `${label} CLI was ${opts.waiting.doing} for ${opts.waiting.limitMs / 1000}s, so the call ends as a failed connection: ${opts.waiting.note}`;
         core.warning(msg);
-        const unreachable = opts.waiting.unreachable?.(stderr);
+        const unreachable = opts.waiting.unreachable?.();
         reject(unreachable ? new UnreachableError(msg, unreachable) : new Error(msg));
         return;
       }
       if (timedOut) {
-        const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+        const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr, opts.retrying?.());
         const msg = `${label} CLI timed out after ${hardTimeoutMs / 1000}s${details ? `. ${details}` : ''}`;
         core.warning(msg);
         reject(new TimeoutError(msg));

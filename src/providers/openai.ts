@@ -7,8 +7,8 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { registerSecret } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, extractCliErrorSnippet, HARD_TIMEOUT_MS, lastLine, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { registerSecret, safeJsonParse } from '../utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -193,24 +193,87 @@ function openAITimeoutError(error: unknown, requestTimeoutMs: number): TimeoutEr
   return new TimeoutError(`OpenAI API timed out after ${requestTimeoutMs / 1000}s per request`, { cause: error });
 }
 
-// The line Codex ends its stderr with when the provider reports an overload.
-const CAPACITY_ERROR = 'ERROR: Selected model is at capacity. Please try a different model.';
+// Codex's own error when the provider reports an overload.
+const CAPACITY_ERROR = 'Selected model is at capacity. Please try a different model.';
 // Codex's own words once every try of one request met a 429. The endpoint named no wait with it.
-const THROTTLED_ERROR = /^ERROR: exceeded retry limit, last status: 429\b/;
+const THROTTLED_ERROR = /^exceeded retry limit, last status: 429\b/;
 
-// Once a request of the run has used tokens, Codex prints their count below its error, which it prints twice.
-const ERROR_ABOVE_TOKENS = /\n(ERROR:[^\n]*)\r?\n\1\r?\ntokens used\r?\n\d[\d,]*\s*$/;
+// The events `codex exec --json` prints on stdout, one JSON object per line, in the runs measured with Codex 0.166.0.
+const CODEX_EVENTS = new Set(['thread.started', 'turn.started', 'item.started', 'item.completed', 'error', 'turn.completed', 'turn.failed']);
+// The note of an `error` event while Codex waits before it sends a failed request again.
+const RETRY_NOTE = /^Reconnecting\.\.\. \d+\/\d+ /;
+// A session goes on the command line of a resumed run, so only an id in the form Codex gives it counts.
+const SESSION_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+// The longest error of Codex's own that a message quotes.
+const MAX_ERROR_CHARS = 16_384;
+
+type CodexEvent = { type: string } & Record<string, unknown>;
+
+/** What a `codex exec --json` run printed on stdout. */
+interface CodexRunEvents {
+  /** The session of the run, from `thread.started`. */
+  session?: string;
+  /** The text of the last `agent_message` of a turn that ended with `turn.completed`. */
+  answer?: string;
+  /** Codex's own error, from the `turn.failed` that ended the turn. */
+  failure?: string;
+  /** The text of the last `agent_message`, also of a turn that failed or did not end. */
+  reply?: string;
+}
+
+/** Reads `line` as an event of `CODEX_EVENTS`, or `undefined` when it is anything else. */
+function parseCodexEvent(line: string): CodexEvent | undefined {
+  const event = safeJsonParse(line) as { type?: unknown } | null;
+  return typeof event?.type === 'string' && CODEX_EVENTS.has(event.type) ? event as CodexEvent : undefined;
+}
+
+const textOf = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
+const agentMessage = (event: CodexEvent): string | undefined => {
+  const item = event.item as { type?: unknown; text?: unknown } | undefined;
+  return event.type === 'item.completed' && item?.type === 'agent_message' ? textOf(item.text) : undefined;
+};
 
 /**
- * Returns the `ERROR:` line Codex ended the run on, or `undefined` when the run did not end on an error of Codex's own.
- * Codex prints its own error last on stderr, above the token count when it prints one, then exits with a code and no
- * answer on stdout. It also writes the prompt and the model's text to stderr, so no earlier line counts. A run that a
- * signal ended, or that printed an answer, can end stderr on the model's text, so none of its lines counts.
+ * Reads the events a `codex exec --json` run that exited with `code` printed on `stdout`. The model's text arrives inside
+ * a JSON string, so no text of the model can pass for an event. A run gives an answer or Codex's own error only in the
+ * sequence measured: every line is an event, `thread.started` comes first, one turn starts and one event ends it, and
+ * that event comes last. Codex exits with 0 after `turn.completed` and with 1 after `turn.failed`. Any other run has neither.
  */
-function codexFinalError({ signal, stderr }: Pick<CliExit, 'signal' | 'stderr'>, stdout: string): string | undefined {
-  if (signal || stdout) return undefined;
-  const line = ERROR_ABOVE_TOKENS.exec(stderr)?.[1] ?? lastLine(stderr);
-  return /^ERROR:\s/.test(line) ? extractCliErrorSnippet(line) : undefined;
+function readCodexEvents(stdout: string, { code, signal }: Pick<CliExit, 'code' | 'signal'> = { code: null, signal: null }): CodexRunEvents {
+  const lines = stdout.split('\n');
+  // The text after the last line break is a line that a killed run did not end.
+  const cut = lines.pop() !== '';
+  const parsed = lines.map(parseCodexEvent);
+  const events = parsed.filter((event): event is CodexEvent => event !== undefined);
+  const id = events[0]?.type === 'thread.started' ? textOf(events[0].thread_id) : undefined;
+  const session = id && SESSION_ID.test(id) ? id : undefined;
+  const turns = events.filter(event => event.type === 'turn.started');
+  const ends = events.filter(event => event.type === 'turn.completed' || event.type === 'turn.failed');
+  const last = events.at(-1);
+  const measured = !cut && !signal && events.length === parsed.length && session !== undefined && turns.length === 1 && ends.length === 1 && last === ends[0];
+  const messages = (from: CodexEvent[]) => from.map(agentMessage).filter((text): text is string => text !== undefined);
+  const answer = measured && code === 0 && last.type === 'turn.completed' ? messages(events.slice(events.indexOf(turns[0]))).at(-1) ?? '' : undefined;
+  const failure = measured && code === 1 && last.type === 'turn.failed' ? textOf((last.error as { message?: unknown } | undefined)?.message) : undefined;
+  const reply = messages(events).at(-1);
+  return {
+    ...(session && { session }),
+    ...(answer !== undefined && { answer }),
+    ...(failure && { failure: sanitizeLogOutput(failure).slice(0, MAX_ERROR_CHARS) }),
+    ...(reply !== undefined && { reply }),
+  };
+}
+
+/** Returns the event on the last line of `stdout`, or `undefined` when that line is no event or has not ended. */
+function lastEvent(stdout: string): CodexEvent | undefined {
+  if (!stdout.endsWith('\n')) return undefined;
+  return parseCodexEvent(stdout.slice(stdout.lastIndexOf('\n', stdout.length - 2) + 1, -1));
+}
+
+/** Returns the message of the last event on `stdout`, when it is Codex's `error` event saying it retries a failed request. */
+function retryNote(stdout: string): string | undefined {
+  const last = lastEvent(stdout);
+  const message = last?.type === 'error' ? textOf(last.message) : undefined;
+  return message && RETRY_NOTE.test(message) ? message : undefined;
 }
 
 /** Returns the limit that `finalError`, Codex's final error, reports as a `QuotaError`, or `undefined` when it reports none. */
@@ -255,30 +318,54 @@ const CAPACITY_PAUSES_MS = [5_000, 15_000, 30_000, 60_000];
 const MIN_RESUMED_RUN_MS = 30_000;
 // Codex's own words for a connection that ended before the answer did. A failure the endpoint words follows the same
 // prefix, and so does an answer a content filter cut. Neither is a dropped connection.
-const DROPPED_TEXT = /^ERROR: stream disconnected before completion: (?:stream closed before response\.completed|Transport error|idle timeout waiting for SSE)\b/;
-// Codex ends the header of its stderr with the session line, and echoes the prompt after it. The match never passes
-// the header's end, so no line of the prompt is read as the session. The header is a few hundred characters long.
-const HEADER_CHARS = 4000;
-const SESSION_ID = /^(?:(?!--------\r?\nuser\r?\n).*\n)*?session id: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\r?\n--------\r?\nuser\r?\n/;
-// Codex prints this line when it cannot reach the provider at all, as when the connection is refused or the host does not
-// resolve. It then tries again after a wait that grows to about a minute, and never gives up within the call.
-const NO_NETWORK_LINE = /^ERROR: Reconnecting\.\.\. waiting for network\s*$/;
-// How long a run may print nothing but `NO_NETWORK_LINE` before it ends. Codex tries five times within it.
+const DROPPED_TEXT = /^stream disconnected before completion: (?:stream closed before response\.completed|Transport error|idle timeout waiting for SSE)\b/;
+// Codex's note when it cannot reach the provider at all, as when the connection is refused, the host does not resolve
+// or TLS fails. It then tries again after a wait that grows to about a minute, and never gives up within the call.
+const WAITING_NOTE = 'Reconnecting... waiting for network';
+// The notes measured, all `(Connection failed: error sending request)`. Codex words them itself after a failed connect,
+// while a failure the provider words starts with another prefix, so the cause after `Connection failed:` can vary.
+const NO_NETWORK_NOTE = /^Reconnecting\.\.\. waiting for network \(Connection failed: [^\n]+\)$/;
+// How long a run may report nothing but `WAITING_NOTE` before it ends. Codex tries five times within it.
 const NO_NETWORK_LIMIT_MS = 120_000;
+// The warning Codex gives before the turn for a model it has no metadata for, as for a model only an endpoint serves.
+const NO_METADATA = /^Model metadata for `[^`\n]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.$/;
+
+const messageOf = (event: CodexEvent): string => textOf(event.message) ?? '';
+const isWaiting = (event: CodexEvent): boolean => event.type === 'error' && messageOf(event).startsWith(`${WAITING_NOTE} (`);
+const isNoNetwork = (event: CodexEvent): boolean => event.type === 'error' && NO_NETWORK_NOTE.test(messageOf(event));
+const isNoMetadata = (event: CodexEvent): boolean => {
+  const item = event.item as { type?: unknown; message?: unknown } | undefined;
+  return event.type === 'item.completed' && item?.type === 'error' && NO_METADATA.test(textOf(item.message) ?? '');
+};
+
+/** Returns where the `WAITING_NOTE` events that end `stdout` start, or `undefined` when it does not end on one. */
+function waitingSince(stdout: string): number | undefined {
+  let since: number | undefined;
+  for (let end = stdout.length; stdout[end - 1] === '\n';) {
+    const start = stdout.lastIndexOf('\n', end - 2) + 1;
+    const event = parseCodexEvent(stdout.slice(start, end - 1));
+    if (!event || !isWaiting(event)) break;
+    since = end = start;
+  }
+  return since;
+}
 
 /**
- * Whether the stderr of a run sent `input` proves that no request reached the model. Codex echoes `input` below its
- * header, and the proof is that only `NO_NETWORK_LINE` follows the echo. Any other line, such as the model's text or
- * another error, can follow a request the model received.
+ * Whether the events of a run prove that no request reached the model: every line is an event, `thread.started` comes
+ * first, then at most the `NO_METADATA` warning, then `turn.started`, and after it only `NO_NETWORK_NOTE` events. Any
+ * other event can follow a request the provider received. On a ChatGPT login Codex first retries over WebSocket, and
+ * those retries read the same as a failure the provider words itself, so they prove nothing.
  */
-function reachedNoModel(stderr: string, input: string): boolean {
-  const header = SESSION_ID.exec(stderr.slice(0, HEADER_CHARS))?.[0];
-  const rest = header && stderr.slice(header.length);
-  if (!rest?.startsWith(`${input}\n`)) return false;
-  const lines = rest.slice(input.length + 1).split(/\r?\n/).filter(line => line !== '');
-  return lines.length > 0 && lines.every(line => NO_NETWORK_LINE.test(line));
+function reachedNoModel(stdout: string): boolean {
+  const lines = stdout.split('\n');
+  if (lines.pop() !== '') return false;
+  const parsed = lines.map(parseCodexEvent);
+  if (!parsed.every(event => event !== undefined)) return false;
+  const [started, ...rest] = parsed as CodexEvent[];
+  const [turn, ...notes] = rest[0] && isNoMetadata(rest[0]) ? rest.slice(1) : rest;
+  return started?.type === 'thread.started' && turn?.type === 'turn.started' && notes.length > 0 && notes.every(isNoNetwork);
 }
-const RESUME_PROMPT ='The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
+const RESUME_PROMPT = 'The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
 const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
 
 /** Reads a wait worded as a duration, such as `in 3s`, `in 320ms` or `in 1m30s`, in milliseconds. Any other text has none. */
@@ -311,7 +398,7 @@ export function codexExecArgs(model: string, baseUrl?: string): string[] {
   // The read-only sandbox still lets tools read every file, such as the auth files, so every built-in tool Codex can
   // switch off is off. `docs/security.md` lists the few Codex keeps for some models and what they can reach.
   return [
-    'exec', '--skip-git-repo-check', `--model=${model}`, '--sandbox', 'read-only', '-c', 'approval_policy=never',
+    'exec', '--json', '--skip-git-repo-check', `--model=${model}`, '--sandbox', 'read-only', '-c', 'approval_policy=never',
     '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
     '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
     '-c', 'agents.enabled=false', '-c', 'features.goals=false', '-c', 'features.sleep_tool=false',
@@ -473,9 +560,10 @@ export class OpenAIClient implements LLMClient {
       ...(endpoint && { [ENDPOINT_KEY_ENV]: endpoint.key }),
     }, endpoint && ENDPOINT_KEY_ENV);
 
+    // The stdout of the run that runs now, or ran last.
     let output = '';
     const unreachableLimit = endpoint ? 'OpenAI endpoint unreachable' : 'OpenAI unreachable';
-    const { code, signal, stderr, lastStdoutChunk, relatedReads } = await withPromptDir(async (promptDir) => {
+    const { code, signal, stderr, lastStdoutChunk, events, relatedReads } = await withPromptDir(async (promptDir) => {
       // Manki's instructions replace Codex's own, so stdin carries only the untrusted content.
       const instructionsPath = join(promptDir, 'instructions.md');
       writeFileSync(instructionsPath, instructions, { mode: 0o600 });
@@ -488,26 +576,31 @@ export class OpenAIClient implements LLMClient {
         : [];
       const reads = () => (repoTools?.related ? readRelatedReads(readsFile) : undefined);
       const carry = (error: unknown): never => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); };
-      const run = (runArgs: string[], input: string, usedMs?: number): Promise<CliExit> => runCli({
-        label: 'Codex',
-        cliPath,
-        args: [...args, ...toolArgs, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, ...runArgs],
-        env,
-        input,
-        hardTimeoutMs: limitMs,
-        usedMs,
-        signal: options?.signal,
-        waiting: {
-          line: NO_NETWORK_LINE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network',
-          // A resumed run follows a run that reached the model.
-          unreachable: (stderr) => usedMs === undefined && !output && reachedNoModel(stderr, input) ? unreachableLimit : undefined,
-        },
-        onStdout: (chunk) => { output += chunk; },
-      }).catch(carry);
+      const run = async (runArgs: string[], input: string, usedMs?: number): Promise<CliExit & { events: CodexRunEvents }> => {
+        output = '';
+        const exit = await runCli({
+          label: 'Codex',
+          cliPath,
+          args: [...args, ...toolArgs, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, ...runArgs],
+          env,
+          input,
+          hardTimeoutMs: limitMs,
+          usedMs,
+          signal: options?.signal,
+          waiting: {
+            since: () => waitingSince(output), note: WAITING_NOTE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network',
+            // A resumed run follows a run that reached the model.
+            unreachable: () => usedMs === undefined && reachedNoModel(output) ? unreachableLimit : undefined,
+          },
+          retrying: () => retryNote(output),
+          onStdout: (chunk) => { output += chunk; },
+        }).catch(carry);
+        return { ...exit, events: readCodexEvents(output, exit) };
+      };
       let exit = await run(['-'], userMessage);
-      const session = endpoint && SESSION_ID.exec(exit.stderr.slice(0, HEADER_CHARS))?.[1];
-      for (let resume = 1; session && exit.code !== 0 && resume <= MAX_RESUMES; resume++) {
-        const finalError = codexFinalError(exit, output);
+      const session = endpoint && exit.events.session;
+      for (let resume = 1; session && exit.events.answer === undefined && resume <= MAX_RESUMES; resume++) {
+        const finalError = exit.events.failure;
         const failure = streamFailure(finalError, resume);
         // A resume whose pause leaves the resumed run too little of the call's time is not started, so the call fails
         // on this run's error.
@@ -524,13 +617,13 @@ export class OpenAIClient implements LLMClient {
       }
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
-      warnReplyTail('Codex CLI', output);
+      warnReplyTail('Codex CLI', readCodexEvents(output).reply ?? '');
       throw error;
     }).finally(() => registerAuthFileSecrets(join(home, 'auth.json')));
 
     const limits = limitReadings();
-    if (code !== 0) {
-      const limitError = codexLimitError(codexFinalError({ signal, stderr }, output), !!endpoint);
+    if (events.answer === undefined) {
+      const limitError = codexLimitError(events.failure, !!endpoint);
       if (limitError) {
         core.warning(limitError.message);
         throw carryReadings(limitError, { relatedReads, ...limits });
@@ -544,12 +637,13 @@ export class OpenAIClient implements LLMClient {
         effort: options?.effort,
         promptChars: instructions.length + userMessage.length,
         elapsedMs: Date.now() - startTime,
+        resultEvent: events.failure ? { error: { message: events.failure } } : null,
       });
       core.warning(`Codex CLI failed (${msg})`);
-      warnReplyTail('Codex CLI', output);
+      warnReplyTail('Codex CLI', events.reply ?? '');
       throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, ...limits });
     }
-    const content = output.trim();
+    const content = events.answer.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
       content,
