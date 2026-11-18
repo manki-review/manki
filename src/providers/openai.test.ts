@@ -1435,9 +1435,9 @@ describe('sendViaCLI — extended coverage', () => {
   it('ends a run that shows only that Codex waits for the network for two minutes, as unreachable only when no request reached the model', async () => {
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     jest.spyOn(core, 'info').mockImplementation(() => {});
-    // What Codex 0.166.0 printed when the connection to the endpoint was refused or its host did not resolve.
+    // What Codex 0.166.0 printed when the connection to the endpoint was refused, its host did not resolve or TLS failed.
     const noNetwork = error('Reconnecting... waiting for network (Connection failed: error sending request)');
-    const waitedOut = 'Codex CLI was waiting for the network for 120s, so the call ends as a failed connection: Reconnecting... waiting for network (Connection failed: error sending request)';
+    const waitedOut = 'Codex CLI was waiting for the network for 120s, so the call ends as a failed connection: Reconnecting... waiting for network';
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
     try {
       const client = new OpenAIClient({ auth: { kind: 'endpoint', key: 'sk-test', baseUrl: 'http://127.0.0.1:1/v1' }, model: 'gpt-4o' });
@@ -1469,24 +1469,42 @@ describe('sendViaCLI — extended coverage', () => {
         run.procHandlers['close']?.(null, 'SIGTERM');
         return call;
       };
-      // A ChatGPT login names OpenAI itself.
-      const chatgpt = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+      // A ChatGPT login names OpenAI itself. A model Codex has no metadata for adds a warning before the turn, and Codex
+      // can word the cause of a failed connect otherwise. A known model has no warning.
+      const chatgpt = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
       expect(await waitOut(jsonl(started(), TURN, noNetwork, noNetwork), chatgpt)).toMatchObject({ name: 'UnreachableError', limit: 'OpenAI unreachable' });
-      // Any other event, such as a message, a retry of a request or a warning, can follow a request the provider received.
-      const refused = 'stream disconnected before completion: Connection refused (os error 61)';
+      const noMetadata = (model: string, text = 'not found. Defaulting to fallback metadata; this can degrade performance and cause issues.') =>
+        ({ type: 'item.completed', item: { id: 'item_0', type: 'error', message: `Model metadata for \`${model}\` ${text}` } });
       for (const stdout of [
-        jsonl(started(), TURN, message('I looked at the diff.'), noNetwork),
-        jsonl(started(), TURN, error(`Reconnecting... 2/5 (${refused})`), noNetwork),
-        // On the ChatGPT login Codex 0.166.0 first retries over WebSockets, then falls back to HTTPS.
-        jsonl(started(), TURN, error(`Reconnecting... 2/5 (${refused})`), { type: 'item.completed', item: { id: 'item_0', type: 'error', message: `Falling back from WebSockets to HTTPS transport. ${refused}` } }, noNetwork),
-        jsonl(started(), { type: 'item.completed', item: { id: 'item_0', type: 'error', message: 'Model metadata for `gpt-4o` not found.' } }, TURN, noNetwork),
-        jsonl(TURN, noNetwork),
-        `${jsonl(started(), TURN)}ERROR: Reconnecting... waiting for network\n${jsonl(noNetwork)}`,
-        jsonl(started(), TURN, message(noNetwork.message), noNetwork),
+        jsonl(started(), noMetadata('gpt-4o'), TURN, noNetwork),
+        jsonl(started(), TURN, error('Reconnecting... waiting for network (Connection failed: error sending request for url (http://127.0.0.1:1/v1/responses))'), noNetwork),
       ]) {
-        const other = await waitOut(stdout);
+        expect(await waitOut(stdout)).toMatchObject({ name: 'UnreachableError', limit: 'OpenAI endpoint unreachable', message: waitedOut });
+      }
+      // Any other event, such as a message, a retry of a request, another warning or one in another place, can follow a
+      // request the provider received. A server that received the request can make Codex print the retries over
+      // WebSocket that a refused login connection prints, the fallback to HTTPS too.
+      const refused = 'stream disconnected before completion: Connection refused (os error 61)';
+      const fallback = { type: 'item.completed', item: { id: 'item_0', type: 'error', message: `Falling back from WebSockets to HTTPS transport. ${refused}` } };
+      const waits = (event: object) => [event, noNetwork];
+      for (const [stdout, on] of [
+        [jsonl(started(), TURN, message('I looked at the diff.'), noNetwork), client],
+        [jsonl(started(), TURN, error(`Reconnecting... 2/5 (${refused})`), noNetwork), client],
+        [jsonl(started(), TURN, error(`Reconnecting... 2/5 (${refused})`), error(`Reconnecting... 5/5 (${refused})`), ...waits(fallback)), chatgpt],
+        [jsonl(started(), noMetadata('gpt-4o', 'not found.'), TURN, noNetwork), client],
+        [jsonl(started(), noMetadata('gpt-4o'), noMetadata('gpt-4o'), TURN, noNetwork), client],
+        [jsonl(started(), TURN, noMetadata('gpt-4o'), noNetwork), client],
+        [jsonl(noMetadata('gpt-4o'), started(), TURN, noNetwork), client],
+        [jsonl(started(), TURN, error('Reconnecting... waiting for network (Transport error)'), noNetwork), client],
+        [jsonl(TURN, noNetwork), client],
+        [`${jsonl(started(), TURN)}ERROR: Reconnecting... waiting for network\n${jsonl(noNetwork)}`, client],
+        [jsonl(started(), TURN, message(noNetwork.message), noNetwork), client],
+      ] as const) {
+        const other = await waitOut(stdout, on);
         expect([other?.message, other instanceof QuotaError]).toEqual([waitedOut, false]);
       }
+      // A wait whose cause Codex words otherwise still ends after 2 minutes, as a plain failed connection.
+      expect(await waitOut(jsonl(started(), TURN, error('Reconnecting... waiting for network (dns error)')))).toMatchObject({ name: 'Error', message: waitedOut });
 
       // A resumed run follows a run that reached the model, so its wait fails as a plain connection failure.
       mockSpawn.mockClear();

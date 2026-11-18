@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { registerSecret } from '../utils';
+import { registerSecret, safeJsonParse } from '../utils';
 import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
@@ -223,14 +223,8 @@ interface CodexRunEvents {
 
 /** Reads `line` as an event of `CODEX_EVENTS`, or `undefined` when it is anything else. */
 function parseCodexEvent(line: string): CodexEvent | undefined {
-  let event: unknown;
-  try {
-    event = JSON.parse(line);
-  } catch {
-    return undefined;
-  }
-  const type = (event as { type?: unknown } | null)?.type;
-  return typeof type === 'string' && CODEX_EVENTS.has(type) ? event as CodexEvent : undefined;
+  const event = safeJsonParse(line) as { type?: unknown } | null;
+  return typeof event?.type === 'string' && CODEX_EVENTS.has(event.type) ? event as CodexEvent : undefined;
 }
 
 const textOf = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
@@ -325,38 +319,51 @@ const MIN_RESUMED_RUN_MS = 30_000;
 // Codex's own words for a connection that ended before the answer did. A failure the endpoint words follows the same
 // prefix, and so does an answer a content filter cut. Neither is a dropped connection.
 const DROPPED_TEXT = /^stream disconnected before completion: (?:stream closed before response\.completed|Transport error|idle timeout waiting for SSE)\b/;
-// Codex's note when it cannot reach the provider at all, as when the connection is refused or the host does not
-// resolve. It then tries again after a wait that grows to about a minute, and never gives up within the call.
-const NO_NETWORK_NOTE = 'Reconnecting... waiting for network (Connection failed: error sending request)';
-// How long a run may report nothing but `NO_NETWORK_NOTE` before it ends. Codex tries five times within it.
+// Codex's note when it cannot reach the provider at all, as when the connection is refused, the host does not resolve
+// or TLS fails. It then tries again after a wait that grows to about a minute, and never gives up within the call.
+const WAITING_NOTE = 'Reconnecting... waiting for network';
+// The notes measured, all `(Connection failed: error sending request)`. Codex words them itself after a failed connect,
+// while a failure the provider words starts with another prefix, so the cause after `Connection failed:` can vary.
+const NO_NETWORK_NOTE = /^Reconnecting\.\.\. waiting for network \(Connection failed: [^\n]+\)$/;
+// How long a run may report nothing but `WAITING_NOTE` before it ends. Codex tries five times within it.
 const NO_NETWORK_LIMIT_MS = 120_000;
+// The warning Codex gives before the turn for a model it has no metadata for, as for a model only an endpoint serves.
+const NO_METADATA = /^Model metadata for `[^`\n]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.$/;
 
-const isNoNetwork = (event: CodexEvent): boolean => event.type === 'error' && event.message === NO_NETWORK_NOTE;
+const messageOf = (event: CodexEvent): string => textOf(event.message) ?? '';
+const isWaiting = (event: CodexEvent): boolean => event.type === 'error' && messageOf(event).startsWith(`${WAITING_NOTE} (`);
+const isNoNetwork = (event: CodexEvent): boolean => event.type === 'error' && NO_NETWORK_NOTE.test(messageOf(event));
+const isNoMetadata = (event: CodexEvent): boolean => {
+  const item = event.item as { type?: unknown; message?: unknown } | undefined;
+  return event.type === 'item.completed' && item?.type === 'error' && NO_METADATA.test(textOf(item.message) ?? '');
+};
 
-/** Returns where the `NO_NETWORK_NOTE` events that end `stdout` start, or `undefined` when it does not end on one. */
+/** Returns where the `WAITING_NOTE` events that end `stdout` start, or `undefined` when it does not end on one. */
 function waitingSince(stdout: string): number | undefined {
   let since: number | undefined;
   for (let end = stdout.length; stdout[end - 1] === '\n';) {
     const start = stdout.lastIndexOf('\n', end - 2) + 1;
     const event = parseCodexEvent(stdout.slice(start, end - 1));
-    if (!event || !isNoNetwork(event)) break;
+    if (!event || !isWaiting(event)) break;
     since = end = start;
   }
   return since;
 }
 
 /**
- * Whether the events of a run prove that no request reached the model: every line is an event, and after
- * `thread.started` and `turn.started` come only `NO_NETWORK_NOTE` events. Any other event, such as an item, another
- * error or a retry, can follow a request the provider received.
+ * Whether the events of a run prove that no request reached the model: every line is an event, `thread.started` comes
+ * first, then at most the `NO_METADATA` warning, then `turn.started`, and after it only `NO_NETWORK_NOTE` events. Any
+ * other event can follow a request the provider received. On a ChatGPT login Codex first retries over WebSocket, and
+ * those retries read the same as a failure the provider words itself, so they prove nothing.
  */
 function reachedNoModel(stdout: string): boolean {
   const lines = stdout.split('\n');
   if (lines.pop() !== '') return false;
-  const events = lines.map(parseCodexEvent);
-  const [started, turn, ...rest] = events;
-  return events.every(event => event !== undefined) && started?.type === 'thread.started' && turn?.type === 'turn.started'
-    && rest.length > 0 && rest.every(event => isNoNetwork(event!));
+  const parsed = lines.map(parseCodexEvent);
+  if (!parsed.every(event => event !== undefined)) return false;
+  const [started, ...rest] = parsed as CodexEvent[];
+  const [turn, ...notes] = rest[0] && isNoMetadata(rest[0]) ? rest.slice(1) : rest;
+  return started?.type === 'thread.started' && turn?.type === 'turn.started' && notes.length > 0 && notes.every(isNoNetwork);
 }
 const RESUME_PROMPT = 'The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
 const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
@@ -581,7 +588,7 @@ export class OpenAIClient implements LLMClient {
           usedMs,
           signal: options?.signal,
           waiting: {
-            since: () => waitingSince(output), note: NO_NETWORK_NOTE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network',
+            since: () => waitingSince(output), note: WAITING_NOTE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network',
             // A resumed run follows a run that reached the model.
             unreachable: () => usedMs === undefined && reachedNoModel(output) ? unreachableLimit : undefined,
           },
