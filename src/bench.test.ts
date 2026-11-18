@@ -667,13 +667,14 @@ describe('scoreRun', () => {
     // A matcher that fails twice on them leaves the run complete with its posted score, and the raw part unscored.
     const failed = await scored(2);
     expect(failed).toMatchObject({ complete: true, mustCatchRecall: 0.5, matches: [{ item: 'K1', verdict: 'MATCH' }, { item: 'K2', verdict: 'NONE' }, { item: 'N1', verdict: 'MATCH' }] });
-    expect(failed.raw).toEqual({ findings: retried.raw!.findings, matches: [], caught: [], unscored: true, matcherCostUsd: 6 });
+    expect(failed.raw).toEqual({ findings: retried.raw!.findings, matches: [], caught: [], unscored: true, error: expect.any(String), matcherCostUsd: 6 });
     const unpriced = await scored(0, false);
     expect(unpriced.raw!.matcherCostUsd).toBeNull();
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [retried, failed] }] }]);
     expect(report.variants[0].summary.raw).toEqual({ items: 2, found: 2, posted: 1, lost: { judge: 1 }, unscored: 1, matcherCostUsd: 12 });
     expect(formatBenchSummary(report)).toContain(" The matcher failed on the finders' findings of 1 run, which count in none of these. Matcher cost of this scoring $12.00.\n");
+    expect(formatBenchSummary(report)).toContain(`    the matcher failed on the finders' findings: ${failed.raw!.error}\n`);
     const withUnpriced = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [retried, unpriced] }] }]);
     expect(withUnpriced.variants[0].summary.raw!.matcherCostUsd).toBeNull();
     expect(formatBenchSummary(withUnpriced)).toContain('Matcher cost of this scoring unknown, since a call has no known price.\n');

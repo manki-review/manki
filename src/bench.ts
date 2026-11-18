@@ -498,6 +498,8 @@ interface RawScore {
   caught: RawCatch[];
   /** Set when the matcher failed twice on these findings. `matches` and `caught` are then empty, and the run's posted score stands. */
   unscored?: true;
+  /** Why the matcher failed, when it did. Like a run's `error`, it is printed only for a case outside the hold-out set. */
+  error?: string;
   /** What every matcher call of this scoring cost, a failed attempt's included, or `null` when a call has no known cost. A cached decision costs nothing. */
   matcherCostUsd: number | null;
 }
@@ -783,13 +785,17 @@ function rawFindings(context: RoundContext): RawFinding[] {
  */
 async function scoreRaw(benchCase: BenchCase, findings: RawFinding[], posted: ItemMatch[], matcher: Matcher): Promise<RawScore> {
   const spend: MatcherSpend = { costUsd: 0, unpriced: 0 };
+  let error: string | undefined;
   const matches = await twice(async () => {
     const matches: ItemMatch[] = [];
     for (const item of benchCase.mustCatch) matches.push(await matchItem(benchCase, item, findings, matcher, spend));
     return matches;
-  }).catch(() => undefined);
+  }).catch((e: unknown) => {
+    error = e instanceof Error ? e.message : String(e);
+    return undefined;
+  });
   const matcherCostUsd = spend.unpriced > 0 ? null : spend.costUsd;
-  if (!matches) return { findings, matches: [], caught: [], unscored: true, matcherCostUsd };
+  if (!matches) return { findings, matches: [], caught: [], unscored: true, error, matcherCostUsd };
   const caught = matches.filter(m => m.verdict === 'MATCH').map((m): RawCatch => {
     const shown = posted.some(p => p.item === m.item && p.verdict === 'MATCH');
     const named = m.findings.map(n => findings[n]);
@@ -1704,6 +1710,7 @@ export function formatBenchSummary(report: BenchReport): string {
           ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}`
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
         const lost = run.complete ? run.raw?.caught.filter(caught => !caught.posted) ?? [] : [];
+        if (run.complete && run.raw?.unscored) lines.push(`    the matcher failed on the finders' findings: ${shown ? oneLine(run.raw.error ?? 'no reason given') : 'the reason is in the report'}`);
         if (lost.length > 0) lines.push(`    found by a finder and missed by the review: ${lost.map(l => `${l.item} (${(l.exits ?? ['unknown']).map(exit => RAW_EXITS[exit]).join(', ')})`).join(', ')}`);
       }
     }
