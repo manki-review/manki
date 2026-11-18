@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -231,15 +231,20 @@ function askAgainNote(files: string[], units: string[], slices: boolean): string
 /** Changed functions and conditions one finder call answers for. */
 const MAX_UNITS_PER_CALL = 20;
 
-/** A slice of the diff as `dealUnits` reads it: its paths and the lines of each file's hunks, for several slices. */
-type UnitSlices = ReadonlyArray<{ paths?: Set<string>; lines?: ReadonlyMap<string, ReadonlyArray<[number, number]>> }>;
+type LineSpans = ReadonlyMap<string, ReadonlyArray<[number, number]>>;
+
+/** A slice of the diff as `dealUnits` reads it: its paths and the head and base lines of each file's hunks, for several slices. */
+type UnitSlices = ReadonlyArray<{ paths?: Set<string>; lines?: LineSpans; baseLines?: LineSpans }>;
 
 /**
  * Returns the index of the slice whose call answers for `unit`: the first whose hunks hold one of its lines, since a
- * large file can be split between slices. Failing that, the first that holds its file, or -1 when none does.
+ * large file can be split between slices. A removed condition is placed by its base lines. Failing that, the first slice
+ * that holds its file, or -1 when none does.
  */
 function unitSlice(unit: ChangeUnit, slices: UnitSlices): number {
-  const holding = slices.findIndex(s => s.lines?.get(unit.file)?.some(([from, to]) => from <= unit.end && unit.start <= to));
+  const base = unit.deleted ? [unit.start, unit.end] : unit.base;
+  const [start, end] = base ?? [unit.start, unit.end];
+  const holding = slices.findIndex(s => (base ? s.baseLines : s.lines)?.get(unit.file)?.some(([from, to]) => from <= end && start <= to));
   return holding >= 0 ? holding : slices.findIndex(s => !s.paths || s.paths.has(unit.file));
 }
 
@@ -285,11 +290,16 @@ function unitsSection(units: readonly ChangeUnit[]): string {
 
 const MAX_UNIT_LINE_CHARS = 200;
 
-/** Whether a reply element is a unit line: it names a `unit` and has no title or description, so it is no finding. */
+const UNIT_LINE_KEYS = new Set(['unit', 'checked', 'defect']);
+
+/**
+ * Whether a reply element is a unit line: a string `unit` with at most a `checked` and `defect` of text or null. Any other
+ * element is a finding, so a malformed finding that names a unit still fails as one.
+ */
 function isUnitLine(element: unknown): boolean {
   if (element === null || typeof element !== 'object' || Array.isArray(element)) return false;
   const f = element as Record<string, unknown>;
-  return typeof f.unit === 'string' && textOf(f.title) === '' && textOf(f.description) === '';
+  return typeof f.unit === 'string' && Object.entries(f).every(([key, value]) => UNIT_LINE_KEYS.has(key) && (key === 'unit' || value == null || typeof value === 'string'));
 }
 
 /** Returns the lines of a finder reply for the `units` it was asked about. A line counts only when it says what was checked. */
@@ -2320,19 +2330,23 @@ const MAX_PARALLEL_SLICES = 4;
 
 /**
  * Returns the slices `sliceDiff` splits `rawDiff` into, each as the text a prompt shows and, when there are several, the
- * paths it holds and the lines each file's hunks span there: head lines, or base lines for a deleted file. A diff that
- * fits one slice keeps its own text, unless it is too long to show uncut.
+ * paths it holds and the head and base lines each file's hunks span there. A diff that fits one slice keeps its own
+ * text, unless it is too long to show uncut.
  */
-function diffSlices(rawDiff: string): Array<{ raw: string; paths?: Set<string>; lines?: Map<string, Array<[number, number]>> }> {
+function diffSlices(rawDiff: string): Array<{ raw: string; paths?: Set<string>; lines?: LineSpans; baseLines?: LineSpans }> {
   const slices = sliceDiff(parsePRDiff(rawDiff), SLICE_LINES);
   if (slices.length === 1) return [{ raw: rawDiff.length <= MAX_SLICE_CHARS ? rawDiff : rebuildRawDiff(slices[0]) }];
   return slices.map(slice => {
-    const lines = new Map<string, Array<[number, number]>>();
-    for (const file of slice.files) {
-      const spans = file.hunks.map(h => (file.changeType === 'deleted' ? [h.oldStart, h.oldLines] : [h.newStart, h.newLines]));
-      lines.set(file.path, [...lines.get(file.path) ?? [], ...spans.map(([start, count]) => [start, start + Math.max(count, 1) - 1] as [number, number])]);
-    }
-    return { raw: rebuildRawDiff(slice), paths: new Set(slice.files.map(f => f.path)), lines };
+    const spans = (pick: (hunk: DiffHunk) => [number, number]) => {
+      const spanned = new Map<string, Array<[number, number]>>();
+      for (const file of slice.files) {
+        spanned.set(file.path, [...spanned.get(file.path) ?? [], ...file.hunks.map(pick).map(([start, count]) => [start, start + Math.max(count, 1) - 1] as [number, number])]);
+      }
+      return spanned;
+    };
+    return {
+      raw: rebuildRawDiff(slice), paths: new Set(slice.files.map(f => f.path)), lines: spans(h => [h.newStart, h.newLines]), baseLines: spans(h => [h.oldStart, h.oldLines]),
+    };
   });
 }
 

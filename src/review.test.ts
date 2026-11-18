@@ -134,17 +134,19 @@ describe('dealUnits', () => {
     const perSlice = dealUnits(spread, ['A'], sliced);
     expect([ids(perSlice.byFinder.get('A')), ids(perSlice.cut)]).toEqual([[...ids(spread.slice(0, 15))!, 'U26', ...ids(spread.slice(15, 25))!], ['U27']]);
 
-    // A file split between slices: a unit goes to the slice whose hunks hold its lines, which for a deleted file are base lines.
+    // A file split between slices: a unit goes to the slice whose hunks hold its lines. A condition of a deleted file, or one
+    // the change only removes, goes by its base lines, since its head line can sit past the end of every hunk.
     const spans = (from: number, to: number) => [[from, to]] as Array<[number, number]>;
     const split = [
-      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(1, 900)], ['gone.sh', spans(1, 1000)]]) },
-      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(901, 2000)], ['gone.sh', spans(1001, 2000)]]) },
+      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(1, 900)]]), baseLines: new Map([['src/big.ts', spans(1, 900)], ['gone.sh', spans(1, 1000)]]) },
+      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(901, 2000)]]), baseLines: new Map([['src/big.ts', spans(901, 2100)], ['gone.sh', spans(1001, 2000)]]) },
     ];
     const late = { id: 'U1', kind: 'condition' as const, file: 'src/big.ts', start: 1500, end: 1500, code: '+if (a) {' };
     const across = { id: 'U2', kind: 'function' as const, file: 'src/big.ts', start: 880, end: 950, name: 'f' };
     const gone = { id: 'U3', kind: 'condition' as const, file: 'gone.sh', start: 1500, end: 1500, deleted: true as const, code: '-if a' };
-    const bySlice = dealUnits([late, across, gone], ['A'], split);
-    expect(ids(bySlice.byFinder.get('A'))).toEqual(['U2', 'U1', 'U3']);
+    const removed = { id: 'U4', kind: 'condition' as const, file: 'src/big.ts', start: 2001, end: 2001, base: [2100, 2100] as [number, number], code: '-if (b) {' };
+    const bySlice = dealUnits([late, across, gone, removed], ['A'], split);
+    expect(ids(bySlice.byFinder.get('A'))).toEqual(['U2', 'U1', 'U3', 'U4']);
 
     // Without a finder no unit is asked about.
     expect([dealUnits(twenty, [], one).byFinder.size, dealUnits(twenty, [], one).cut]).toEqual([0, twenty]);
@@ -291,7 +293,7 @@ describe('parseFindings', () => {
       { unit: ' U2 ', checked: '  Both branches.  ', defect: 'None.' },
       // A line that says nothing checked, or names a unit it was not asked about, counts for none.
       { unit: 'U3', checked: ' ', defect: 'none' },
-      { unit: 'U9', checked: 'Read it.' },
+      { unit: 'U9', checked: 'Read it.', defect: null },
       { unit: 'U3', checked: 'c'.repeat(300), defect: 'd'.repeat(300) },
     ];
     // An element with a title is a finding, also one that names its unit.
@@ -309,6 +311,11 @@ describe('parseFindings', () => {
       // Findings that are all unusable fail the reply as they do without unit lines, so the finder's retry asks again.
       expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer'))
         .toThrow(/^no element has a title or a description \(1 element\(s\), keys: severity, file, line\)$/);
+      // An element with any key past `unit`, `checked` and `defect`, or a field that is no text, is a finding, so a malformed one fails the reply too.
+      for (const malformed of [{ unit: 'U1', severity: 'warning', file: 'a.sh', line: 1 }, { unit: 'U1', checked: 'Read it.', defect: { title: 'x' } }]) {
+        expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer')).toThrow(/^no element has a title or a description \(1 element\(s\), /);
+        expect(parseUnitLines(JSON.stringify([malformed]), units)).toEqual([]);
+      }
       // A reply that does not parse holds no line.
       expect(parseUnitLines('I checked U1.', units)).toEqual([]);
     } finally {
@@ -2613,6 +2620,9 @@ describe('runReview', () => {
     rmSync(join(deleted, 'src/big.ts'));
     git(deleted, 'add', '-A');
     const gone = { root: deleted, diff: parsePRDiff(git(deleted, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
+    // A file split between slices whose last hunk only removes its last line, a condition, so its head line is past that hunk.
+    const tail = (mark: string, last: string) => `${Array.from({ length: 2500 }, (_, i) => `// ${mark.repeat(90)} ${i}\n`).join('')}${Array.from({ length: 10 }, (_, i) => `const k${i} = ${i};\n`).join('')}${last}`;
+    const trailing = gitWorkspace({ 'src/tail.ts': tail('x', 'if (debug) console.log(1);\n') }, { 'src/tail.ts': tail('y', '') });
     // The same change with a file long enough that the diff is read in slices.
     const sliced = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n'), 'assets/rates.txt': 'rate\n'.repeat(1600) });
     const ASKED = 'without a line for';
@@ -2695,6 +2705,13 @@ describe('runReview', () => {
         expect(message).toContain('U1 condition at src/big.ts:2502 of the base, in a file the PR deletes');
         expect(message).toContain('\n-  if (n > 1) return 1;\n');
       }
+      const cut = await run([checkedU1], [], trailing);
+      const cutUnits = cut.first.filter(message => message.includes('## Units of the Change'));
+      expect(cutUnits).toHaveLength(cut.result.agentNames.length);
+      for (const message of cutUnits) {
+        expect(message).toContain('U1 condition at src/tail.ts:2511\n');
+        expect(message).toContain('\n-if (debug) console.log(1);\n');
+      }
 
       // Findings that are all unusable fail the reply also next to unit lines, so the finder is run again with the note on its reply.
       const clients = makeClients();
@@ -2707,7 +2724,7 @@ describe('runReview', () => {
       expect(sendMessage.mock.calls.filter(([, message]) => message.includes(RETRY_NOTE))).toHaveLength(retried.agentNames.length);
       expect(retried.rawFindings?.map(f => f.title)).toEqual(['Retried', 'Retried']);
     } finally {
-      for (const dir of [root, sliced.root, big.root, deleted]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [root, sliced.root, big.root, deleted, trailing.root]) rmSync(dir, { recursive: true, force: true });
     }
   }, GIT_TEST_TIMEOUT_MS);
 

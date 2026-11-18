@@ -554,6 +554,8 @@ export interface ChangeUnit {
   end: number;
   /** Set on a condition of a file the PR deletes, whose lines are base lines. */
   deleted?: true;
+  /** The base lines of a condition the change only removes, in a file the PR keeps. */
+  base?: [number, number];
   /** The function's name. */
   name?: string;
   /** The condition's changed lines, each as the diff shows it with `+` or `-` in front. */
@@ -1439,23 +1441,28 @@ function changeUnits(files: DiffFile[], declared: ChangedSymbol[], skip: (file: 
     .map((unit, i) => ({ id: `U${i + 1}`, ...unit }));
 }
 
-// A line of code that opens a branch, loop, guard or assertion, such as `if`, `elif`, `} else if`, `- if:` or `assert`, or joins checks with `&&` or `||`.
-const CONDITION = /^\s*(?:[-}]\s*)?(?:else\s+if|elif|elsif|if|unless|while|until|guard|when)\b|^\s*(?:debug_)?assert(?:\w*!?\s*\(|\s)|&&|\|\|/;
+// A line of code that opens a branch, loop, guard or assertion, such as `if`, `elif`, `} else if`, `- if:` or `assert`.
+const CONDITION = /^\s*(?:[-}]\s*)?(?:else\s+if|elif|elsif|if|unless|while|until|guard|when)\b|^\s*(?:debug_)?assert(?:\w*!?\s*\(|\s)/;
+// `&&` or `||` between two operands with spaces around it, or ending a line after one or starting one before one. That
+// leaves out a reference type such as `&&str` and a closure such as `|| {`, `move || x` or `(|| x)`.
+const JOINED = /[\w)\]'"`?](?<!\bmove)\s+(?:&&|\|\|)\s+[\w(!'"`$[-]|[\w)\]'"`?](?<!\bmove)\s*(?:&&|\|\|)\s*$|^\s*(?:&&|\|\|)\s+[^\s{]/;
 
 /** Whether the code of `text`, without a trailing comment, holds a condition. */
 function isCondition(text: string): boolean {
-  return CONDITION.test(text.replace(COMMENT, ''));
+  const code = text.replace(COMMENT, '');
+  return CONDITION.test(code) || JOINED.test(code);
 }
 
 /** Returns the conditions of `file`'s changed lines, one unit per stretch of consecutive head lines in a run of changed lines. */
 function changedConditions(file: DiffFile): Array<Omit<ChangeUnit, 'id'>> {
   if (file.changeType === 'deleted') return deletedConditions(file);
   const units: Array<Omit<ChangeUnit, 'id'>> = [];
-  const addRun = (removed: string[], added: Array<[number, string]>, at: number) => {
-    const gone = removed.filter(isCondition).map(text => `-${text}`);
+  const addRun = (removed: Array<[number, string]>, added: Array<[number, string]>, at: number) => {
+    const conditions = removed.filter(([, text]) => isCondition(text));
+    const gone = conditions.map(([, text]) => `-${text}`);
     const kept = added.filter(([, text]) => isCondition(text));
     if (kept.length === 0) {
-      if (gone.length > 0) units.push({ kind: 'condition', file: file.path, start: at, end: at, code: unitCode(gone) });
+      if (gone.length > 0) units.push({ kind: 'condition', file: file.path, start: at, end: at, base: [conditions[0][0], conditions.at(-1)![0]], code: unitCode(gone) });
       return;
     }
     let first = true;
@@ -1470,7 +1477,8 @@ function changedConditions(file: DiffFile): Array<Omit<ChangeUnit, 'id'>> {
   };
   for (const hunk of file.hunks) {
     let line = hunk.newStart;
-    let removed: string[] = [];
+    let old = hunk.oldStart;
+    let removed: Array<[number, string]> = [];
     let added: Array<[number, string]> = [];
     let at = line;
     const flush = () => {
@@ -1483,13 +1491,16 @@ function changedConditions(file: DiffFile): Array<Omit<ChangeUnit, 'id'>> {
       if (content.startsWith('-')) {
         if (added.length > 0) flush();
         if (removed.length === 0) at = line;
-        removed.push(content.slice(1));
+        removed.push([old++, content.slice(1)]);
         continue;
       }
       if (content.startsWith('+')) {
         if (removed.length + added.length === 0) at = line;
         added.push([line, content.slice(1)]);
-      } else flush();
+      } else {
+        flush();
+        old++;
+      }
       line++;
     }
     flush();

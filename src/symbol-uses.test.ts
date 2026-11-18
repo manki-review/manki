@@ -531,6 +531,7 @@ describe('listUsesOutsideDiff', () => {
       'src/auth.ts': gate,
       'src/gate.py': 'def allowed(user):\n    if user.banned:\n        return False\n    return True\n',
       'src/limits.rs': admit('', ''),
+      'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    0\n}\n',
       'src/gate.test.ts': 'it("opens", () => {});\n',
       'docs/guide.md': '# Guide\n',
       'dist/out.js': 'run();\n',
@@ -541,6 +542,7 @@ describe('listUsesOutsideDiff', () => {
       'src/auth.ts': gate.replace('user.admin;', 'user.admin && !user.locked;'),
       'src/gate.py': 'def allowed(user):\n    return True\n',
       'src/limits.rs': admit('    if n == 0 {\n        return false;\n    }\n', '        assert!(!super::admit(0));\n'),
+      'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    let first: &&str = &v[0];\n    let worker = std::thread::spawn(move || {\n        1\n    });\n    let later = || v.len();\n    v.iter().filter(|s| s.len() > 1).count()\n        + usize::from(first.is_empty() && later() > 2)\n}\n',
       'src/rules.ts': `export const ok = (a: number) =>\n${Array.from({ length: 8 }, (_, i) => `  a > ${i + 1} &&\n`).join('')}  a > 9;\n`,
       'src/gate.test.ts': 'it("opens", () => {\n  if (gate.open()) done();\n});\n',
       'docs/guide.md': '# Guide\n\nif you want, open the gate && close it.\n',
@@ -557,14 +559,17 @@ describe('listUsesOutsideDiff', () => {
       condition('src/auth.ts', 3, 3, '+    return user.admin && !user.locked;'),
       // A removed guard is a unit at the line where it was.
       { kind: 'function', file: 'src/gate.py', start: 1, end: 2, name: 'allowed' },
-      condition('src/gate.py', 2, 2, '-    if user.banned:'),
+      { ...condition('src/gate.py', 2, 2, '-    if user.banned:'), base: [2, 2] },
       // A test function, and an assertion in it, add none.
       { kind: 'function', file: 'src/limits.rs', start: 1, end: 6, name: 'admit' },
       condition('src/limits.rs', 2, 2, '+    if n == 0 {'),
+      // A reference type such as `&&str` and a closure such as `move || {` join no checks. Only `&&` between two operands does.
+      { kind: 'function', file: 'src/refs.rs', start: 1, end: 9, name: 'pick' },
+      condition('src/refs.rs', 8, 8, '+        + usize::from(first.is_empty() && later() > 2)'),
       // A constant that holds a function is no function unit, and a long condition shows its first 6 lines.
       condition('src/rules.ts', 2, 9, `${Array.from({ length: 6 }, (_, i) => `+  a > ${i + 1} &&`).join('\n')}\n... 2 more lines`),
     ]);
-    expect(units?.map(unit => unit.id)).toEqual(Array.from({ length: 10 }, (_, i) => `U${i + 1}`));
+    expect(units?.map(unit => unit.id)).toEqual(Array.from({ length: 12 }, (_, i) => `U${i + 1}`));
 
     // A deleted file adds each stretch of condition lines it removes, at its base lines.
     const kept = gitWorkspace({ 'run.sh': 'echo\n' }, { 'run.sh': 'echo\n' });
