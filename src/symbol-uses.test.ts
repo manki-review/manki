@@ -608,6 +608,63 @@ describe('listUsesOutsideDiff', () => {
     expect(listedUnder(ranked.finderSection, 'headerLimit')).toEqual(['src/z_last.ts:1', 'src/a_stub.ts:2']);
   });
 
+  it('maps what the change adds, removes or changes in each file outside tests and docs, removals first, with or without a grammar', async () => {
+    const config = (field: string, body: string, rest: string) => `export interface Config {\n  ${field}\n}\n\n/** Reads the config. */\nexport function parseConfig(text: string): Config {\n  return ${body};\n}\n\n${rest}`;
+    const { root, diff } = gitWorkspace({
+      'src/config.ts': config('limit: number;', '{ limit: Number(text) }', 'export function oldHelper(): number {\n  const local = 1;\n  return local;\n}\n\nexport const MAX_SIZE = 10;\n'),
+      'src/config.test.ts': "it('parses', () => expect(parseConfig('1').limit).toBe(1));\n",
+      'docs/config.md': '# Config\n',
+      'cmd/fee.swift': 'func computeFee(n: Int) -> Int { return n }\n',
+      'manki.yml': 'review:\n  noise: low\n',
+      'src/shapes.ts': 'export function area() {\n  return 1;\n}\n\nexport function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 1;\n  }\n}\n\n/** A square. */\nexport class Square {\n  draw() {\n    return 1;\n  }\n}\n\nexport const scale = (n: number) => n;\n',
+      'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n',
+      'cmd/shop.swift': 'func helper() {}\nfunc total() -> Int { return 1 }\nfunc outer() {\n    func inner() {}\n    struct Local {}\n}\n',
+    }, {
+      'src/config.ts': config('limit: number | null;', "text ? { limit: Number(text) } : { limit: null }", 'export function newHelper(): number {\n  return 2;\n}\n'),
+      'src/config.test.ts': "it('parses', () => expect(parseConfig('').limit).toBeNull());\n\nfunction fixture() {}\n",
+      'docs/config.md': '# Config\n\ntype Config = the settings\n',
+      'cmd/fee.swift': 'func computeFee(n: Int, rate: Int) -> Int { return n * rate }\n\nfunc roundFee(n: Int) -> Int { return n }\n',
+      'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n',
+      'src/shapes.ts': 'export function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 2;\n  }\n}\n\n/** A square, drawn from its corner. */\nexport class Square {\n  draw() {\n    return 2;\n  }\n}\n\nexport const scale = (n: number) => n * 2;\n',
+      'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n',
+      'cmd/shop.swift': 'func total() -> Int { return 2 }\nfunc outer() {\n}\n',
+    });
+    const deleted = parsePRDiff('diff --git a/src/legacy.ts b/src/legacy.ts\ndeleted file mode 100644\n--- a/src/legacy.ts\n+++ /dev/null\n@@ -1,4 +0,0 @@\n-export function legacyParse(): void {\n-  const indented = 2;\n-}\n-const TOP_LEVEL = 1;').files;
+    try {
+      const { changes } = await listUsesOutsideDiff(root, { ...diff, files: [...diff.files, ...deleted] }, { loadApi });
+      // Each declaration is labeled by comparing its namesake on both sides, so `perimeter`, below the removed `area`, is
+      // not listed, a changed doc changes the declaration, and a one-line declaration whose body alone changes is a changed
+      // body. A method is named with its type.
+      expect(changes).toEqual([
+        { file: 'cmd/fee.swift', symbol: 'function computeFee', change: 'declaration changed' },
+        { file: 'cmd/fee.swift', symbol: 'function roundFee', change: 'added' },
+        // Without a grammar, an indented declaration such as `inner` or `Local` is most often local to a function.
+        { file: 'cmd/shop.swift', symbol: 'function helper', change: 'removed' },
+        { file: 'cmd/shop.swift', symbol: 'function total', change: 'body changed' },
+        { file: 'manki.yml', symbol: 'config key slice_lines', change: 'added' },
+        // The removed lines declare `oldHelper` and `MAX_SIZE`, never the indented `local`.
+        { file: 'src/config.ts', symbol: 'function oldHelper', change: 'removed' },
+        { file: 'src/config.ts', symbol: 'constant MAX_SIZE', change: 'removed' },
+        { file: 'src/config.ts', symbol: 'field Config.limit', change: 'declaration changed' },
+        { file: 'src/config.ts', symbol: 'type Config', change: 'body changed' },
+        { file: 'src/config.ts', symbol: 'function parseConfig', change: 'body changed' },
+        { file: 'src/config.ts', symbol: 'function newHelper', change: 'added' },
+        { file: 'src/engine.rs', symbol: 'function Engine.run', change: 'body changed' },
+        { file: 'src/engine.rs', symbol: 'function Motor.run', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'function area', change: 'removed' },
+        { file: 'src/shapes.ts', symbol: 'type Square', change: 'declaration changed' },
+        { file: 'src/shapes.ts', symbol: 'type Circle', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'function Circle.draw', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'function Square.draw', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'constant scale', change: 'body changed' },
+        { file: 'src/legacy.ts', symbol: 'function legacyParse', change: 'removed' },
+        { file: 'src/legacy.ts', symbol: 'constant TOP_LEVEL', change: 'removed' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
@@ -1181,15 +1238,17 @@ ${body}	return true
       // A failed search leaves its reason in the round record, which tells it from a change with nothing to list.
       expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
+      const changes = [{ file: 'src/a.rs', symbol: 'function compute_total', change: 'body changed' }];
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({
-        ...NOTHING, referenceNames: ['compute_total'], units: [{ id: 'U1', kind: 'function', file: 'src/a.rs', start: 1, end: 1, name: 'compute_total' }],
+        ...NOTHING, referenceNames: ['compute_total'], units: [{ id: 'U1', kind: 'function', file: 'src/a.rs', start: 1, end: 1, name: 'compute_total' }], changes,
       });
       expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons, 0 added pieces and 1 units$/));
-      // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name.
+      // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name,
+      // and the map of the change built before the search is kept.
       rmSync(join(root, '.git'), { recursive: true, force: true });
       mkdirSync(join(root, '.git'));
       const broken = await listUsesOutsideDiff(root, diff, { loadApi });
-      expect(broken).toEqual({ ...NOTHING, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
+      expect(broken).toEqual({ ...NOTHING, changes, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
       expect(core.warning).toHaveBeenLastCalledWith(`Skipped the list of uses outside the diff: ${broken.record?.failed}`);
       // A `git grep` that a signal ends leaves no exit code, and the reason names the signal.
       const bin = mkdtempSync(join(tmpdir(), 'manki-bin-'));

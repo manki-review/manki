@@ -598,6 +598,16 @@ export interface UsesOutsideDiff {
   units?: ChangeUnit[];
   /** How many units `MAX_UNITS` left out. */
   unitsOverLimit?: number;
+  /** The declarations the change adds, changes or removes outside tests and docs, from `mappedChanges`. */
+  changes?: MappedChange[];
+}
+
+/** A declaration the change adds, changes or removes, as the map of the change names it to a reader of one slice. */
+export interface MappedChange {
+  file: string;
+  /** The kind and name, such as `function parseConfig` or `field Config.timeout`. */
+  symbol: string;
+  change: 'removed' | 'declaration changed' | 'body changed' | 'added';
 }
 
 export interface UsesOptions {
@@ -626,16 +636,18 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
     core.info('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     return { ...NO_SECTION, siblings: NO_SIBLINGS };
   }
+  // The map of the change is built before the search for uses, so a failed search keeps it.
+  const built: Pick<UsesOutsideDiff, 'changes'> = {};
   try {
     const started = Date.now();
-    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff);
+    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff, built);
     const { fields, implementations } = uses.siblings;
     core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons, ${uses.pieces?.length ?? 0} added pieces and ${uses.units?.length ?? 0} units`);
     return uses;
   } catch (error) {
     const failed = (error instanceof Error ? error.message : String(error)).slice(0, MAX_FAILURE_CHARS);
     core.warning(`Skipped the list of uses outside the diff: ${failed}`);
-    return { ...NO_SECTION, record: { failed }, siblings: NO_SIBLINGS };
+    return { ...NO_SECTION, ...built, record: { failed }, siblings: NO_SIBLINGS };
   }
 }
 
@@ -965,6 +977,7 @@ function formatRelatedUses(
 
 async function buildUsesSection(
   workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean, fullDiff: ParsedDiff,
+  built: Pick<UsesOutsideDiff, 'changes'>,
 ): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
@@ -1035,6 +1048,8 @@ async function buildUsesSection(
   const allUnits = changeUnits(diff.files, declared, addsNothing);
   const units = allUnits.slice(0, MAX_UNITS);
   if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
+  const changes = mappedChanges(diff.files, parser);
+  if (changes.length > 0) built.changes = changes;
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -1062,6 +1077,7 @@ async function buildUsesSection(
   const nothing = {
     ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }), ...(pieces.length > 0 && { pieces }),
     ...(units.length > 0 && { units }), ...(allUnits.length > units.length && { unitsOverLimit: allUnits.length - units.length }),
+    ...(changes.length > 0 && { changes }),
   };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
@@ -1535,6 +1551,98 @@ function unitCode(lines: string[]): string {
   return shown.join('\n');
 }
 
+const CHANGE_RANK: Record<MappedChange['change'], number> = { 'removed': 0, 'declaration changed': 1, 'body changed': 2, 'added': 3 };
+
+/** A declaration on one side of the diff, as `mappedChanges` compares it with its namesake on the other side. */
+interface DeclarationView {
+  /** The kind and name, such as `function Renderer.render`. */
+  label: string;
+  /** The declaration before its body or value, with its whitespace collapsed. */
+  signature: string;
+  /** The whole declaration, unset when it was read by keyword from one line. */
+  text?: () => string;
+  /** Whether the declaration may be local to a function, which no other file can use. */
+  local?: boolean;
+}
+
+/**
+ * Returns the declarations each file of `files` adds, removes or changes outside tests and docs, per file in diff order,
+ * and in each file the changes most likely to break other code first. Each declaration is matched by kind and name, a
+ * method or field by its type's name too, between the base and the head. A declaration only the head holds is added, one
+ * only the base holds is removed, one whose part before its body differs is a changed declaration, and one whose body
+ * differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by keyword from
+ * the removed and added lines. A removed declaration local to a function is never named.
+ */
+function mappedChanges(files: DiffFile[], parser: Parser): MappedChange[] {
+  return files.filter(file => !TEST_PATH.test(file.path) && !DOC_FILE.test(file.path)).flatMap(file => {
+    const head = file.changeType === 'deleted' ? undefined : parser.parse(file.path);
+    const base = file.changeType === 'added' ? undefined : parser.parseBase(file);
+    const parsed = (head || file.changeType === 'deleted') && (base || file.changeType === 'added');
+    const before = parsed ? parsedViews(base, removedOldLines(file)) : keywordViews(file, removedOldLines(file));
+    const after = parsed ? parsedViews(head, addedLines(file)) : keywordViews(file, addedLines(file));
+    const changes: MappedChange[] = [];
+    for (const key of new Set([...after.touched.keys(), ...before.touched.keys()])) {
+      const [old, now] = [before.all.get(key), after.all.get(key)];
+      const change = !old ? 'added' : !now ? 'removed' : old.signature !== now.signature ? 'declaration changed'
+        : !now.text || !old.text || now.text() !== old.text() ? 'body changed' : undefined;
+      if (change && !(change === 'removed' && old!.local)) changes.push({ file: file.path, symbol: (now ?? old)!.label, change });
+    }
+    return changes.sort((a, b) => CHANGE_RANK[a.change] - CHANGE_RANK[b.change]);
+  });
+}
+
+/**
+ * Returns the declarations of a parsed side outside tests and functions, each by kind and name, and those of them whose
+ * lines hold one of `changed`. The first of several namesakes stands for them.
+ */
+function parsedViews(parsed: ParsedFile | undefined, changed: { has(line: number): boolean }): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
+  const all = new Map<string, DeclarationView>();
+  const touched = new Map<string, DeclarationView>();
+  for (const decl of parsed?.declarations ?? []) {
+    const name = decl.test ? undefined : parsed!.mappedName(decl);
+    const key = name && `${decl.kind} ${name}`;
+    if (!key || all.has(key)) continue;
+    const view = { label: `${KIND_LABEL[decl.kind]} ${name}`, signature: parsed!.headerText(decl).replace(/\s+/g, ' ').trim(), text: () => decl.node.text() };
+    all.set(key, view);
+    for (let line = decl.start; line <= decl.end; line++) {
+      if (!changed.has(line)) continue;
+      touched.set(key, view);
+      break;
+    }
+  }
+  return { all, touched };
+}
+
+/** Returns the declarations `lines` hold by keyword, each by kind and name, as both the whole side and its changed part. */
+function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
+  const all = new Map<string, DeclarationView>();
+  for (const { name, kind, line } of keywordDeclarations(file, lines)) {
+    const text = lines.get(line)!;
+    // An indented declaration is most often local to a function.
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: signatureOf(text), local: /^\s/.test(text) });
+  }
+  return { all, touched: all };
+}
+
+/**
+ * Returns the declaration on `line` before the first `{` or `=` outside brackets, with its whitespace collapsed, so a
+ * change inside the body or value of a one-line declaration leaves it the same.
+ */
+function signatureOf(line: string): string {
+  let depth = 0;
+  let end = line.length;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth--;
+    else if (depth === 0 && (c === '{' || (c === '=' && !'=!<>'.includes(line[i - 1] ?? '') && !'=>'.includes(line[i + 1] ?? '')))) {
+      end = i;
+      break;
+    }
+  }
+  return line.slice(0, end).replace(/\s+/g, ' ').trim();
+}
+
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
 export function declaredNames(diff: ParsedDiff): string[] {
   return [...new Set(diff.files.flatMap(file => keywordDeclarations(file)).map(s => s.name).filter(name => isSearchable(name)))];
@@ -1792,6 +1900,24 @@ class ParsedFile {
     this.marked.clear();
     this.testModules.clear();
     this.scopes.clear();
+  }
+
+  /**
+   * Returns the name the map of the change shows for `decl`: `Type.name` for a member of a type, and nothing for a
+   * function, type or constant declared inside a function.
+   */
+  mappedName(decl: Declaration): string | undefined {
+    if (decl.kind !== 'field' && decl.kind !== 'variant' && this.tree.ancestors(decl.node).some(a => this.rules.declarations[a.kind()] === 'function')) return undefined;
+    const owner = this.methods.find(m => m.decl === decl)?.owner ?? (decl.container && this.byKey.get(decl.container)?.name);
+    return owner ? `${owner}.${decl.name}` : decl.name;
+  }
+
+  /** Returns the source of `decl` before its body or value, from its doc and attributes on. */
+  headerText(decl: Declaration): string {
+    const end = (decl.node.field('body') ?? decl.node.field('value'))?.range().start ?? decl.node.range().end;
+    const lines = this.lines.slice(decl.start - 1, end.line + 1);
+    lines[lines.length - 1] = lines[lines.length - 1].slice(0, end.column);
+    return lines.join('\n');
   }
 
   /** `named` picks one of the names of a node that declares several. */
