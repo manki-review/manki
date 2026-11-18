@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, fileReadBy, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, fileReadBy, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -60,7 +60,7 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * `requestInput` is set on the `message_start` of each request: its input tokens, cache reads and writes included.
  */
 function processJsonLine(line: string): {
-  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string; input: unknown }[]; toolResults?: string[];
+  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string; input: unknown }[]; toolResults?: { id: string; chars: number }[];
   limits?: LimitUsage[]; requestInput?: number;
 } {
   try {
@@ -73,14 +73,14 @@ function processJsonLine(line: string): {
       const usage = streamed.message?.usage;
       return { text: '', replace: false, resultEvent: null, requestInput: usage && typeof usage === 'object' ? readAnthropicUsage(usage).inputTokens : 0 };
     }
-    const blocks: { type?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
+    const blocks: { type?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown; content?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
     if (event.type === 'assistant') {
       const refused = event.message?.stop_reason === 'refusal';
       const toolUses = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), tool: String(b.name), input: b.input }));
       return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null, toolUses };
     }
     if (event.type === 'user') {
-      return { text: '', replace: false, resultEvent: null, toolResults: blocks.filter(b => b.type === 'tool_result').map(b => String(b.tool_use_id)) };
+      return { text: '', replace: false, resultEvent: null, toolResults: blocks.filter(b => b.type === 'tool_result').map(b => ({ id: String(b.tool_use_id), chars: resultChars(b.content) })) };
     }
     if (event.type === 'rate_limit_event') {
       return { text: '', replace: false, resultEvent: null, limits: readClaudeLimits(event.rate_limit_info) };
@@ -370,7 +370,7 @@ export class AnthropicClient implements LLMClient {
     let lastResultEvent: unknown = null;
     let refusal: string | undefined;
     const toolSteps: ToolStep[] = [];
-    const toolStarts = new Map<string, { tool: string; start: number }>();
+    const toolStarts = new Map<string, { tool: string; start: number; file?: string }>();
     const filesRead = new Set<string>();
     const root = options?.repoTools?.root;
     // The CLI reports the limits after each request, so a later reading of a window replaces an earlier one.
@@ -385,13 +385,13 @@ export class AnthropicClient implements LLMClient {
       if (delta.requestInput !== undefined) requestInputs.push(delta.requestInput);
       for (const { id, tool, input } of delta.toolUses ?? []) {
         if (!toolStarts.has(id)) options?.onToolStep?.();
-        toolStarts.set(id, { tool, start: Date.now() });
         const file = fileReadBy(tool, input, root);
+        toolStarts.set(id, { tool, start: Date.now(), ...(file && { file }) });
         if (file) filesRead.add(file);
       }
-      for (const id of delta.toolResults ?? []) {
+      for (const { id, chars } of delta.toolResults ?? []) {
         const started = toolStarts.get(id);
-        if (started) toolSteps.push({ tool: started.tool, durationMs: Date.now() - started.start });
+        if (started) toolSteps.push({ tool: started.tool, durationMs: Date.now() - started.start, ...(started.file && { file: started.file }), resultChars: chars });
       }
       if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
       if (!delta.replace) replyTail = appendReplyTail(replyTail, delta.text);

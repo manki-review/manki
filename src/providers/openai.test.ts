@@ -704,14 +704,17 @@ describe('sendViaCLI (Codex CLI path)', () => {
     }
 
     it('resumes the session after a pause that fits the reason, and returns the resumed run\'s answer', async () => {
+      // A resumed run numbers its items again, and the tool steps of every run count.
+      const readCall = (path: string) => ({ type: 'item.completed', item: { id: 'item_1', type: 'mcp_tool_call', server: 'manki', tool: 'read_file', arguments: { path }, result: { content: [] }, error: null, status: 'completed' } });
       const [first, ...resumed] = [
-        failedRun(CAPACITY), failedRun(CAPACITY, PART), failedRun(DROPPED, PART),
+        failedRun(CAPACITY, readCall('src/a.rs')), failedRun(CAPACITY, PART), failedRun(DROPPED, PART),
         failedRun('stream disconnected before completion: Transport error: network error: error decoding response body', PART),
         failedRun('stream disconnected before completion: idle timeout waiting for SSE'),
         failedRun(`${RATE_LIMIT} Please try again in 3s. Visit https://platform.openai.com/account/rate-limits to learn more.`, PART),
         failedRun(`${RATE_LIMIT} Please try again in 1m0.5s.`),
         // Codex gave up on a request the endpoint kept answering with 429, and the endpoint named no wait.
-        failedRun('exceeded retry limit, last status: 429 Too Many Requests'), answer,
+        failedRun('exceeded retry limit, last status: 429 Too Many Requests'),
+        { stdout: jsonl(started(), TURN, readCall('src/b.rs'), message('[]', 'item_2'), { type: 'turn.completed', usage: SESSION_USAGE }) },
       ];
       const { stdin, instructions, starts } = setupSpawnMock('', first, ...resumed);
       // As Codex wrote it for a run whose first request answered and whose second failed, and a resumed run's request.
@@ -722,6 +725,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
       expect(value?.content).toBe('[]');
       expect(value?.usage).toEqual({ inputTokens: 4000, outputTokens: 40, cacheReadTokens: 400, cacheWriteTokens: 0, reasoningTokens: 4, largestRequestInputTokens: 3000 });
+      expect(value?.toolSteps?.map(step => step.file)).toEqual(['src/a.rs', 'src/b.rs']);
+      expect(value?.filesRead).toEqual(['src/a.rs', 'src/b.rs']);
       const pauses = [5_000, 15_000, 0, 0, 0, 3_000, 60_500, 60_000];
       expect(starts.slice(1).map((start, i) => start - starts[i] - RUN_MS)).toEqual(pauses);
       expect(tookMs).toBe(143_500 + 9 * RUN_MS);
@@ -1077,16 +1082,31 @@ describe('sendViaCLI (Codex CLI path)', () => {
     }
 
     // Each call of Manki's tool server is one step as Codex starts it, though Codex reports its start and its end, and
-    // a line can arrive in two parts.
+    // a line can arrive in two parts. A step is recorded as it ends, with the file it read, named as the Claude CLI
+    // names the tool, and the text its result or error gave the model. A call whose start Codex did not report has no time.
     const onToolStep = jest.fn();
     const steps = jsonl(
       started(), TURN, { type: 'item.started', item: { ...toolCall, result: null, status: 'in_progress' } },
-      { type: 'item.completed', item: { ...toolCall, result: { content: [] }, status: 'completed' } },
-      { type: 'item.completed', item: { ...toolCall, id: 'item_4', result: { content: [] }, status: 'completed' } }, message('[]', 'item_5'), COMPLETED,
+      { type: 'item.completed', item: { ...toolCall, result: { content: [{ type: 'text', text: '1\tfn a() {}' }, { type: 'image', data: 'x' }] }, status: 'completed' } },
+      { type: 'item.completed', item: { ...toolCall, id: 'item_4', arguments: { path: '/work/repo/src/b.rs' }, result: { content: [] }, status: 'completed' } },
+      { type: 'item.completed', item: { ...toolCall, id: 'item_5', tool: 'grep', arguments: { pattern: '(' }, result: null, error: { message: 'bad pattern' }, status: 'failed' } },
+      message('[]', 'item_6'), COMPLETED,
     );
     setupSpawnMock(steps, { chunks: [steps.indexOf('item_4')] });
-    expect((await client.sendMessage('sys', 'user', { onToolStep })).content).toBe('[]');
-    expect(onToolStep).toHaveBeenCalledTimes(2);
+    const stepped = await client.sendMessage('sys', 'user', { onToolStep, repoTools: { root: '/work/repo', steps: 15, related: undefined } });
+    expect(stepped.content).toBe('[]');
+    expect(onToolStep).toHaveBeenCalledTimes(3);
+    expect(stepped.toolSteps).toEqual([
+      { tool: 'mcp__manki__read_file', durationMs: expect.any(Number), file: 'README.md', resultChars: 11 },
+      { tool: 'mcp__manki__read_file', file: 'src/b.rs', resultChars: 0 },
+      { tool: 'mcp__manki__grep', resultChars: 11 },
+    ]);
+    expect(stepped.filesRead).toEqual(['README.md', 'src/b.rs']);
+    // A call with tools whose model called none reports an empty list, and a call without tools reports none.
+    setupSpawnMock(answered('[]'));
+    expect((await client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15, related: undefined } })).toolSteps).toEqual([]);
+    setupSpawnMock(answered('[]'));
+    expect(await client.sendMessage('sys', 'user')).not.toHaveProperty('toolSteps');
 
     // A turn that reports no token counts leaves them unknown.
     setupSpawnMock(jsonl(started(), TURN, message('[]'), { type: 'turn.completed' }));
@@ -1160,6 +1180,9 @@ describe('sendViaCLI (Codex CLI path)', () => {
       const full = await busy.sendMessage('sys', 'user', { timeoutMs: 1_000 }).then(() => null, (e: Error) => e);
       expect(full).toBeInstanceOf(QuotaError);
       expect(full).toMatchObject({ message: `${typed.limit}: ${text}`, ...typed });
+      // A failed call keeps the files its tool calls read.
+      if (stdout.includes('mcp_tool_call')) expect(full).toMatchObject({ filesRead: ['README.md'] });
+      else expect(full).not.toHaveProperty('filesRead');
     }
 
     // The model's text arrives inside a JSON string, so a reply made of `ERROR:` lines is never a limit, whatever the

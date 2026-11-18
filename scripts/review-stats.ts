@@ -82,6 +82,9 @@ interface FinderStats {
   readSteps: number;
   readFileSteps: number;
   otherSteps: number;
+  /** The characters of text each `Read` and each `read_file` step gave the model, over the steps that record it. */
+  readChars: number[];
+  readFileChars: number[];
 }
 
 /**
@@ -303,6 +306,7 @@ function finder(stats: ReviewStats, model: string): FinderStats {
   const found = stats.finders.get(model) ?? {
     rounds: 0, rawFindings: 0, keptOnly: 0, keptShared: 0, toolSteps: [], budgetedCalls: 0, wrapUps: 0,
     stepsPerRound: [], filesPerRound: [], relatedFiles: 0, filesInDiff: 0, filesInListedRounds: 0, readSteps: 0, readFileSteps: 0, otherSteps: 0,
+    readChars: [], readFileChars: [],
   };
   stats.finders.set(model, found);
   return found;
@@ -416,10 +420,14 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
           const { repo, path } = readFileParts(file);
           use.files.add(repo + path);
         }
-        for (const { tool } of call.toolSteps) {
-          if (tool === 'Read') stat.readSteps++;
-          else if (tool === 'mcp__manki__read_file') stat.readFileSteps++;
-          else stat.otherSteps++;
+        for (const { tool, resultChars } of call.toolSteps) {
+          if (tool === 'Read') {
+            stat.readSteps++;
+            if (resultChars !== undefined) stat.readChars.push(resultChars);
+          } else if (tool === 'mcp__manki__read_file') {
+            stat.readFileSteps++;
+            if (resultChars !== undefined) stat.readFileChars.push(resultChars);
+          } else stat.otherSteps++;
         }
       }
       // A record too large to keep `diff.perFile` does not say which files the diff changes.
@@ -704,11 +712,11 @@ function finderToolLines(finders: [string, FinderStats][]): string[] {
   const recorded = finders.filter(([, f]) => f.stepsPerRound.length > 0);
   if (recorded.length === 0) return ['No finder tool steps recorded.'];
   return [
-    'Per finder and round. A file counts once per finder and round. The share in the diff counts only the files of the PR\'s own repo. The finder\'s prompt already shows a file the diff changes, unless the file did not fit the prompt\'s size budget. `Read` is the CLI\'s built-in tool, which returns up to 25,000 tokens of a file per call, and `read_file` is Manki\'s own, which returns up to 20,000 characters per call. The record does not say whether a read reached either limit. A client that reports no tool steps, as the Codex CLI, counts in none of these. A call that failed keeps its files but not its steps, so it counts in none of these either.',
+    'Per finder and round. A file counts once per finder and round. The share in the diff counts only the files of the PR\'s own repo. The finder\'s prompt already shows a file the diff changes, unless the file did not fit the prompt\'s size budget. `Read` is the CLI\'s built-in tool, which returns up to 25,000 tokens of a file per call, and `read_file` is Manki\'s own, which returns up to 20,000 characters per call. The characters per step are the text a step\'s result gave the model, which shows how close the reads come to either limit, and count only the steps whose record keeps them. A call whose record lists no tool steps, as an older record of a Codex call, counts in none of these. A call that failed keeps its files but not its steps, so it counts in none of these either.',
     '',
-    '| model | finder rounds | tool steps per round | files read per round | files read in a related repo | own files read that the diff changes | `Read` steps | `read_file` steps | other steps |',
-    '| --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |',
-    ...recorded.map(([model, f]) => `| ${model} | ${f.stepsPerRound.length} | ${summary(f.stepsPerRound)} | ${summary(f.filesPerRound)} | ${f.relatedFiles} | ${share(f.filesInDiff, f.filesInListedRounds)} | ${f.readSteps} | ${f.readFileSteps} | ${f.otherSteps} |`),
+    '| model | finder rounds | tool steps per round | files read per round | files read in a related repo | own files read that the diff changes | `Read` steps | characters per `Read` step | `read_file` steps | characters per `read_file` step | other steps |',
+    '| --- | ---: | --- | --- | ---: | ---: | ---: | --- | ---: | --- | ---: |',
+    ...recorded.map(([model, f]) => `| ${model} | ${f.stepsPerRound.length} | ${summary(f.stepsPerRound)} | ${summary(f.filesPerRound)} | ${f.relatedFiles} | ${share(f.filesInDiff, f.filesInListedRounds)} | ${f.readSteps} | ${summary(f.readChars, 0)} | ${f.readFileSteps} | ${summary(f.readFileChars, 0)} | ${f.otherSteps} |`),
   ];
 }
 

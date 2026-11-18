@@ -653,6 +653,16 @@ export function fileReadBy(tool: string, input: unknown, root: string | undefine
   return file && root && isAbsolute(file) ? relative(root, file) : file;
 }
 
+/** Returns the characters of text in a tool result's `content`: a string, or a list of content blocks whose text counts. */
+export function resultChars(content: unknown): number {
+  if (typeof content === 'string') return content.length;
+  if (!Array.isArray(content)) return 0;
+  return content.reduce((sum: number, block: unknown) => {
+    const text = block && typeof block === 'object' ? (block as { text?: unknown }).text : undefined;
+    return sum + (typeof text === 'string' ? text.length : 0);
+  }, 0);
+}
+
 /** What a call measured before it failed. */
 type CallReadings = Pick<LLMResponse, 'relatedReads' | 'filesRead' | 'limits'>;
 

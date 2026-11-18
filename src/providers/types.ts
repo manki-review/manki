@@ -157,10 +157,14 @@ export class NotStartedError extends Error {
   }
 }
 
-/** A tool step an LLM call took. */
+/** A tool step an LLM call took. A tool of Manki's tool server is named `mcp__manki__<tool>` on every client. */
 export interface ToolStep {
   tool: string;
   durationMs?: number;
+  /** The file the step read, as `filesRead` names it. Unset on a step that read no file. */
+  file?: string;
+  /** The characters of text the tool's result gave the model. */
+  resultChars?: number;
 }
 
 /** One LLM call, as the round and reply records keep it. Token counts follow `LLMUsage`. */
