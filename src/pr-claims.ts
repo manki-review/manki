@@ -6,7 +6,7 @@ import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
 import { shownLines } from './refute';
 import { offeredRepos, repoTools } from './related-repos';
-import type { EarlierAnswer } from './compare';
+import type { EarlierAnswers } from './compare';
 import { fencePrText, parseFindings, unmarkedText } from './review';
 import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
@@ -239,8 +239,8 @@ interface ClaimCheckOptions {
   signal?: AbortSignal;
   /** Hears how many checks are asked and the findings of each. A check skipped for want of tools made no call. */
   progress?: CheckProgress<number>;
-  /** The answers of an earlier attempt by reviewer name. A check sent exactly what its answer's `inputDigest` says is not asked again. */
-  earlier?: ReadonlyMap<string, EarlierAnswer<RoundPrClaim>>;
+  /** The answers of an earlier attempt. A check sent exactly what its answer's `inputDigest` says is not asked again. */
+  earlier?: EarlierAnswers<RoundPrClaim>;
 }
 
 /**
@@ -261,8 +261,8 @@ export async function runClaimChecks(
     if (!workspace || !client.repoTools) return unchecked('skipped');
     const message = checkMessage(claim, rawDiff, lines);
     const inputDigest = digestOf([CHECK_SYSTEM_PROMPT, message, effort ?? null, CHECK_STEPS, offeredRepos(related)]);
-    const kept = earlier?.get(reviewer);
-    if (kept && !kept.record.call && kept.record.inputDigest === inputDigest) {
+    const kept = earlier?.answers.get(reviewer);
+    if (kept && !kept.record.call && kept.record.inputDigest === inputDigest && await earlier!.confirm()) {
       core.info(`${reviewer}: kept the answer of the last attempt`);
       return { record: { ...kept.record, reused: true as const }, findings: kept.findings };
     }

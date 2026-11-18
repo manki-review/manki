@@ -35,7 +35,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { BASE_QUESTION, CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
+import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -2395,8 +2395,8 @@ describe('runReview', () => {
     const ASKED = 'without opening any file outside the changed files that';
     const answer = (title: string) => ({ content: JSON.stringify([{ severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
     type Reads = { toolSteps?: []; filesRead?: string[] };
-    type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string; leaveOut?: string };
-    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, leaveOut }: Asked) => {
+    type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string; leaveOut?: string; attempt?: RoundContext };
+    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, leaveOut, attempt }: Asked) => {
       const clients = makeClients();
       const reads = (message: string) => (typeof first === 'function' ? first(message) : first);
       const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(ASKED) ? second() : { ...answer('First'), ...reads(message) }));
@@ -2404,7 +2404,10 @@ describe('runReview', () => {
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
       // `leaveOut` drops a file from the diff the finders read, but not from the one the uses are listed for.
       const read = { ...workspace.diff, files: workspace.diff.files.filter(f => f.path !== leaveOut) };
-      const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(read), repoContext: '', workspace: workspace.root });
+      const result = await runReview(clients, {
+        config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(read), repoContext: '', workspace: workspace.root,
+        headSha: 'abc', changeDigest: 'digest', ...(attempt && { earlierAttempt: { record: { ...attempt, meta: { ...attempt.meta, incomplete: true } }, review: 7 } }),
+      });
       const messages = sendMessage.mock.calls.filter(([system]) => !isRelatedCheck(system)).map(call => call[1]);
       return { result, first: messages.filter(m => !m.includes(ASKED)), again: messages.filter(m => m.includes(ASKED)), kept: [...new Set(result.rawFindings?.map(f => f.title))], judged: mockedRunJudgeAgent.mock.calls.at(-1)?.[2].findings ?? [] };
     };
@@ -2418,6 +2421,7 @@ describe('runReview', () => {
       expect(listed).toHaveLength(10);
       expect(listed.at(-1)).toBe('o/ref:fee.cpp');
       expect(asked.result.agentsAskedAgain).toEqual(asked.result.agentNames);
+      expect([...asked.result.agentInputDigests!.keys()]).toEqual(asked.result.agentNames);
       expect(asked.kept).toEqual(['Second']);
       // Each finder is asked once more and no further, though its second answer read nothing either.
       expect(asked.again).toHaveLength(asked.first.length);
@@ -2502,6 +2506,11 @@ describe('runReview', () => {
         expect(failed.result.agentsAskedAgain).toEqual(failed.result.agentNames);
         expect([...failed.result.agentWarnings!]).toEqual(failed.result.agentNames.map(name => [name, [reason]]));
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`${failed.result.agentNames[0]}: the second ask failed, so its first answer stays: `));
+        // Its read did not finish as asked, so it records no digest, and a retry of the round runs it again.
+        expect(failed.result.agentInputDigests?.size).toBe(0);
+        const retried = await run({ first: { toolSteps: [] }, second, attempt: postedRecord(failed.result) });
+        expect(retried.first).toHaveLength(failed.first.length);
+        expect(retried.result.reused?.finders ?? []).toEqual([]);
       }
     } finally {
       fetchSpy.mockRestore();
@@ -8962,6 +8971,32 @@ describe('runReview triage', () => {
       await runReview(clients, { ...options, earlierAttempt: { record: { ...record, relatedRepos: [{ repo: 'o/r', status: 'unused' }] }, review: 7 } });
       expect(jest.mocked(clients.reviewer.sendMessage).mock.calls).toHaveLength(0);
       expect(fetchSpy.mock.calls[0][0].repos).toEqual([]);
+
+      // The related repos are fetched for the check only when a part of the attempt could otherwise be kept.
+      commit = 'c1';
+      const fetches = async (earlierAttempt?: EarlierAttempt, changed: Partial<typeof options> = {}): Promise<number> => {
+        fetchSpy.mockClear();
+        await runReview(clients, { ...options, ...changed, ...(earlierAttempt && { earlierAttempt }) });
+        return fetchSpy.mock.calls.length;
+      };
+      const own = await fetches();
+      expect(await fetches({ record, review: 7 }, { changeDigest: 'other' })).toBe(own);
+      // An attempt on the same diff whose every part was sent another input keeps nothing either.
+      expect(await fetches({ record, review: 7 }, { repoContext: 'other repo' })).toBe(own);
+      expect(await fetches({ record, review: 7 })).toBe(own + 1);
+
+      // A finder that may not be kept starts before that fetch ends, so the check never holds it up.
+      const opusFailed = { ...record, reviewers: { ...record.reviewers, agentMetrics: record.reviewers.agentMetrics!.map((m, i) => (i === 1 ? { ...m, status: 'failed' as const } : m)) } };
+      let finderStarted = (): void => undefined;
+      const started = new Promise<void>(resolve => { finderStarted = resolve; });
+      jest.mocked(clients.reviewer.sendMessage).mockClear().mockImplementation(async () => {
+        finderStarted();
+        return { content: '[]' };
+      });
+      fetchSpy.mockImplementation(async () => started.then(() => []));
+      const oneKept = await runReview(clients, { ...options, earlierAttempt: { record: opusFailed, review: 7 } });
+      expect(oneKept.reused?.finders).toEqual(['Claude Sonnet 5.5 · high']);
+      expect(jest.mocked(clients.reviewer.sendMessage).mock.calls).toHaveLength(1);
     } finally {
       fetchSpy.mockRestore();
       outcomeSpy.mockRestore();

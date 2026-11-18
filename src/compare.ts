@@ -183,14 +183,20 @@ export interface ComparisonOptions {
   signal?: AbortSignal;
   /** Hears how many questions are asked and the findings of each answer. A question skipped for want of tools made no call. */
   progress?: CheckProgress<number>;
-  /** The answers of an earlier attempt by reviewer name. A question sent exactly what its answer's `inputDigest` says is not asked again. */
-  earlier?: ReadonlyMap<string, EarlierAnswer<RoundComparison>>;
+  /** The answers of an earlier attempt. A question sent exactly what its answer's `inputDigest` says is not asked again. */
+  earlier?: EarlierAnswers<RoundComparison>;
 }
 
 /** An answer of an earlier attempt: its record, which holds the digest of what the call was sent, and its findings. */
 export interface EarlierAnswer<R> {
   record: R;
   findings: Finding[];
+}
+
+/** The answers of an earlier attempt by reviewer name. One is kept only when `confirm`, asked only then, resolves true. */
+export interface EarlierAnswers<R> {
+  answers: ReadonlyMap<string, EarlierAnswer<R>>;
+  confirm: () => Promise<boolean>;
 }
 
 /** How a step asks its questions: what its log calls them, its system prompt, how it reads a reply, and whether a call needs repository tools. */
@@ -219,8 +225,8 @@ async function ask(
     const record = { kind: q.kind, reviewer: q.reviewer, at: q.at };
     if (needsTools && !tools) return { record: { ...record, status: 'skipped' }, findings: [] };
     const inputDigest = digestOf([system(tools), q.message(tools), effort ?? null, tools && COMPARE_STEPS, tools && offeredRepos(related)]);
-    const kept = earlier?.get(q.reviewer);
-    if (kept?.record.status === 'answered' && kept.record.inputDigest === inputDigest) {
+    const kept = earlier?.answers.get(q.reviewer);
+    if (kept?.record.status === 'answered' && kept.record.inputDigest === inputDigest && await earlier!.confirm()) {
       core.info(`${q.reviewer}: kept the answer of the last attempt`);
       return { record: { ...kept.record, reused: true }, findings: kept.findings };
     }

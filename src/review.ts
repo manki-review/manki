@@ -22,7 +22,7 @@ import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH } from './symbol-uses';
-import { EarlierAnswer, runComparisons, runRelatedChecks } from './compare';
+import { EarlierAnswer, EarlierAnswers, runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
@@ -1085,11 +1085,19 @@ export async function runReview(
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
   if (related && unread) return incomplete(unread);
-  let kept = keptAttempt(options.earlierAttempt, team, options);
-  if (kept && !(await readsSameRelatedCommits(options.earlierAttempt!.record, related))) {
-    core.info('The last attempt is not reused, since a related repo is not at the commit it read');
-    kept = undefined;
-  }
+  const kept = keptAttempt(options.earlierAttempt, team, options);
+  // Checked only once a part of the attempt could be kept, and then once for the whole round.
+  let sameRelated: Promise<boolean> | undefined;
+  const confirmKept = (): Promise<boolean> => (sameRelated ??= readsSameRelatedCommits(options.earlierAttempt!.record, related)
+    .catch((error: unknown) => {
+      core.info(`The related repos could not be checked: ${error}`);
+      return false;
+    })
+    .then(same => {
+      if (!same) core.info('The last attempt is not reused, since a related repo is not at the commit it read');
+      return same;
+    }));
+  const earlierOf = <R>(answers: Map<string, EarlierAnswer<R>> | undefined): EarlierAnswers<R> | undefined => answers && { answers, confirm: confirmKept };
   // Asked beside the finders on the judge's client. Only the round's end reads the answer, so nothing waits for it before then.
   const scopePromise = runScopeReader(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'scope'), {
     diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds,
@@ -1101,7 +1109,7 @@ export async function runReview(
   const sideProgress = (kind: SideCheckKind): CheckProgress<number> | undefined =>
     onProgress && reportChecks(event => onProgress({ phase: 'side-check', sideCheck: { kind, ...event } }));
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
-    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal, progress: sideProgress('comparison'), earlier: kept?.comparisons,
+    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal, progress: sideProgress('comparison'), earlier: earlierOf(kept?.comparisons),
   });
   const checkWorkspace = quickCheckOnly(team) ? undefined : workspace;
   // Lines of the related repos for the claims' own checks. A repo is fetched for them also when the diff's names start no search of their own.
@@ -1134,7 +1142,7 @@ export async function runReview(
       return { lines: new Map<number, string[]>(), record: undefined };
     }), cut]);
     const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
-      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal, progress: sideProgress('claim'), earlier: kept?.claims,
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal, progress: sideProgress('claim'), earlier: earlierOf(kept?.claims),
     });
     return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims), terms };
   });
@@ -1149,7 +1157,7 @@ export async function runReview(
   // Each counterpart in a related repo gets a call of its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
   const relatedChecksPromise = runRelatedChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'related_check', reviewer),
     checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], {
-      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: kept?.comparisons,
+      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: earlierOf(kept?.comparisons),
     });
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;
@@ -1191,6 +1199,11 @@ export async function runReview(
   const agentWarnings = new Map<string, string[]>();
   const agentsAskedAgain: string[] = [];
   const agentInputDigests = new Map<string, string>();
+  // A finder whose second ask failed did not finish the read it was asked for, so it gets no digest and a retry runs it again.
+  const secondAskFailed = new Set<string>();
+  const finishedRead = (name: string): void => {
+    if (!secondAskFailed.has(name)) agentInputDigests.set(name, finderDigests.get(name)!);
+  };
   Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentsAskedAgain, agentInputDigests });
   const quotaErrors = new Map<string, QuotaError>();
   // Why a failed finder is not run again: a used-up limit, or its own time limit, which a retry from the start would meet again.
@@ -1254,6 +1267,7 @@ export async function runReview(
       };
     } catch (error) {
       core.warning(`${finder.name}: the second ask failed, so its first answer stays: ${recordWarning(finder.name, error)}`);
+      secondAskFailed.add(finder.name);
       return first;
     }
   };
@@ -1261,24 +1275,7 @@ export async function runReview(
   let completedCount = 0;
   let progressFindingCount = 0;
 
-  // A finder whose read of the last attempt finished on the same input is not run again, and its findings stand.
-  const reusedFinders = team.finders.filter(f => kept?.finders.get(f.name)?.record.inputDigest === finderDigests.get(f.name));
-  for (const finder of reusedFinders) {
-    const findings = kept!.finders.get(finder.name)!.findings;
-    allFindings.push(...findings);
-    agentInputDigests.set(finder.name, finderDigests.get(finder.name)!);
-    completedCount++;
-    progressFindingCount += findings.length;
-    core.info(`${finder.name}: kept the ${findings.length} findings of the last attempt`);
-    onProgress?.({
-      phase: 'agent-complete', agentName: finder.name, agentFindingCount: findings.length, agentStatus: 'success', agentReused: true,
-      rawFindingCount: progressFindingCount, completedAgents: completedCount, totalAgents: team.finders.length,
-    });
-  }
-  const running = team.finders.filter(f => !reusedFinders.includes(f));
-
-  core.info(`Running ${running.length} reviewer agents in parallel...`);
-  const agentPromises = running.map(agent => {
+  const startFinder = (agent: Finder): Promise<Finding[]> => {
     const startTime = Date.now();
     onProgress?.({ phase: 'agent-start', agentName: agent.name });
     return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
@@ -1288,7 +1285,7 @@ export async function runReview(
         agentResponseLengths.set(agent.name, agentResult.responseLength);
         accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
         accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
-        agentInputDigests.set(agent.name, finderDigests.get(agent.name)!);
+        finishedRead(agent.name);
         progressFindingCount += agentResult.findings.length;
         const durationMs = Date.now() - startTime;
 
@@ -1326,9 +1323,35 @@ export async function runReview(
         }
         throw error;
       });
-  });
+  };
 
-  const agentResults = await Promise.allSettled(agentPromises);
+  // A finder whose read of the last attempt finished on the same input is not run again, and its findings stand. The
+  // other finders start at once, before the related repos are checked for the ones that may be kept.
+  const mayKeep = team.finders.filter(f => kept?.finders.get(f.name)?.record.inputDigest === finderDigests.get(f.name));
+  const running = team.finders.filter(f => !mayKeep.includes(f));
+  core.info(`Running ${running.length} reviewer agents in parallel...`);
+  // Settled at once, so a finder that fails during the wait for the related repos is no unhandled rejection.
+  const settled = (agent: Finder): Promise<PromiseSettledResult<Finding[]>> => Promise.allSettled([startFinder(agent)]).then(([result]) => result);
+  const agentPromises = running.map(settled);
+  const reusedFinders = mayKeep.length > 0 && await confirmKept() ? mayKeep : [];
+  for (const finder of mayKeep.filter(f => !reusedFinders.includes(f))) {
+    running.push(finder);
+    agentPromises.push(settled(finder));
+  }
+  for (const finder of reusedFinders) {
+    const findings = kept!.finders.get(finder.name)!.findings;
+    allFindings.push(...findings);
+    agentInputDigests.set(finder.name, finderDigests.get(finder.name)!);
+    completedCount++;
+    progressFindingCount += findings.length;
+    core.info(`${finder.name}: kept the ${findings.length} findings of the last attempt`);
+    onProgress?.({
+      phase: 'agent-complete', agentName: finder.name, agentFindingCount: findings.length, agentStatus: 'success', agentReused: true,
+      rawFindingCount: progressFindingCount, completedAgents: completedCount, totalAgents: team.finders.length,
+    });
+  }
+
+  const agentResults = await Promise.all(agentPromises);
 
   for (let i = 0; i < agentResults.length; i++) {
     const result = agentResults[i];
@@ -1395,7 +1418,7 @@ export async function runReview(
         agentResponseLengths.set(agent.name, agentResult.responseLength);
         accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
         accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
-        agentInputDigests.set(agent.name, finderDigests.get(agent.name)!);
+        finishedRead(agent.name);
         agentFailureReasons.delete(agent.name);
         progressFindingCount += agentResult.findings.length;
         completedCount++;

@@ -175,7 +175,7 @@ describe('runClaimChecks', () => {
 
     // A retry checks again only the claim whose check gave no answer, and keeps each answer whose check it would send unchanged.
     const answers = result.claims.map(c => (c.reviewer === 'Claim check 2' ? { ...claims[1], reviewer: c.reviewer, status: 'unchecked' as const, call: 'failed' as const } : c));
-    const earlier = new Map(answers.map(c => [c.reviewer, { record: c, findings: result.findings.filter(f => f.reviewers.includes(c.reviewer)) }]));
+    const earlier = { answers: new Map(answers.map(c => [c.reviewer, { record: c, findings: result.findings.filter(f => f.reviewers.includes(c.reviewer)) }])), confirm: async () => true };
     const again = fakeClient(user => Object.entries(replies).find(([key]) => user.includes(key))![1]);
     const retried = await runClaimChecks(() => again, claims, { rawDiff, effort: 'high', workspace: root, earlier });
     expect(again.calls.map(c => c.user.includes('upload service'))).toEqual([true]);
@@ -185,6 +185,10 @@ describe('runClaimChecks', () => {
     const other = fakeClient(user => Object.entries(replies).find(([key]) => user.includes(key))![1]);
     await runClaimChecks(() => other, claims, { rawDiff: `${rawDiff}\n`, effort: 'high', workspace: root, earlier });
     expect(other.calls).toHaveLength(5);
+    // A check whose answer may not be kept is asked again.
+    const refused = fakeClient(user => Object.entries(replies).find(([key]) => user.includes(key))![1]);
+    await runClaimChecks(() => refused, claims, { rawDiff, effort: 'high', workspace: root, earlier: { ...earlier, confirm: async () => false } });
+    expect(refused.calls).toHaveLength(5);
 
     const [first, second] = client.calls;
     expect(first.options).toEqual({ effort: 'high', repoTools: { root, steps: 12 }, timeoutMs: 600_000 });

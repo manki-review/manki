@@ -118,7 +118,8 @@ describe('runComparisons', () => {
 
     // A retry asks only the question whose call failed, and keeps each answer whose question it would send unchanged.
     const raised = { severity: 'warning' as const, title: 'Kept', file: 'src/claim.py', line: 2, description: 'd', reviewers: ['Sibling field: idle vs a'] };
-    const earlier = new Map(result.comparisons.map(c => [c.reviewer, { record: c, findings: c.reviewer === raised.reviewers[0] ? [raised] : [] }]));
+    const confirm = jest.fn(async () => true);
+    const earlier = { answers: new Map(result.comparisons.map(c => [c.reviewer, { record: c, findings: c.reviewer === raised.reviewers[0] ? [raised] : [] }])), confirm };
     const again = fakeClient(() => '[]');
     const retried = await runComparisons(() => again, { fields, implementations }, { earlier });
     expect(again.calls.map(c => c.user.includes('`b` instead'))).toEqual([true]);
@@ -132,8 +133,15 @@ describe('runComparisons', () => {
     expect(retried.findings).toEqual([raised]);
     // A question sent anything else, here at another effort, is asked again.
     const other = fakeClient(() => '[]');
+    confirm.mockClear();
     await runComparisons(() => other, { fields, implementations }, { earlier, effort: 'high' });
     expect(other.calls).toHaveLength(12);
+    // Nothing could be kept, so nothing asked whether it may be.
+    expect(confirm).not.toHaveBeenCalled();
+    // A question whose answer may not be kept is asked again.
+    const refused = fakeClient(() => '[]');
+    await runComparisons(() => refused, { fields, implementations }, { earlier: { ...earlier, confirm: async () => false } });
+    expect(refused.calls).toHaveLength(12);
   });
 
   it('records a question still running when the signal stops the round waiting as timed out, and asks none after it', async () => {
