@@ -1,13 +1,13 @@
 import { execFile } from 'child_process';
 import { mkdirSync, writeFileSync } from 'fs';
-import { isAbsolute, join, relative } from 'path';
+import { join } from 'path';
 import { promisify } from 'util';
 
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, fileReadBy, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -60,7 +60,7 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * `requestInput` is set on the `message_start` of each request: its input tokens, cache reads and writes included.
  */
 function processJsonLine(line: string): {
-  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string; file?: string }[]; toolResults?: string[];
+  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string; input: unknown }[]; toolResults?: string[];
   limits?: LimitUsage[]; requestInput?: number;
 } {
   try {
@@ -76,10 +76,7 @@ function processJsonLine(line: string): {
     const blocks: { type?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
     if (event.type === 'assistant') {
       const refused = event.message?.stop_reason === 'refusal';
-      const toolUses = blocks.filter(b => b.type === 'tool_use').map(b => {
-        const file = fileReadBy(String(b.name), b.input);
-        return { id: String(b.id), tool: String(b.name), ...(file && { file }) };
-      });
+      const toolUses = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), tool: String(b.name), input: b.input }));
       return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null, toolUses };
     }
     if (event.type === 'user') {
@@ -96,15 +93,6 @@ function processJsonLine(line: string): {
     // Non-JSON line (e.g. verbose debug output) — skip silently
   }
   return { text: '', replace: false, resultEvent: null };
-}
-
-/** Returns the file a `Read` or `read_file` call reads, as the call names it. A file in a related repo gets `owner/name:` in front. */
-function fileReadBy(tool: string, input: unknown): string | undefined {
-  if (!input || typeof input !== 'object') return undefined;
-  const { file_path: filePath, path, repo } = input as Record<string, unknown>;
-  if (tool === 'Read' && typeof filePath === 'string') return filePath;
-  if (tool === 'mcp__manki__read_file' && typeof path === 'string') return typeof repo === 'string' && repo ? `${repo}:${path}` : path;
-  return undefined;
 }
 
 const CLAUDE_WINDOWS: Record<string, string> = {
@@ -395,10 +383,11 @@ export class AnthropicClient implements LLMClient {
       const delta = processJsonLine(line);
       for (const limit of delta.limits ?? []) limits.set(limit.window, limit);
       if (delta.requestInput !== undefined) requestInputs.push(delta.requestInput);
-      for (const { id, tool, file } of delta.toolUses ?? []) {
+      for (const { id, tool, input } of delta.toolUses ?? []) {
         if (!toolStarts.has(id)) options?.onToolStep?.();
         toolStarts.set(id, { tool, start: Date.now() });
-        if (file) filesRead.add(root && isAbsolute(file) ? relative(root, file) : file);
+        const file = fileReadBy(tool, input, root);
+        if (file) filesRead.add(file);
       }
       for (const id of delta.toolResults ?? []) {
         const started = toolStarts.get(id);
