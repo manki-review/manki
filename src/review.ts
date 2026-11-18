@@ -1,7 +1,6 @@
 import { posix } from 'path';
 
 import * as core from '@actions/core';
-import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
@@ -22,7 +21,7 @@ import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReas
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
-import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions } from './symbol-uses';
+import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
@@ -213,9 +212,6 @@ class PlannerTimeoutError extends Error {
 }
 
 const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
-
-/** Test files. From the second round, notes on them are dropped. */
-const TEST_PATH_PATTERNS = ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'];
 
 const FOCUS_LABEL_LENGTH = 40;
 
@@ -1515,7 +1511,7 @@ export async function runReview(
     const before = finalFindings.length;
     finalFindings = finalFindings.filter(f => {
       if (!canLeaveOut(f)) return true;
-      const onTestFile = TEST_PATH_PATTERNS.some(p => minimatch(f.file, p));
+      const onTestFile = TEST_PATH.test(f.file);
       if (onTestFile) {
         core.info(`Dropping the note "${f.title}" on the test file ${f.file}:${f.line}`);
       }

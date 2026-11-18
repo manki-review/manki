@@ -7013,7 +7013,8 @@ describe('runReview post-judge suppression', () => {
   it('drops a note on a test file in round 2, never a security finding or a tool alert', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        ...['src/foo.test.ts', 'web/cart.spec.js', 'crate/tests/sync.rs', 'src/__tests__/parse.ts'].map(file => makeFinding({ severity: 'note', file, title: 'Could simplify' })),
+        ...['src/foo.test.ts', 'web/cart.spec.js', 'crate/tests/sync.rs', 'src/__tests__/parse.ts', 'pkg/sync_test.go', 'Tests/AppTests/LoginTests.swift', 'src/test/java/LoginTest.java']
+          .map(file => makeFinding({ severity: 'note', file, title: 'Could simplify' })),
         makeFinding({ severity: 'note', file: 'src/contest.ts', title: 'Rename the helper' }),
         makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Token logged in a fixture', tags: ['security'] }),
         makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Unused import', toolSource: 'eslint' }),
@@ -7030,7 +7031,7 @@ describe('runReview post-judge suppression', () => {
       },
     );
     expect(result.findings.map(f => f.title)).toEqual(['Rename the helper', 'Token logged in a fixture', 'Unused import']);
-    expect(result.testNitSuppressedCount).toBe(4);
+    expect(result.testNitSuppressedCount).toBe(7);
   });
 
   it('keeps a note on a test file in round 1', async () => {

@@ -9,7 +9,7 @@ import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
 import { parsePRDiff } from './diff';
-import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, UsesOutsideDiff } from './symbol-uses';
+import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH, UsesOutsideDiff } from './symbol-uses';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
@@ -1330,6 +1330,24 @@ describe('declarationPattern', () => {
       declares.test(line);
       expect(performance.now() - started).toBeLessThan(100);
     }
+  });
+});
+
+describe('TEST_PATH', () => {
+  it.each([
+    ['TypeScript', ['src/parse.test.ts', 'web/cart.spec.tsx', 'src/__tests__/parse.ts', 'test/parse.ts', 'src/parse.test.d.ts'], ['src/contest.ts', 'src/attestation.ts', 'src/testing.ts', 'vitest.config.ts']],
+    ['JavaScript', ['lib/cart.spec.js', 'test/cart.js', 'lib/__tests__/cart.js', 'lib/cart.test.mjs'], ['lib/latest.js', 'jest.config.js']],
+    ['Go', ['pkg/sync/sync_test.go', 'pkg/sync/testdata/block.bin'], ['latest/x.go', 'pkg/contest/x.go', 'pkg/testing.go']],
+    ['Rust', ['crate/tests/sync.rs', 'crate/src/sync/tests.rs', 'crate/src/sync_tests.rs', 'crate/src/test_utils/mod.rs'], ['crate/src/attest.rs', 'crate/src/protest.rs']],
+    ['Swift', ['Tests/AppTests/LoginTests.swift', 'App/AppUITests/LaunchTests.swift', 'Sources/App/LoginTest.swift', 'Sources/App/LoginSpec.swift'], ['Sources/App/Latest.swift', 'Sources/App/Contest.swift', 'Sources/Testing/Login.swift']],
+    ['Java', ['src/test/java/org/app/LoginTest.java', 'src/main/java/org/app/LoginTests.java'], ['src/main/java/org/app/Latest.java', 'src/main/java/org/app/Contest.java', 'src/main/java/org/app/Attestation.java']],
+    ['Kotlin', ['src/test/kotlin/app/LoginTest.kt', 'app/src/main/kotlin/LoginTests.kt', 'build/LoginSpec.kts'], ['src/main/kotlin/app/Latest.kt', 'src/main/kotlin/app/Protest.kt']],
+    ['C#', ['App.Tests/LoginTests.cs', 'App.Test/Login.cs', 'src/App/LoginTest.cs'], ['src/App/Latest.cs', 'src/App.Testing/Login.cs']],
+    ['Python', ['tests/test_login.py', 'app/test_login.py', 'app/login_test.py', 'app/conftest.py'], ['app/contest.py', 'app/latest_test_data.py', 'app/testing.py']],
+    ['Ruby', ['spec/models/user_spec.rb', 'test/models/user_test.rb', 'lib/user_spec.rb'], ['lib/contest.rb', 'lib/latest.rb', 'lib/inspect.rb']],
+  ])('matches the test layouts of %s and no look-alike', (_language, tests, others) => {
+    expect(tests.filter(path => !TEST_PATH.test(path))).toEqual([]);
+    expect(others.filter(path => TEST_PATH.test(path))).toEqual([]);
   });
 });
 

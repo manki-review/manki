@@ -372,7 +372,16 @@ const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 const INLINE_TYPES = new Set(['object_type', 'struct_type']);
 // Nodes that wrap a declaration, so the comments above them belong to it.
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
-const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|spec)s?\.\w+$|(?:^|\/)test_[^/]*\.py$/;
+/**
+ * Test code and its fixtures, by a directory such as `tests/`, `src/test/`, `__tests__/`, `testdata/`, Swift's `Tests/` or
+ * C#'s `App.Tests/`, or by a file name such as `a.test.ts`, `a_test.go`, `test_a.py`, a Rust `tests.rs` or `ATests.swift`.
+ */
+export const TEST_PATH = new RegExp([
+  String.raw`(?:^|/)(?:tests?|__tests__|test_utils|testdata|spec|[^/]*Tests?)/`,
+  String.raw`[._](?:test|spec)s?\.[^/]+$`,
+  String.raw`(?:^|/)(?:test_[^/]*|conftest)\.py$|(?:^|/)tests\.rs$`,
+  String.raw`(?:Tests?|Spec)\.(?:swift|java|kt|kts|scala|groovy|cs)$`,
+].join('|'));
 // Code a repository carries from another project, whose namesakes say nothing about the reference itself.
 const VENDORED_PATH = /(?:^|\/)(?:vendor|third_party|thirdparty|external|extern|depends|deps|node_modules)\//;
 // Code a tool writes, by a directory such as `gen/` or a file name such as `schema.generated.ts`, `api.gen.go` or `app.min.js`.
