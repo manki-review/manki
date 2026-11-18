@@ -73,11 +73,11 @@ This was measured with Codex CLI 0.166.0 and the stand-in endpoint of the `Codex
 
 `AGENTS.md` in `~/.agents`, `instructions` in `config.toml`, a file in `~/.codex/rules` or `~/.codex/prompts`, and memories while the `memories` feature is off reached no request. A `notify` program did not run.
 
-With Manki's own home, none of these reached a request or ran. The login's token went only to OpenAI's hosts, and the endpoint's key only to the endpoint. Setting `CODEX_HOME` alone is not enough: a skill in `~/.agents/skills` still reached the request until `HOME` pointed at the new folder too. The `Codex tools` workflow plants a skill in both folders, an MCP server and an `AGENTS.md` in a runner home on every pull request, and fails when any of them reaches a request.
+With Manki's own home, none of these reached a request or ran. The login's token went only to OpenAI's hosts, and the endpoint's key only to the endpoint. Setting `CODEX_HOME` alone is not enough: a skill in `~/.agents/skills` still reached the request until `HOME` pointed at the new folder too. The `Codex tools` workflow plants a skill in both folders, an `AGENTS.md`, a key in `.env`, and a `config.toml` with an MCP server, an `otel` exporter, a provider and ChatGPT URL that point elsewhere and a trusted hook in a runner home on every pull request. It fails when any of them reaches Codex, on an endpoint or on the ChatGPT login. The same runs on the runner's own home must still show each one, so a Codex version that reads one from elsewhere fails the check instead of passing it.
 
 What a home folder does not change:
 
 - The reviewer's tools run as the runner's user, so [Codex reviewer tools](#codex-reviewer-tools) still applies. `apply_patch` can tell whether a file the model names exists anywhere that user can read, and whether a line the model guesses is in it.
 - Codex's source also reads settings that the machine's administrator sets for every user, in `/etc/codex` and, on macOS, in managed device profiles. These were not measured, and Manki does not keep them out.
 - The variables of the Manki step that pass to the Codex CLI, listed under Token handling above, still reach it.
-- These runs were on macOS, and the `Codex tools` workflow checks its four planted items on Linux. Windows was not measured. There, Codex's source finds the user's home folder without reading `HOME`, so a skill in `~/.agents/skills` may still reach a review.
+- These runs were on macOS, and the `Codex tools` workflow checks its planted items on Linux. Windows was not measured. There, Codex's source finds the user's home folder without reading `HOME`, so a skill in `~/.agents/skills` may still reach a review.
