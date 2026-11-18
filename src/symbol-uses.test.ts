@@ -530,6 +530,7 @@ describe('listUsesOutsideDiff', () => {
       'scripts/release.sh': '#!/bin/sh\nset -e\nprev=$(cat VERSION)\n[ "$prev" != "$VERSION" ] ||\n  die "no bump"\necho done\n',
       'src/auth.ts': gate,
       'src/gate.py': 'def allowed(user):\n    if user.banned:\n        return False\n    return True\n',
+      'lib/kind.rb': 'def kind(x)\n  case x\n  when 1 then :one\n  end\nend\n',
       'src/limits.rs': admit('', ''),
       'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    0\n}\n',
       'src/gate.test.ts': 'it("opens", () => {});\n',
@@ -541,6 +542,8 @@ describe('listUsesOutsideDiff', () => {
       'scripts/release.sh': '#!/bin/sh\nset -e\n# if this fails, nothing is published\n[ -n "$(git diff --name-only HEAD^ HEAD -- CHANGELOG.md)" ] ||\n  die "no changelog"\nstatus=0\ngit ls-remote --exit-code origin "$tag" >/dev/null || status=$?\n[ "$status" -eq 2 ] && exit 0\necho done\n',
       'src/auth.ts': gate.replace('user.admin;', 'user.admin && !user.locked;'),
       'src/gate.py': 'def allowed(user):\n    return True\n',
+      // A `when` branch, like `case` and `match`, adds no condition unit.
+      'lib/kind.rb': 'def kind(x)\n  case x\n  when 1 then :one\n  when 2 then :two\n  end\nend\n',
       'src/limits.rs': admit('    if n == 0 {\n        return false;\n    }\n', '        assert!(!super::admit(0));\n'),
       'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    let first: &&str = &v[0];\n    let worker = std::thread::spawn(move || {\n        1\n    });\n    let later = || v.len();\n    v.iter().filter(|s| s.len() > 1).count()\n        + usize::from(first.is_empty() && later() > 2)\n}\n',
       'src/rules.ts': `export const ok = (a: number) =>\n${Array.from({ length: 8 }, (_, i) => `  a > ${i + 1} &&\n`).join('')}  a > 9;\n`,

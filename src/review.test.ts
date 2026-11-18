@@ -311,11 +311,14 @@ describe('parseFindings', () => {
       // Findings that are all unusable fail the reply as they do without unit lines, so the finder's retry asks again.
       expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer'))
         .toThrow(/^no element has a title or a description \(1 element\(s\), keys: severity, file, line\)$/);
-      // An element with any key past `unit`, `checked` and `defect`, or a field that is no text, is a finding, so a malformed one fails the reply too.
-      for (const malformed of [{ unit: 'U1', severity: 'warning', file: 'a.sh', line: 1 }, { unit: 'U1', checked: 'Read it.', defect: { title: 'x' } }]) {
+      // An element with a key a finding is built from is a finding, so a malformed one that names a unit fails the reply too.
+      for (const malformed of [{ unit: 'U1', severity: 'warning', file: 'a.sh', line: 1 }, { unit: 'U1', checked: 'Read it.', proof: ['a.sh:1'] }]) {
         expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer')).toThrow(/^no element has a title or a description \(1 element\(s\), /);
         expect(parseUnitLines(JSON.stringify([malformed]), units)).toEqual([]);
       }
+      // Any other extra key leaves a unit line a unit line.
+      const extra = JSON.stringify([{ unit: 'U1', checked: 'Read it.', defect: 'none', confidence: 'high' }]);
+      expect([parseFindings(extra, 'Reviewer'), parseUnitLines(extra, units)]).toEqual([[], [{ unit: 'U1', checked: 'Read it.' }]]);
       // A reply that does not parse holds no line.
       expect(parseUnitLines('I checked U1.', units)).toEqual([]);
     } finally {

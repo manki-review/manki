@@ -65,10 +65,8 @@ const MAX_CLAIM_LINES = 15;
 const MAX_REFERENCE_LINE_CHARS = 1000;
 /** The bytes at the start of a file that are searched for `GENERATED_HEADER`. A licence can stand before the header. */
 const HEADER_BYTES = 2048;
-/** Files of one checkout whose start is read for `GENERATED_HEADER`. Past it only the path tells a generated file. */
+/** Files of one checkout whose start is read for `GENERATED_HEADER`, apart for the changed files and the uses. Past it only the path tells a generated file. */
 const MAX_HEADER_FILES = 2000;
-/** Changed files read for `GENERATED_HEADER` to leave generated code out of the units, apart from `MAX_HEADER_FILES`. */
-const MAX_UNIT_HEADER_FILES = 200;
 const GREP_TIMEOUT_MS = 30_000;
 /** The reason a failed search of the PR's head commit leaves in the log and the round record is cut to this length. */
 const MAX_FAILURE_CHARS = 300;
@@ -1028,13 +1026,13 @@ async function buildUsesSection(
       }
     }
   }
-  const lastRanked = new LastRankedFiles(workspace);
-  const addsNoPieces = (file: string) => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file);
+  // The changed files get a header budget of their own, so a large change cannot use up the one that ranks the uses.
+  const generated = new LastRankedFiles(workspace);
+  const addsNothing = (file: string) => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || generated.has(file);
   const reviewed = new Set(diff.files.map(f => f.path));
   // A file left out of `diff` adds no pieces, but a piece can move out of it, so its removed lines are read by keyword.
-  const pieces = addedPieces(diff, declared, movedNames(fullDiff, parser, file => addsNoPieces(file) || !reviewed.has(file)), addsNoPieces);
-  const generated = new LastRankedFiles(workspace, MAX_UNIT_HEADER_FILES);
-  const allUnits = changeUnits(diff.files, declared, file => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || generated.has(file));
+  const pieces = addedPieces(diff, declared, movedNames(fullDiff, parser, file => addsNothing(file) || !reviewed.has(file)), addsNothing);
+  const allUnits = changeUnits(diff.files, declared, addsNothing);
   const units = allUnits.slice(0, MAX_UNITS);
   if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
@@ -1121,6 +1119,7 @@ async function buildUsesSection(
   // A symbol that was not searched for is in a line only next to another name, so those lines are not its uses.
   const redefinedNames = new Set(redefined.keys());
   const found = findSymbolUses(searched.filter(s => !unsearched.has(s.name)), hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), redefinedNames, otherType);
+  const lastRanked = new LastRankedFiles(workspace);
   const { blocks: finderBlocks, symbols: listed, common, capped } = formatSymbolUses(found, packages, redefinedNames, typeFiles, file => lastRanked.has(file));
   const { blocks } = formatSymbolUses(found, packages, redefinedNames, typeFiles);
   // What follows the symbols in both copies of the section.
@@ -1441,8 +1440,8 @@ function changeUnits(files: DiffFile[], declared: ChangedSymbol[], skip: (file: 
     .map((unit, i) => ({ id: `U${i + 1}`, ...unit }));
 }
 
-// A line of code that opens a branch, loop, guard or assertion, such as `if`, `elif`, `} else if`, `- if:` or `assert`.
-const CONDITION = /^\s*(?:[-}]\s*)?(?:else\s+if|elif|elsif|if|unless|while|until|guard|when)\b|^\s*(?:debug_)?assert(?:\w*!?\s*\(|\s)/;
+// A line that opens a branch, loop, guard or assertion, such as `} else if` or `- if:`. `case`, `when` and `match` are left to the function's unit.
+const CONDITION = /^\s*(?:[-}]\s*)?(?:else\s+if|elif|elsif|if|unless|while|until|guard)\b|^\s*(?:debug_)?assert(?:\w*!?\s*\(|\s)/;
 // `&&` or `||` between two operands with spaces around it, or ending a line after one or starting one before one. That
 // leaves out a reference type such as `&&str` and a closure such as `|| {`, `move || x` or `(|| x)`.
 const JOINED = /[\w)\]'"`?](?<!\bmove)\s+(?:&&|\|\|)\s+[\w(!'"`$[-]|[\w)\]'"`?](?<!\bmove)\s*(?:&&|\|\|)\s*$|^\s*(?:&&|\|\|)\s+[^\s{]/;
@@ -2270,7 +2269,7 @@ class LastRankedFiles {
   private readonly known = new Map<string, boolean>();
   private headers = 0;
 
-  constructor(private readonly root: string, private readonly limit = MAX_HEADER_FILES) {}
+  constructor(private readonly root: string) {}
 
   has(file: string): boolean {
     let last = this.known.get(file);
@@ -2282,9 +2281,9 @@ class LastRankedFiles {
     return last;
   }
 
-  /** A file that cannot be read, or one past `limit`, counts as written by hand. */
+  /** A file that cannot be read, or one past `MAX_HEADER_FILES`, counts as written by hand. */
   private hasGeneratedHeader(file: string): boolean {
-    if (this.headers >= this.limit) return false;
+    if (this.headers >= MAX_HEADER_FILES) return false;
     this.headers++;
     try {
       const { absolute } = resolveInRoot(this.root, file);

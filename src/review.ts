@@ -290,16 +290,20 @@ function unitsSection(units: readonly ChangeUnit[]): string {
 
 const MAX_UNIT_LINE_CHARS = 200;
 
-const UNIT_LINE_KEYS = new Set(['unit', 'checked', 'defect']);
+/** The keys `parseFindings` builds a finding from. `checked` is left out, since a unit line has it too. */
+const FINDING_KEYS = [
+  'title', 'severity', 'file', 'line', 'description', 'suggestedFix', 'howToFix', 'evidence', 'proof', 'claimsMissing', 'emptySearch',
+  'lead', 'left', 'notChecked', 'preExisting', 'preExistingReason', 'rule', 'ruleFile',
+];
 
 /**
- * Whether a reply element is a unit line: a string `unit` with at most a `checked` and `defect` of text or null. Any other
- * element is a finding, so a malformed finding that names a unit still fails as one.
+ * Whether a reply element is a unit line: a string `unit` and none of `FINDING_KEYS`. Other keys are ignored. An element
+ * with a finding key is a finding, so a malformed finding that names a unit still fails as one.
  */
 function isUnitLine(element: unknown): boolean {
   if (element === null || typeof element !== 'object' || Array.isArray(element)) return false;
   const f = element as Record<string, unknown>;
-  return typeof f.unit === 'string' && Object.entries(f).every(([key, value]) => UNIT_LINE_KEYS.has(key) && (key === 'unit' || value == null || typeof value === 'string'));
+  return typeof f.unit === 'string' && !FINDING_KEYS.some(key => key in f);
 }
 
 /** Returns the lines of a finder reply for the `units` it was asked about. A line counts only when it says what was checked. */
