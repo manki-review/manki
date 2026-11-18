@@ -3,7 +3,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import {
+  dealUnits,
   parseFindings,
+  parseUnitLines,
   parseProof,
   validateSeverity,
   determineOutcome,
@@ -54,6 +56,8 @@ import { repoToolsPrompt } from './providers/cli-utils';
 const failedPlanner = (): LLMClient => ({ sendMessage: jest.fn().mockRejectedValue(new Error('planner unavailable')) });
 const isRelatedCheck = (system: string) => system.startsWith('You check a pull request\'s change against one counterpart in a related repository');
 const isPatternCheck = (system: string) => system.startsWith('You check one piece of structure a pull request adds');
+/** Returns a finder's line for each unit of the change `message` lists, as a finder that answers for every unit gives them. */
+const unitLines = (message: string) => [...message.matchAll(/^(U\d+) (?:function `\w+`|condition) at /gm)].map(([, unit]) => ({ unit, checked: 'Followed each path.', defect: 'none' }));
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -105,6 +109,35 @@ const postedRecord = (result: ReviewResult): RoundContext => JSON.parse(JSON.str
   models: { planner: 'p', judge: 'j', dedup: 'd' }, recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 5,
   diff: makeDiff(), changeDigest: 'digest', excludedFiles: [], openThreads: [], memoryLoadStatus: 'disabled',
 }, result, { judgeDurationMs: 0 }))) as RoundContext;
+
+describe('dealUnits', () => {
+  const units = (count: number, file = 'src/a.ts', from = 1) => Array.from({ length: count }, (_, i) => ({ id: `U${from + i}`, kind: 'function' as const, file, start: i + 1, end: i + 1, name: `f${i}` }));
+  const ids = (list: Array<{ id: string }> | undefined) => list?.map(unit => unit.id);
+
+  it('gives every finder all units of a call up to the cap, deals them out in turns past it, and cuts the rest', () => {
+    const one = [{}];
+    const twenty = units(20);
+    const both = dealUnits(twenty, ['A', 'B'], one);
+    expect([ids(both.byFinder.get('A')), ids(both.byFinder.get('B')), both.cut]).toEqual([ids(twenty), ids(twenty), []]);
+
+    const fifty = units(50);
+    const dealt = dealUnits(fifty, ['A', 'B'], one);
+    expect(ids(dealt.byFinder.get('A'))).toEqual(ids(fifty.filter((_, i) => i % 2 === 0 && i < 40)));
+    expect(ids(dealt.byFinder.get('B'))).toEqual(ids(fifty.filter((_, i) => i % 2 === 1 && i < 40)));
+    expect(ids(dealt.cut)).toEqual(ids(fifty.slice(40)));
+    const alone = dealUnits(fifty, ['A'], one);
+    expect([ids(alone.byFinder.get('A')), ids(alone.cut)]).toEqual([ids(fifty.slice(0, 20)), ids(fifty.slice(20))]);
+
+    // Each slice's call takes the units of its files, a unit of a file in two slices goes to the first, and a unit of a file in no slice is cut.
+    const sliced = [{ paths: new Set(['src/a.ts', 'src/b.ts']) }, { paths: new Set(['src/b.ts', 'src/c.ts']) }];
+    const spread = [...units(15, 'src/a.ts'), ...units(10, 'src/c.ts', 16), ...units(1, 'src/b.ts', 26), ...units(1, 'src/gone.ts', 27)];
+    const perSlice = dealUnits(spread, ['A'], sliced);
+    expect([ids(perSlice.byFinder.get('A')), ids(perSlice.cut)]).toEqual([[...ids(spread.slice(0, 15))!, 'U26', ...ids(spread.slice(15, 25))!], ['U27']]);
+
+    // Without a finder no unit is asked about.
+    expect([dealUnits(twenty, [], one).byFinder.size, dealUnits(twenty, [], one).cut]).toEqual([0, twenty]);
+  });
+});
 
 describe('parseFindings', () => {
   it('parses valid JSON array', () => {
@@ -236,6 +269,36 @@ describe('parseFindings', () => {
     ['keys that are long, odd or many', JSON.stringify([Object.fromEntries([['a\n::error::`b`', 1], ['k'.repeat(80), 1], ...Array.from({ length: 9 }, (_, i) => [`k${i}`, 1])])]), new RegExp(`\\(1 element\\(s\\), keys: a\\?\\?\\?error\\?\\?\\?b\\?, k{30}, k0, k1, k2, k3, k4, k5, \\.\\.\\.\\)$`)],
   ])('throws on %s', (_label, input, expected) => {
     expect(() => parseFindings(input, 'Reviewer')).toThrow(expected);
+  });
+
+  it('reads the unit lines apart from the findings, and an answer of unit lines alone as no findings', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const units = ['U1', 'U2', 'U3'].map(id => ({ id, kind: 'condition' as const, file: 'a.sh', start: 1, end: 1, code: '+if x' }));
+    const lines = [
+      { unit: 'U1', checked: 'An empty tag passes it.', defect: 'An empty tag passes the check' },
+      { unit: ' U2 ', checked: '  Both branches.  ', defect: 'None.' },
+      // A line that says nothing checked, or names a unit it was not asked about, counts for none.
+      { unit: 'U3', checked: ' ', defect: 'none' },
+      { unit: 'U9', checked: 'Read it.' },
+      { unit: 'U3', checked: 'c'.repeat(300), defect: 'd'.repeat(300) },
+    ];
+    // An element with a title is a finding, also one that names its unit.
+    const finding = { unit: 'U1', severity: 'warning', title: 'An empty tag passes the check', file: 'a.sh', line: 1, description: 'd' };
+    try {
+      const reply = JSON.stringify([...lines, finding]);
+      expect(parseFindings(reply, 'Reviewer').map(f => f.title)).toEqual([finding.title]);
+      expect(parseUnitLines(reply, units)).toEqual([
+        { unit: 'U1', checked: 'An empty tag passes it.', defect: 'An empty tag passes the check' },
+        { unit: 'U2', checked: 'Both branches.' },
+        { unit: 'U3', checked: 'c'.repeat(200), defect: 'd'.repeat(200) },
+      ]);
+      expect(parseFindings(JSON.stringify(lines), 'Reviewer')).toEqual([]);
+      expect(warnSpy).not.toHaveBeenCalled();
+      // A reply that does not parse holds no line.
+      expect(parseUnitLines('I checked U1.', units)).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('parses empty array without warning', () => {
@@ -2176,12 +2239,12 @@ describe('runReview', () => {
     const run = async (stage: Stage, fallbackTools: boolean, error: QuotaError = limit) => {
       const clients = makeClients();
       let reported = false;
-      const answer = async (system: string, _user: string, _options?: SendMessageOptions) => {
+      const answer = async (system: string, user: string, _options?: SendMessageOptions) => {
         const answered = stageOf(system);
         if (answered === 'compare') return { content: '[]' };
         if (answered === 'sweep') return { content: JSON.stringify({ class: 'a lookup checks one of two sets', general: true, findings: [] }) };
         if (answered === 'claim_check') return { content: JSON.stringify({ status: 'unchecked', reason: 'The importer was not read.' }) };
-        const content = reported ? '[]' : JSON.stringify([blocker]);
+        const content = JSON.stringify([...unitLines(user), ...(reported ? [] : [blocker])]);
         reported = true;
         return { content };
       };
@@ -2398,13 +2461,13 @@ describe('runReview', () => {
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }]);
     const NOTE = '\n\nYou answered this message before without opening any file outside the changed files that "Uses Outside the Diff" or "In the Reference Repos" lists. ';
     const ASKED = 'without opening any file outside the changed files that';
-    const answer = (title: string) => ({ content: JSON.stringify([{ severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
+    const answer = (title: string, message = '') => ({ content: JSON.stringify([...unitLines(message), { severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
     type Reads = { toolSteps?: []; filesRead?: string[] };
     type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string; leaveOut?: string; attempt?: RoundContext };
     const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, leaveOut, attempt }: Asked) => {
       const clients = makeClients();
       const reads = (message: string) => (typeof first === 'function' ? first(message) : first);
-      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : isPatternCheck(system) ? { content: '{"answer": "follows"}' } : message.includes(ASKED) ? second() : { ...answer('First'), ...reads(message) }));
+      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : isPatternCheck(system) ? { content: '{"answer": "follows"}' } : message.includes(ASKED) ? second() : { ...answer('First', message), ...reads(message) }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
       // `leaveOut` drops a file from the diff the finders read, but not from the one the uses are listed for.
@@ -2523,6 +2586,71 @@ describe('runReview', () => {
       for (const dir of [change.root, sliced.root, mentioned.root, referenceOnly.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
     }
   }, 4 * GIT_TEST_TIMEOUT_MS);
+
+  it('asks every finder for a line per unit of the change, once more for the units still without one, keeps both answers and records the lines', async () => {
+    const gate = (check: string) => `export function allow(user: User): boolean {\n${check}  return true;\n}\n`;
+    const { root, diff } = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n') });
+    // The same change with a file long enough that the diff is read in slices.
+    const sliced = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n'), 'assets/rates.txt': 'rate\n'.repeat(1600) });
+    const ASKED = 'without a line for';
+    const finding = (title: string) => ({ severity: 'note', title, file: 'src/gate.ts', line: 2, description: 'd' });
+    const checkedU1 = { unit: 'U1', checked: 'Both returns.', defect: 'none' };
+    const checkedU2 = { unit: 'U2', checked: 'A banned admin is refused.', defect: 'none' };
+    const run = async (first: object[], second: object[], change = { root, diff }) => {
+      const clients = makeClients();
+      const sendMessage = jest.fn(async (_system: string, message: string) => ({ content: JSON.stringify(message.includes(ASKED) ? second : first) }));
+      Object.assign(clients.reviewer, { sendMessage });
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+      const result = await runReview(clients, { config: makeConfig(), diff: change.diff, rawDiff: rebuildRawDiff(change.diff), repoContext: '', workspace: change.root });
+      const messages = sendMessage.mock.calls.map(call => call[1]);
+      return { result, first: messages.filter(m => !m.includes(ASKED)), again: messages.filter(m => m.includes(ASKED)) };
+    };
+    try {
+      const asked = await run([checkedU1, finding('First')], [checkedU2, finding('Second')]);
+      expect(asked.result.agentNames).toHaveLength(2);
+      expect(asked.result.units).toEqual({
+        listed: [{ id: 'U1', kind: 'function', at: 'src/gate.ts:1-4', name: 'allow' }, { id: 'U2', kind: 'condition', at: 'src/gate.ts:2' }],
+      });
+      for (const message of asked.first) {
+        expect(message).toContain('## Units of the Change\n\nManki split the change into the units below: each function it changes, and each condition it adds, changes or removes');
+        expect(message).toContain('For a condition, name the input or state that passes it but should not, and what happens when a command or call it relies on fails, returns nothing or returns an error.');
+        expect(message).toContain('```\nU1 function `allow` at src/gate.ts:1-4\nU2 condition at src/gate.ts:2\n    +  if (user.banned) return false;\n```\n\n## Pull Request Diff');
+      }
+      // The second ask is the same message with a note that names the units without a line, and both answers' findings stay.
+      expect(asked.again).toHaveLength(2);
+      for (const message of asked.again) {
+        expect(message.startsWith(asked.first[0])).toBe(true);
+        expect(message.slice(asked.first[0].length)).toBe('\n\nYou answered this message before without a line for the unit U2 of "Units of the Change". Check that unit as that section asks. Then answer with only the findings you add and a line for it. Your earlier findings are kept. Reply with only the JSON array the system prompt describes, with no text, markdown or code fence around it.');
+      }
+      expect(asked.result.agentsAskedAgain).toEqual(asked.result.agentNames);
+      expect(asked.result.rawFindings?.map(f => f.title)).toEqual(['First', 'Second', 'First', 'Second']);
+      // A line that names no defect is recorded without one.
+      const recorded = [{ unit: 'U1', checked: checkedU1.checked }, { unit: 'U2', checked: checkedU2.checked }];
+      expect([...asked.result.agentUnitLines!]).toEqual(asked.result.agentNames.map(name => [name, recorded]));
+
+      // A unit still without a line after the second ask stays in the record without what was checked, and no third ask follows.
+      const left = await run([checkedU1], []);
+      expect(left.again).toHaveLength(2);
+      expect([...left.result.agentUnitLines!]).toEqual(left.result.agentNames.map(name => [name, [recorded[0], { unit: 'U2' }]]));
+      // A finder with a line for every unit is not asked again.
+      const covered = await run([checkedU1, checkedU2], []);
+      expect([covered.again, covered.result.agentsAskedAgain]).toEqual([[], []]);
+
+      // A sliced finder answers for each unit in the call on its slice, and is asked once more on that slice only.
+      const slices = await run([checkedU1, finding('First')], [checkedU2, finding('Second')], sliced);
+      const gateSlice = slices.first.find(message => message.includes('diff --git a/src/gate.ts'))!;
+      expect(slices.first.filter(message => message.includes('## Units of the Change'))).toEqual([gateSlice, gateSlice]);
+      expect(slices.again).toHaveLength(2);
+      for (const message of slices.again) {
+        expect(message.startsWith(gateSlice)).toBe(true);
+        expect(message.slice(gateSlice.length)).toMatch(/^\n\nYou read this diff before, in slices, without a line for the unit U2 of "Units of the Change"\. /);
+      }
+      expect(slices.result.rawFindings?.map(f => f.title)).toEqual(['First', 'First', 'Second', 'First', 'First', 'Second']);
+      expect([...slices.result.agentUnitLines!]).toEqual(slices.result.agentNames.map(name => [name, recorded]));
+    } finally {
+      for (const dir of [root, sliced.root]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('searches a dependency for the names the change calls, and fetches for those names only when one is configured', async () => {
     // The change declares nothing a search could use, and calls a function of the dependency.
@@ -2820,7 +2948,7 @@ describe('runReview', () => {
       };
       Object.assign(clients.reviewer, { repoTools: true });
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
-        const answer = isCheck(system) ? check(user) : JSON.stringify(found);
+        const answer = isCheck(system) ? check(user) : JSON.stringify([...unitLines(user), ...found]);
         if (answer instanceof Error) throw answer;
         return { content: answer };
       });
