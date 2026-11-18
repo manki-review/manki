@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 import { judgeAddressedThreadIds } from '../src/recap';
-import { FindingFingerprintEntry } from '../src/types';
+import { FindingFingerprintEntry, RoundContext } from '../src/types';
 import { Evidence, findThread, HistoryLine, labelFinding, LabelledFinding, renderReport, roundsByPullRequest, selectSet, Thread } from './calibration';
 
 function thread(slug: string, ...replies: Array<[bot: boolean, body: string]>): Thread {
@@ -56,13 +56,13 @@ describe('labelFinding', () => {
 });
 
 describe('roundsByPullRequest and findThread', () => {
-  it('groups rounds per pull request in posting order, fills missing blocks and skips reply records, incomplete rounds, records without a commit and rounds out of sequence', () => {
+  it('groups rounds per pull request in posting order, fills missing blocks and skips reply records, incomplete rounds, records without a commit, rounds out of sequence and undecoded rounds', () => {
     const lines: HistoryLine[] = [
-      { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'a', round: 1, timestamp: '' } } as HistoryLine['record'] },
+      { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'a', round: 1, timestamp: '' } } as Partial<RoundContext> },
       // A round that could not read the earlier records numbers itself round 1 again, so the latest posting of a finding is unknown.
-      { repo: 'o/r', pr: 4, record: { meta: { prNumber: 4, commitSha: 'd', round: 1, timestamp: '' } } as HistoryLine['record'] },
-      { repo: 'o/r', pr: 4, record: { meta: { prNumber: 4, commitSha: 'e', round: 1, timestamp: '' } } as HistoryLine['record'] },
-      { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: '' }, findings: { count: 1, severityCounts: {}, entries: [entry('x')] } } as HistoryLine['record'] },
+      { repo: 'o/r', pr: 4, record: { meta: { prNumber: 4, commitSha: 'd', round: 1, timestamp: '' } } as Partial<RoundContext> },
+      { repo: 'o/r', pr: 4, record: { meta: { prNumber: 4, commitSha: 'e', round: 1, timestamp: '' } } as Partial<RoundContext> },
+      { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: '' }, findings: { count: 1, severityCounts: {}, entries: [entry('x')] } } as Partial<RoundContext> },
       { repo: 'o/r', pr: 2, record: {} },
       // An incomplete round whose judge finished resolved no thread, whatever its evaluations say.
       {
@@ -71,14 +71,19 @@ describe('roundsByPullRequest and findThread', () => {
           meta: { prNumber: 1, commitSha: 'c', round: 2, timestamp: '', incomplete: true },
           findings: { count: 1, severityCounts: {}, entries: [entry('y')] },
           judge: { threadEvaluations: [{ threadId: 'T_x', status: 'addressed', reason: 'The check is in place.' }] },
-        } as HistoryLine['record'],
+        } as Partial<RoundContext>,
       },
-      { kind: 'reply', repo: 'o/r', pr: 3, record: { meta: { prNumber: 3, commitSha: 'c', round: 1, timestamp: '' } } as HistoryLine['record'] },
+      { kind: 'reply', repo: 'o/r', pr: 3, record: { meta: { prNumber: 3, commitSha: 'c', round: 1, timestamp: '' } } as Partial<RoundContext> },
+      // Round 2 did not decode, so the round after it numbers itself round 2 and the records read as rounds 1, 2.
+      { repo: 'o/r', pr: 5, record: { meta: { prNumber: 5, commitSha: 'f', round: 1, timestamp: '' } } as Partial<RoundContext> },
+      { kind: 'undecoded', repo: 'o/r', pr: 5 },
+      { repo: 'o/r', pr: 5, record: { meta: { prNumber: 5, commitSha: 'g', round: 2, timestamp: '' } } as Partial<RoundContext> },
     ];
 
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const rounds = roundsByPullRequest(lines);
     expect(errorSpy).toHaveBeenCalledWith('Skipping o/r#4: record 2 in posting order is of round 1, not 2');
+    expect(errorSpy).toHaveBeenCalledWith('Skipping o/r#5: 1 round record did not decode');
     errorSpy.mockRestore();
 
     expect([...rounds.keys()]).toEqual(['o/r#1']);

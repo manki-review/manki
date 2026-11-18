@@ -43,7 +43,7 @@ describe('review history', () => {
     errorSpy.mockRestore();
   });
 
-  it('prints one line per LLM call, with where it was recorded, and none for records without calls', () => {
+  it('prints one line per LLM call, with where it was recorded, and none for records without calls or undecoded ones', () => {
     const judge = call('judge', { model: 'claude-opus-5-5' });
     const finder = call('reviewer', { agent: 'Finder', model: 'claude-sonnet-5-5' });
     const reply = call('reply');
@@ -58,7 +58,7 @@ describe('review history', () => {
     });
 
     const source = { repo: 'owner/repo', pr: 9, author: 'manki-review[bot]' };
-    expect(callLines(lines)).toEqual([
+    expect(callLines([...lines, { kind: 'undecoded', repo: 'owner/repo', pr: 9 }])).toEqual([
       { kind: 'round', ...source, sourceId: 1, round: 2, ...finder },
       { kind: 'round', ...source, sourceId: 1, round: 2, ...judge },
       { kind: 'reply', ...source, sourceId: 20, ...reply },
