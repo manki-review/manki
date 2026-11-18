@@ -500,6 +500,30 @@ describe('openai_oauth_file', () => {
     warning.mockRestore();
   }, 30_000);
 
+  it('starts the next calls from a renewal it could not write back yet, instead of renewing again', async () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => undefined);
+    await start(2 * MINUTE);
+    const stuck = spawn('sleep', ['60']);
+    try {
+      holdLock(`${file}.writing`, stuck.pid);
+      expect(await client().sendMessage('sys', 'first')).toMatchObject({ content: 'OK' });
+      expect(await client().sendMessage('sys', 'second')).toMatchObject({ content: 'OK' });
+      expect(fileLogin().tokens.refresh_token).toBe('refresh-1');
+    } finally {
+      stuck.kill();
+    }
+    expect(standIn.renewals).toEqual([{ given: 'refresh-1', reason: 'forced' }]);
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(String(warning.mock.calls[0][0])).toContain(`could not write it back to ${file}`);
+
+    await new Promise(done => setTimeout(done, 100));
+    expect(await client().sendMessage('sys', 'third')).toMatchObject({ content: 'OK' });
+    expect(fileLogin().tokens.refresh_token).toBe('refresh-2');
+    expect(standIn.renewals).toHaveLength(1);
+    expect(standIn.refused).toEqual([]);
+    warning.mockRestore();
+  }, 40_000);
+
   it('writes back at exit a renewal made while the run holds the lock', async () => {
     await start(2 * MINUTE);
     process.env.CODEX_STANDIN_NO_APP_RENEWAL = '1';

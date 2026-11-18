@@ -298,6 +298,15 @@ function pendingRenewal(state: LoginFileState): string | undefined {
 }
 
 /**
+ * Returns the login the next Codex call starts from: a renewal still waiting in the home to be written, or the file. The
+ * file is read and checked either way.
+ */
+function loginInUse(state: LoginFileState): string {
+  const file = readLoginFile(state.path);
+  return pendingRenewal(state) ?? file;
+}
+
+/**
  * Makes one try to write the login Codex renewed in the home to the file, under the `writing` lock. The file is written
  * only while it still holds the login the renewal was made from, so it never goes back to a used refresh token. Returns
  * why the try failed, or `undefined` when nothing is left to write.
@@ -469,7 +478,7 @@ async function renew(state: LoginFileState, renewal: Renewal, runner: CodexRunne
   try {
     sync(state);
     // Checked once the lock is held, since another run may have renewed meanwhile.
-    if (!isDue(readLoginFile(state.path), renewal.limitMs)) return;
+    if (!isDue(loginInUse(state), renewal.limitMs)) return;
     await renewInHome(runner, dirname(state.homeFile!));
     await writeBack(state, WRITE_WAIT_MS);
   } finally {
@@ -568,9 +577,9 @@ export async function withLoginFile<T>(
   if (state.homeFile !== homeFile) state.synced = undefined;
   state.homeFile = homeFile;
   sync(state);
-  if (isDue(readLoginFile(path), limitMs)) {
+  if (isDue(loginInUse(state), limitMs)) {
     await renewBefore(state, runner, limitMs, deadline, signal);
-    if (isDue(readLoginFile(path), limitMs)) {
+    if (isDue(loginInUse(state), limitMs)) {
       core.warning(`Codex could not renew the login of ${INPUT} before the call, so this call holds the lock of the file while it runs.`);
       return runLocked(state, deadline, signal, run);
     }
