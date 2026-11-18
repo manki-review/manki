@@ -109,6 +109,7 @@ describe('estimateCostUsd', () => {
   it('prices OpenAI and Gemini models, with the OpenAI long-context tier above 272,000 input tokens', () => {
     expect(estimateCostUsd('gpt-6.1-sol', usage(272_000, 1_000_000, 100_000))).toBeCloseTo(0.172 * 2 + 0.1 * 0.1 + 10);
     expect(estimateCostUsd('gpt-6.1-sol', usage(1_000_000, 1_000_000, 500_000))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
+    expect(estimateCostUsd('gpt-6.2-sol', usage(1_000_000, 1_000_000, 500_000))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
     expect(estimateCostUsd('gemini-3.8-flash', usage(1_000_000, 1_000_000, 200_000))).toBeCloseTo(0.8 * 0.75 + 0.2 * 0.075 + 3.75);
   });
 

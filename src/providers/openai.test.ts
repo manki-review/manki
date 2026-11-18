@@ -115,6 +115,7 @@ describe('resolveReasoningEffort', () => {
     ['GPT-6-Luna', 'max'],
     ['gpt-6-astra', 'max'],
     ['gpt-6.1-sol', 'max'],
+    ['gpt-6.2-sol', 'max'],
     ['gpt-6.1-terra', 'max'],
   ])('maps max to the highest effort %s accepts, and xhigh to at most that', (model, expected) => {
     expect(resolveReasoningEffort(model, 'max')).toBe(expected);
