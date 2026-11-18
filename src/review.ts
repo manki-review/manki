@@ -72,7 +72,8 @@ export function postedWhenPreExisting(f: Finding): boolean {
  * Tags each finding that `checkOf` finds on code this PR did not change, or that `sameOnBase` finds failing the same
  * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
  * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
- * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker.
+ * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker, whatever
+ * `sameOnBase` found.
  */
 function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -86,12 +87,14 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
       continue;
     }
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], ...(check && { preExistingCheck: check }) };
+    const unchanged = check === 'pre_existing';
+    const lowers = f.severity === 'blocker' && (unchanged ? !isSecurityFinding(f.tags, f.reviewers) : !!base);
     if (!postedWhenPreExisting(f)) {
       core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
       unposted.push(tagged);
-    } else if (f.severity === 'blocker' && (base || !isSecurityFinding(f.tags, f.reviewers))) {
-      const why = base ? `the code before this PR fails the same way: ${base.reason}` : f.preExisting;
-      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: ${base ? 'the code before this PR fails the same way' : 'the PR did not change that line'}`);
+    } else if (lowers) {
+      const why = unchanged ? f.preExisting : `the code before this PR fails the same way: ${base?.reason}`;
+      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: ${unchanged ? 'the PR did not change that line' : 'the code before this PR fails the same way'}`);
       posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', why), originalSeverity: f.originalSeverity ?? 'blocker' });
     } else {
       posted.push(tagged);

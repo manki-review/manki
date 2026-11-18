@@ -4513,6 +4513,11 @@ describe('runReview', () => {
       expect([kept.title, result.outcome, result.findings[0].severity, result.findings[0].tags?.includes('pre-existing') ?? false]).toEqual([kept.title, 'ADDRESS_FIRST', 'blocker', false]);
     }
 
+    // A security blocker on code the PR did not change keeps blocking, even when both refuters found it the same before this PR.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...oldInjection, refutation: check('disproved'), pairRefutation: check('disproved', 'pair-model') }], summary: 'One defect.' });
+    const untouched = await run(makeClients());
+    expect([untouched.outcome, untouched.findings.map(f => [f.severity, f.tags, f.preExistingCheck])]).toEqual(['ADDRESS_FIRST', [['blocker', ['security', 'pre-existing'], 'pre_existing']]]);
+
     // Each of these sits outside every hunk, but something ties it to this PR, so it keeps blocking.
     const checks: Array<Finding['preExistingCheck']> = [];
     for (const tied of [callerProof, callerUnmarked, deleted, excluded, siblingPath]) {

@@ -1209,13 +1209,30 @@ describe('refuteBlockers', () => {
     expect(sameOnBase(paired(result[5], { proof: [] }))).toBeUndefined();
     expect(sameOnBase({ ...paired(result[5], {}), refutation: { ...result[5].refutation!, model: undefined } })).toBeUndefined();
 
-    // A stored check of a blocker without an answer about the base is asked again. One with it is reused.
+    // A changed file the message does not name looks the same at the base, so an answer under a cut list stays open.
+    const paths = (n: number) => Array.from({ length: n }, (_, i) => `gen/file${i}.ts`);
+    const [named] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(49) });
+    const [cut] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(50) });
+    expect(client.calls.at(-1)![2]).toContain(', and 1 more it does not name');
+    expect([named.refutation?.base?.outcome, cut.refutation?.base?.outcome, !!sameOnBase(cut)]).toEqual(['disproved', 'unsettled', false]);
+
+    // A warning reuses its stored check without the answer about the base, so no stale answer makes it pre-existing.
     const stored = (refutation: Refutation) => [{ findings: { entries: [{ title: 'Same before', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation }] }, judge: {} }] as unknown as RoundContext[];
-    const { base: _base, ...unasked } = result[0].refutation!;
     const again = fakeClient({ 'Same before': { ...confirmed, base: same } });
-    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(unasked) });
+    const [warning] = await refuteBlockers(again, [finding('Same before', { severity: 'warning', evidence: { checks: [], proof: [] } })], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    expect([again.calls.length, warning.refutation?.outcome, warning.refutation?.base]).toEqual([0, 'confirmed', undefined]);
+    // A blocker's stored check that found the same failure before this PR is never reused, since a push to any file can
+    // make the failure the PR's own: it is asked again with the code unchanged, after a push to another file, and after
+    // a push to a cited file. One whose answer about the base lowers nothing is reused while its files are unchanged.
+    const open = { ...result[1].refutation!, codeDigest: result[0].refutation!.codeDigest, files: result[0].refutation!.files };
+    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(open) });
+    expect(again.calls).toHaveLength(0);
     await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
-    expect(again.calls).toHaveLength(1);
+    writeFileSync(join(workspace, 'src', 'api.ts'), 'export const total = add(Number.MAX_SAFE_INTEGER, 1);\n');
+    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    writeFileSync(join(workspace, 'src', 'math.ts'), 'export function add(a: number, b: number) {\n  return a + b + 1;\n}\n');
+    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    expect(again.calls).toHaveLength(3);
   });
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {

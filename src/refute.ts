@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, BASE_QUESTION, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -57,7 +57,7 @@ To refute it:
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
-- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base. In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read how this PR changed those lines with \`git_history\`, or answer unsettled.
+- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. Then answer \`base\` unsettled. In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read how this PR changed those lines with \`git_history\`, or answer unsettled.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
 - **confirmed**: the failure path holds. Cite the lines that show the failure in \`proof\`.
@@ -183,7 +183,9 @@ function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutat
  * Returns the refutation an earlier round stored in `field` for the same finding, when it covers every file the finding
  * now cites and none of those files changed since. Only the latest such answer counts, so no older one is ever reused
  * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
- * Neither is one without a `base` answer for a finding that `asksBase`.
+ * Neither is one without a `base` answer for a finding that `asksBase`. A push to any file can make the failure the
+ * PR's own, so such a finding is checked again when its stored `base` answer found the same failure before this PR.
+ * A reused check of any other finding leaves out its `base` answer for the same reason.
  * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
  * covers the PR's files only and the related repo can have changed, when it is a disproof that no longer cites the
  * finding's code or that confirmed the defect, which contradicts itself, when it ended unsettled on its step budget,
@@ -202,8 +204,11 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       && restsOnSameCode(refutation, workspace))?.refutation;
     if (!refutation) continue;
     const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes' && !refutation.premises?.some(p => p.decides === 'drop')
+      && (!asksBase(finding) || refutation.base?.outcome !== 'disproved')
       && (outcomeOf(refutation) !== 'disproved' || (refutation.defect !== 'confirmed' && citesFindingCode(finding.file, refutation.proof ?? [], diff)));
-    return reusable ? refutation : undefined;
+    if (!reusable) return undefined;
+    const { base: _base, ...withoutBase } = refutation;
+    return asksBase(finding) ? refutation : withoutBase;
   }
   return undefined;
 }
@@ -213,9 +218,20 @@ function asksBase(finding: Finding): boolean {
   return finding.severity === 'blocker' || confirmedGrade(finding) === 'blocker';
 }
 
-/** Returns the line that names the files this PR changes besides `shown`, from `diff` and `excludedPaths`, at most `MAX_CHANGED_PATHS`. */
-function otherChangedFiles(diff: ParsedDiff | undefined, shown: readonly string[], excludedPaths: readonly string[]): string {
-  const paths = [...new Set([...(diff?.files ?? []).map(f => f.path), ...(diff?.binarySkipped ?? []).map(f => f.path), ...excludedPaths])].filter(p => !shown.includes(p));
+/** Returns the files of `diff` whose change a check of `finding` shows: those it cites, when the judge doubts it or the check `asksBase`. */
+function shownChanges(finding: Finding, diff: ParsedDiff | undefined): DiffFile[] {
+  const cited = finding.gradeIfConfirmed || asksBase(finding) ? refutationFiles(finding.file, finding.evidence?.proof) : [];
+  return diff?.files.filter(f => cited.includes(f.path)) ?? [];
+}
+
+/** Returns the files this PR changes, from `diff` and `excludedPaths`, apart from those whose change a check of `finding` shows. */
+function otherChangedPaths(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): string[] {
+  const shown = shownChanges(finding, diff).map(f => f.path);
+  return [...new Set([...(diff?.files ?? []).map(f => f.path), ...(diff?.binarySkipped ?? []).map(f => f.path), ...excludedPaths])].filter(p => !shown.includes(p));
+}
+
+/** Returns the line that names the other files this PR changes, at most `MAX_CHANGED_PATHS`. */
+function otherChangedFiles(paths: readonly string[]): string {
   const named = paths.slice(0, MAX_CHANGED_PATHS).map(p => sanitizeForPromptEmbed(p)).join(', ');
   const rest = paths.length - MAX_CHANGED_PATHS;
   return `- **Other files this PR changes**: ${named || 'none'}${rest > 0 ? `, and ${rest} more it does not name` : ''}`;
@@ -235,8 +251,7 @@ function findingKind(finding: Finding): string {
 function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff, excludedPaths: readonly string[] = []): string {
   // Whether the PR causes the failure is settled only by the PR's change.
   const asked = asksBase(finding);
-  const cited = finding.gradeIfConfirmed || asked ? refutationFiles(finding.file, finding.evidence?.proof) : [];
-  const changed = diff?.files.filter(f => cited.includes(f.path)).map(shortenLongLines) ?? [];
+  const changed = shownChanges(finding, diff).map(shortenLongLines);
   const lines = [
     `## ${findingKind(finding)}: ${sanitizeForPromptEmbed(finding.title)}`,
     '',
@@ -249,7 +264,7 @@ function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput
     ...(finding.doubts ? ['- **Premises the judge doubts**, to answer in order:', ...finding.doubts.map((d, i) => `  ${i + 1}. ${d.decides === 'drop' ? '(the premise the drop rests on) ' : ''}${sanitizeForPromptEmbed(d.premise)}`)] : []),
     ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
     ...(asksBase(finding) ? [`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`] : []),
-    ...(asked ? [otherChangedFiles(diff, changed.map(f => f.path), excludedPaths)] : []),
+    ...(asked ? [otherChangedFiles(otherChangedPaths(finding, diff, excludedPaths))] : []),
   ];
   const change = changed.length > 0 && diff
     ? `## The PR's Change to the Cited Files\n\n${UNTRUSTED_DIFF_NOTE}\n\n${fenceText(truncateDiff(rebuildRawDiff({ ...diff, files: changed }), MAX_FILE_CHANGE_CHARS), 'diff')}`
@@ -283,7 +298,7 @@ function parseBase(answer: unknown, settle: (outcome: RefutationOutcome, proof: 
   };
 }
 
-function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools): Refutation {
+function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools, excludedPaths: readonly string[] = []): Refutation {
   const parsed = JSON.parse(extractJSON(text)) as Record<string, unknown>;
   // Either verdict has to cite the code that decides it, so one without real proving lines settles nothing. A line of a
   // related repo counts as such a line. A disproof lifts a finding, so it still needs a line of the finding's own file
@@ -322,7 +337,9 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
     // The answer's own lines come first, so the cut drops lines of a premise before a line that decides the defect.
     relatedProof = [...new Set([...(ownAnswer ? shownRelated : []), ...premises.flatMap((p, i) => cites(p, i) ? p.relatedProof ?? [] : [])])].slice(0, MAX_RELATED_PROOF);
   }
-  const base = asksBase(finding) ? parseBase(parsed.base, settle, workspace, related) : undefined;
+  // A changed file the message does not name looks the same at the base, so a cut list leaves the answer open.
+  const listCut = otherChangedPaths(finding, diff, excludedPaths).length > MAX_CHANGED_PATHS;
+  const base = asksBase(finding) ? parseBase(parsed.base, (outcome, proof, relatedProof) => (listCut ? 'unsettled' : settle(outcome, proof, relatedProof)), workspace, related) : undefined;
   const files = refutationFiles(finding.file, [...proof, ...(base?.proof ?? [])]);
   return {
     outcome, defect, reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }), ...(premises && { premises }),
@@ -693,7 +710,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
           ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
           ...(finding.reviewers.some(isSweepName) && { sweep: true as const }),
         }),
-        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related), ...(reply.model && { model: reply.model }) }, reply),
+        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related, excludedPaths), ...(reply.model && { model: reply.model }) }, reply),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
