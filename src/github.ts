@@ -7,7 +7,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
@@ -791,7 +791,12 @@ async function readInstructionFile(files: RepoFiles, path: string): Promise<{ co
  */
 export const INDENT = '&nbsp;&nbsp;&nbsp;&nbsp;';
 
-function renderAgentLines(agents: AgentProgressEntry[]): string {
+/** The time from `startedAt` until `now`, as a live line shows it. */
+function soFar(startedAt: number, now: number): string {
+  return `${formatDuration(Math.max(1000, now - startedAt))} so far`;
+}
+
+function renderAgentLines(agents: AgentProgressEntry[], now: number): string {
   return agents.map(a => {
     const name = sanitizeMarkdown(a.name);
     if (a.status === 'done') {
@@ -806,12 +811,14 @@ function renderAgentLines(agents: AgentProgressEntry[]): string {
     }
     if (a.status === 'retrying') {
       if (a.retryCount != null) {
-        return `${INDENT}⚠️ ${name}: retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})`;
+        return `${INDENT}🔁 ${name}: retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})`;
       }
-      return `${INDENT}⚠️ ${name}: retrying`;
+      return `${INDENT}🔁 ${name}: retrying`;
     }
     if (a.status === 'reviewing') {
-      return `${INDENT}⏳ ${name}`;
+      if (a.startedAt === undefined) return `${INDENT}⏳ ${name}`;
+      const steps = a.toolSteps ? `${countOf(a.toolSteps, 'tool step')} · ` : '';
+      return `${INDENT}⏳ ${name}: ${steps}${soFar(a.startedAt, now)}`;
     }
     return `${INDENT}○ ${name}`;
   }).join('\n');
@@ -840,6 +847,47 @@ function reviewHeading(routing: DashboardData['routing']): string {
   return `Review (${sanitizeMarkdown(route)})`;
 }
 
+const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', sweep: 'sweeps' };
+// `runReview` starts these three steps beside the finders in every round, the sweeps only after the judge.
+const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim'];
+
+/**
+ * The line of the side checks of `kinds`, such as `⏳ Comparisons and claim checks: 2 of 5 done, 1 finding`. It is done
+ * once every step of `kinds` ended all its checks. Unset while none of them asks a check.
+ */
+function sideCheckLine(checks: DashboardData['sideChecks'], kinds: SideCheckKind[]): string | undefined {
+  const steps = kinds.flatMap(kind => (checks?.[kind] ? [{ kind, ...checks[kind] }] : []));
+  const asking = steps.filter(step => step.total > 0);
+  if (asking.length === 0) return undefined;
+  const names = asking.map(step => SIDE_CHECK_NAMES[step.kind]);
+  const label = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  const sum = (field: 'total' | 'ended' | 'findings') => asking.reduce((n, step) => n + step[field], 0);
+  const found = sum('findings') > 0 ? `, ${countOf(sum('findings'), 'finding')}` : '';
+  const text = `${label.charAt(0).toUpperCase()}${label.slice(1)}: ${sum('ended')} of ${sum('total')} done${found}`;
+  const ends = steps.map(step => step.endedAt);
+  if (steps.length < kinds.length || ends.some(end => end === undefined)) return `${INDENT}⏳ ${text}`;
+  const took = Math.max(...ends as number[]) - Math.min(...steps.map(step => step.startedAt));
+  return `${INDENT}✅ ${text} (${formatDuration(took)})`;
+}
+
+/** The refuter's line, such as `refuter: 1 of 3 checks done · 1 disproved`. Unset while it checks nothing. */
+function refuterLine(refuter: DashboardData['refuter']): string | undefined {
+  if (!refuter || refuter.total === 0) return undefined;
+  const outcomes = (['confirmed', 'disproved', 'unsettled'] as const).filter(o => (refuter.outcomes[o] ?? 0) > 0).map(o => `${refuter.outcomes[o]} ${o}`);
+  const done = Object.values(refuter.outcomes).reduce((n, count) => n + (count ?? 0), 0);
+  return `${INDENT}refuter: ${done} of ${refuter.total} checks done${outcomes.map(o => ` · ${o}`).join('')}`;
+}
+
+/** The live lines under the judge: its grades, the refuter's checks and the verdict reader, each once it started. */
+function judgeLiveLines(data: DashboardData, now: number): string[] {
+  const { graded, verdictReader: reader } = data;
+  return [
+    graded && `${INDENT}graded ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings: ${graded.kept} kept · ${graded.dropped} dropped (${formatDuration(graded.durationMs)})`,
+    refuterLine(data.refuter),
+    reader && `${INDENT}verdict reader: ${reader.durationMs === undefined ? `reading the diff · ${soFar(reader.startedAt, now)}` : `read the diff (${formatDuration(reader.durationMs)})`}`,
+  ].filter((line): line is string => !!line);
+}
+
 function preJudgeDrops(data: DashboardData): string {
   const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0);
   return [
@@ -847,7 +895,8 @@ function preJudgeDrops(data: DashboardData): string {
   ].join(', ');
 }
 
-export function buildDashboard(data: DashboardData): string {
+/** Renders the stages of `data`. A review still running shows the time each running stage has taken by `now`. */
+export function buildDashboard(data: DashboardData, now = Date.now()): string {
   const agents = data.agentProgress;
   const review = reviewHeading(data.routing);
   const hasAgentProgress = !!(agents && agents.length > 0);
@@ -861,7 +910,7 @@ export function buildDashboard(data: DashboardData): string {
   const plannerLines: string[] = [];
   if (data.phase === 'planning') {
     plannerLines.push(`**Planner**`);
-    plannerLines.push(`${INDENT}analyzing...`);
+    plannerLines.push(`${INDENT}analyzing...${data.plannerStartedAt === undefined ? '' : ` (${soFar(data.plannerStartedAt, now)})`}`);
   } else if (data.plannerInfo) {
     const prType = validPrTypeOrNull(data.plannerInfo.prType);
     const plannerDur = data.plannerDurationMs != null ? ` (${formatDuration(data.plannerDurationMs)})` : '';
@@ -892,7 +941,7 @@ export function buildDashboard(data: DashboardData): string {
     if (hasAgentProgress) {
       const done = agents.filter(a => a.status === 'done' || a.status === 'failed' || a.status === 'retrying').length;
       reviewLines.push(`**${review}:** ${done}/${agents.length} agents complete`);
-      reviewLines.push(renderAgentLines(agents));
+      reviewLines.push(renderAgentLines(agents, now));
     } else {
       reviewLines.push(`**${review}**`);
       reviewLines.push(`${INDENT}reviewing with ${data.agentCount} agents...`);
@@ -900,8 +949,11 @@ export function buildDashboard(data: DashboardData): string {
   } else {
     reviewLines.push(`**${review}:** ${countOf(data.rawFindingCount ?? 0, 'finding')}`);
     if (hasAgentProgress) {
-      reviewLines.push(renderAgentLines(agents));
+      reviewLines.push(renderAgentLines(agents, now));
     }
+  }
+  if (data.phase !== 'complete') {
+    reviewLines.push(...[sideCheckLine(data.sideChecks, BESIDE_FINDERS), sideCheckLine(data.sideChecks, ['sweep'])].filter((line): line is string => !!line));
   }
   const sameEffort = data.routing?.deeperSameEffort;
   if (sameEffort) {
@@ -917,10 +969,15 @@ export function buildDashboard(data: DashboardData): string {
     judgeLines.push(`**Judge:** skipped, nothing to judge`);
     const drops = preJudgeDrops(data);
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
+    if (data.phase === 'reviewed') judgeLines.push(...judgeLiveLines(data, now));
   } else if (data.phase === 'reviewed') {
     judgeLines.push(`**Judge**`);
-    const drops = preJudgeDrops(data);
-    judgeLines.push(`${INDENT}evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings${drops ? ` (${drops})` : ''}...`);
+    if (!data.graded) {
+      const drops = preJudgeDrops(data);
+      const time = data.judgeStartedAt === undefined ? '' : ` · ${soFar(data.judgeStartedAt, now)}`;
+      judgeLines.push(`${INDENT}grading ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings${drops ? ` (${drops})` : ''}${time}`);
+    }
+    judgeLines.push(...judgeLiveLines(data, now));
   } else {
     const judgeDur = data.judgeDurationMs != null ? ` (${formatDuration(data.judgeDurationMs)})` : '';
     judgeLines.push(`**Judge:** ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${judgeDur}`);
@@ -1229,6 +1286,31 @@ export async function updateProgressComment(
 /** Whether `body` is a progress comment whose review failed or ended incomplete. */
 function isFailedProgress(body: string): boolean {
   return body.startsWith(REVIEW_FAILED_LINE) || body.startsWith(failedLead('Review'));
+}
+
+/** How often the live dashboard edits the progress comment while a review runs. */
+export const LIVE_EDIT_MS = 20_000;
+
+/**
+ * Runs `edit` every `LIVE_EDIT_MS` until `stop`, so the progress comment follows the review without an edit per event.
+ * No stage waits for an edit: one still running skips the next, and a failed one only warns. `stop` waits for an edit
+ * in flight, so the edit that follows it lands last.
+ */
+export function startLiveEdits(edit: () => Promise<void>): { stop(): Promise<void> } {
+  let inFlight: Promise<void> | undefined;
+  const timer = setInterval(() => {
+    inFlight ??= edit()
+      .catch(error => core.warning(`Failed to update the progress comment: ${error instanceof Error ? error.message : error}`))
+      .finally(() => { inFlight = undefined; });
+  }, LIVE_EDIT_MS);
+  // A run that never stops the edits still ends.
+  timer.unref();
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }
 
 /**

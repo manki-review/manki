@@ -7,7 +7,7 @@ import { repoTools } from './related-repos';
 import { shownLines } from './refute';
 import { isUsableElement, parseFindings } from './review';
 import { CodeExcerpt, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
-import { EffortLevel, Finding, RelatedRepoKind, RelatedRepoTools, RoundComparison } from './types';
+import { CheckProgress, EffortLevel, Finding, RelatedRepoKind, RelatedRepoTools, RoundComparison } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -181,6 +181,8 @@ export interface ComparisonOptions {
   related?: RelatedRepoTools;
   /** Stops the questions still running or not yet asked, which are then recorded as `timed_out`. */
   signal?: AbortSignal;
+  /** Hears how many questions are asked and the findings of each answer. A question skipped for want of tools made no call. */
+  progress?: CheckProgress<number>;
 }
 
 /** How a step asks its questions: what its log calls them, its system prompt, how it reads a reply, and whether a call needs repository tools. */
@@ -199,9 +201,10 @@ type Answers = { findings: Finding[]; comparisons: RoundComparison[] };
  * as `timed_out`, and with `needsTools` one whose client has no repository tools as `skipped`. It never throws.
  */
 async function ask(
-  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal }: ComparisonOptions, { what, system, parse, needsTools }: Asking,
+  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal, progress }: ComparisonOptions, { what, system, parse, needsTools }: Asking,
 ): Promise<Answers> {
   if (asked.length > 0) core.info(`Asking ${asked.length} ${what} question(s)${cut.length > 0 ? `, ${cut.length} cut by the cap` : ''}`);
+  progress?.started(asked.length);
   const answers = await mapWithConcurrency(asked, MAX_PARALLEL_QUESTIONS, async (q): Promise<{ record: RoundComparison; findings: Finding[] }> => {
     const client = clientFor(q.reviewer);
     const tools = !!workspace && !!client.repoTools;
@@ -235,7 +238,7 @@ async function ask(
       core.warning(`${q.reviewer} failed, so its question goes unanswered this round: ${error}`);
       return { record: { ...record, status: 'failed' }, findings: [] };
     }
-  });
+  }, ({ record, findings }) => progress?.ended(record.status === 'skipped' ? undefined : findings.length));
   return {
     findings: answers.flatMap(a => a.findings),
     comparisons: [...answers.map(a => a.record), ...cut.map(q => ({ kind: q.kind, reviewer: q.reviewer, at: q.at, status: 'cut' as const }))],

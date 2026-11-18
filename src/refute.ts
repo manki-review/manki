@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -626,6 +626,8 @@ export interface RefuteOptions {
   preExisting?: (finding: Finding) => boolean;
   /** The repository's `review.rules`, which decides whether a confirmed rule grades a finding and how. */
   rules?: RulesMode;
+  /** Hears how many findings are checked and the outcome the refuters agree on for each. */
+  progress?: CheckProgress<RefutationOutcome>;
 }
 
 /**
@@ -636,7 +638,7 @@ export interface RefuteOptions {
  * `gradeIfConfirmed`. A call that fails, or that the round did not start or stopped, leaves the grade to the other
  * refuter, or to the judge. With `roundEnd` it makes only the checks `doubtsToCheck` picks.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules, progress }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
@@ -691,10 +693,12 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (decidesGrade(finding) ? !confirmedGrade(finding) && hiddenLater?.(finding) : noCheck(finding)) return false;
     return checkable(finding);
   }));
+  progress?.started(checked.size);
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
     if (overLimit.has(finding)) return { ...finding, overCheckLimit: true as const };
     if (!checked.has(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
+    progress?.ended(agreedOutcome([refutation, pairRefutation].filter((r): r is Refutation => !!r)));
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
   });
 }

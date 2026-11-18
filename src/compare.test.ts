@@ -206,8 +206,12 @@ describe('runRelatedChecks', () => {
   it('asks at most eight counterparts in their order and records the rest as cut, and asks none without repository tools', async () => {
     const names = Array.from({ length: 10 }, (_, i) => `name_${i}`);
     const client = fakeClient(() => '[]');
-    const result = await runRelatedChecks(() => client, [...names.map(name => question('consumer', name)), question('consumer', 'name_0')], { workspace: '/repo' });
+    const progress = { started: jest.fn(), ended: jest.fn() };
+    const result = await runRelatedChecks(() => client, [...names.map(name => question('consumer', name)), question('consumer', 'name_0')], { workspace: '/repo', progress });
     expect(client.calls.map(c => c.user.match(/`(name_\d)`/)![1])).toEqual(names.slice(0, 8));
+    // The progress counts the questions asked, not those cut, and hears the findings of each answer.
+    expect(progress.started.mock.calls).toEqual([[8]]);
+    expect(progress.ended.mock.calls).toEqual(Array.from({ length: 8 }, () => [0]));
     expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual([
       ...names.slice(0, 8).map(name => `Consumer check: ${name}: answered`),
       'Consumer check: name_8: cut', 'Consumer check: name_9: cut', 'Consumer check: name_0 #2: cut',
@@ -216,7 +220,9 @@ describe('runRelatedChecks', () => {
     // A call that could not open the counterpart would report nothing, so none is made.
     const plain = fakeClient(() => '[]', false);
     for (const workspace of ['/repo', undefined]) {
-      const skipped = await runRelatedChecks(() => plain, [question('reference', 'MIN_PEER_VERSION')], { workspace });
+      const skippedProgress = { started: jest.fn(), ended: jest.fn() };
+      const skipped = await runRelatedChecks(() => plain, [question('reference', 'MIN_PEER_VERSION')], { workspace, progress: skippedProgress });
+      expect(skippedProgress.ended.mock.calls).toEqual([[undefined]]);
       expect(skipped).toEqual({ findings: [], comparisons: [{ kind: 'reference', reviewer: 'Reference check: MIN_PEER_VERSION', at: ['acme/node:src/net.cpp:2'], status: 'skipped' }] });
     }
     expect(plain.calls).toEqual([]);

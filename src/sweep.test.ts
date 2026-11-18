@@ -102,9 +102,12 @@ describe('runSweeps', () => {
       blocker('Proven warning', { severity: 'warning', line: 9 }),
     ];
 
-    const { findings, sweeps } = await runSweeps(() => client, blockers, { rawDiff });
+    const progress = { started: jest.fn(), ended: jest.fn() };
+    const { findings, sweeps } = await runSweeps(() => client, blockers, { rawDiff, progress });
 
     expect(findings).toEqual([]);
+    // The progress counts the sweeps asked, not those cut, and each one ends, the failed one too.
+    expect([progress.started.mock.calls, progress.ended.mock.calls]).toEqual([[[3]], [[0], [0], [0]]]);
     // Each sweep is numbered in its order, and its record names the finding's location and grade, never its text.
     expect(sweeps.map(s => [s.reviewer, s.source, s.severity, s.status])).toEqual([
       ['Sweep 1', 'src/cache.ts:5', 'blocker', 'answered'],

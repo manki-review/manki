@@ -6338,10 +6338,25 @@ describe('runReview', () => {
     expect(planningCalls[1][0].heuristicFallback).toBeUndefined();
     expect(result.plannerResult).toEqual(expect.objectContaining({ judgeEffort: 'low', prType: 'feat' }));
 
-    for (const call of (clients.reviewer.sendMessage as jest.Mock).mock.calls) {
-      expect(call[2]).toEqual({ effort: 'medium', timeoutMs: 900_000 });
+    const finderCalls = (clients.reviewer.sendMessage as jest.Mock).mock.calls;
+    for (const call of finderCalls) {
+      expect(call[2]).toEqual({ effort: 'medium', timeoutMs: 900_000, onToolStep: expect.any(Function) });
     }
     expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('low');
+
+    // Each finder's tool calls, the steps beside the finders, the judge's grades and the verdict reader reach the progress as they happen.
+    const events = () => onProgress.mock.calls.map(([event]: [import('./review').ReviewProgress]) => event);
+    expect(events().filter(e => e.phase === 'side-check').map(e => e.sideCheck).sort((a, b) => a!.kind.localeCompare(b!.kind))).toEqual([
+      { kind: 'claim', total: 0 }, { kind: 'comparison', total: 0 }, { kind: 'related', total: 0 },
+    ]);
+    expect(events().filter(e => e.phase === 'verdict-reader')).toEqual([{ phase: 'verdict-reader' }, { phase: 'verdict-reader', verdictReaderDone: true }]);
+    onProgress.mockClear();
+    for (const call of finderCalls) call[2].onToolStep();
+    mockedRunJudgeAgent.mock.calls[0][2].onGraded!(2, 1);
+    expect(events()).toEqual([
+      ...result.agentNames.map(agentName => ({ phase: 'agent-step', agentName })),
+      { phase: 'graded', graded: { kept: 2, dropped: 1 } },
+    ]);
   });
 
   it('routes a PR that changes only an excluded lockfile on the supply-chain floor, and checks findings on the lockfile', async () => {

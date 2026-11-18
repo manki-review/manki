@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -327,7 +327,9 @@ export interface JudgeInput {
    * the head, and the client tries to refute each blocker, open lead and finding lowered for want of proof, and the
    * warnings on changed code that nothing proves yet. The round's calls share `MAX_DOUBT_CHECKS` of those checks through `doubtBudget`.
    */
-  refutation?: { client: LLMClient; workspace: string; related?: RelatedRepoTools; pair?: LLMClient; doubtBudget?: { left: number } };
+  refutation?: { client: LLMClient; workspace: string; related?: RelatedRepoTools; pair?: LLMClient; doubtBudget?: { left: number }; progress?: CheckProgress<RefutationOutcome> };
+  /** Called with how many findings the judge kept and dropped once it graded them, before the refuter checks them. */
+  onGraded?: (kept: number, dropped: number) => void;
   /** Read-only tool calls the judge itself may make on the `refutation` workspace while it grades. 0 or unset gives it none. */
   toolSteps?: number;
   /** The section `listUsesOutsideDiff` builds, shown to the judge and the refuter. */
@@ -1766,9 +1768,11 @@ export async function runJudgeAgent(
   const unpostedLater = (finding: Finding): boolean => suppress([finding], true).findings[0].severity !== finding.severity
     || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0;
   const earlier = earlierFindings(priorRounds ?? [], openThreads ?? input.evaluatedThreads?.openThreads ?? [], crossRoundOptions.threadEvaluations);
+  const kept = mapped.filter(f => f.severity !== 'ignore').length;
+  input.onGraded?.(kept, mapped.length - kept);
   // The suppressions hide findings by grade, so the refuter settles each grade first.
   const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
-    workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
+    workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
     blockingThreads: (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks),
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
     unpostedLater,

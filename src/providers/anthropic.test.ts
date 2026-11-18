@@ -518,8 +518,9 @@ describe('sendViaOAuth — error paths', () => {
     // Each request starts with a `message_start` that reports its own input, and the `result` sums the requests.
     const request = (n: number) => ({ type: 'stream_event', event: { type: 'message_start', message: { id: `msg_${n}`, usage: { input_tokens: 10 * n, cache_read_input_tokens: 1000 * n, cache_creation_input_tokens: 100 * n, output_tokens: 1 } } } });
     const result = (inputTokens: number) => ({ type: 'result', result: '[]', usage: { input_tokens: inputTokens, cache_read_input_tokens: 15_000, cache_creation_input_tokens: 1500, output_tokens: 75 } });
+    // A tool call the stream shows twice is one step.
     const events = [
-      request(1), toolUse('t1', 'Read', { file_path: '/work/repo/src/a.rs' }), toolResult('t1'),
+      request(1), toolUse('t1', 'Read', { file_path: '/work/repo/src/a.rs' }), toolUse('t1', 'Read', { file_path: '/work/repo/src/a.rs' }), toolResult('t1'),
       request(2), toolUse('t2', 'mcp__manki__git_history', { path: 'src/b.rs' }), toolResult('t2'),
       request(3), toolUse('t3', 'Read', { file_path: '/work/repo/src/a.rs', offset: 400 }), toolResult('t3'),
       request(4), toolUse('t4', 'mcp__manki__read_file', { repo: 'dashpay/dash', path: 'src/net.cpp' }), toolResult('t4'),
@@ -549,7 +550,8 @@ describe('sendViaOAuth — error paths', () => {
     };
     const savedApiUrl = process.env.GITHUB_API_URL;
     process.env.GITHUB_API_URL = 'https://ghe.example/api/v3';
-    const response = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } })
+    const onToolStep = jest.fn();
+    const response = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related }, onToolStep })
       .finally(() => { if (savedApiUrl === undefined) delete process.env.GITHUB_API_URL; else process.env.GITHUB_API_URL = savedApiUrl; });
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
@@ -587,6 +589,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(systemPromptFile).toContain('- Read a **reference** when the changed code implements or mirrors it, such as a spec, a file or wire format, another implementation or an API this code talks to. Compare both directions of each contract: what this code produces against what the reference accepts, and the reverse, along with limits, field order, field types and versions.');
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps?.map(step => step.tool)).toEqual(['Read', 'mcp__manki__git_history', 'Read', 'mcp__manki__read_file']);
+    expect(onToolStep).toHaveBeenCalledTimes(4);
     expect(response.usage).toEqual({ inputTokens: 16_650, outputTokens: 75, cacheReadTokens: 15_000, cacheWriteTokens: 1500, reasoningTokens: 0, largestRequestInputTokens: 5550 });
     // Requests that do not add up to the `result` leave the largest unknown, since the missing one could be it. The largest
     // one seen is kept as a lower bound.
