@@ -1340,9 +1340,10 @@ describe('TEST_PATH', () => {
     ['Go', ['pkg/sync/sync_test.go', 'pkg/sync/testdata/block.bin'], ['latest/x.go', 'pkg/contest/x.go', 'pkg/testing.go', 'internal/LoadTest/run.go', 'internal/Tests/run.go']],
     ['Rust', ['crate/tests/sync.rs', 'crate/src/sync/tests.rs', 'crate/src/sync_tests.rs', 'crate/src/test_utils/mod.rs'], ['crate/src/attest.rs', 'crate/src/protest.rs']],
     ['Swift', ['Tests/AppTests/LoginTests.swift', 'App/AppUITests/LaunchTests.swift', 'Sources/App/LoginTest.swift', 'Sources/App/LoginSpec.swift'], ['Sources/App/Latest.swift', 'Sources/App/Contest.swift', 'Sources/Testing/Login.swift']],
-    ['Java', ['src/test/java/org/app/LoginTest.java', 'src/main/java/org/app/LoginTests.java'], ['src/main/java/org/app/Latest.java', 'src/main/java/org/app/Contest.java', 'src/main/java/org/app/Attestation.java']],
-    ['Kotlin', ['src/test/kotlin/app/LoginTest.kt', 'app/src/main/kotlin/LoginTests.kt', 'build/LoginSpec.kts'], ['src/main/kotlin/app/Latest.kt', 'src/main/kotlin/app/Protest.kt']],
-    ['C#', ['App.Tests/LoginTests.cs', 'App.Test/Login.cs', 'src/App/LoginTest.cs'], ['src/App/Latest.cs', 'src/App.Testing/Login.cs']],
+    ['Java', ['src/test/java/org/app/LoginTest.java', 'src/main/java/org/app/LoginTests.java', 'src/test/java/org/app/PaymentSpec.java'], ['src/main/java/org/app/Latest.java', 'src/main/java/org/app/Contest.java', 'src/main/java/org/app/Attestation.java', 'src/main/java/org/app/PaymentSpec.java']],
+    ['Kotlin', ['src/test/kotlin/app/LoginTest.kt', 'app/src/main/kotlin/LoginTests.kt'], ['src/main/kotlin/app/Latest.kt', 'src/main/kotlin/app/Protest.kt', 'src/main/kotlin/app/PodSpec.kt', 'build/LoginSpec.kts']],
+    ['C#', ['App.Tests/LoginTests.cs', 'App.Test/Login.cs', 'src/App/LoginTest.cs'], ['src/App/Latest.cs', 'src/App.Testing/Login.cs', 'src/App/ServiceSpec.cs']],
+    ['Scala and Groovy', ['src/main/scala/app/LoginSpec.scala', 'src/app/LoginSpec.groovy'], ['src/main/scala/app/Inspect.scala']],
     ['Python', ['tests/test_login.py', 'app/test_login.py', 'app/login_test.py', 'app/conftest.py'], ['app/contest.py', 'app/latest_test_data.py', 'app/testing.py']],
     ['Ruby', ['spec/models/user_spec.rb', 'test/models/user_test.rb', 'lib/user_spec.rb'], ['lib/contest.rb', 'lib/latest.rb', 'lib/inspect.rb']],
   ])('matches the test layouts of %s and no look-alike', (_language, tests, others) => {

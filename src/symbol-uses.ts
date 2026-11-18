@@ -374,16 +374,19 @@ const INLINE_TYPES = new Set(['object_type', 'struct_type']);
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
 // Languages that mark tests by a capital `Test` or `Tests` at the end of a folder or file name.
 const CAPITAL_TEST_LANGUAGES = String.raw`\.(?:swift|java|kt|kts|scala|groovy|cs)$`;
+// Languages whose test frameworks name a test `...Spec`. In Java, Kotlin and C# that is mostly a production type.
+const SPEC_TEST_LANGUAGES = String.raw`\.(?:swift|scala|groovy)$`;
 /**
  * Test code and its fixtures, by a directory such as `tests/`, `src/test/`, `__tests__/` or `testdata/`, by a file name
- * such as `a.test.ts`, `a_test.go`, `test_a.py` or a Rust `tests.rs`, and in `CAPITAL_TEST_LANGUAGES` by a name such as
- * Swift's `Tests/` and `ATests.swift` or C#'s `App.Tests/`.
+ * such as `a.test.ts`, `a_test.go`, `test_a.py` or a Rust `tests.rs`, in `CAPITAL_TEST_LANGUAGES` by a name such as
+ * Swift's `Tests/` and `ATests.swift` or C#'s `App.Tests/`, and in `SPEC_TEST_LANGUAGES` by a name such as `ASpec.scala`.
  */
 export const TEST_PATH = new RegExp([
   String.raw`(?:^|/)(?:tests?|__tests__|test_utils|testdata|spec)/`,
   String.raw`[._](?:test|spec)s?\.[^/]+$`,
   String.raw`(?:^|/)(?:test_[^/]*|conftest)\.py$|(?:^|/)tests\.rs$`,
-  String.raw`(?:(?:^|/)[^/]*Tests?/.*|Tests?|Spec)` + CAPITAL_TEST_LANGUAGES,
+  String.raw`(?:(?:^|/)[^/]*Tests?/.*|Tests?)` + CAPITAL_TEST_LANGUAGES,
+  String.raw`Spec` + SPEC_TEST_LANGUAGES,
 ].join('|'));
 // Code a repository carries from another project, whose namesakes say nothing about the reference itself.
 const VENDORED_PATH = /(?:^|\/)(?:vendor|third_party|thirdparty|external|extern|depends|deps|node_modules)\//;
