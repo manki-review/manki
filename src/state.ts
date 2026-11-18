@@ -10,9 +10,9 @@ import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
-import { extractReplyRecords, formatApprovalRecord, hasOwnMarker, hasReviewRecord } from './review-record';
+import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
-import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReplyRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
+import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
 import { COMMENT_MARKER as BOT_MARKER, ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -96,20 +96,11 @@ interface ReviewThread {
   fixedOn?: string[];
 }
 
-const FIXED_MARKER_OPENER = '<!-- manki-fixed:';
-
-/** Marks Manki's reply that confirms a fix on `commitSha`, so a thread gets one such reply per head. */
-function fixedMarker(commitSha: string): string {
-  return `${FIXED_MARKER_OPENER}${commitSha} -->`;
-}
 
 const THREAD_COMMENTS_LIMIT = 100;
 
 /** Marks Manki's reply that the thread's finding is filed as an issue, which lifts the hold of a warning thread. */
 const TRACKED_MARKER = '<!-- manki-tracked -->';
-
-/** What a reply record says happened to the thread when Manki accepted a reply of the PR author or of someone with write access. Any other value leaves a warning's hold in place. */
-const SETTLING_FATES: ReadonlySet<string> = new Set(['resolves', 'already_resolved']);
 
 /**
  * Whether `body`, one of Manki's own replies in a thread, settles a warning: it carries `TRACKED_MARKER`, or its reply
@@ -119,14 +110,7 @@ const SETTLING_FATES: ReadonlySet<string> = new Set(['resolves', 'already_resolv
 function settlesWarning(body: string): boolean {
   if (!body.includes(`\n${BOT_MARKER}`)) return false;
   if (hasOwnMarker(body, TRACKED_MARKER, BOT_MARKER)) return true;
-  const [record] = extractReplyRecords(body);
-  if (!record) return false;
-  try {
-    const decision = (JSON.parse(record) as Partial<ReplyRecord> | null)?.decision;
-    return !!decision && SETTLING_FATES.has(decision.thread);
-  } catch {
-    return false;
-  }
+  return !!settlingDecision(body);
 }
 
 /** Returns the latest round that put a warning or a blocker into each earlier thread: one that restates the thread or finds its answered problem again. */

@@ -1,6 +1,6 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
-import type { ApprovalRecord, ReplyRecord, RoundContext } from './types';
+import type { ApprovalRecord, ReplyDecision, ReplyRecord, RoundContext } from './types';
 import { COMMENT_MARKER, linesBelow, ownMarker, redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
 /** Opens a round record, plain or compressed. */
@@ -48,6 +48,31 @@ export function extractApprovalRecords(body: string): string[] {
 export function extractReplyRecords(body: string): string[] {
   const last = body.includes(`\n${COMMENT_MARKER}`) ? ownMarker(body, '<!-- manki-reply-record: ', COMMENT_MARKER) : undefined;
   return last ? [last] : [];
+}
+
+/** What a reply record says happened to the thread when Manki accepted a reply of the PR author or of someone with write access. Any other value settles nothing. */
+const SETTLING_FATES: ReadonlySet<string> = new Set(['resolves', 'already_resolved']);
+
+/**
+ * Returns the decision in the reply record of `body`, one of Manki's own thread replies, when that answer settled the
+ * finding. A record that cannot be read, or one whose thread stayed open, settles nothing.
+ */
+export function settlingDecision(body: string): ReplyDecision | undefined {
+  const [record] = extractReplyRecords(body);
+  if (!record) return undefined;
+  try {
+    const decision = (JSON.parse(record) as Partial<ReplyRecord> | null)?.decision;
+    return decision && SETTLING_FATES.has(decision.thread) ? decision : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const FIXED_MARKER_OPENER = '<!-- manki-fixed:';
+
+/** Marks Manki's reply that confirms a fix on `commitSha`, so a thread gets one such reply per head. */
+export function fixedMarker(commitSha: string): string {
+  return `${FIXED_MARKER_OPENER}${commitSha} -->`;
 }
 
 /** Serializes a record with secrets and tokens redacted, since nothing that scans posted text can see inside a compressed one. */
