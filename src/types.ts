@@ -859,6 +859,8 @@ export function withReachDoubt(doubts: readonly Doubt[] = []): Doubt[] {
 /** How a refuter answered one premise the judge doubts. */
 export interface PremiseCheck {
   premise: string;
+  /** What the doubt decided when the check ran. A record from before this was stored has none. */
+  decides?: Doubt['decides'];
   outcome: RefutationOutcome;
   reason: string;
   proof?: string[];
@@ -917,6 +919,17 @@ export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome 
   if (votes.size !== 1) return 'unsettled';
   const [outcome] = votes;
   return outcome === 'confirmed' && checks.some(r => outcomeOf(r) === 'disproved' || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
+}
+
+/**
+ * Whether `check` asked whether the defect of `finding` exists and confirmed it. A confirmed premise is no such answer.
+ * Neither is a confirmation that left unsettled or disproved a premise that decides whether the defect exists. A
+ * premise says what it decided when the check ran. One stored without that is looked up in the doubts of `finding`,
+ * and one no doubt names counts as deciding the defect, since nothing shows it only decided the grade.
+ */
+export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
+  const decides = (p: PremiseCheck): Doubt['decides'] | undefined => p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
+  return check.defect === 'confirmed' && !check.premises?.some(p => p.outcome !== 'confirmed' && decides(p) !== 'grade');
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
