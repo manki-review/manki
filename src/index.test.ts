@@ -5172,6 +5172,8 @@ describe('runFullReview orchestration', () => {
         });
         onProgress!({ phase: 'side-check', sideCheck: { kind: 'comparison', total: 2 } });
         onProgress!({ phase: 'side-check', sideCheck: { kind: 'related', total: 0 } });
+        // A finder's time counts from the start of its call, not from the planner naming it.
+        onProgress!({ phase: 'agent-start', agentName: 'general' });
         onProgress!({ phase: 'agent-step', agentName: 'general' });
         onProgress!({ phase: 'agent-step', agentName: 'general' });
         onProgress!({ phase: 'side-check', sideCheck: { kind: 'comparison', ended: 1 } });
@@ -5180,7 +5182,7 @@ describe('runFullReview orchestration', () => {
         onProgress!({ phase: 'side-check', sideCheck: { kind: 'claim', ended: undefined } });
         expect(await edit()).toMatchObject({
           phase: 'started',
-          agentProgress: [{ name: 'general', status: 'reviewing', startedAt: 20_000, toolSteps: 2 }, { name: 'second', status: 'reviewing', startedAt: 20_000 }],
+          agentProgress: [{ name: 'general', status: 'reviewing', startedAt: 20_000, toolSteps: 2 }, { name: 'second', status: 'reviewing' }],
           sideChecks: {
             comparison: { total: 2, ended: 1, findings: 1, startedAt: 20_000 },
             related: { total: 0, ended: 0, findings: 0, startedAt: 20_000, endedAt: 20_000 },
@@ -5192,18 +5194,23 @@ describe('runFullReview orchestration', () => {
         });
         onProgress!({ phase: 'side-check', sideCheck: { kind: 'comparison', ended: 0 } });
         onProgress!({ phase: 'side-check', sideCheck: { kind: 'claim', ended: 0 } });
+        // A retry starts the time and the tool steps again.
+        onProgress!({ phase: 'agent-start', agentName: 'second' });
+        onProgress!({ phase: 'agent-step', agentName: 'second' });
+        onProgress!({ phase: 'agent-start', agentName: 'second' });
         const sideDone = await edit();
         expect(sideDone.agentProgress![0]).toMatchObject({ name: 'general', status: 'done', findingCount: 2 });
+        expect(sideDone.agentProgress![1]).toEqual({ name: 'second', status: 'reviewing', startedAt: 40_000 });
         expect(sideDone.sideChecks?.claim).toMatchObject({ total: 1, ended: 1, endedAt: 40_000 });
         onProgress!({ phase: 'reviewed', rawFindingCount: 3 });
         onProgress!({ phase: 'judging', rawFindingCount: 3, judgeInputCount: 3, staticDedupCount: 0, llmDedupCount: 0 });
         expect(await edit()).toMatchObject({ phase: 'reviewed', judgeStartedAt: 60_000, judgeInputCount: 3 });
-        onProgress!({ phase: 'graded', graded: { kept: 2, dropped: 1 } });
+        onProgress!({ phase: 'graded', graded: { kept: 2, dropped: 1, merged: 0 } });
         onProgress!({ phase: 'refuter', refuterCheck: { total: 2 } });
         onProgress!({ phase: 'refuter', refuterCheck: { ended: 'disproved' } });
         onProgress!({ phase: 'verdict-reader' });
         expect(await edit()).toMatchObject({
-          graded: { kept: 2, dropped: 1, durationMs: 20_000 }, refuter: { total: 2, outcomes: { disproved: 1 } }, verdictReader: { startedAt: 100_000 },
+          graded: { kept: 2, dropped: 1, merged: 0, durationMs: 20_000 }, refuter: { total: 2, outcomes: { disproved: 1 } }, verdictReader: { startedAt: 100_000 },
         });
         onProgress!({ phase: 'verdict-reader', verdictReaderDone: true });
         expect((await edit()).verdictReader).toEqual({ startedAt: 100_000, durationMs: 20_000 });
@@ -5326,7 +5333,7 @@ describe('runFullReview orchestration', () => {
       const firstDashboard = dashboardCalls[0][4];
       expect(firstDashboard.agentCount).toBe(3);
       expect(firstDashboard.agentProgress).toEqual(
-        fallbackAgents.map(name => ({ name, status: 'reviewing', startedAt: expect.any(Number) })),
+        fallbackAgents.map(name => ({ name, status: 'reviewing' })),
       );
       expect(firstDashboard.plannerDurationMs).toBe(250);
       expect(firstDashboard.heuristicFallback).toBe(true);

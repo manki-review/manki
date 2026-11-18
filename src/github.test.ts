@@ -3278,7 +3278,7 @@ describe('buildDashboard', () => {
     };
     const sideDone = '> ✅ Comparisons and claim checks: 5 of 5 done, 1 finding (3m 46s)';
     const reviewDone = ['**Review (behavior · full):** 8 findings', '> ✅ Claude Opus 5.5 · high: 4 findings (5m 53s)', '> ✅ GPT 6.2 Sol · high: 3 findings (7m 20s)'];
-    const graded = { graded: { kept: 5, dropped: 3, durationMs: 86_000 } };
+    const graded = { graded: { kept: 5, dropped: 3, merged: 0, durationMs: 86_000 } };
     const steps: [number, DashboardData, string][] = [
       [5, { phase: 'planning', lineCount: 954, agentCount: 0, plannerStartedAt: 0 }, lines(
         '**Review in progress**', '', '**Planner**', '> analyzing... (5s so far)', '', '**Review**', '> pending', '', '**Judge**', '> pending',
@@ -3326,9 +3326,13 @@ describe('buildDashboard', () => {
     const sweeping = buildDashboard({ ...reviewed, ...graded, sideChecks: { ...side(3, 2, 1, 238_000), sweep: { total: 2, ended: 1, findings: 0, startedAt: 560_000 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 } }, 700_000);
     expect(sweeping).toContain(lines(sideDone, '> ⏳ Sweeps: 1 of 2 done'));
     expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> verdict reader: read the diff (47s)'));
-    // A finder that has started no tool call shows its time alone, and the side checks show once a step asks one.
-    const quiet = buildDashboard({ ...started, agentProgress: [claude], sideChecks: { comparison: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 } } }, 20_000);
-    expect(quiet).toContain(lines('**Review (behavior · full):** 0/1 agents complete', '> ⏳ Claude Opus 5.5 · high: 8s so far', '', '**Judge**'));
+    // The findings the judge folded into another one are counted too, so the graded line adds up.
+    expect(buildDashboard({ ...reviewed, graded: { kept: 4, dropped: 2, merged: 2, durationMs: 86_000 } }, 560_000))
+      .toContain('> graded 8 findings: 4 kept · 2 dropped · 2 merged (1m 26s)'.replace('> ', INDENT));
+    // A finder that has started no tool call shows its time alone, one whose call has not started shows no time, and the
+    // side checks show once a step asks one.
+    const quiet = buildDashboard({ ...started, agentProgress: [claude, { name: gpt.name, status: 'reviewing' }], sideChecks: { comparison: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 } } }, 20_000);
+    expect(quiet).toContain(lines('**Review (behavior · full):** 0/2 agents complete', '> ⏳ Claude Opus 5.5 · high: 8s so far', '> ⏳ GPT 6.2 Sol · high', '', '**Judge**'));
     // The side checks stay running until every step beside the finders reported, and name the related repo checks.
     expect(buildDashboard({ ...started, sideChecks: { related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 } } }, 40_000))
       .toContain('> ⏳ Related checks: 1 of 1 done'.replace('> ', INDENT));

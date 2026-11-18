@@ -1729,7 +1729,7 @@ export interface AgentProgressEntry {
   retryCount?: number;
   /** Why a retry or a move to the fallback model of the finder was not started, one line each. */
   notStarted?: string[];
-  /** When the finder started, in ms since the epoch, for its time so far. */
+  /** When the finder's call started, in ms since the epoch, for its time so far. A retry starts it again. */
   startedAt?: number;
   /** The tool calls the finder started so far. */
   toolSteps?: number;
@@ -1744,6 +1744,13 @@ export interface CheckProgress<R> {
   started(total: number): void;
   /** Called as each check ends, with its result, or with `undefined` when it made no call. */
   ended(result: R | undefined): void;
+}
+
+/** What the judge made of the findings it graded, before the refuter checks them. `merged` folded into another finding. */
+export interface GradedCounts {
+  kept: number;
+  dropped: number;
+  merged: number;
 }
 
 /** How one step of side checks is going. */
@@ -1801,8 +1808,7 @@ export interface DashboardData {
   sideChecks?: Partial<Record<SideCheckKind, SideCheckState>>;
   /** When the finders ended, which starts the judge's time. */
   judgeStartedAt?: number;
-  /** The judge's grades before the refuter checks them. */
-  graded?: { kept: number; dropped: number; durationMs: number };
+  graded?: GradedCounts & { durationMs: number };
   refuter?: { total: number; outcomes: Partial<Record<RefutationOutcome, number>> };
   verdictReader?: { startedAt: number; durationMs?: number };
 }

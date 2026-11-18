@@ -1476,11 +1476,18 @@ async function reviewRound(
           }
           dashboard.agentCount = event.teamAgentNames.length;
           dashboard.judgeEffort = event.judgeEffort;
-          dashboard.agentProgress = event.teamAgentNames.map(name => ({ name, status: 'reviewing' as const, startedAt: now }));
+          dashboard.agentProgress = event.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
           dashboard.routing = event.routing;
           dashboard.plannerDurationMs = event.plannerDurationMs;
           if (event.heuristicFallback) dashboard.heuristicFallback = true;
           dashboard.phase = 'started';
+        }
+      } else if (event.phase === 'agent-start') {
+        // A retry counts from its own start, as the time it ends with does.
+        const entry = dashboard.agentProgress?.find(a => a.name === event.agentName);
+        if (entry) {
+          entry.startedAt = now;
+          delete entry.toolSteps;
         }
       } else if (event.phase === 'agent-step') {
         const entry = dashboard.agentProgress?.find(a => a.name === event.agentName);

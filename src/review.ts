@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, CheckProgress, disproof, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, CheckProgress, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -501,8 +501,8 @@ function reportChecks<R>(report: (event: CheckEvent<R>) => void): CheckProgress<
 }
 
 export interface ReviewProgress {
-  phase: 'planning' | 'agent-complete' | 'agent-step' | 'side-check' | 'reviewed' | 'judging' | 'graded' | 'refuter' | 'verdict-reader';
-  /** The finder of an `agent-complete` event, or the one that started a tool call on an `agent-step` event. */
+  phase: 'planning' | 'agent-start' | 'agent-complete' | 'agent-step' | 'side-check' | 'reviewed' | 'judging' | 'graded' | 'refuter' | 'verdict-reader';
+  /** The finder whose call started on an `agent-start` event, that started a tool call on an `agent-step` event, or of an `agent-complete` event. */
   agentName?: string;
   agentFindingCount?: number;
   agentDurationMs?: number;
@@ -532,8 +532,8 @@ export interface ReviewProgress {
   sideCheck?: { kind: SideCheckKind } & CheckEvent<number>;
   /** On a `refuter` event: how the refuter's checks go, with the outcome of each one that ended. */
   refuterCheck?: CheckEvent<RefutationOutcome>;
-  /** On a `graded` event: how many findings the judge kept and dropped, before the refuter checks them. */
-  graded?: { kept: number; dropped: number };
+  /** On a `graded` event: what the judge made of the findings, before the refuter checks them. */
+  graded?: GradedCounts;
   /** Set on the `verdict-reader` event that says the verdict reader ended. */
   verdictReaderDone?: true;
 }
@@ -1149,6 +1149,7 @@ export async function runReview(
   core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
   const agentPromises = team.finders.map(agent => {
     const startTime = Date.now();
+    onProgress?.({ phase: 'agent-start', agentName: agent.name });
     return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
       .then(first => askAgain(agent, first))
       .then(agentResult => {
@@ -1244,6 +1245,7 @@ export async function runReview(
 
     const retryPromises = agentsToRetry.map(agent => {
       const startTime = Date.now();
+      onProgress?.({ phase: 'agent-start', agentName: agent.name });
       return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, takeRetryNote(agent.name)))
         .then(first => askAgain(agent, first))
         .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
@@ -1482,7 +1484,7 @@ export async function runReview(
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
     carriedWarnings,
-    ...(onProgress && { onGraded: (kept: number, dropped: number) => onProgress({ phase: 'graded', graded: { kept, dropped } }) }),
+    ...(onProgress && { onGraded: (graded: GradedCounts) => onProgress({ phase: 'graded', graded }) }),
   };
   if (judgeSkipped) {
     core.info('No finding, open thread or carried warning to judge, so the judge is skipped');

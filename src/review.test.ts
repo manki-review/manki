@@ -5529,6 +5529,10 @@ describe('runReview', () => {
     );
     expect(retryingCalls.length).toBe(1);
     expect(retryingCalls[0][0].retryCount).toBe(1);
+    // The retry's call starts the finder again, after the event that says it is retried.
+    const phases = onProgress.mock.calls.map(([p]: [ReviewProgress]) => `${p.phase} ${p.agentStatus ?? ''}`.trim());
+    expect(phases.filter(p => p === 'agent-start')).toHaveLength(3);
+    expect(phases.lastIndexOf('agent-start')).toBeGreaterThan(phases.indexOf('agent-complete retrying'));
   });
 
   it('fires onProgress with failure status when all agents fail including retries', async () => {
@@ -6350,12 +6354,13 @@ describe('runReview', () => {
       { kind: 'claim', total: 0 }, { kind: 'comparison', total: 0 }, { kind: 'related', total: 0 },
     ]);
     expect(events().filter(e => e.phase === 'verdict-reader')).toEqual([{ phase: 'verdict-reader' }, { phase: 'verdict-reader', verdictReaderDone: true }]);
+    expect(events().filter(e => e.phase === 'agent-start')).toEqual(result.agentNames.map(agentName => ({ phase: 'agent-start', agentName })));
     onProgress.mockClear();
     for (const call of finderCalls) call[2].onToolStep();
-    mockedRunJudgeAgent.mock.calls[0][2].onGraded!(2, 1);
+    mockedRunJudgeAgent.mock.calls[0][2].onGraded!({ kept: 2, dropped: 1, merged: 1 });
     expect(events()).toEqual([
       ...result.agentNames.map(agentName => ({ phase: 'agent-step', agentName })),
-      { phase: 'graded', graded: { kept: 2, dropped: 1 } },
+      { phase: 'graded', graded: { kept: 2, dropped: 1, merged: 1 } },
     ]);
   });
 

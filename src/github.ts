@@ -882,7 +882,7 @@ function refuterLine(refuter: DashboardData['refuter']): string | undefined {
 function judgeLiveLines(data: DashboardData, now: number): string[] {
   const { graded, verdictReader: reader } = data;
   return [
-    graded && `${INDENT}graded ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings: ${graded.kept} kept · ${graded.dropped} dropped (${formatDuration(graded.durationMs)})`,
+    graded && `${INDENT}graded ${countOf(graded.kept + graded.dropped + graded.merged, 'finding')}: ${graded.kept} kept · ${graded.dropped} dropped${graded.merged ? ` · ${graded.merged} merged` : ''} (${formatDuration(graded.durationMs)})`,
     refuterLine(data.refuter),
     reader && `${INDENT}verdict reader: ${reader.durationMs === undefined ? `reading the diff · ${soFar(reader.startedAt, now)}` : `read the diff (${formatDuration(reader.durationMs)})`}`,
   ].filter((line): line is string => !!line);
