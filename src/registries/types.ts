@@ -20,8 +20,6 @@ export interface ManifestFacts {
   overridden?: string;
   /** Set, to how, when the manifest takes the package from somewhere other than the registry, or states it in a way Manki does not read. */
   otherSource?: string;
-  /** Set, to why, when a fresh install may not pick the highest version a requirement allows, such as for Cargo's `rust-version`. */
-  freshPick?: string;
   /** Set, to why, when the manifest takes its versions from a lockfile outside its own folder and the folders above it. */
   lockedElsewhere?: string;
 }
@@ -85,6 +83,12 @@ export interface Registry {
    * Manki cannot read one of them with certainty.
    */
   overriddenBy(name: string, configs: readonly RegistryConfig[]): string | undefined;
+  /**
+   * Whether the manifest in the folder `member` belongs to the project whose lockfile sits in the folder `root` above
+   * it, as a member of its workspace. `text` returns a file of the checkout that Manki read. Throws when Manki cannot
+   * tell with certainty, such as for a workspace pattern it does not read.
+   */
+  isWorkspaceMember(root: string, member: string, text: (path: string) => string | undefined): boolean;
   /**
    * Returns which of `files`, the settings and manifests of the checkout, makes a fresh install pick another version
    * than the highest a requirement allows, and how, or `undefined`. Throws when Manki cannot read one with certainty.

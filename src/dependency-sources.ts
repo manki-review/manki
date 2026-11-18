@@ -11,7 +11,7 @@ import { cratesIo } from './registries/crates';
 import { npmRegistry } from './registries/npm';
 import { shown } from './registries/shown';
 import { PublishedVersion, Registry, RegistryConfig, RegistryFetch } from './registries/types';
-import { DEPENDENCY_STATE, FETCH_TIMEOUT_MS, fetchOutcome, RelatedRepoPending, sharedCheckout, WAIT_SLACK_MS, writeMarker } from './related-repos';
+import { DEPENDENCY_STATE, FETCH_TIMEOUT_MS, fetchOutcome, RelatedRepoPending, RetryableFetch, sharedCheckout, WAIT_SLACK_MS, writeMarker } from './related-repos';
 import { claimStep, STALE_TIMEOUT_MS } from './tool-steps';
 import { fetchWhole, matchesIntegrity } from './tool-install';
 import { RoundDependencySource } from './types';
@@ -106,15 +106,18 @@ function readableChecksum(checksum: string | undefined): checksum is string {
  * other one matches.
  */
 export function pickVersion(versions: readonly PublishedVersion[], range: string, latest?: string): PublishedVersion | undefined {
-  const matching = versions.filter(v => !v.yanked && valid(v.version) && satisfies(v.version, range));
+  // A version reaches a key, a URL and a note, so only one spelled exactly as semver spells it is picked.
+  const matching = versions.filter(v => !v.yanked && valid(v.version) === v.version && VERSION.test(v.version) && satisfies(v.version, range));
   const current = matching.filter(v => !v.deprecated);
   const preferred = latest === undefined ? undefined : current.find(v => v.version === latest);
   return preferred ?? (current.length > 0 ? current : matching).sort((a, b) => rcompare(a.version, b.version))[0];
 }
 
-/** Returns a fetch that reaches only the hosts of `registry` and refuses redirects. Its requests end `timeoutMs` after the fetch is made. */
-function registryFetch(registry: Registry, timeoutMs: number): RegistryFetch {
-  const deadline = AbortSignal.timeout(timeoutMs);
+/**
+ * Returns a fetch that reaches only the hosts of `registry` and refuses redirects. Its requests end when `deadline`
+ * aborts, `timeoutMs` after the fetch is made unless given.
+ */
+function registryFetch(registry: Registry, timeoutMs: number, deadline = AbortSignal.timeout(timeoutMs)): RegistryFetch {
   return (url, maxBytes, headers) => {
     if (!registry.origins.includes(new URL(url).origin)) return Promise.reject(new Error(`${url} is not on a host of ${registry.id}`));
     return fetchWhole(url, deadline, { maxBytes, noRedirects: true, deadlineMs: timeoutMs, ...(headers && { headers }) });
@@ -217,6 +220,17 @@ async function resolveDependency(
   }
 
   const manifests = files.filter(f => registry.manifests.includes(posix.basename(f))).map((file): RegistryConfig => ({ file, text: read(file, 'require or override it') }));
+  const texts = new Map([...configs, ...manifests].map(({ file, text }) => [file, text]));
+  // Whether the manifest in `dir` belongs to the project of the lockfile in `root`: always when it sits beside it, and
+  // else only as a provable member of that project's workspace.
+  const belongs = (root: string, dir: string, file: string): boolean => {
+    if (root === dir) return true;
+    try {
+      return registry.isWorkspaceMember(root, dir, path => texts.get(path));
+    } catch (error) {
+      return uncertain(file, error);
+    }
+  };
   const requirements = manifests.flatMap(({ file, text }) => {
     const { requirements: stated, overridden, otherSource, lockedElsewhere } = certain(file, text, () => registry.manifest(text, name), { requirements: [] });
     if (overridden) refuse(`${shown(file)} changes its code for an install: ${overridden}`, { file });
@@ -226,10 +240,16 @@ async function resolveDependency(
     const origin = { name: stated[0].name, source: 'requirement' as const, file, requirement: stated[0].requirement };
     const installFile = unreadIn(dir);
     if (installFile) refuse(`${shown(file)} requires it, and ${shown(installFile)}, which Manki does not read, can decide what an install there gets`, origin);
-    // A manifest under a lockfile takes its version from that lockfile, which must then lock it.
-    const covering = lockfiles.filter(f => within(dir, posix.dirname(f)));
+    // A manifest under a lockfile takes its versions from the nearest one, but only as part of that lockfile's project.
+    // A lockfile further up that also counts it as a member leaves Manki unsure which of the two an install reads.
+    const covering = lockfiles.filter(f => within(dir, posix.dirname(f))).sort((a, b) => b.length - a.length);
     if (covering.length > 0) {
-      if (!locked.some(p => covering.includes(p.file))) refuse(`${shown(file)} requires it, but ${shown(covering[0])}, which locks that manifest's versions, does not lock it`, origin);
+      const nearest = posix.dirname(covering[0]);
+      if (!belongs(nearest, dir, file)) refuse(`${shown(file)} requires it, and Manki cannot tell that it belongs to the project ${shown(covering[0])} locks`, origin);
+      const further = covering.find(f => posix.dirname(f) !== nearest && belongs(posix.dirname(f), dir, file));
+      if (further) refuse(`${shown(file)} requires it, and both ${shown(covering[0])} and ${shown(further)} can lock that manifest's versions`, origin);
+      const own = covering.filter(f => posix.dirname(f) === nearest);
+      if (!locked.some(p => own.includes(p.file))) refuse(`${shown(file)} requires it, but ${shown(own[0])}, which locks that manifest's versions, does not lock it`, origin);
       return [];
     }
     if (lockedElsewhere) refuse(`${shown(file)} requires it, but ${lockedElsewhere}`, origin);
@@ -239,6 +259,8 @@ async function resolveDependency(
     const { file, requirement } = requirements[0];
     const origin = { name: requirements[0].name, source: 'requirement' as const, file, requirement };
     if (otherRegistry !== undefined) refuse(`it may come from another registry than ${registry.id}, since ${otherRegistry}`, origin);
+    const unread = requirements.find(r => registry.range(r.requirement) === undefined);
+    if (unread) refuse(`${shown(unread.file)} requires it as \`${shown(unread.requirement)}\`, a form Manki does not read with certainty`, { ...origin, file: unread.file, requirement: unread.requirement });
     let fresh: string | undefined;
     try {
       fresh = registry.freshPick([...configs, ...manifests]);
@@ -263,6 +285,8 @@ async function resolveDependency(
       const origin: PackageOrigin = { registry: registry.id, name: first.name, source: 'requirement', file: first.file, requirement: first.requirement };
       throw new UnreadPackage(`Manki could not read the published versions of ${label} to resolve its requirement: ${error instanceof Error ? error.message : String(error)}`, `${registry.id}/${first.name}`, origin, false);
     }
+    // The registry's spelling of the name reaches the key and the note, so it must be a name of the same package.
+    if (!registry.validName(published.name) || !registry.sameName(published.name, first.name)) throw new Error(`${registry.id} lists ${label} under a name Manki does not read.`);
     own = published.name;
     for (const { file, requirement } of requirements) {
       const range = registry.range(requirement);
@@ -270,9 +294,9 @@ async function resolveDependency(
       if (picked) candidates.push({ version: picked.version, source: 'requirement', file, requirement, checksum: picked.checksum, hostAssumed: true });
     }
   }
-  const where = (c: typeof candidates[number]) => c.source === 'lockfile' ? `locked in ${c.file}` : `resolved from \`${shown(c.requirement!)}\` in ${c.file}`;
+  const where = (c: typeof candidates[number]) => c.source === 'lockfile' ? `locked in ${shown(c.file)}` : `resolved from \`${shown(c.requirement!)}\` in ${shown(c.file)}`;
   if (candidates.length === 0) {
-    throw new Error(`No published version of ${label} matches what the PR requires: ${requirements.map(r => `\`${shown(r.requirement)}\` in ${r.file}`).join(', ')}.`);
+    throw new Error(`No published version of ${label} matches what the PR requires: ${requirements.map(r => `\`${shown(r.requirement)}\` in ${shown(r.file)}`).join(', ')}.`);
   }
   const versions = [...new Set(candidates.map(c => c.version))];
   const chosen = version !== undefined ? candidates.find(c => c.version === version) : versions.length === 1 ? candidates[0] : undefined;
@@ -336,12 +360,12 @@ function claimPackagePlace(stateDir: string, marker: string, maxPackages: number
 async function fetchPackage(resolved: Resolved, stateDir: string, fetch: RegistryFetch, marker: string, maxArchiveBytes: number, archiveLimits: ArchiveLimits): Promise<string> {
   const { registry, name, version, key } = resolved;
   let checksum = readableChecksum(resolved.checksum) ? resolved.checksum : undefined;
-  let stated = resolved.source === 'lockfile' ? resolved.file : registry.id;
+  let stated = resolved.source === 'lockfile' ? shown(resolved.file) : registry.id;
   if (!checksum) {
     checksum = (await registry.published(name, fetch)).versions.find(v => v.version === version)?.checksum;
     stated = registry.id;
   }
-  if (!readableChecksum(checksum)) throw new Error(`neither ${resolved.file} nor ${registry.id} states a checksum Manki can check the archive of ${key} against`);
+  if (!readableChecksum(checksum)) throw new Error(`neither ${shown(resolved.file)} nor ${registry.id} states a checksum Manki can check the archive of ${key} against`);
   const archive = await fetch(registry.archiveUrl(name, version), maxArchiveBytes);
   if (!checksumMatches(archive, checksum)) {
     writeFileSync(`${marker}.mismatch`, '');
@@ -448,6 +472,11 @@ export function dependencyLoader(
     const { key, source, file, requirement } = resolved;
     const origin: PackageOrigin = { registry: registry.id, name: resolved.name, version: resolved.version, source, file, ...(requirement && { requirement }) };
     const marker = join(stateDir, encodeURIComponent(key));
+    // The fetch gets its own whole time. When a slow resolution left too little of the call for it, the next call
+    // fetches, since the round keeps the resolution.
+    if (!existsSync(`${marker}.done`) && left() - WAIT_SLACK_MS < timeoutMs) {
+      throw new Error(`Manki resolved ${key}, but this call has too little time left to fetch it. Name it again in your next call.`);
+    }
     let dir: string;
     try {
       // The call limit counts from the start of the call, so the time spent resolving the version leaves less to wait.
@@ -455,8 +484,13 @@ export function dependencyLoader(
         writeMarker(`${marker}.from`, JSON.stringify(origin));
         claimPackagePlace(stateDir, marker, maxPackages);
         // A fresh deadline, so a call that takes over a stopped fetch gets the whole time, within what the call has left.
-        const fetch = registryFetch(registry, Math.max(0, Math.min(timeoutMs, left() - WAIT_SLACK_MS)));
-        return { dir: await fetchPackage(resolved, stateDir, fetch, marker, maxArchiveBytes, archiveLimits), commit: '' };
+        const deadline = AbortSignal.timeout(Math.max(0, Math.min(timeoutMs, left() - WAIT_SLACK_MS)));
+        try {
+          return { dir: await fetchPackage(resolved, stateDir, registryFetch(registry, timeoutMs, deadline), marker, maxArchiveBytes, archiveLimits), commit: '' };
+        } catch (error) {
+          // Running out of time says nothing about the package, so a later call may try again.
+          throw deadline.aborted ? new RetryableFetch(error instanceof Error ? error.message : String(error)) : error;
+        }
       });
     } catch (error) {
       if (error instanceof RelatedRepoPending) throw new Error(`${key} ${error.message}`);
@@ -479,13 +513,14 @@ function dependencyState(stateDir: string): string {
 /**
  * Returns each package a tool server of the round in `stateDir` tried to read: its version and where that came from,
  * and whether it was fetched, failed with the reason, was refused with the reason, or its archive did not match its
- * checksum. Warns about each one that was not read.
+ * checksum. Warns about each one that was not read. A package whose versions could not be fetched to resolve it, and
+ * that a later call read, shows only as read.
  */
 export function dependencyOutcomes(roundStateDir: string): RoundDependencySource[] {
   const stateDir = dependencyState(roundStateDir);
   if (!existsSync(stateDir)) return [];
   const files = new Set(readdirSync(stateDir));
-  return [...files].filter(f => f.endsWith('.from')).sort().map(f => {
+  const records = [...files].filter(f => f.endsWith('.from')).sort().map(f => {
     const key = decodeURIComponent(f.slice(0, -'.from'.length));
     const origin = JSON.parse(readFileSync(join(stateDir, f), 'utf8')) as PackageOrigin;
     const { status, reason, durationMs } = fetchOutcome(stateDir, files, key);
@@ -497,7 +532,14 @@ export function dependencyOutcomes(roundStateDir: string): RoundDependencySource
       ...(status === 'unused' ? { reason: 'the fetch never started' } : reason && { reason }),
       ...(durationMs !== undefined && !refused && { durationMs }),
     };
-    if (record.status !== 'fetched') core.warning(`Could not read the dependency ${key}: ${record.reason ?? record.status}`);
     return record;
+  });
+  const read = records.filter(r => r.status === 'fetched');
+  const sameName = (a: RoundDependencySource, b: RoundDependencySource) => a.registry === b.registry && (REGISTRIES.find(r => r.id === a.registry)?.sameName(a.name, b.name) ?? a.name === b.name);
+  return records.filter(record => {
+    // Only a failure to resolve has no version, and a later call that read the package outdates it.
+    const outdated = record.status === 'failed' && record.version === undefined && read.some(r => sameName(r, record));
+    if (!outdated && record.status !== 'fetched') core.warning(`Could not read the dependency ${record.package}: ${record.reason ?? record.status}`);
+    return !outdated;
   });
 }

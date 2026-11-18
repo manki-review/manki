@@ -232,10 +232,15 @@ export async function sharedCheckout(
     writeMarker(`${marker}.done`, dir);
     return dir;
   } catch (error) {
-    writeMarker(`${marker}.failed`, messageOf(error));
+    // A fetch that only ran out of time releases its lock, so the next call takes over with the whole time again.
+    if (error instanceof RetryableFetch) writeFileSync(`${lockPath(marker, takeovers)}.released`, error.message);
+    else writeMarker(`${marker}.failed`, messageOf(error));
     throw error;
   }
 }
+
+/** A failure of a fetch that a later call can retry, such as one that ran out of time. `sharedCheckout` records no outcome for it. */
+export class RetryableFetch extends Error {}
 
 /** Writes `text` to `path` through a rename, so a waiting process never reads it half written. */
 export function writeMarker(path: string, text: string): void {
@@ -273,6 +278,7 @@ async function waitForCheckout(name: string, marker: string, lock: string, timeo
 
 /** Whether the process whose PID the lock holds still runs. A lock whose PID is not written yet counts as held. */
 function isHolderAlive(lock: string): boolean {
+  if (existsSync(`${lock}.released`)) return false;
   const pid = Number(readFileSync(lock, 'utf-8'));
   if (!pid) return true;
   try {
@@ -362,9 +368,11 @@ export function fetchOutcome(stateDir: string, files: ReadonlySet<string>, name:
     return { status: 'failed', reason: readFileSync(join(stateDir, `${marker}.failed`), 'utf-8').slice(0, MAX_REASON_CHARS), ...took(`${marker}.failed`) };
   }
   // No outcome says nothing about the fetch: the stage that held the newest lock did not get to the end of it.
-  const reason = isHolderAlive(lock)
-    ? 'the fetch was still running when the round ended'
-    : 'the stage fetching it was stopped before the fetch finished, and no later call fetched it';
+  const released = files.has(`${lockPath(marker, takeovers)}.released`) ? readFileSync(`${lock}.released`, 'utf-8') : undefined;
+  const reason = released !== undefined ? `${released.slice(0, MAX_REASON_CHARS)}, and no later call fetched it`
+    : isHolderAlive(lock)
+      ? 'the fetch was still running when the round ended'
+      : 'the stage fetching it was stopped before the fetch finished, and no later call fetched it';
   return { status: 'failed', reason, unfinished: true };
 }
 

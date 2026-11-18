@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 
 import { namesTarball } from '../lockfile';
 import { shown } from './shown';
+import { matchesWorkspace } from './workspace';
 import { PublishedVersion, Registry, RegistryConfig } from './types';
 
 /** The host of the npm registry. */
@@ -52,20 +53,22 @@ const UNREAD_INSTALL_FILES = [
   'package.json5', 'package.yaml',
 ];
 
-/** The scripts a package manager runs when it installs the project, which can change any installed package. */
+/**
+ * The scripts a package manager runs when it installs the project. Each can change any installed package, whatever
+ * command it names, since the program behind a name can come from a dependency the PR picks.
+ */
 const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare', 'dependencies', 'pnpm:devPreinstall'];
 
-/** Commands of an install script that change no installed package: Git hooks, and `patch-package`, whose patches Manki reads. */
-const HARMLESS_COMMANDS = new Set(['husky', 'husky install', 'npx husky', 'npx husky install', 'is-ci', 'patch-package', 'npx patch-package', 'true']);
-
 /**
- * The settings that change which lockfile, hook, package manager or cache of installed packages an install uses, with
- * the value that does when only one does. Each is in lower case, in every spelling of `.npmrc`, `.yarnrc`,
- * `.yarnrc.yml` and `pnpm-workspace.yaml`.
+ * The settings that change which lockfile, hook, plugin, package manager or cache of installed packages an install
+ * uses, with the value that does when only one does. Each is in lower case, in every spelling of `.npmrc`,
+ * `.yarnrc`, `.yarnrc.yml` and `pnpm-workspace.yaml`.
  */
 const LOCKFILE_SETTINGS: ReadonlyArray<[string, string?]> = [
   ['package-lock', 'false'], ['packagelock', 'false'], ['shrinkwrap', 'false'], ['lockfile', 'false'], ['cachefolder'], ['lockfile-dir'], ['lockfiledir'], ['pnpmfile'], ['global-pnpmfile'], ['globalpnpmfile'],
   ['--no-lockfile'], ['--install.no-lockfile'], ['no-lockfile'], ['lockfilefilename'], ['yarnpath'], ['yarn-path'], ['--install.yarn-path'],
+  // A Yarn plugin runs the file its `path` names, whatever its `spec` says.
+  ['plugins'],
 ];
 
 /** The settings that make a fresh install pick another version than the highest a requirement allows, in lower case. */
@@ -170,10 +173,6 @@ function registrySettings({ file, text }: RegistryConfig): RegistrySetting[] {
   });
 }
 
-/** Whether the install script `script` runs only commands of `HARMLESS_COMMANDS`, joined by `&&`, `||` or `;`. */
-function harmlessScript(script: string): boolean {
-  return script.split('&&').flatMap(part => part.split('||')).flatMap(part => part.split(';')).every(command => HARMLESS_COMMANDS.has(command.trim()));
-}
 
 /** Whether a patch-package file named `base` names the package `name` in any part of its path, as the patched package or a parent of it. */
 function patchesPackage(base: string, name: string): boolean {
@@ -189,6 +188,19 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
     manifests: ['package.json'],
     lockfiles: ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml'],
     unreadInstallFiles: UNREAD_INSTALL_FILES,
+    isWorkspaceMember(root, member, text) {
+      // npm, Yarn and Bun list a workspace's members in the root manifest's `workspaces`, and pnpm in its workspace settings.
+      const manifest = text(posix.join(root, 'package.json'));
+      const data: unknown = manifest === undefined ? undefined : JSON.parse(manifest);
+      const workspaces = isObject(data) ? data.workspaces : undefined;
+      const patterns: unknown[] = Array.isArray(workspaces) ? workspaces : isObject(workspaces) && Array.isArray(workspaces.packages) ? workspaces.packages : [];
+      for (const file of PNPM_WORKSPACE) {
+        const settings = text(posix.join(root, file));
+        const packages = settings === undefined ? undefined : yamlSettings(settings).packages;
+        if (Array.isArray(packages)) patterns.push(...packages);
+      }
+      return matchesWorkspace(patterns, posix.relative(root, member));
+    },
     installedCopy(dir, name) {
       // A committed `node_modules` copy, or a zip in Yarn's committed cache, is what the project runs, whatever the lockfile says.
       const installed = posix.join('node_modules', name);
@@ -234,16 +246,9 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
           const workspace = yamlSettings(text);
           if (namesPackage(workspace.overrides, name) || namesPackage(workspace.patchedDependencies, name)) return `${shown(file)} overrides or patches it`;
         }
-        if (base === '.yarnrc.yml') {
-          const settings = yamlSettings(text);
-          // Yarn's own plugins add commands and protocols but change no package from the registry.
-          const plugins = Array.isArray(settings.plugins) ? settings.plugins : settings.plugins === undefined ? [] : [settings.plugins];
-          const foreign = plugins.find(plugin => !(isObject(plugin) && typeof plugin.spec === 'string' && plugin.spec.startsWith('@yarnpkg/plugin-')));
-          if (foreign !== undefined) return `${shown(file)} loads a Yarn plugin other than Yarn's own, which can change any package`;
-        }
         // A key in lower case matches a known name, so it holds no character `shown` would change.
         const lockfile = settingsOf(config).find(({ key, value }) => LOCKFILE_SETTINGS.some(([k, v]) => k === key.toLowerCase() && (v === undefined || String(value) === v)));
-        if (lockfile) return `${shown(file)} sets \`${lockfile.key}\`, so Manki cannot tell which lockfile, hook or package manager an install uses`;
+        if (lockfile) return `${shown(file)} sets \`${lockfile.key}\`, so Manki cannot tell what an install runs or which lockfile it reads`;
       }
       return undefined;
     },
@@ -270,7 +275,7 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
         [['overrides', manifest.overrides], ['resolutions', manifest.resolutions], ['patchedDependencies', manifest.patchedDependencies], ['pnpm.overrides', pnpm.overrides], ['pnpm.patchedDependencies', pnpm.patchedDependencies]] as const
       ).find(([, table]) => namesPackage(table, name))?.[0];
       const scripts = isObject(manifest.scripts) ? manifest.scripts : {};
-      const script = INSTALL_SCRIPTS.find(s => Object.hasOwn(scripts, s) && !(typeof scripts[s] === 'string' && harmlessScript(scripts[s])));
+      const script = INSTALL_SCRIPTS.find(s => Object.hasOwn(scripts, s));
       const overridden = field ? `its \`${field}\` names it`
         : script ? `its \`${script}\` script runs at install and can change any installed package`
           : manifest.name === name ? 'it is a package of the checkout with that name, which a workspace install can link in its place'

@@ -1,7 +1,9 @@
+import { posix } from 'path';
 import { validRange } from 'semver';
 
 import { shown } from './shown';
 import { parseTomlSubset, tableOf, TomlTable } from './toml';
+import { matchesWorkspace } from './workspace';
 import { ManifestFacts, PublishedVersion, Registry, RegistryConfig, Requirement } from './types';
 
 /** The hosts of crates.io: its sparse index, and the host its archives are served from. */
@@ -63,8 +65,7 @@ function replacedCrate(spec: string): string | undefined {
 
 /**
  * Returns what a `Cargo.toml` says of the crate `name`: each requirement it states from crates.io, whether `[patch]`
- * or `[replace]` swaps the crate, whether a `rust-version` can make a fresh install pick an older version, and whether
- * a workspace root elsewhere locks its versions. An entry that inherits from `[workspace.dependencies]` is stated
+ * or `[replace]` swaps the crate, and whether a workspace root elsewhere locks its versions. An entry that inherits from `[workspace.dependencies]` is stated
  * there. One from a path, a git repository or another registry, or with a field Manki does not know, sets `otherSource`.
  */
 function cargoManifest(text: string, name: string): ManifestFacts {
@@ -125,13 +126,41 @@ function cargoFreshPick(files: readonly RegistryConfig[]): string | undefined {
 }
 
 /**
- * Turns a Cargo requirement into an npm semver range. A bare version means `^` in Cargo and the exact version in npm,
- * and Cargo joins its parts with commas where npm uses spaces.
+ * One comparator of a Cargo requirement: an optional operator, then a version of one to three parts, where only a full
+ * version may carry a prerelease and build. A number has no leading zero. Each quantified part ends at a character
+ * the next one cannot match, so a match takes linear time.
+ */
+const CARGO_COMPARATOR = /^(\^|~|=|>=|<=|>|<)?[ \t]*(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*|\*)(?:\.(0|[1-9][0-9]*|\*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?)?)?$/;
+
+/**
+ * Turns one Cargo comparator into the npm range with the same meaning, or `undefined` for a form Manki does not read
+ * with certainty. A bare version means `^` in Cargo and the exact version in npm. A wildcard such as `1.2.*` means
+ * `1.2.x` in both, and only a bare one is read. Each operator on a partial version, such as `~1`, `=1.2` or `>1.2`,
+ * means the same in npm as in Cargo.
+ */
+function cargoComparator(text: string): string | undefined {
+  if (text === '*') return '*';
+  const parts = CARGO_COMPARATOR.exec(text);
+  if (!parts) return undefined;
+  const [, operator, major, minor, patch, pre = '', build = ''] = parts;
+  const wildcard = minor === '*' || patch === '*';
+  if (wildcard) {
+    // Only `1.*` and `1.2.*` are read: a wildcard after a number, with no operator and nothing after it.
+    if (operator || (minor === '*' && patch !== undefined) || pre || build) return undefined;
+    return minor === '*' ? `${major}.x` : `${major}.${minor}.x`;
+  }
+  const version = [major, minor, patch].filter(p => p !== undefined).join('.') + pre + build;
+  return `${operator ?? '^'}${version}`;
+}
+
+/**
+ * Turns a Cargo requirement into an npm semver range, or `undefined` when any of its comparators is a form Manki does
+ * not read with certainty. Cargo joins comparators with commas where npm uses spaces.
  */
 function cargoRange(requirement: string): string | undefined {
-  const parts = requirement.split(',').map(p => p.trim());
-  if (parts.some(p => !p)) return undefined;
-  const range = parts.map(p => (/^\d/.test(p) ? `^${p}` : p)).join(' ');
+  const parts = requirement.split(',').map(p => cargoComparator(p.trim()));
+  if (parts.some(p => p === undefined)) return undefined;
+  const range = parts.join(' ');
   return validRange(range) ? range : undefined;
 }
 
@@ -146,6 +175,30 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     sameName: (a, b) => normalize(a) === normalize(b),
     unreadInstallFiles: [],
     installedCopy: () => undefined,
+    isWorkspaceMember(root, member, text) {
+      const rootText = text(posix.join(root, 'Cargo.toml'));
+      const memberText = text(posix.join(member, 'Cargo.toml'));
+      if (rootText === undefined || memberText === undefined) return false;
+      // A manifest with a `[workspace]` of its own is the root of its own workspace.
+      if (Object.hasOwn(parseTomlSubset(memberText), 'workspace')) return false;
+      const manifest = parseTomlSubset(rootText);
+      const relative = posix.relative(root, member);
+      // A path dependency of the root shares its lockfile, with or without a `[workspace]`.
+      const pathDependency = dependencyTables(manifest).some(table => Object.values(table).some(entry => {
+        const path = tableOf(entry).path;
+        return typeof path === 'string' && posix.normalize(path).split('/').filter(Boolean).join('/') === relative;
+      }));
+      if (pathDependency) return true;
+      if (!Object.hasOwn(manifest, 'workspace')) return false;
+      const workspace = tableOf(manifest.workspace);
+      const list = (value: unknown): unknown[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
+      const excluded = list(workspace.exclude).some(path => {
+        if (typeof path !== 'string') throw new Error('an `exclude` entry is not a string');
+        const prefix = posix.normalize(path).split('/').filter(Boolean).join('/');
+        return relative === prefix || relative.startsWith(`${prefix}/`);
+      });
+      return !excluded && matchesWorkspace(list(workspace.members), relative);
+    },
     isRegistrySource: source => source !== undefined && CRATES_IO_SOURCES.includes(source),
     namesHost: () => true,
     isConfigFile: path => CARGO_CONFIGS.test(path),
