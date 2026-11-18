@@ -237,11 +237,16 @@ export interface ReadFileArgs {
 }
 
 /** Returns lines `offset` to `offset + limit - 1` of the file, each prefixed with its number and a tab. */
-export async function readRepoFile(root: string, { path, offset = 1, limit = MAX_READ_LINES }: ReadFileArgs): Promise<string> {
+export async function readRepoFile(root: string, { path, offset, limit }: ReadFileArgs): Promise<string> {
   const target = resolveInRoot(root, path);
   if (!statSync(target.absolute).isFile()) throw new Error(`${path} is not a file`);
   const text = readText(target.absolute);
   if (text === undefined) throw new Error(`${path} is binary or over ${MAX_FILE_BYTES / 1024} KB`);
+  return numberedLines(text, { path, offset, limit });
+}
+
+/** Returns lines `offset` to `offset + limit - 1` of `text`, the content of `path`, each prefixed with its number and a tab. */
+function numberedLines(text: string, { path, offset = 1, limit = MAX_READ_LINES }: ReadFileArgs): string {
   const lines = text.split('\n');
   const last = Math.min(lines.length, offset - 1 + Math.min(limit, MAX_READ_LINES));
   const shown: string[] = [];
