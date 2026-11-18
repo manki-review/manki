@@ -3,11 +3,11 @@ import { posix } from 'path';
 import * as core from '@actions/core';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, quotaResetTime, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
 import { escapeRegExp, formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
+import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
 import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
@@ -260,24 +260,74 @@ function accumulateAgentDuration(map: Map<string, number>, name: string, duratio
 }
 
 /**
- * The round's summary when a provider reports a used-up limit, naming the `readers` it stopped
- * and quoting when the limit lifts if the provider said.
+ * How long after an incomplete round the token service still starts its retry. It looks only at pull requests updated
+ * in the last day, and an hour is left for its passes.
  */
-function quotaSummary(error: QuotaError, readers: readonly string[] = []): string {
+const AUTOMATIC_RETRY_WINDOW_MS = 23 * 60 * 60 * 1000;
+
+/** The summary of a round that ended incomplete, and when the token service may start its retry, as an ISO 8601 time. */
+interface RoundEnd {
+  summary: string;
+  retryAfter?: string;
+}
+
+/**
+ * Says that the token service starts one more review of the commit, after `resetAt` when a limit lifts then, and that
+ * the command retries only after that review. `other` names the credential that gets past a limit.
+ */
+function automaticRetryLine(resetAt?: number, other = ''): string {
+  const when = resetAt !== undefined && resetAt > Date.now() ? `after ${formatResetTime(Math.ceil(resetAt / 60_000) * 60)}` : 'within a few minutes';
+  return `Manki starts one more review of this commit on its own ${when}. If that one does not finish either, retry with /manki review${other}.`;
+}
+
+/** How to retry a round that ended incomplete for a reason other than a limit. With `automatic`, the token service retries it first. */
+function retryHint(automatic: boolean): string {
+  return automatic ? automaticRetryLine() : RETRY_HINT;
+}
+
+/**
+ * The round's summary when a provider reports a used-up limit, naming the `readers` it stopped
+ * and quoting when the limit lifts if the provider said. With `automatic`, the summary leaves out how to retry.
+ */
+function quotaSummary(error: QuotaError, readers: readonly string[] = [], automatic = false): string {
   const who = readers.length > 0 ? ` for ${readers.join(', ')}` : '';
   const resets = error.resetsAt ? ` It resets ${error.resetsAt}.` : '';
+  if (automatic) return `${error.limit}${who}.${resets}`;
   const other = error.credential ? `, or use another ${error.credential}` : '';
   return `${error.limit}${who}.${resets} Retry with /manki review ${error.resetsAt ? 'after that' : 'later'}${other}.`;
 }
 
-/** The round's summary for a judge call that failed. `what` names what the call graded when that is not the finders' findings. */
-function judgeFailureSummary(error: unknown, what = ''): string {
-  if (error instanceof QuotaError) return quotaSummary(error);
-  return `The judge ${error instanceof TimeoutError ? 'ran out of time' : 'failed'}${what && ` on ${what}`}. ${RETRY_HINT}`;
+/**
+ * The end of a round that the limits in `groups` stopped, one sentence group per limit and then the sentences `also`,
+ * with the latest reset time the limits name. With `automatic`, one closing sentence says when the token service retries,
+ * unless the latest reset is too far off for its retry. Each limit then says how to retry as without it.
+ */
+function limitEnd(groups: ReadonlyArray<{ error: QuotaError; readers: string[] }>, automatic: boolean, also: readonly string[] = []): RoundEnd {
+  const resets = groups.flatMap(({ error }) => {
+    const at = quotaResetTime(error);
+    return at === undefined ? [] : [at];
+  });
+  const resetAt = resets.length > 0 ? Math.max(...resets) : undefined;
+  const retries = automatic && (resetAt === undefined || resetAt - Date.now() <= AUTOMATIC_RETRY_WINDOW_MS);
+  const credentials = [...new Set(groups.flatMap(({ error }) => (error.credential ? [error.credential] : [])))];
+  const other = credentials.length > 0 ? `, or use another ${credentials.join(' or ')}` : '';
+  return {
+    summary: [...groups.map(({ error, readers }) => quotaSummary(error, readers, retries)), ...also, ...(retries ? [automaticRetryLine(resetAt, other)] : [])].join(' '),
+    ...(resetAt !== undefined && { retryAfter: new Date(resetAt).toISOString() }),
+  };
 }
 
-/** Summarises a round whose finders hit a used-up limit, one sentence group per limit, then any finder that failed otherwise. */
-function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedAgents: readonly string[]): string {
+/** The end of a round whose judge call failed. `what` names what the call graded when that is not the finders' findings. */
+function judgeFailureEnd(error: unknown, automatic: boolean, what = ''): RoundEnd {
+  if (error instanceof QuotaError) return limitEnd([{ error, readers: [] }], automatic);
+  return { summary: `The judge ${error instanceof TimeoutError ? 'ran out of time' : 'failed'}${what && ` on ${what}`}. ${retryHint(automatic)}` };
+}
+
+/**
+ * The end of a round whose finders hit a used-up limit, one sentence group per limit, then any of `failedAgents` that
+ * failed after retries, then the sentences `unretried`.
+ */
+function quotaRoundEnd(quotaErrors: ReadonlyMap<string, QuotaError>, failedAgents: readonly string[], unretried: readonly string[], automatic: boolean): RoundEnd {
   const byLimit = new Map<string, { error: QuotaError; readers: string[] }>();
   for (const [name, error] of quotaErrors) {
     const key = quotaSummary(error);
@@ -286,10 +336,7 @@ function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedA
     byLimit.set(key, group);
   }
   const others = failedAgents.filter(name => !quotaErrors.has(name));
-  return [
-    ...[...byLimit.values()].map(({ error, readers }) => quotaSummary(error, readers)),
-    ...(others.length > 0 ? [`${others.join(', ')} also failed after retries.`] : []),
-  ].join(' ');
+  return limitEnd([...byLimit.values()], automatic, [...(others.length > 0 ? [`${others.join(', ')} also failed after retries.`] : []), ...unretried]);
 }
 
 /** The answers used when the planner fails: each takes the side that adds review. */
@@ -714,6 +761,8 @@ export interface ReviewOptions {
   relatedReposAsOf?: string;
   /** The `changeDigest` of the PR's diff, which tells whether the scope reader runs again. */
   changeDigest?: string;
+  /** The token service starts one more review of the commit if this round ends incomplete, so its summary says so. */
+  automaticRetry?: boolean;
 }
 
 export async function runReview(
@@ -722,7 +771,7 @@ export async function runReview(
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
     config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal, deadline,
-    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfiles = [],
+    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfiles = [], automaticRetry = false,
   } = options;
   const overlong = overlongChangedLines(diff);
   if (overlong.length > 0) {
@@ -764,7 +813,7 @@ export async function runReview(
     if (leftMs >= minMs) return undefined;
     const reason = `the round has ${formatDuration(Math.max(0, leftMs))} left, less than the ${formatDuration(minMs)} a ${lateCallName(call)} starts with`;
     skip({ kind: 'call', ...call, reason });
-    stopped = `A ${lateCallName(call)} was not started, since ${reason}. ${RETRY_HINT}`;
+    stopped = `A ${lateCallName(call)} was not started, since ${reason}. ${retryHint(automaticRetry)}`;
     stopLate.abort();
     return stopped;
   };
@@ -912,8 +961,9 @@ export async function runReview(
   const agentFailureReasons = new Map<string, string>();
   let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims'> = {};
   // Related work is left out: the posted incomplete review would render it.
-  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
-    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
+  const incomplete = (end: string | RoundEnd, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
+    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', findings: [], highlights: [], reviewComplete: false,
+    ...(typeof end === 'string' ? { summary: end } : end),
     agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
     ...(modelFallbacks.length > 0 && { modelFallbacks }), ...(notStarted.length > 0 && { notStarted }), llmCalls, ...finderContext, ...relatedRecord(),
@@ -1246,20 +1296,23 @@ export async function runReview(
   finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
-    // A limit names itself in `quotaRoundSummary`, so only the other reasons a finder was not retried are said here.
+    // A limit names itself in `quotaRoundEnd`, so only the other reasons a finder was not retried are said here.
     const unretried = failedAgents.flatMap(name => {
       const reason = !quotaErrors.has(name) && notStarted.find(e => e.kind === 'retry' && e.agent === name)?.reason;
       return reason ? [{ name, line: `${name} failed and was not retried: ${reason}.` }] : [];
     });
     const retried = failedAgents.filter(name => !unretried.some(u => u.name === name));
-    const summary = quotaErrors.size > 0
-      ? [quotaRoundSummary(quotaErrors, retried), ...unretried.map(u => u.line)].join(' ')
-      : unretried.length > 0
-        ? [...unretried.map(u => u.line), ...(retried.length > 0 ? [`${retried.join(', ')} failed after retries.`] : []), RETRY_HINT].join(' ')
-        : failedAgents.length === team.finders.length
-          ? `All reviewers failed. ${RETRY_HINT}`
-          : `${failedAgents.join(', ')} failed after retries. ${RETRY_HINT}`;
-    return incomplete(summary, { failedAgents });
+    const hint = retryHint(automaticRetry);
+    const end: RoundEnd = quotaErrors.size > 0
+      ? quotaRoundEnd(quotaErrors, retried, unretried.map(u => u.line), automaticRetry)
+      : {
+        summary: unretried.length > 0
+          ? [...unretried.map(u => u.line), ...(retried.length > 0 ? [`${retried.join(', ')} failed after retries.`] : []), hint].join(' ')
+          : failedAgents.length === team.finders.length
+            ? `All reviewers failed. ${hint}`
+            : `${failedAgents.join(', ')} failed after retries. ${hint}`,
+      };
+    return incomplete(end, { failedAgents });
   }
 
   await checkpoint?.();
@@ -1443,7 +1496,7 @@ export async function runReview(
         core.warning(`Judge failed: ${error}`);
         logOutputTokens('Judge', judgeWrap.getTotals().usage);
       }
-      return incomplete(error instanceof NotStartedError ? error.message : judgeFailureSummary(error), {
+      return incomplete(error instanceof NotStartedError ? { summary: error.message } : judgeFailureEnd(error, automaticRetry), {
         // The failed attempts count too, since the judge ended on one.
         judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
       });
@@ -1462,7 +1515,7 @@ export async function runReview(
   // The verdict reader's blockers, which only a round that ends before it checks them records as raw findings.
   let readerRaw: Finding[] = [];
   // The sweep and the checks at the round's end change what the judge's call recorded, so a round that ends incomplete after it records these as they then are.
-  const incompleteAfterJudge = (summary: string): ReviewResult & { outcome: RoundOutcome } => incomplete(summary, {
+  const incompleteAfterJudge = (end: string | RoundEnd): ReviewResult & { outcome: RoundOutcome } => incomplete(end, {
     allJudgedFindings, rawFindings: [...allFindings, ...sweepRaw, ...readerRaw], rawFindingCount: checkedFindings.length + sweepRaw.length, staticDedupCount, llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(sweeps && { sweeps }), ...(openLeads.length > 0 && { openLeads }),
   });
@@ -1521,7 +1574,7 @@ export async function runReview(
         if (error instanceof NotStartedError) return incompleteAfterJudge(error.message);
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
-        return incompleteAfterJudge(judgeFailureSummary(error, 'the findings of the sweep'));
+        return incompleteAfterJudge(judgeFailureEnd(error, automaticRetry, 'the findings of the sweep'));
       }
     }
   }
@@ -1688,7 +1741,9 @@ export async function runReview(
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
-      return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`);
+      return incompleteAfterJudge(error instanceof QuotaError
+        ? limitEnd([{ error, readers: [] }], automaticRetry)
+        : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${retryHint(automaticRetry)}`);
     }
     readerRaw = reports.flatMap(report => report.blockers);
     if (stopped) return incompleteAfterJudge(stopped);

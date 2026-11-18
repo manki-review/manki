@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { eventPrClosed, restoreDispatchedEvent } from './dispatch';
+import { eventPrClosed, restoreDispatchedEvent, startedByCatchUp } from './dispatch';
 
 jest.mock('@actions/core', () => ({
   ...jest.requireActual('@actions/core'),
@@ -111,6 +111,21 @@ describe('restoreDispatchedEvent', () => {
     // The approval check of a PR marked ready runs only on the head it was queued for.
     expect(await dispatch({ ...pushed, action: 'approval_check' })).toBe('superseded');
     expect(await dispatch({ ...pushed, action: 'closed' })).toBe('run');
+  });
+
+  it('tells a review of the token service\'s catch-up by its delivery id, which names the head', async () => {
+    const push = { event: 'pull_request', action: 'synchronize', pr: '7', head_sha: HEAD };
+    await dispatch({ ...push, delivery_id: `catch-up-${HEAD.slice(0, 12)}` });
+    expect(startedByCatchUp()).toBe(true);
+
+    for (const delivery_id of ['f1e2d3c4-0000-4000-8000-000000000001', `catch-up-${'b2'.repeat(6)}`, `catch-up-${HEAD}`, '']) {
+      await dispatch({ ...push, delivery_id });
+      expect(startedByCatchUp()).toBe(false);
+    }
+    // The catch-up asks only for a review of a push, so the id on any other event names none.
+    await dispatch({ ...push, delivery_id: `catch-up-${HEAD.slice(0, 12)}` });
+    await dispatch({ event: 'issue_comment', action: 'created', pr: '7', comment_id: '11', delivery_id: `catch-up-${HEAD.slice(0, 12)}` });
+    expect(startedByCatchUp()).toBe(false);
   });
 
   it('stops when the comment or review is gone', async () => {

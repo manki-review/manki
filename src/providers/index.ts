@@ -1,6 +1,6 @@
 export { buildAuthForProvider, hasAnyProviderCredentials, readProviderInputsFromEnv } from './auth';
 export type { ProviderInputs } from './auth';
-export { cutLegacyCommands, removeSeededAuthFiles, sanitizeLogOutput } from './cli-utils';
+export { cutLegacyCommands, quotaResetTime, removeSeededAuthFiles, sanitizeLogOutput } from './cli-utils';
 export { createLLMClient } from './factory';
 export { latestLimits, recordCalls, summarizeCalls, withModelFallback, withSignal, wrapClientForUsage } from './instrumentation';
 export { estimateCostUsd, modelDisplayName, parseModelSpec } from './model-registry';

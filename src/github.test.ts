@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -2400,6 +2400,17 @@ describe('postReview body lead', () => {
     expect(reviewedCommit(posted)).toBe(SHA_A);
     expect(await hasBotReviewOnCommit(reviews, TEST_BOT, 'owner', 'repo', 1, SHA_A)).toBe(false);
     expect(await fetchStandingVerdict(reviews, TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+
+    // A round of the token service's catch-up says so below the verdict line. A round that limits stopped names when
+    // they lift on a line of its own below the record, where the token service reads it.
+    const retried = makeContext({ meta: { ...record.meta, trigger: { event: 'pull_request:synchronize', sender: 'alice', catchUp: true } } });
+    mockCreateReview.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, SHA_A, { ...incomplete, retryAfter: '2026-11-18T15:30:00.000Z' }, diff, retried, 1000, { noVerdict: true });
+    const limited = (mockCreateReview.mock.calls[0][0] as { body: string }).body;
+    expect(lead(limited)).toMatch(/^⏸️ \*\*Review incomplete:\*\* The judge failed\.\n\nStarted automatically, since no review of this commit had finished\.\n\n/u);
+    expect(limited).toContain(`${extractReviewRecords(limited).records[0]} -->\n\n<!-- manki-no-verdict -->\n<!-- manki-retry-after: 2026-11-18T15:30:00.000Z -->\n`);
+    expect(recorded).not.toContain('manki-retry-after');
+    expect(recorded).not.toContain('Started automatically');
   });
 
   it('posts follow-up warnings off the changed lines as file-level threads, security ones included, and lists the suggestions', async () => {
@@ -3257,6 +3268,13 @@ describe('buildDashboard', () => {
     expect(md).toContain(`${INDENT}pending`);
   });
 
+  it('says first that the token service\'s catch-up started the run, while it runs and once it ended', () => {
+    const line = 'Started automatically, since no review of this commit had finished.';
+    expect(buildDashboard({ phase: 'planning', lineCount: 83, agentCount: 0, catchUp: true }).startsWith(`${line}\n\n**Review in progress**`)).toBe(true);
+    expect(buildDashboard({ phase: 'complete', lineCount: 83, agentCount: 2, catchUp: true }).startsWith(`${line}\n\n**Planner**`)).toBe(true);
+    expect(buildDashboard({ phase: 'planning', lineCount: 83, agentCount: 0 })).not.toContain(line);
+  });
+
   it('renders the planning phase with analyzing planner and pending review/judge', () => {
     const data: DashboardData = { phase: 'planning', lineCount: 83, agentCount: 0 };
     const md = buildDashboard(data);
@@ -3857,6 +3875,21 @@ describe('updateProgressComment', () => {
 
     await markProgressCommentSuperseded(mockOctokit, 'owner', 'repo', 123, { reviewedSha: 'abc1234ffff', headSha: 'abc1234ffff' });
     expect(mockUpdateComment.mock.calls[2][0].body).toMatch(/^\*\*Review superseded\*\* by a later review of `abc1234`, which posted its verdict\.\n/);
+  });
+
+  it('marks a failed progress comment superseded by the run that starts, keeping its report and dropping its settings block', async () => {
+    const report = `🔴 **Review failed** in 4m 12s\n\n${buildDashboard({ ...baseDashboard, phase: 'complete' })}\n\n${BOT_MARKER}\n${REVIEW_COMPLETE_MARKER}`;
+    const failed = { id: 9, body: withSettingsBlock(report, { head: 'abc1234', status: 'review incomplete', boxes: new Set(['pause', 'again']), ticked: new Set() }) };
+
+    expect(await markFailedProgressSuperseded(mockOctokit, 'owner', 'repo', failed, 'abc1234ffff')).toBe(true);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(mockUpdateComment.mock.calls[0][0].comment_id).toBe(9);
+    expect(body).toBe(`**Review superseded** by a later review of \`abc1234\`. This attempt ended as follows.\n\n${report}`);
+    // A verdict later marks only a comment that still reads as failed, so this one keeps its report.
+    expect(isFailedProgress(body)).toBe(false);
+
+    mockUpdateComment.mockRejectedValueOnce(new Error('Forbidden'));
+    expect(await markFailedProgressSuperseded(mockOctokit, 'owner', 'repo', failed, 'abc1234ffff')).toBe(false);
   });
 
   it('renders config section in metadata', async () => {

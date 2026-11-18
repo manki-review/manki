@@ -5950,6 +5950,10 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', undefined, 'key'));
     const limited = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect([limited.outcome, limited.summary]).toEqual(['INCOMPLETE', 'Anthropic API rate limit reached. Retry with /manki review later, or use another key.']);
+    mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', 'in 2m', 'key'));
+    const retried = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', automaticRetry: true });
+    expect(retried.summary).toMatch(/^Anthropic API rate limit reached\. It resets in 2m\. Manki starts one more review of this commit on its own after \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\. If that one does not finish either, retry with \/manki review, or use another key\.$/);
+    expect(Date.parse(retried.retryAfter!) - Date.now()).toBeGreaterThan(60_000);
 
     mockedRunJudgeAgent.mockRejectedValueOnce(new TimeoutError('Codex CLI timed out after 900s'));
     const slow = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
@@ -6927,6 +6931,35 @@ describe('runReview', () => {
     const run = (pairFailure: Error) => runReview(pairedClients(jest.fn().mockRejectedValue(limit), jest.fn().mockRejectedValue(pairFailure)), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token.');
     expect((await run(new Error('Timeout'))).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with /manki review after that, or use another token. Claude Opus 5.5 · high also failed after retries.');
+    // A time the provider worded without a sure day or zone is quoted, but the round records none.
+    expect((await run(limit)).retryAfter).toBeUndefined();
+
+    // When the token service retries the round, the summary says so once, after every reason, and names the command only for after that.
+    const retrying = (primaryFailure: Error, pairFailure: Error) => runReview(
+      pairedClients(jest.fn().mockRejectedValue(primaryFailure), jest.fn().mockRejectedValue(pairFailure)),
+      { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', automaticRetry: true },
+    );
+    const later = 'If that one does not finish either, retry with /manki review';
+    expect((await retrying(limit, new Error('Timeout'))).summary).toBe(`Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Claude Opus 5.5 · high also failed after retries. Manki starts one more review of this commit on its own within a few minutes. ${later}, or use another token.`);
+    expect((await retrying(new Error('Timeout'), new Error('Timeout'))).summary).toBe(`All reviewers failed. Manki starts one more review of this commit on its own within a few minutes. ${later}.`);
+
+    // A limit that lifts at a time Manki reads holds the retry until then, and the round records the latest such time.
+    jest.useFakeTimers({ now: Date.parse('2026-11-18T15:00:00Z'), doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+    try {
+      const soon = new QuotaError('rate limited', 'OpenAI endpoint limit reached', 'in 29m30s', 'key');
+      const usedUp = Object.assign(new QuotaError("You've hit your limit", 'Claude subscription limit reached', '4pm (Europe/Berlin)', 'token'), {
+        limits: [{ account: 'Claude subscription', window: '5-hour', usedPercent: 100, resetsAt: Date.parse('2026-11-18T16:00:00Z') / 1000 }],
+      });
+      const both = await retrying(soon, usedUp);
+      expect(both.retryAfter).toBe('2026-11-18T16:00:00.000Z');
+      expect(both.summary).toBe(`OpenAI endpoint limit reached for Claude Sonnet 5.5 · high. It resets in 29m30s. Claude subscription limit reached for Claude Opus 5.5 · high. It resets 4pm (Europe/Berlin). Manki starts one more review of this commit on its own after 2026-11-18 16:00 UTC. ${later}, or use another key or token.`);
+      // A limit that lifts too late for the token service's retry gets only the command, as without the retry.
+      const weekly = new QuotaError('quota exceeded', 'OpenAI endpoint limit reached', 'at 2026-11-20T09:00:00Z', 'key');
+      const far = await retrying(weekly, weekly);
+      expect([far.retryAfter, far.summary]).toEqual(['2026-11-20T09:00:00.000Z', 'OpenAI endpoint limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets at 2026-11-20T09:00:00Z. Retry with /manki review after that, or use another key.']);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('sends a finder and a verdict reader that reached a limit to the fallback model, and no finder to a model that already reads for the round', async () => {

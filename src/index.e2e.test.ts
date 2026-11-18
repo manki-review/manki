@@ -871,8 +871,9 @@ describe('runFullReview end to end', () => {
 
     expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
     expect(skipNotices()).toEqual([]);
-    // The run on the same head deletes the failed progress comment, so the head shows one comment.
-    expect(mockGitHub.comments).not.toContain(progress);
+    // The run on the same head marks the failed progress comment superseded, which keeps saying which reviewer failed.
+    expect(progress?.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`\. This attempt ended as follows\.\n\n🔴 \*\*Review failed\*\*/u);
+    expect(progress?.body).toContain('failed after 2 attempts');
     expect(mockGitHub.comments.filter(c => c.body.startsWith('✅ **Review complete**'))).toHaveLength(1);
   });
 
@@ -953,8 +954,8 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
-    // The run on the same head deletes the failed progress comment, which has the settings block.
-    expect(mockGitHub.comments).not.toContain(progress);
+    // The run on the same head marks the failed progress comment, which has the settings block, superseded at its start.
+    expect(progress?.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`\. This attempt ended as follows\.\n\n🔴 \*\*Review failed:\*\* /u);
     expect(other.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`/);
     expect(quoted.body).toBe('🔴 **Review failed:** boom');
   });
@@ -1510,6 +1511,28 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.stateReports).toEqual([
         { owner: OWNER, repo: REPO, pr: PR_NUMBER, reviewed: { commit: HEAD_SHA }, approval: { commit: HEAD_SHA, held: false }, pause: null },
       ]);
+    });
+
+    it('says an incomplete review of a push gets one automatic retry, and that the retry is it', async () => {
+      mockLLM.replies.reviewer = 'I could not finish the review.';
+      await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: HEAD_SHA, delivery_id: '72d3162e-cc78-11e3-81ab-4c9367dc0958' });
+
+      const [first] = postedReviews();
+      expect(first.body).toMatch(/^⏸️ \*\*Review incomplete:\*\* All reviewers failed\. Manki starts one more review of this commit on its own within a few minutes\. If that one does not finish either, retry with \/manki review\.\n/u);
+      expect(first.body).not.toContain('Started automatically');
+      const failed = mockGitHub.comments.find(c => c.body.startsWith('🔴 **Review failed**'))!;
+
+      // The token service's retry says what it is, and its own incomplete review names only the command.
+      await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: HEAD_SHA, delivery_id: `catch-up-${HEAD_SHA.slice(0, 12)}` });
+
+      const retry = postedReviews()[1];
+      expect(retry.body).toMatch(/^⏸️ \*\*Review incomplete:\*\* All reviewers failed\. Retry with \/manki review\.\n\nStarted automatically, since no review of this commit had finished\.\n/u);
+      expect(mockGitHub.roundContext(retry).meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice', catchUp: true });
+      const progress = mockGitHub.comments.filter(c => c.body.startsWith('🔴 **Review failed**'));
+      expect(progress).toHaveLength(1);
+      expect(progress[0].body).toContain('\n\nStarted automatically, since no review of this commit had finished.\n\n**Planner**');
+      // The first attempt's report stays, marked superseded by the retry.
+      expect(failed.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`\. This attempt ended as follows\.\n\n🔴 \*\*Review failed\*\*/u);
     });
 
     it('writes nothing for a push the PR head has moved past', async () => {

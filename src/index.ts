@@ -13,7 +13,7 @@ import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, hasQueuedCheck, outcomeReport, reportCheck, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
+import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent, startedByCatchUp } from './dispatch';
 import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, mentionsMankiUser, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
@@ -85,6 +85,7 @@ import {
   isFailedProgress,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
+  markFailedProgressSuperseded,
   markProgressCommentSuperseded,
   latestSettings,
   PAUSE_NOTICE_MARKER,
@@ -130,7 +131,7 @@ function buildRoundTrigger(modes: ReadonlySet<string> = new Set()): RoundTrigger
       event = `${event}:/manki review`;
     }
   }
-  return { event, sender };
+  return { event, sender, ...(startedByCatchUp() && { catchUp: true as const }) };
 }
 
 function readProviderInputs(): ProviderInputs {
@@ -642,14 +643,18 @@ async function handlePullRequest(): Promise<void> {
     baseBranch: pr.base.ref,
   };
 
+  const trigger = buildRoundTrigger();
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
-    trigger: buildRoundTrigger(),
+    trigger,
     ...(forced && { forceReview: true, skipCap: true, bypassHint: 'force_review' as const }),
     settings,
     draft,
     fullReview,
     deeper,
+    // The token service's catch-up reviews a head once more when its review did not finish, except a draft, a fork's
+    // head and a head it already caught up. A ticked box can review a commit that has a verdict, which it never retries.
+    automaticRetry: !forced && !draft && !trigger.catchUp && pr.head.repo?.full_name === pr.base.repo?.full_name,
   });
 }
 
@@ -856,8 +861,8 @@ const runningSettings = (target: RunTarget, progress: RunProgress): SettingsView
 
 /**
  * Posts the run's progress comment, ending with the settings block, which older comments then lose, so only the newest
- * progress comment has one. The failed progress comment of an earlier run on the same head is deleted, so a head shows
- * one. It is not edited into this run's, since the token service takes only a comment created after the run started.
+ * progress comment has one. The failed progress comment of an earlier run on the same head is marked superseded and
+ * keeps its report. It is not edited into this run's, since the token service takes only a comment created after the run started.
  */
 async function postRunProgress(target: RunTarget, progress: RunProgress, { settings = NO_SETTINGS, draft = false }: FullReviewOptions): Promise<number> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
@@ -868,22 +873,14 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
     core.warning(`Failed to read the earlier settings block, so it stays: ${error instanceof Error ? error.message : error}`);
   }
   const latest = latestSettings(comments, bot);
-  const failedId = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest.id : undefined;
+  const failed = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest : undefined;
   progress.settings = {
     lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
-    ...(latest && failedId === undefined && { previousId: latest.id }),
+    ...(latest && !failed && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));
-  let kept = comments;
-  if (failedId !== undefined) {
-    try {
-      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: failedId });
-      kept = comments.filter(c => c.id !== failedId);
-    } catch (error) {
-      core.warning(`Failed to delete the failed progress comment ${failedId}: ${error instanceof Error ? error.message : error}`);
-    }
-  }
-  await retireSettingsBlocks(octokit, bot, owner, repo, kept, commentId);
+  const superseded = failed && await markFailedProgressSuperseded(octokit, owner, repo, failed, commitSha);
+  await retireSettingsBlocks(octokit, bot, owner, repo, superseded ? comments.filter(c => c.id !== failed.id) : comments, commentId);
   return commentId;
 }
 
@@ -2048,7 +2045,7 @@ async function runFullReview(
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
     // `runReview` reports the team after triage.
-    const dashboard: DashboardData = { phase: 'planning', lineCount, agentCount: 0 };
+    const dashboard: DashboardData = { phase: 'planning', lineCount, agentCount: 0, ...(trigger.catchUp && { catchUp: true }) };
     await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(target, progress));
     const unreviewedMetadata = (): ReviewMetadata => ({
       config: metadataConfig(config, models, 'none', []),
@@ -2154,6 +2151,7 @@ async function runFullReview(
       excludedPaths: excludedFiles.map(f => f.path),
       lockfiles,
       changeDigest: digest,
+      automaticRetry: options.automaticRetry,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();

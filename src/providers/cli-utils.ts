@@ -13,7 +13,7 @@ import { makeScratchDir } from '../tool-install';
 import { LISTED_FILES_TO_OPEN, STALE_TIMEOUT_MS, STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepoTools } from '../types';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
-import { LLMResponse, RepoTools, SendMessageOptions, TimeoutError, UnreachableError } from './types';
+import { LLMResponse, QuotaError, RepoTools, SendMessageOptions, TimeoutError, UnreachableError } from './types';
 
 export { STALE_TIMEOUT_MS };
 export const HARD_TIMEOUT_MS = 1_200_000;
@@ -101,6 +101,24 @@ const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 
 export function advisedWaitMs(resetsAt = ''): number | undefined {
   if (!/^in (?:\d+(?:\.\d+)?(?:ms|[hms]))+$/.test(resetsAt)) return undefined;
   return Math.ceil([...resetsAt.matchAll(/(\d+(?:\.\d+)?)(ms|[hms])/g)].reduce((sum, [, n, unit]) => sum + Number(n) * UNIT_MS[unit], 0));
+}
+
+// An ISO 8601 time with its zone, such as `2026-11-18T15:30:00Z`.
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Returns when the limit behind `error` lifts, in milliseconds since the epoch, or `undefined` when the provider named
+ * no time that reads for certain. A window the call's readings show used up names its reset exactly. Of the provider's
+ * own words, only a wait such as `in 1m30s` and an ISO 8601 time with its zone are read: other wording, such as
+ * `3pm (America/New_York)`, leaves the day or the zone unsure.
+ */
+export function quotaResetTime(error: QuotaError, now = Date.now()): number | undefined {
+  const usedUp = (readingsOf(error).limits ?? []).flatMap(l => (l.usedPercent >= 100 && l.resetsAt != null ? [l.resetsAt * 1000] : []));
+  if (usedUp.length > 0) return Math.max(...usedUp);
+  const wait = advisedWaitMs(error.resetsAt);
+  if (wait !== undefined) return now + wait;
+  const at = error.resetsAt?.replace(/^at\s+/i, '');
+  return at && ISO_TIME.test(at) ? Date.parse(at) : undefined;
 }
 
 /** Returns the used-up limit or overload that `text` reports, or `undefined` when it reports none. */
