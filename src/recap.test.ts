@@ -1,8 +1,9 @@
-import { Finding, FindingFingerprintEntry, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
+import { Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
 import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
+import { fixedMarker, formatReplyRecord } from './review-record';
 import { highlightCode } from './highlight';
 import { applyCrossRoundSuppression } from './judge';
 
@@ -1451,6 +1452,26 @@ describe('fetchRecapState', () => {
       const afterClear = await fetchRecapState(withWriter(mockOctokit([cleared], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(afterClear.previousFindings.map(f => [f.status, f.reopen ?? false])).toEqual([['auto-resolved', false]]);
 
+      // Manki's answer decided the thread without a fix only when its record says it accepted no fix and no answer of
+      // Manki's accepted or confirmed one. An answer without a readable record proves nothing.
+      const answer = (outcome: ReplyDecision['outcome']) => `**${outcome}.** The caller checks it.\n\n<!-- manki -->\n${formatReplyRecord({
+        kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome, thread: 'resolves' },
+      })}`;
+      const confirmed = `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`;
+      const answeredWith = (id: string, path: string, replies: string[]) => {
+        const answered = thread(id, path, BOT_LOGIN);
+        answered.comments.nodes.push({ body: 'The caller checks this.', author: { login: 'alice' } }, ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
+        return answered;
+      };
+      const decided: Array<[string, string[], boolean]> = [
+        ['waived', [answer('Withdrawn')], true], ['agreed', [answer('Agreed')], true], ['fixed', [answer('Fixed')], false],
+        ['fix confirmed later', [answer('Agreed'), confirmed], false], ['no record', ['**Withdrawn.** The caller checks it.\n\n<!-- manki -->'], false],
+      ];
+      for (const [why, replies, without] of decided) {
+        const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+        expect([why, read.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])]).toEqual([why, [['auto-resolved', without]]]);
+      }
+
       // A later round that found the thread open again takes the earlier `addressed` away, so Manki's resolve has nothing
       // to back it. A warning thread Manki resolved on an `addressed` record counts as resolved and fixed.
       const laterCtx = makeRoundContext(2, { judge: { summary: 'ok', threadEvaluations: [
@@ -1465,6 +1486,12 @@ describe('fetchRecapState', () => {
         [ctx, laterCtx].map((record, i) => ({ id: 100 + i, body: htmlCommentBlock(record), user: { login: BOT_LOGIN } })),
       ), TEST_BOT, 'owner', 'repo', 1);
       expect(later.previousFindings.map(f => [f.status, f.fixed ?? false])).toEqual([['open', false], ['resolved', true]]);
+      // A thread a round's judge once found fixed is never decided without a fix, whatever the answer after it says.
+      const onceFixed = await fetchRecapState(withWriter(mockOctokit(
+        [answeredWith('T_JUDGE', files.judge, [answer('Withdrawn')])],
+        [ctx, laterCtx].map((record, i) => ({ id: 100 + i, body: htmlCommentBlock(record), user: { login: BOT_LOGIN } })),
+      )), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(onceFixed.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])).toEqual([['auto-resolved', false]]);
       expect(state.previousFindings.map(f => f.fixed ?? false)).toEqual([false, false, true, false, false]);
 
       const newFindings = Object.values(files).map(file => makeFinding({ title, file, line: 10 }));
@@ -2460,10 +2487,12 @@ describe('llmDeduplicateFindings', () => {
     // Unless the round pairs the two, as by a line both cite.
     const paired = (prev: PreviousFinding, f: Finding) => prev.title === waived.title && f.file === elsewhere.file;
     expect(await llmDeduplicateFindings([elsewhere], [waived], match, paired)).toEqual({ unique: [], duplicates: [{ finding: elsewhere, matchedTitle: waived.title, matchType: 'llm' }] });
-    // A thread Manki resolved after a maintainer's reply was decided too, in its own file and in another.
+    // A thread Manki resolved after an answer that accepted no fix was decided too, in its own file and in another. One
+    // whose answers do not show that may have been fixed, so a repeat there goes to the judge.
     const settledByReply = { ...waived, status: 'auto-resolved' as const };
     for (const finding of [second, elsewhere]) {
-      expect(await llmDeduplicateFindings([finding], [settledByReply], match, paired)).toEqual({ unique: [], duplicates: [{ finding, matchedTitle: waived.title, matchType: 'llm' }] });
+      expect(await llmDeduplicateFindings([finding], [{ ...settledByReply, decidedWithoutFix: true }], match, paired)).toEqual({ unique: [], duplicates: [{ finding, matchedTitle: waived.title, matchType: 'llm' }] });
+      expect(await llmDeduplicateFindings([finding], [settledByReply], match, paired)).toEqual({ unique: [finding], duplicates: [] });
     }
 
     // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.

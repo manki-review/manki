@@ -6,7 +6,7 @@ import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
-import { extractReviewRecords, hasOwnMarker, hasReviewRecord } from './review-record';
+import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
 import { COMMENT_MARKER, ownMarker } from './utils';
 
@@ -388,10 +388,12 @@ interface PreviousFinding extends FindingMetadata {
   peakGrade?: FindingSeverity;
   /** Set when a round record could not be read, so the grade it may hold is unknown and the thread stays guarded. */
   gradeUnknown?: boolean;
-  /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open, but `llmDeduplicateFindings` drops a repeat of it. */
+  /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open, but `llmDeduplicateFindings` drops a repeat of one `decidedWithoutFix`. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
   fixed?: boolean;
+  /** Settled without a fix, as `decidedWithoutFix` reads Manki's replies, and never found fixed by a round's judge. */
+  decidedWithoutFix?: boolean;
   threadId?: string;
   threadUrl?: string;
   /** Slug from the thread's `<!-- manki:<severity>:<slug> -->` marker. */
@@ -647,6 +649,7 @@ async function fetchRecapState(
     ...(authorCannotClear(t) && t.resolvedByHuman && t.resolvedByLogin && { resolverLogin: t.resolvedByLogin }),
   })));
 
+  const everAddressed = judgeAddressedThreadIds(priorRounds);
   const previousFindings = botThreads.map(t => {
     const facts = { ...t, ...backing.get(t.threadId) };
     const settled = settledBy(facts, bot, prAuthorLogin, prAuthorRole);
@@ -664,6 +667,7 @@ async function fetchRecapState(
       ...(t.gradeUnknown && { gradeUnknown: true }),
       status,
       ...(facts.addressed && status !== 'open' && status !== 'replied' && { fixed: true }),
+      ...(t.decidedWithoutFix && !everAddressed.has(t.threadId) && { decidedWithoutFix: true }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -737,6 +741,16 @@ interface ThreadFacts extends OverrideCandidate {
   writerReplyLogin?: string;
   /** Who resolved the thread, when `hasWriteAccess` confirms a person with write access. GraphQL types every resolver as `User`, a bot included. */
   writerResolverLogin?: string;
+}
+
+/**
+ * Whether Manki's replies show that the thread was settled without a fix: one accepted an "Agreed." or "Withdrawn."
+ * answer that settled it, or a person asked to dismiss it. A reply of Manki's that accepted or confirmed a fix rules it out.
+ */
+function decidedWithoutFix(bot: BotIdentity, comments: ThreadCommentNode[]): boolean {
+  const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
+  if (own.some(body => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined)) return false;
+  return own.some(body => !!settlingDecision(body)) || personReplies(bot, comments).some(c => DISMISS_COMMAND_RE.test(c.body ?? ''));
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
@@ -942,6 +956,8 @@ interface ReviewThread extends FindingMetadata {
   /** Set when the thread's later comments could not be read, so its latest reply is unknown. */
   commentsIncomplete?: boolean;
   answer?: string;
+  /** Set when Manki's replies show the thread was settled without a fix, by `decidedWithoutFix`. */
+  decidedWithoutFix?: boolean;
 }
 
 /** Earlier wordings of `MISSED_EARLIER_NOTE` that threads posted before still carry. */
@@ -1124,6 +1140,7 @@ async function fetchReviewThreads(
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
+      const decided = isBotThread && !incomplete.has(thread.id) && decidedWithoutFix(bot, thread.comments.nodes);
 
       return {
         threadId: thread.id,
@@ -1155,6 +1172,7 @@ async function fetchReviewThreads(
         ...(authorReplyAssociation && { authorReplyAssociation }),
         ...(incomplete.has(thread.id) && { commentsIncomplete: true }),
         ...(answer && { answer }),
+        ...(decided && { decidedWithoutFix: true }),
       };
     });
     return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };
@@ -1320,7 +1338,7 @@ function describeForDedup(f: DedupItem): string {
 }
 
 /**
- * Asks `client` which findings repeat an earlier resolved or auto-resolved one, in any wording. A match counts in the same file, or in
+ * Asks `client` which findings repeat an earlier resolved one, or an `auto-resolved` one `decidedWithoutFix`, in any wording. A match counts in the same file, or in
  * another file when `acrossFiles` pairs the two. A repeat of a waived finding is dropped, and a repeat of a fixed one
  * goes to the judge with a note. A failed call, or one the round did not start or stopped, keeps every finding.
  */
@@ -1336,8 +1354,8 @@ async function llmDeduplicateFindings(
     const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client, acrossFiles);
     return { unique: [...alerts, ...rest.unique], duplicates: rest.duplicates };
   }
-  // A thread Manki resolved after a reply was settled by that reply's writer, so it counts as decided like one a person resolved.
-  const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved' || f.status === 'auto-resolved');
+  // A thread Manki resolved after an answer that accepted no fix was decided like one a person resolved. Any other may have been fixed.
+  const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved' || (f.status === 'auto-resolved' && f.decidedWithoutFix));
   if (findings.length === 0 || resolved.length === 0) {
     return { unique: findings, duplicates: [] };
   }
