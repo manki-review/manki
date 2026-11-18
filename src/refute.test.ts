@@ -303,6 +303,8 @@ describe('refuteBlockers', () => {
       // With `review.rules: warn` a confirmed rule alone gives a warning, so the finding goes no lower than that, whatever its finder filed.
       ['Breaks a rule', { ...raised('note'), rule: { file: 'AGENTS.md', quote: 'Every bound must be checked.', verdict: 'confirmed' } }],
       ['Merged finder blocker', { ...raised(), reviewerSeverity: 'blocker' }],
+      // A finder filed it as a blocker, so the judge did not raise it alone, also when another finder filed a warning.
+      ['Split finder blocker', { ...raised(), reviewerSeverity: 'blocker', lowestReviewerSeverity: 'warning' }],
       ['Finder blocker', {}],
       // Any second answer but a disproof keeps the blocker.
       ['Second unsure', raised(), { outcome: 'unsettled', reason: 'Could not tell.' }],
@@ -443,7 +445,7 @@ describe('refuteBlockers', () => {
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
 
-  it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed and a finder filed a blocker or the check confirmed the defect and its consequence, and never raises or moves one in the `rare` column', async () => {
+  it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed and every finder filed a blocker or the check confirmed the defect and its consequence, and never raises or moves one in the `rare` column', async () => {
     const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
     const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };
     const confirmed = (proof: string) => ({ outcome: 'confirmed', reason: 'It holds.', proof: [proof] });
@@ -504,7 +506,7 @@ describe('refuteBlockers', () => {
       finding(unsettledDown, held),
       // An earlier warning is no blocker to restate. The check of a finding linked to an earlier one waits for the round's end.
       finding('Restates an earlier warning', { ...held, sameAs: 'src/old.ts:3:3:old-warning' }),
-      // The highest grade a finder gave any merged copy counts.
+      // Every finder filed the merged copies as blockers.
       finding('Merged copy filed as a blocker', { ...held, reviewerSeverity: 'blocker' }),
       finding('Security finding', { ...held, tags: ['security'] }),
       // A later step can fold the finding into the earlier blocker, which only a blocker keeps blocking.
@@ -614,8 +616,8 @@ describe('refuteBlockers', () => {
     expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
 
     // With a premise about the consequence, a finding no finder filed as a blocker rises only when the check confirms
-    // the defect and every premise. A finder's blocker and a security finding are checked without that premise, as if
-    // the judge had not named it.
+    // the defect and every premise. So does one the finders split on. A blocker every finder filed and a security
+    // finding are checked without that premise, as if the judge had not named it.
     const harm = { premise: 'The overflowed sum is the total `report` prints', decides: 'grade' as const, consequence: true as const };
     const withHarm = { ...held, doubts: [exists, harm] };
     const harmReplies = {
@@ -626,7 +628,10 @@ describe('refuteBlockers', () => {
       'Consequence confirmed, defect premise disproved': { ...confirmed('src/math.ts:2'), premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }, confirmed('src/api.ts:4')] },
       'Finder blocker with a consequence': { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] },
       'Security with a consequence': { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] },
+      'Split blocker, consequence confirmed': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
+      'Split blocker, consequence unsettled': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2'), { outcome: 'unsettled', reason: 'No caller prints it.' }] },
     };
+    const split = { reviewerSeverity: 'blocker' as const, lowestReviewerSeverity: 'warning' as const };
     const harmed = [
       finding('Defect and consequence confirmed', withHarm),
       finding('Defect confirmed, consequence unsettled', withHarm),
@@ -635,6 +640,8 @@ describe('refuteBlockers', () => {
       finding('Consequence confirmed, defect premise disproved', withHarm),
       finding('Finder blocker with a consequence', { ...withHarm, reviewerSeverity: 'blocker' }),
       finding('Security with a consequence', { ...withHarm, tags: ['security'] }),
+      finding('Split blocker, consequence confirmed', { ...withHarm, ...split }),
+      finding('Split blocker, consequence unsettled', { ...withHarm, ...split }),
     ];
     const harmClient = fakeClient(harmReplies);
     const harmResult = await refuteBlockers(harmClient, harmed, { workspace, diff, doubtBudget: { left: 0 } });
@@ -648,10 +655,16 @@ describe('refuteBlockers', () => {
       ['Consequence confirmed, defect premise disproved', 'warning', 'blocker', 'unsettled', 2, 'unconfirmed'],
       ['Finder blocker with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
       ['Security with a consequence', 'blocker', 'blocker', 'confirmed', 1, 'unconfirmed'],
+      ['Split blocker, consequence confirmed', 'blocker', 'blocker', 'confirmed', 2, 'confirmed'],
+      ['Split blocker, consequence unsettled', 'warning', 'blocker', 'unsettled', 2, 'confirmed'],
     ]);
     // Each is checked with none of the round's checks of warnings left, since its answer can raise the finding.
     expect(harmClient.calls.map(([title]) => title)).toEqual(harmed.map(f => f.title));
     expect(harmResult[0].gradePath?.at(-1)).toEqual({ from: 'warning', to: 'blocker', by: 'refutation', reason: 'It holds.' });
+    // Without a consequence the judge named, a confirmed doubt leaves a split blocker a warning, which no later answer raises.
+    const splitTitle = 'Split blocker, doubt confirmed';
+    const [splitKept] = await refuteBlockers(fakeClient({ [splitTitle]: { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] } }), [finding(splitTitle, { ...held, ...split })], { workspace, diff });
+    expect([splitKept.severity, splitKept.gradeIfConfirmed, splitKept.refutation?.outcome, staysWarningIfConfirmed(splitKept)]).toEqual(['warning', 'warning', 'confirmed', true]);
   });
 
   it('drops a finding below blocker when the refuter answers that the defect does not exist, whatever its premises add up to', async () => {

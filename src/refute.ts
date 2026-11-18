@@ -302,13 +302,13 @@ function raisedTo(finding: Finding, grade: FindingSeverity | undefined): Finding
 /**
  * Whether the pending blocker of `finding` needs a confirmed `consequence` premise. A doubt means the judge named the
  * cell for code it had not seen, and only a `consequence` premise asks the refuter how serious the damage is. So the
- * blocker is given on the other premises alone only when a finder filed one, on a security finding, or when the
- * finding `restates` an earlier blocker. A grade that a step after the judge's moved, such as a rule blocker, is left alone.
+ * blocker is given on the other premises alone only when every finder that reported it filed one, on a security
+ * finding, or when the finding `restates` an earlier blocker. A grade that a step after the judge's moved, such as a rule blocker, is left alone.
  */
 function needsConsequence(finding: Finding, restates: boolean): boolean {
   const held = pendingGrade(finding) === 'blocker' && isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) === 'blocker'
     && (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge';
-  return held && finderGrade(finding) !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
+  return held && finderGrade(finding, 'lowest') !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
 const namesConsequence = (finding: Pick<Finding, 'doubts'>): boolean => !!finding.doubts?.some(d => d.consequence);
@@ -389,7 +389,7 @@ function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[],
 /**
  * Returns the grade the finders gave a blocker that only the judge raised to blocker and that two refuters on
  * different models both disproved, or undefined when the blocker stays. A finding that `breaksRule` goes no lower than
- * the grade `rules` gives. A blocker a finder filed stays, since PR
+ * the grade `rules` gives. A blocker any finder filed stays, since PR
  * content the refuters read could steer them all. So does a tool alert, a security finding, an open lead, which is
  * no finished finding to grade, and a finding whose refuters' models are unknown or the same.
  */

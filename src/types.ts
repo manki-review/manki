@@ -113,7 +113,7 @@ export function migrateLegacySeverity(severity: string): FindingSeverity | strin
 }
 
 /** The fields that hold a severity wherever they sit in a stored record. */
-const SEVERITY_FIELDS: ReadonlySet<string> = new Set(['severity', 'originalSeverity', 'reviewerSeverity', 'gradeIfConfirmed', 'recordedGrade', 'peakGrade']);
+const SEVERITY_FIELDS: ReadonlySet<string> = new Set(['severity', 'originalSeverity', 'reviewerSeverity', 'lowestReviewerSeverity', 'gradeIfConfirmed', 'recordedGrade', 'peakGrade']);
 
 /** The severity fields of the entries of a list. `from`, `to` and `grade` are common names, so they count only in the list named here. */
 const SEVERITY_FIELDS_OF = new Map<string, ReadonlySet<string>>([
@@ -334,6 +334,8 @@ export interface Finding {
    * finding differently, or when a merged duplicate was filed higher. The judge never sees it.
    */
   reviewerSeverity?: FindingSeverity;
+  /** The lowest severity a reviewer gave the finding or a duplicate merged into it. Set only when the reviewers split on the grade. */
+  lowestReviewerSeverity?: FindingSeverity;
   /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
   gradePath?: GradeStep[];
   /** Fingerprint key of the earlier finding that names the same defect. */
@@ -388,7 +390,7 @@ export interface Finding {
   /**
    * The grade the finding gets once every premise in `doubts` holds. Set when the finding has a doubt. Manki works it
    * out from the `cell`, except that it is `warning` in a cell that gives a blocker when the judge stated `warning`.
-   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. A blocker cell that no
+   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. A blocker cell that not every
    * finder filed as a blocker, that is no security finding and that restates no earlier blocker needs more: every
    * check confirms the defect and a `consequence` premise. Before its checks, `refuteBlockers` sets `warning` here on
    * such a finding without a `consequence` premise. On a finding that `isRareClaim` it is the grade of
@@ -800,9 +802,10 @@ export function gradeStep(finding: Finding, to: FindingSeverity, by: GradeChange
   return { severity: to, gradePath: [...(finding.gradePath ?? []), step] };
 }
 
-/** Returns the highest grade a finder gave `finding` or a duplicate merged into it. */
-export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'gradePath' | 'severity'>): FindingSeverity {
-  return finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
+/** Returns the highest grade a finder gave `finding` or a duplicate merged into it, or the lowest one with `lowest`. */
+export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'lowestReviewerSeverity' | 'gradePath' | 'severity'>, which: 'highest' | 'lowest' = 'highest'): FindingSeverity {
+  const highest = finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
+  return which === 'lowest' ? finding.lowestReviewerSeverity ?? highest : highest;
 }
 
 /**
@@ -815,7 +818,7 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
 
 /**
  * Whether the cell of `f` gives a blocker that no confirmation of its doubts gives. Either the judge stated `warning`
- * for that case, or `refuteBlockers` set it because no finder filed a blocker and the judge named no `consequence` premise.
+ * for that case, or `refuteBlockers` set it because not every finder filed a blocker and the judge named no `consequence` premise.
  */
 export function staysWarningIfConfirmed(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): boolean {
   return f.gradeIfConfirmed === 'warning' && isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker';
@@ -2311,6 +2314,7 @@ export interface RoundJudgeDrop {
   line: number;
   reviewers: string[];
   reviewerSeverity?: FindingSeverity;
+  lowestReviewerSeverity?: FindingSeverity;
   judgeNotes?: string;
   refutation?: Refutation;
   pairRefutation?: Refutation;
@@ -2600,6 +2604,8 @@ export interface FindingFingerprintEntry {
   originalSeverity?: FindingSeverity;
   /** Mirrors `Finding.reviewerSeverity`. */
   reviewerSeverity?: FindingSeverity;
+  /** Mirrors `Finding.lowestReviewerSeverity`. */
+  lowestReviewerSeverity?: FindingSeverity;
   /** Whether a tool confirmed or contradicted the finding, or was silent. Mirrors `Finding.toolEvidence.status`. */
   toolEvidence?: ToolEvidenceStatus;
   /** Tool that reported the finding. Mirrors `Finding.toolSource`. */

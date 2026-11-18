@@ -488,6 +488,11 @@ describe('scoreRun', () => {
       blocker('Consequence', {
         gradePath: [step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker', doubts: [doubt('defect'), { ...doubt('grade'), consequence: true }], refutation,
       }),
+      // The finders split on it, so the check that confirmed the consequence made it a blocker, not the finder that filed one.
+      blocker('Split', {
+        reviewerSeverity: 'blocker', lowestReviewerSeverity: 'warning', gradePath: [step('blocker', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker',
+        doubts: [doubt('defect'), { ...doubt('grade'), consequence: true }], refutation,
+      }),
     ];
     const review = makeReview('ADDRESS_FIRST', findings);
     review.result.verdictReason = 'required_present';
@@ -495,7 +500,7 @@ describe('scoreRun', () => {
 
     const score = await scoreRun(benchCase, review, matcher);
 
-    expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 5 });
+    expect(score).toMatchObject({ verdictReason: 'required_present', falseBlockers: 6 });
     expect(score.findings.map(f => f.route)).toEqual([
       {
         finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
@@ -518,6 +523,10 @@ describe('scoreRun', () => {
         finderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'warning', to: 'blocker', by: 'refutation' }],
         doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' },
       },
+      {
+        finderGrade: 'blocker', lowestFinderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
+        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' },
+      },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
 
@@ -529,7 +538,7 @@ describe('scoreRun', () => {
       '| base: filed by a finder and kept | 1 | 0 | 0 | 1 | 2 |',
       '| base: raised by the judge | 0 | 1 | 0 | 0 | 1 |',
       '| base: raised by a confirmed doubt | 0 | 0 | 1 | 0 | 1 |',
-      '| base: raised by a confirmed doubt and consequence | 0 | 0 | 0 | 1 | 1 |',
+      '| base: raised by a confirmed doubt and consequence | 0 | 0 | 0 | 2 | 2 |',
       '| base: claim check | 0 | 0 | 0 | 1 | 1 |',
       '| base: verdict reader | 0 | 0 | 0 | 1 | 1 |',
       '| base: other | 0 | 0 | 0 | 1 | 1 |',
@@ -540,7 +549,7 @@ describe('scoreRun', () => {
     // A report of a ref that stored no route scores the same, and the route of its blockers is not known.
     const older: BenchReport = JSON.parse(JSON.stringify(routed, (key, value: unknown) => (key === 'route' || key === 'verdictReason' ? undefined : value)));
     expect(older.variants[0].summary).toEqual(routed.variants[0].summary);
-    expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 5 | 8 |']));
+    expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 6 | 9 |']));
   });
 
   it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
