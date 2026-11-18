@@ -1271,6 +1271,14 @@ export async function handleReviewCommentCommand(
   }
 }
 
+/** The reply record of Manki's answer that accepts a dismissal of the thread, as a thread reply that agrees and resolves records it. */
+function boxDismissRecord(prNumber: number): string {
+  return formatReplyRecord({
+    kind: 'thread-reply', prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage([]),
+    decision: { outcome: 'Agreed', thread: 'resolves' },
+  });
+}
+
 /**
  * Runs the command that the ticked `box` stands for, as the event's sender, who ticked it. Each command checks the
  * sender as it does for a comment, and answers as it does there. The Dismiss box sits in the review comment
@@ -1289,8 +1297,11 @@ export async function handleBoxCommand(
       return handleForget(octokit, owner, repo, prNumber, id ?? '', memory);
     case 'dismiss': {
       const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, config.author_clear_role, commentId);
-      if (thread?.note && commentId) {
-        await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(thread.note, BOT_MARKER) });
+      if (commentId && (thread?.note || thread?.changed)) {
+        // The reply record of an accepted answer is what later rounds and the fix rate read as a dismissal.
+        const record = thread.changed ? [boxDismissRecord(prNumber)] : [];
+        const text = [thread.changed && `Dismissed by \`@${github.context.payload.sender?.login}\`.`, thread.note].filter(Boolean).join('\n\n');
+        await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(text, BOT_MARKER, ...record) });
       }
       return !!thread?.changed;
     }

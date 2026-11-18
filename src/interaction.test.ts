@@ -1,6 +1,6 @@
 import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview, handleBoxCommand, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
 import { Finding, ReplyRecord, ReviewConfig } from './types';
-import { extractReplyRecords, formatReviewRecord } from './review-record';
+import { extractReplyRecords, formatReviewRecord, settlingDecision } from './review-record';
 import { RELATED_REPO_TRUST_RULE, WRITING_RULES } from './writing-rules';
 import { rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -2214,9 +2214,12 @@ describe('handleBoxCommand', () => {
     expect(await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 })).toBe(writer);
     expect(jest.mocked(dismissed.rest.pulls.getReviewComment).mock.calls[0]?.[0]).toEqual({ owner: 'test-owner', repo: 'test-repo', comment_id: 99 });
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(writer ? [[dismissed, 'PRRT_this', 'WONT_FIX']] : []);
-    expect(jest.mocked(dismissed.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
-      writer ? [] : [[expect.objectContaining({ comment_id: 99, body: expect.stringContaining('Only the PR author or someone with write access can dismiss this finding') })]],
-    );
+    const replies = jest.mocked(dismissed.rest.pulls.createReplyForReviewComment).mock.calls.map((call: unknown[]) => call[0] as { comment_id: number; body: string });
+    expect(replies).toEqual([expect.objectContaining({
+      comment_id: 99, body: expect.stringContaining(writer ? 'Dismissed by `@writer`.' : 'Only the PR author or someone with write access can dismiss this finding'),
+    })]);
+    // A dismissal that resolved the thread leaves the reply record that later rounds and the fix rate read as a settled thread.
+    expect(replies.map((r: { body: string }) => settlingDecision(r.body))).toEqual([writer ? { outcome: 'Agreed', thread: 'resolves' } : undefined]);
     // A thread someone resolved already is left as it is, so the dismiss did nothing.
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: 'writer', isBlocking: false, findingTitle: 'Token' }]);
     jest.mocked(state.resolveReviewThread).mockClear();

@@ -2186,6 +2186,8 @@ export interface FullReviewOptions {
   deeper?: boolean;
   /** The token service starts one more review of the commit if this round ends incomplete. */
   automaticRetry?: boolean;
+  /** The id of the incomplete review whose own box started this round. Ticking that box edits the review, which does not stop its finished parts from being reused. */
+  retryOfReview?: number;
 }
 
 /** A one-off mode a settings box queued for a run. */

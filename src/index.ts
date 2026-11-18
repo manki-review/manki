@@ -435,8 +435,7 @@ async function run(): Promise<void> {
 
     case 'pull_request_review_comment':
       if (boxTick) {
-        await handleIssueTick();
-        await handleBoxTick();
+        await handleTicks();
       } else {
         await handleReviewCommentInteraction();
       }
@@ -444,8 +443,7 @@ async function run(): Promise<void> {
 
     case 'pull_request_review':
       if (boxTick) {
-        await handleIssueTick();
-        await handleBoxTick();
+        await handleTicks();
         break;
       }
       core.info('Review submitted/dismissed — checking if auto-approve is warranted');
@@ -733,12 +731,15 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
 
   const { octokit, bot } = await getAuth();
   const settings = await loadSettings(owner, repo, prNumber);
-  const { forced, fullReview, deeper } = reviewModes(settings);
-  if (message) await settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, forced ? payload.sender?.login : undefined);
-  if (settingsTick && !forced) {
+  const queued = reviewModes(settings);
+  if (message) await settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, queued.forced ? payload.sender?.login : undefined);
+  if (settingsTick && !queued.forced) {
     core.info('The settings box tick queued no review for this run, nothing to do');
     return;
   }
+  // The box of an incomplete review retries it as the review command does: no forced or full review, and its finished parts are reused.
+  const retriesReview = message?.kind === 'review' && !!payload.review?.body?.startsWith(REVIEW_INCOMPLETE_LINE);
+  const { forced, fullReview, deeper } = retriesReview ? { forced: false, fullReview: false, deeper: false } : queued;
 
   // Acknowledge the command unconditionally so the user knows it was received.
   if (payload.comment?.id && !settingsTick) {
@@ -777,6 +778,7 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
     draft,
     fullReview,
     deeper,
+    ...(retriesReview && { retryOfReview: message?.id }),
   });
 }
 
@@ -1093,12 +1095,14 @@ async function loadRecap(
 
 /**
  * Returns the PR's last attempt on `commitSha` when the round may keep results of it. Review again and Deeper review ask for
- * a new read, so they keep nothing, and neither does a round whose last attempt's review someone edited.
+ * a new read, so they keep nothing, and neither does a round whose last attempt's review someone edited, unless the round
+ * retries that review by the tick of its own box (`retryOfReview`).
  */
-async function reusableAttempt(octokit: Octokit, recap: RecapState, commitSha: string, { fullReview, deeper }: FullReviewOptions): Promise<EarlierAttempt | undefined> {
+async function reusableAttempt(octokit: Octokit, recap: RecapState, commitSha: string, { fullReview, deeper, retryOfReview }: FullReviewOptions): Promise<EarlierAttempt | undefined> {
   const attempt = recap.lastAttempt;
   if (!attempt?.nodeId || attempt.record.meta.commitSha !== commitSha || fullReview || deeper) return undefined;
-  if (await wasEdited(octokit, attempt.nodeId)) {
+  // Ticking the review's own box edits it, which says nothing about its record.
+  if (retryOfReview !== attempt.review && await wasEdited(octokit, attempt.nodeId)) {
     core.info('The last attempt is not reused, since its review was edited');
     return undefined;
   }
@@ -2405,6 +2409,19 @@ async function handleIssueInteraction(): Promise<void> {
   await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config, held);
 }
 
+/** Runs both tick handlers of an edited review or review comment, so one failing does not skip the other. The first error is rethrown. */
+async function handleTicks(): Promise<void> {
+  const failures: unknown[] = [];
+  for (const handler of [handleIssueTick, handleBoxTick]) {
+    try {
+      await handler();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw failures[0];
+}
+
 /** Files the findings whose issue box the editor ticked in Manki's review comment or review body. */
 async function handleIssueTick(): Promise<void> {
   const { comment, review, pull_request: pr, sender } = github.context.payload;
@@ -2434,27 +2451,40 @@ async function handleBoxTick(): Promise<void> {
   if (!object?.id || !prNumber) return;
   const message: TickedMessage = { kind: eventName === 'issue_comment' ? 'comment' : eventName === 'pull_request_review' ? 'review' : 'review_comment', id: object.id };
   const ticked = tickedMessageBoxes(object.body ?? '');
-  if (ticked.some(({ box }) => box === 'again')) await handleCommentTrigger(true, message);
   const commands = ticked.flatMap(({ box, id }) => (box === 'again' ? [] : [{ box, id }]));
-  if (commands.length === 0) return;
-
+  const again = ticked.some(({ box }) => box === 'again');
+  if (commands.length === 0) {
+    if (again) await handleCommentTrigger(true, message);
+    return;
+  }
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
-  const baseRef: unknown = payload.pull_request?.base?.ref ?? (await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })).data.base.ref;
-  const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(baseRef, 'base branch'));
-  const memory = commands.some(({ box }) => box === 'forget') ? (await openMemoryStore(octokit, config.memory, owner, repo, prNumber)).store : undefined;
-  const commentId = message.kind === 'review_comment' ? message.id : undefined;
-  for (const { box, id } of commands) {
-    let done = false;
-    try {
-      done = await handleBoxCommand(octokit, bot, owner, repo, prNumber, box, id, { memory, config, configHeld: held, commentId });
-    } finally {
-      await settleTickedBox(octokit, owner, repo, prNumber, message, box, id, done ? payload.sender?.login : undefined);
+  const settled = new Set<(typeof commands)[number]>();
+  const settle = async (command: (typeof commands)[number], editor?: string): Promise<void> => {
+    settled.add(command);
+    await settleTickedBox(octokit, owner, repo, prNumber, message, command.box, command.id, editor);
+  };
+  try {
+    if (again) await handleCommentTrigger(true, message);
+    const baseRef: unknown = payload.pull_request?.base?.ref ?? (await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })).data.base.ref;
+    const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(baseRef, 'base branch'));
+    const memory = commands.some(({ box }) => box === 'forget') ? (await openMemoryStore(octokit, config.memory, owner, repo, prNumber)).store : undefined;
+    const commentId = message.kind === 'review_comment' ? message.id : undefined;
+    for (const command of commands) {
+      let done = false;
+      try {
+        done = await handleBoxCommand(octokit, bot, owner, repo, prNumber, command.box, command.id, { memory, config, configHeld: held, commentId });
+      } finally {
+        await settle(command, done ? payload.sender?.login : undefined);
+      }
     }
-  }
-  // As after a dismiss reply, the resolved thread may have been the last one that blocked.
-  if (commands.some(({ box }) => box === 'dismiss') && !held && config.auto_approve) {
-    if (await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config)) core.info(`PR #${prNumber} auto-approved after a ticked Dismiss box`);
+    // As after a dismiss reply, the resolved thread may have been the last one that blocked.
+    if (commands.some(({ box }) => box === 'dismiss') && !held && config.auto_approve) {
+      if (await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config)) core.info(`PR #${prNumber} auto-approved after a ticked Dismiss box`);
+    }
+  } finally {
+    // A step that failed before its command ran leaves the box ticked, so each box not settled is put back.
+    for (const command of commands.filter(c => !settled.has(c))) await settle(command);
   }
 }
 

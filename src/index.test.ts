@@ -1222,6 +1222,35 @@ describe('handlePullRequest', () => {
       }
     });
 
+    it('retries an incomplete review on the tick of its own box, reusing its finished parts as the review command does', async () => {
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
+      const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 2, totalDeletions: 0 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
+      jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(true);
+      const attempt = { record: makeRoundContext(1, { meta: { ...makeRoundContext(1).meta, commitSha: 'abc123', incomplete: true } }), review: 7, nodeId: 'R_7' };
+      const box = (head: string) => `${head}\n\n<!-- manki-issue-box -->\n- [x] Review again <!-- manki-box:again -->\n\n<!-- manki -->`;
+      try {
+        for (const [label, reviewId, head, handed] of [
+          ['the incomplete review', 7, '⏸️ **Review incomplete:** Retry with `/manki review`.', true],
+          ['a complete review', 7, 'Reviewed.', false],
+          ['another review', 8, '⏸️ **Review incomplete:** Retry with `/manki review`.', false],
+        ] as const) {
+          jest.mocked(reviewModule.runReview).mockClear();
+          jest.mocked(ghUtils.wasEdited).mockClear().mockResolvedValue(true);
+          jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(false, ['again']));
+          jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({ previousFindings: [], priorRounds: [], lastAttempt: attempt });
+          setContext({ eventName: 'pull_request_review', payload: { action: 'edited', sender: { login: 'alice', type: 'User' }, pull_request: { number: 1, base: { ref: 'main' }, head: { sha: 'abc123' } }, review: { id: reviewId, body: box(head), user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } } } });
+          await run();
+          const options = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1];
+          expect([label, options?.earlierAttempt]).toEqual([label, handed ? attempt : undefined]);
+        }
+      } finally {
+        jest.mocked(core.getInput).mockReturnValue('');
+        jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
+      }
+    });
+
     it('counts a PR the token service has no state for as not paused, with no modes', async () => {
       jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
       jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(true);
@@ -8534,6 +8563,20 @@ describe('settings box tick', () => {
     jest.mocked(core.getInput).mockReturnValue('');
   });
 
+  it('runs the issue box and the other boxes of a tick independently, then rethrows the first failure', async () => {
+    jest.clearAllMocks();
+    _resetOctokitCache();
+    jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(true);
+    jest.mocked(issueTick.handleIssueBoxTick).mockRejectedValueOnce(new Error('issue filing failed'));
+    jest.mocked(interaction.handleBoxCommand).mockResolvedValue(true);
+    const body = 'Text.\n\n<!-- manki-issue-box -->\n- [x] Create an issue for this <!-- manki-box:issue:src/a.ts:3:Off-by-one -->\n\n<!-- manki-issue-box -->\n- [x] Dismiss this finding <!-- manki-box:dismiss -->\n\n<!-- manki -->';
+    setContext({ eventName: 'pull_request_review_comment', payload: { action: 'edited', sender: { login: 'alice', type: 'User' }, pull_request: { number: 5, base: { ref: 'main' } }, comment: { id: 77, body, user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } } } });
+    await expect(run()).rejects.toThrow('issue filing failed');
+    expect(jest.mocked(issueTick.handleIssueBoxTick)).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(interaction.handleBoxCommand)).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(issueTick.settleTickedBox).mock.calls).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind: 'review_comment', id: 77 }, 'dismiss', undefined, 'alice']]);
+  });
+
   it.each([
     ['Check approval in a review', 'pull_request_review', 'check', undefined, 'review'],
     ['Forget this learning in a thread reply', 'pull_request_review_comment', 'forget', 'learn-1700000000000', 'review_comment'],
@@ -8541,16 +8584,17 @@ describe('settings box tick', () => {
   ] as const)('runs the command of %s for a writer\'s tick only, then settles the box', async (_case, eventName, box, id, kind) => {
     const object = { id: 77, body: `Text.\n\n<!-- manki-issue-box -->\n- [x] Label <!-- manki-box:${box}${id ? `:${id}` : ''} -->\n\n<!-- manki -->`, user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } };
     const pullRequest = { number: 5, base: { ref: 'main' } };
-    const tick = async (sender: string, outcome: 'acted' | 'nothing' | 'fails' = 'acted') => {
+    const tick = async (sender: string, outcome: 'acted' | 'nothing' | 'fails' | 'setup fails' = 'acted') => {
       jest.clearAllMocks();
       _resetOctokitCache();
       jest.mocked(ghUtils.hasWriteAccess).mockImplementation(async (_o, _owner, _repo, login) => login !== 'reader');
       jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, auto_approve: true, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } } as never);
+      if (outcome === 'setup fails') jest.mocked(mockOctokitInstance.rest.pulls.get).mockRejectedValueOnce(new Error('GitHub is down'));
       jest.mocked(interaction.handleBoxCommand).mockImplementation(async () => {
         if (outcome === 'fails') throw new Error('GitHub is down');
         return outcome === 'acted';
       });
-      setContext({ eventName, payload: { action: 'edited', sender: { login: sender, type: 'User' }, pull_request: pullRequest, [eventName === 'pull_request_review' ? 'review' : 'comment']: object } });
+      setContext({ eventName, payload: { action: 'edited', sender: { login: sender, type: 'User' }, pull_request: outcome === 'setup fails' ? { number: 5 } : pullRequest, [eventName === 'pull_request_review' ? 'review' : 'comment']: object } });
       await run().catch(() => undefined);
       return { ran: jest.mocked(interaction.handleBoxCommand).mock.calls, settled: jest.mocked(issueTick.settleTickedBox).mock.calls };
     };
@@ -8563,6 +8607,8 @@ describe('settings box tick', () => {
     expect((await tick('alice', 'nothing')).settled).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, undefined]]);
     // So does a command that fails, so the box can be ticked again.
     expect((await tick('alice', 'fails')).settled).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, undefined]]);
+    // So does a failure before the command, in the setup of the step.
+    expect(await tick('alice', 'setup fails')).toEqual({ ran: [], settled: [[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, undefined]] });
     expect(await tick('reader')).toEqual({ ran: [], settled: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } } as never);
   });
