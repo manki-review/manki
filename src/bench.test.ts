@@ -13,8 +13,8 @@ import type { LLMClient } from './providers';
 import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
-import { VERDICT_READER_NAME } from './types';
-import type { Doubt, Finding, FindingSeverity, GradeChange, Refutation, RoundContext, RoundOutcome } from './types';
+import { PRE_EXISTING_TAG, VERDICT_READER_NAME } from './types';
+import type { Doubt, Finding, FindingFingerprintEntry, FindingSeverity, GradeChange, Refutation, RoundContext, RoundDedup, RoundJudge, RoundLead, RoundMemory, RoundOutcome, RoundRawFinding } from './types';
 
 jest.mock('@actions/core');
 jest.mock('./review-clients', () => {
@@ -131,10 +131,30 @@ function makeFinding(overrides: Partial<Finding>): Finding {
   return { severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', reviewers: ['reviewer'], ...overrides };
 }
 
-function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true): LocalReview {
+/**
+ * Returns a round record of `raw`, the findings the finders reported, and of what became of them: the `posted` findings,
+ * the `unposted` ones and the record's other lists in `parts`.
+ */
+function rawRecord(raw: Array<Partial<RoundRawFinding>>, posted: Finding[], parts: { unposted?: Finding[]; judge?: Partial<RoundJudge>; memory?: RoundMemory; dedup?: RoundDedup; leads?: RoundLead[] } = {}): Partial<RoundContext> {
+  const entry = (f: Finding): FindingFingerprintEntry => ({
+    fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: '' }, title: f.title, severity: f.severity, reviewers: f.reviewers,
+    ...(f.tags && { tags: f.tags }), ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
+  });
+  return {
+    reviewers: { agents: ['finder-a', 'finder-b'], rawFindings: raw.map(f => ({ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', reviewers: ['finder-a'], ...f })) },
+    findings: { count: posted.length, severityCounts: {}, entries: posted.map(entry), ...(parts.unposted && { unposted: parts.unposted.map(entry) }) },
+    judge: { summary: '', mergedDuplicates: 0, ...parts.judge },
+    memory: parts.memory ?? {},
+    dedup: parts.dedup ?? {},
+    ...(parts.leads && { leads: parts.leads }),
+  };
+}
+
+function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true, record: Partial<RoundContext> = {}): LocalReview {
   return {
     result: { verdict: outcome === 'READY' ? 'APPROVE' : 'REQUEST_CHANGES', outcome, summary: '', findings, highlights: [], reviewComplete: complete, agentNames: ['reviewer'] },
     context: {
+      ...record,
       usage: {
         estimatedCostUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 50, wallClockMs: 90,
         llmCalls: [
@@ -143,7 +163,7 @@ function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true)
           { stage: 'judge', model: 'claude-opus-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }] },
         ],
       },
-      reviewers: { agentMetrics: [{ name: 'finder-a', askedAgain: true }, { name: 'finder-b' }] },
+      reviewers: { ...record.reviewers, agentMetrics: [{ name: 'finder-a', askedAgain: true }, { name: 'finder-b' }] },
     } as unknown as RoundContext,
     base: SHA_A,
     head: SHA_B,
@@ -333,6 +353,15 @@ describe('llmMatcher', () => {
     expect(message).toContain('Fix: Bound it.');
     expect(options).toEqual({ effort: 'high', timeoutMs: 300_000 });
     expect(cache.size).toBe(1);
+
+    // A priced call returns its cost with the decision, and the cache keeps the decision alone, so a repeat costs nothing.
+    const usage = { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+    const priced = { sendMessage: jest.fn().mockResolvedValue({ content: '{"verdict": "NONE", "findings": [], "reason": "Not there."}', usage }) } as unknown as LLMClient;
+    const pricedCache = new Map<string, MatchDecision>();
+    const costed = llmMatcher(priced, 'anthropic/claude-sonnet-5-5', pricedCache);
+    expect(await costed(item, findings)).toEqual({ verdict: 'NONE', findings: [], reason: 'Not there.', costUsd: 2 });
+    expect(await costed(item, findings)).toEqual({ verdict: 'NONE', findings: [], reason: 'Not there.' });
+    expect([...pricedCache.values()].every(decision => !('costUsd' in decision))).toBe(true);
   });
 
   it.each([
@@ -521,6 +550,84 @@ describe('scoreRun', () => {
     expect(await scoreRun(clean, makeReview('READY', []), stub({}))).toMatchObject({ mustCatchRecall: null, weightedRecall: null, verdictCorrect: true });
     expect(await scoreRun(clean, makeReview('ADDRESS_FIRST', [makeFinding({ severity: 'blocker' })]), stub({}))).toMatchObject({ verdictCorrect: false, falseBlockers: 1 });
     expect(await scoreRun(benchCase, makeReview('INCOMPLETE', [], false), stub({}))).toMatchObject({ complete: false, error: 'The review did not complete.', mustCatchRecall: null, weightedRecall: null, verdictCorrect: null });
+  });
+
+  it('scores the findings the finders reported against the must-catch items, and names from the round record where each one the review did not post left it', async () => {
+    const posted = [makeFinding({ title: 'Posted', file: 'src/read.rs' })];
+    const step = (by: GradeChange) => [{ from: 'warning' as const, to: 'ignore' as const, by }];
+    const raw: Array<Partial<RoundRawFinding>> = [
+      { title: 'Posted', file: 'src/read.rs' },
+      { title: 'Unproven' }, { title: 'Old code' }, { title: 'Over the cap' },
+      { title: 'Judged', description: 'Calls `unlock` early.', reviewers: ['finder-b'] }, { title: 'Disproved' }, { title: 'Resolved before' }, { title: 'No step' },
+      { title: 'Hidden' }, { title: 'Lead' }, { title: 'Seen before' },
+      { title: 'Merged', description: 'Drops the lock in `unlock`.' },
+      // Two findings at one place with one title are one finding to the record, so it cannot tell which became of which.
+      { title: 'Twin', description: 'One text.' }, { title: 'Twin', description: 'Another text.' },
+    ];
+    const place = (title: string) => ({ title, file: 'src/other.rs', line: 1 });
+    const parts: Parameters<typeof rawRecord>[2] = {
+      unposted: [makeFinding({ ...place('Unproven'), unpostedReason: 'no_proof' }), makeFinding({ ...place('Old code'), tags: [PRE_EXISTING_TAG] }), makeFinding({ ...place('Over the cap'), unpostedReason: 'note_cap' })],
+      judge: {
+        dropped: [{ ...place('Judged'), reviewers: [], gradePath: step('judge') }, { ...place('Disproved'), reviewers: [], gradePath: step('refutation') }, { ...place('Resolved before'), reviewers: [], gradePath: step('ratchet') }, { ...place('No step'), reviewers: [] }],
+        mergedDuplicates: 1,
+      },
+      memory: { suppressed: [{ ...place('Hidden'), severity: 'warning', suppressionId: 'S1' }] },
+      dedup: { duplicateMatches: [{ droppedTitle: 'Seen before', matchedTitle: 'Seen in round 1', matchType: 'exact' }] },
+      leads: [{ ...place('Lead'), severity: 'warning', reviewers: [], description: '', lead: { checked: '', left: '' }, outcome: 'not_checked', since: 1 }],
+    };
+    const record = (changes: typeof parts = {}) => rawRecord(raw, [...posted, makeFinding(place('Twin'))], { ...parts, ...changes });
+    // The matcher names every finding it is shown for K1 and K2, closest first as given, and each of its calls costs a quarter.
+    const matcher = jest.fn(async (item: KeyItem, findings: unknown[]) => ({
+      ...(item.id === 'N1' ? { verdict: 'NONE' as const, findings: [], reason: 'none' } : { verdict: 'MATCH' as const, findings: findings.map((_, i) => i), reason: 'same' }), costUsd: 0.25,
+    }));
+    const exits = async (changes: typeof parts = {}) => (await scoreRun(benchCase, makeReview('ADDRESS_FIRST', posted, true, record(changes)), matcher)).raw!.findings.map(f => f.exit);
+
+    const score = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', posted, true, record()), matcher);
+
+    expect(score.raw!.findings.map(f => [f.title, f.exit])).toEqual([
+      ['Posted', 'posted'], ['Unproven', 'unproven'], ['Old code', 'pre_existing'], ['Over the cap', 'note_cap'],
+      ['Judged', 'judge'], ['Disproved', 'refuter'], ['Resolved before', 'earlier_round'], ['No step', 'unknown'],
+      ['Hidden', 'memory_suppression'], ['Lead', 'open_lead'], ['Seen before', 'dedup'], ['Merged', 'merged'], ['Twin', 'unknown'], ['Twin', 'unknown'],
+    ]);
+    expect(score.raw!.findings[4]).toEqual({ severity: 'warning', title: 'Judged', file: 'src/other.rs', line: 1, description: 'Calls `unlock` early.', reviewers: ['finder-b'], exit: 'judge' });
+    expect(score.raw!.matches).toEqual([
+      { item: 'K1', verdict: 'MATCH', findings: [0], severity: 'warning', reason: 'same' },
+      { item: 'K2', verdict: 'MATCH', findings: [4, 11], severity: 'warning', reason: 'same' },
+    ]);
+    // The raw scoring asks about the must-catch items only, and its cost is counted apart from the posted findings' scoring.
+    expect(score.raw!.caught).toEqual([
+      { item: 'K1', finders: ['finder-a'], posted: true },
+      { item: 'K2', finders: ['finder-b', 'finder-a'], posted: false, exits: ['judge', 'merged'] },
+    ]);
+    expect(score.raw!.matcherCostUsd).toBe(0.5);
+    expect(score.matches.map(m => [m.item, m.verdict])).toEqual([['K1', 'MATCH'], ['K2', 'NONE'], ['N1', 'NONE']]);
+
+    // A finding no stage names is merged only when no step that drops findings without naming them ran, and no more are left than the judge merged.
+    expect((await exits({ dedup: { ...parts.dedup, testNitSuppressedCount: 1 } }))[11]).toBe('unknown');
+    expect((await exits({ judge: { ...parts.judge, mergedDuplicates: 0 } }))[11]).toBe('unknown');
+    const readerFold = rawRecord(raw.slice(11, 12), [...posted, makeFinding({ title: 'Reader blocker', reviewers: [VERDICT_READER_NAME, 'finder-a'] })], { judge: { mergedDuplicates: 1 } });
+    expect((await scoreRun(benchCase, makeReview('ADDRESS_FIRST', posted, true, readerFold), matcher)).raw!.findings.map(f => f.exit)).toEqual(['unknown']);
+    // The dedup names only the title it dropped, so it counts only while it dropped as many findings with that title as no later stage names.
+    const twoSeen = rawRecord([{ title: 'Seen before' }, { title: 'Seen before', file: 'src/b.rs' }], [], { dedup: parts.dedup, judge: { mergedDuplicates: 1 } });
+    expect((await scoreRun(benchCase, makeReview('READY', [], true, twoSeen), matcher)).raw!.findings.map(f => f.exit)).toEqual(['unknown', 'unknown']);
+
+    // The report sums the runs: the items a finder found, the ones posted, the lost ones by the exit of the closest finding naming each, and the matcher's cost.
+    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [score, { ...score, complete: false }] }] }]);
+    expect(report.variants[0].summary.raw).toEqual({ items: 2, found: 2, posted: 1, lost: { judge: 1 }, matcherCostUsd: 0.5 });
+    const summary = formatBenchSummary(report);
+    expect(summary).toContain('\n    found by a finder and missed by the review: K2 (dropped by the judge, merged by the judge into another finding)\n');
+    expect(summary).toContain("\nFinders' findings: 2 of 2 must-catch items found by a finder, 1 found by the review. Missed by the review after a finder found it: dropped by the judge 1. Matcher cost of this scoring $0.50.\n");
+    // A merged report keeps them, and one from a ref that scored no raw findings has none.
+    expect(mergeReports([report], [benchCase], {}).variants[0].cases[0].runs[0].raw).toEqual(score.raw);
+    const older: BenchReport = JSON.parse(JSON.stringify(report, (key, value: unknown) => (key === 'raw' ? undefined : value)));
+    expect(buildReport(report, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: older.variants[0].cases[0].runs }] }]).variants[0].summary.raw).toBeNull();
+    expect(formatBenchSummary(older)).not.toContain("Finders' findings");
+    // A report scored again against a changed key scores the raw findings again too, and keeps where each one left the review.
+    const rekeyed = { ...benchCase, keyVersion: benchCase.keyVersion + 1, mustCatch: benchCase.mustCatch.slice(1) };
+    const again = (await rescoreReport(report, [rekeyed], matcher)).report.variants[0];
+    expect(again.cases[0].runs[0].raw).toEqual({ ...score.raw, matches: score.raw!.matches.slice(1), caught: score.raw!.caught.slice(1), matcherCostUsd: 0.25 });
+    expect(again.summary.raw).toEqual({ items: 1, found: 1, posted: 0, lost: { judge: 1 }, matcherCostUsd: 0.25 });
+    expect(await rescoreReport(older, [rekeyed], matcher).then(r => r.report.variants[0].cases[0].runs[0])).not.toHaveProperty('raw');
   });
 });
 
@@ -765,7 +872,8 @@ describe('runBench and buildReport', () => {
     expect(report.variants[0].summary).toEqual({
       runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), atGradeRecall: 1 / 3, verdictAccuracy: 2 / 3,
       bySeverity: { blocker: { caught: 2, partial: 1, total: 3 }, warning: { caught: 0, partial: 0, total: 3 } },
-      falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
+      falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null,
+      raw: { items: 6, found: 0, posted: 2, lost: {}, matcherCostUsd: 0 }, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
     });
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
     const summary = formatBenchSummary(report);
@@ -778,6 +886,7 @@ describe('runBench and buildReport', () => {
     expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, at grade 33%, verdicts 67%.');
     expect(summary).not.toContain('Follow-up rounds');
     expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, unexpected warnings 0, extra findings 0, duplicates 0, cost $5.00.');
+    expect(summary).toContain("\nFinders' findings: 0 of 6 must-catch items found by a finder, 2 found by the review. Missed by the review after a finder found it: none. Matcher cost of this scoring $0.00.\n");
     expect(summary.slice(summary.indexOf('| Metric'))).toBe([
       '| Metric | base | opus |',
       '| --- | --- | --- |',
@@ -855,7 +964,7 @@ describe('runBench and buildReport', () => {
   it('prints nothing of a hold-out case but its id and counts: no finding text, review log, matcher reply, source or failure reason', async () => {
     const SECRET = 'HOLDOUT-TEXT';
     const cases: BenchCase[] = [{ ...benchCase, id: 'shown-1', title: 'SHOWN-TEXT', source: 'source SHOWN-TEXT' }, { ...benchCase, id: 'held-1', set: 'holdout', title: SECRET, source: `source ${SECRET}` }];
-    // A review logs, and fails on its second run of a case when `failSecond` is set. Its blocker and warning are not in the key.
+    // A review logs, and fails on its second run of a case when `failSecond` is set. Its blocker and warning are not in the key. A finder's finding the judge dropped matches K1.
     const reviewing = (failSecond: boolean) => {
       const seen = new Map<string, number>();
       return jest.fn(async ({ title: text }: LocalReviewInput) => {
@@ -864,7 +973,10 @@ describe('runBench and buildReport', () => {
         seen.set(text!, (seen.get(text!) ?? 0) + 1);
         if (failSecond && seen.get(text!) === 2) throw new Error(`failed on ${text}`);
         const finding = (severity: FindingSeverity) => makeFinding({ severity, title: `title ${text}`, description: `description ${text}`, howToFix: `fix ${text}`, suggestedFix: `code ${text}`, file: `src/${text}.rs` });
-        return makeReview('ADDRESS_FIRST', [finding('blocker'), finding('warning')]);
+        const posted = [finding('blocker'), finding('warning')];
+        const raw = { title: `raw title ${text}`, file: 'src/read.rs', description: `raw description ${text}`, howToFix: `raw fix ${text}`, reviewers: [`finder ${text}`] };
+        const dropped = { ...raw, line: 1, gradePath: [{ from: 'warning' as const, to: 'ignore' as const, by: 'judge' as const }] };
+        return makeReview('ADDRESS_FIRST', posted, true, rawRecord([raw], posted, { judge: { dropped: [dropped] } }));
       });
     };
     // The matcher's client logs each reply through `@actions/core`, as the provider clients do, and the reply quotes the finding.
@@ -872,7 +984,8 @@ describe('runBench and buildReport', () => {
     const matching = (usable: boolean): Matcher => llmMatcher({
       sendMessage: async (_system: string, message: string) => {
         const text = message.includes(SECRET) ? SECRET : 'SHOWN-TEXT';
-        const content = usable ? JSON.stringify({ verdict: 'NONE', findings: [], reason: `reason ${text}` }) : `The finding ${text} is`;
+        const decision = message.includes('raw title') ? { verdict: 'MATCH', findings: [1], reason: `reason ${text}` } : { verdict: 'NONE', findings: [], reason: `reason ${text}` };
+        const content = usable ? JSON.stringify(decision) : `The finding ${text} is`;
         core.debug(content);
         if (!usable) core.warning(`reply ended with: ${content}`);
         return { content };
@@ -889,7 +1002,7 @@ describe('runBench and buildReport', () => {
 
       const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results);
       // The report itself keeps the text, which the hold-out pass reads.
-      for (const text of [`description ${SECRET}`, `reason ${SECRET}`]) expect(JSON.stringify(report.variants[0].cases[1])).toContain(text);
+      for (const text of [`description ${SECRET}`, `reason ${SECRET}`, `raw description ${SECRET}`, `finder ${SECRET}`]) expect(JSON.stringify(report.variants[0].cases[1])).toContain(text);
       const printed = () => [
         formatBenchSummary(report), formatUnmatched(report.variants), formatGate(gateReports([report, { ...report, startedAt: '2026-11-09T01:00:00.000Z' }], [report])),
       ].join('\n');
@@ -897,6 +1010,9 @@ describe('runBench and buildReport', () => {
       expect(printed()).toContain('\nheld-1\n');
       expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
       expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
+      // What became of the finders' findings shows as the item's id and fixed words, with the finders' names left out.
+      expect(printed().split('\nheld-1\n')[1]).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates, files read finder-a 3 (asked again), $1.25\n    found by a finder and missed by the review: K1 (dropped by the judge)\n');
+      expect(printed().split("\nFinders' findings: 1 of 2 must-catch items found by a finder, 0 found by the review. Missed by the review after a finder found it: dropped by the judge 1. Matcher cost of this scoring $0.00.\n")).toHaveLength(3);
       expect(printed()).not.toContain(SECRET);
 
       // Only an explicit request lists hold-out findings, and never in a workflow job, whose log and summary are public.

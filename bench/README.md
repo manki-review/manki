@@ -81,6 +81,25 @@ The summary counts the blockers of the complete runs by the route each took, aga
 - **other**: another step made it a blocker, such as a broken rule under `review.rules: block`.
 - **unknown**: the report holds no route. Each ref writes its own case reports, so every blocker of a ref from before the route was stored is unknown.
 
+### Where the finders' findings went
+
+A must-catch item the review missed was either reported by no finder, or reported by one and dropped by a later stage. To tell the two apart, each complete run stores in `raw` every finding the round record lists in `reviewers.rawFindings`: those of the finders, and those of the sibling comparisons, the claim checks and the sweep. Each one keeps its text, the reviewers that reported it and its `exit`, the stage it left the review at. The matcher scores them against the must-catch items with the same key and model as the posted findings (`raw.matches`). `raw.caught` lists each must-catch item one of them matched, with the reviewers of the findings that match it, whether a posted finding matched it too, and when none did, the exit of each finding that names it, closest first.
+
+The exit comes from the round record, never from a guess:
+
+- `posted`: the review posted it, and only the matcher graded the posted copy differently.
+- `open_lead`: it stayed an open lead, listed as not finished checking.
+- `dedup`: the dedup dropped it as a finding an earlier round resolved.
+- `merged`: the judge merged it into another finding.
+- `judge`, `refuter`, `earlier_round`: the judge graded it `ignore`, a tool check disproved it, or a resolved or agreed thread, a ratchet or a fix an earlier round proposed suppressed it.
+- `unproven`: it was left out as a warning nothing proves.
+- `pre_existing`, `reviewed_code`, `listed_earlier`, `note_cap`, `memory_suppression`, `static_signal_match`: it was left out for that reason, or a memory suppression or a CI tool on the same line hid it.
+- `unknown`: the record does not say for certain.
+
+A later stage records each finding by its place and title. The dedup records only the title, so a finding counts as `dedup` only when the dedup dropped at least as many findings with that title as no later stage names. The judge merges a duplicate without naming it, so a finding no stage names counts as `merged` only when the judge merged at least that many, and no other step that records no finding ran: the drop of notes on test files from the second round on, and the fold into a verdict reader's blocker. Two findings with the same place and title but other text are one finding to the record, so both are `unknown`.
+
+The summary of each variant and set gets one more line: the must-catch items a finder found, the ones the review found, and the ones it missed after a finder found them, each counted under the exit of the closest finding that names it. The review can find an item no finder reported, such as one the verdict reader raised. The line ends with what the matcher calls of this scoring cost, which is not part of the review's cost. A decision the matcher cache answered costs nothing. Each run line that has such a miss is followed by the ids of the items with their exits. Both hold only item ids, counts and fixed words, so they show for hold-out cases too, and the names of the finders are not printed. `bench-report merge` keeps `raw`, and `--rescore` scores it again against the changed key and keeps each exit. A report of a ref that did not store it has none, and its line is left out.
+
 ### Unmatched blockers and unexpected warnings on tuning cases
 
 A false blocker is either a wrong blocker or a real defect the key does not list, and the same holds for an unexpected warning. So the summary of a run with tuning cases, local or on GitHub, lists every blocker and every warning that matched no key item, by case and run, each with its location and description. Check each against the code at the case's head. Add each real blocker to the case's `must_catch`. Add each real warning to `must_catch`, or to `nice_to_have` when a good review may leave it out. Then bump the case's `key_version`, so the next run counts it as a find. `npm run bench-report -- unmatched --report <report.json>` prints the same list from a stored report, and names the cases of the other set, which it does not list. Never grow a hold-out key this way while working on Manki: its cases are not read. The hold-out pass in `RELEASE.md` does it instead.
