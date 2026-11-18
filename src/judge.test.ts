@@ -384,13 +384,18 @@ describe('buildJudgeSystemPrompt', () => {
     expect(unsure).toContain('A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in `doubts`, as a fact the code can confirm or disprove: "a public request handler passes `index` to `getItem` unchecked", not "callers probably validate `index`". Set `decides` to `defect` when the defect does not exist if the premise is false, and to `grade` when the finding stands either way and only its cell depends on the premise. Manki counts a `grade` doubt only on the `wrong` row, where the column decides whether the finding blocks. When you doubt nothing, leave `doubts` empty.');
     expect(prompt).not.toContain('Manki checks each premise with tools');
     expect(prompt).toContain('"doubts": [{"premise": "A fact the code can confirm or disprove", "decides": "defect" | "grade" | "consequence"}],');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools on a `blocker` cell with a doubt where confirming every premise can raise the grade, and on the `rare` column of the `wrong` row, where no answer raises the grade. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to 8 findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding with a `blocker` cell gets that grade only when every premise is confirmed and its `gradeIfConfirmed` is not `warning`. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools on a `blocker` cell with a doubt where confirming every premise can raise the grade, and on the `rare` column of the `wrong` row, where no answer raises the grade. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to 8 findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding with a `blocker` cell gets that grade only when every premise is confirmed and its `gradeIfConfirmed` is not `warning`. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is checked only for its `dropRestsOn`, as below.');
     // The judge states one grade itself: what a blocker cell it doubts earns once every doubt holds. A doubt, a rare state and "not a regression" are no reason for `warning`.
     expect(unsure).toContain('On a finding whose cell gives `blocker` and that you list a doubt for, also set `gradeIfConfirmed`: the grade its consequence earns if every premise you doubt holds, `blocker` or `warning`. This is where you say how serious the damage is. Set `warning` only when the finding would still fail one of the five blocker tests with every doubt confirmed.');
     expect(unsure).toContain('Name the test in `reasoning` and say what in the code makes it fail. A premise you list in `doubts` is no such reason, since it holds in that case. Neither is the state being rare, which is the claim of the `rare` column, nor the change being "not a regression". When you cannot tell which grade it earns, set `blocker`. Leave `gradeIfConfirmed` empty on every other finding. Manki reads it only on a `blocker` cell with a doubt, and never on a security finding: with `warning` no check raises the finding, and with `blocker` or nothing a check that confirms every premise can give it the cell\'s grade.');
     // The consequence that makes the cell a blocker is a premise of its own, which a check has to confirm.
     expect(unsure).toContain('With `gradeIfConfirmed` `blocker`, also list in `doubts` the consequence that puts the finding on its row, with `decides` set to `consequence`. State what goes wrong once the defect happens and where it lands, as a fact the code can confirm, worded so the blocker needs it to be true');
     expect(unsure).toContain('Manki checks it with your other premises, and a check that leaves it open can keep the finding a `warning`.');
+    // A drop that rests on code outside the diff states its premise and the cell the finding earns without it, and tools check it only when they run.
+    expect(unsure).toContain('When you mark a finding `ignore` because of how code outside the diff behaves, such as other code already checking a value, every caller passing a safe one or a lock taken elsewhere, fill `dropRestsOn`, also when you read or cite that code. Set its `premise` to the fact your drop needs, in general form');
+    expect(unsure).toContain('Set its `row` and `column` to the cell the finding earns if that premise is false. Leave `dropRestsOn` empty when the diff itself shows the reason for the drop, and on every finding you keep.\n');
+    expect(prompt).toContain('"dropRestsOn": {"premise": "", "row": "severe" | "wrong" | "degraded" | "improvement" | "style", "column": "normal" | "rare"},');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('On a finding a reviewer filed as a `blocker`, Manki checks the premise with tools. The finding is graded by that cell only when the check disproves the premise, and otherwise it stays dropped.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
@@ -2248,6 +2253,65 @@ describe('runJudgeAgent', () => {
       expect(await judgeSplit(['blocker', 'warning'], missing)).toEqual([['blocker', 'warning', 1]]);
       expect(await judgeSplit(['warning', 'blocker'], missing)).toEqual([['blocker', 'warning', 1]]);
       expect(await judgeSplit(['blocker', 'warning'], { outcome: 'unsettled', reason: 'A later sync may restore them.' })).toEqual([['warning', 'warning', 1]]);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('checks the premise a finder\'s blocker the judge drops rests on, and brings the finding back by the stated cell only when the check disproves it', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const titles = ['Premise disproved', 'Premise confirmed', 'Premise unsettled', 'Reason in the diff', 'Filed as a warning', 'Cell gives a note', 'Rare claim', 'Tool alert'];
+    const findings = titles.map((title, i) => makeFinding({
+      title, line: i + 2, severity: title === 'Filed as a warning' ? 'warning' : 'blocker', evidence: { checks: [], proof: [`src/index.ts:${i + 2}`] },
+      ...(title === 'Tool alert' && { toolSource: 'eslint', reviewers: [] }),
+    }));
+    const premise = 'Every caller of `store` holds `storeLock`';
+    const restsOn = (row: string, column = 'normal') => ({ premise, row, column });
+    mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({
+      summary: 's',
+      findings: titles.map((title, i) => ({
+        id: i + 1, title, row: 'ignore', reasoning: 'ignore. The caller takes the lock.',
+        ...(title === 'Cell gives a note' ? { dropRestsOn: restsOn('degraded', 'rare') } : title === 'Rare claim' ? { dropRestsOn: restsOn('wrong', 'rare') }
+          : title === 'Reason in the diff' ? { dropRestsOn: { premise: '', row: 'severe' } } : { dropRestsOn: restsOn('severe') }),
+      })),
+    }) });
+    const premiseAnswer = (outcome: string, proof?: string[]) => ({ outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome, reason: 'r', ...(proof && { proof }) }] });
+    const replies: Record<string, unknown> = {
+      'Premise disproved': premiseAnswer('disproved', ['src/index.ts:12']),
+      'Premise confirmed': premiseAnswer('confirmed', ['src/index.ts:13']),
+      'Premise unsettled': premiseAnswer('unsettled'),
+    };
+    const asked: string[] = [];
+    const refuter: LLMClient = {
+      repoTools: true,
+      async sendMessage(_system, user) {
+        const title = Object.keys(replies).find(t => user.includes(`: ${t}\n`))!;
+        asked.push(title ?? user);
+        return { content: JSON.stringify(replies[title]) };
+      },
+    };
+
+    try {
+      const result = await runJudgeAgent(mockClient, makeConfig(), { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace } });
+
+      expect(result.findings.map(f => [f.title, f.severity])).toEqual([
+        ['Premise disproved', 'blocker'], ['Premise confirmed', 'ignore'], ['Premise unsettled', 'ignore'],
+        // A drop with no premise, of a finding no finder filed as a blocker, of one a check could only bring back as a
+        // note or in the `rare` column, or of a tool alert is never checked.
+        ...titles.slice(3).map(title => [title, 'ignore']),
+      ]);
+      expect(asked.sort()).toEqual(['Premise confirmed', 'Premise disproved', 'Premise unsettled']);
+      const [back, held] = result.findings;
+      expect([back.cell, back.doubts, back.gradePath?.map(({ from, to, by }) => [from, to, by])]).toEqual([
+        { row: 'severe', column: 'normal' }, undefined, [['blocker', 'ignore', 'judge'], ['ignore', 'blocker', 'refutation']],
+      ]);
+      // A drop that stands keeps its premise, the cell and the check, so the round record shows what was checked and how it came out.
+      expect([held.cell, held.gradeIfConfirmed, held.doubts, held.refutation?.premises?.map(p => [p.decides, p.outcome])]).toEqual([
+        { row: 'severe', column: 'normal' }, 'blocker', [{ premise, decides: 'drop' }], [['drop', 'confirmed']],
+      ]);
+      expect(result.findings.slice(3).map(f => f.doubts)).toEqual(Array(5).fill(undefined));
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
