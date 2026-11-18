@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, CheckProgress, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -492,8 +492,17 @@ function pickReviewerClient(clients: ReviewClients, model: string): StageClient 
   return client ? { client, fallback: clients.fallbacks?.reviewerByModel?.get(key) } : { client: clients.reviewer };
 }
 
+/** How a step of checks is going: how many it asks, or how one of them ended. */
+type CheckEvent<R> = { total: number } | { ended: R | undefined };
+
+/** A `CheckProgress` that passes each thing it hears to `report`. */
+function reportChecks<R>(report: (event: CheckEvent<R>) => void): CheckProgress<R> {
+  return { started: total => report({ total }), ended: ended => report({ ended }) };
+}
+
 export interface ReviewProgress {
-  phase: 'planning' | 'agent-complete' | 'reviewed' | 'judging';
+  phase: 'planning' | 'agent-start' | 'agent-complete' | 'agent-step' | 'side-check' | 'reviewed' | 'judging' | 'graded' | 'refuter' | 'verdict-reader';
+  /** The finder whose call started on an `agent-start` event, that started a tool call on an `agent-step` event, or of an `agent-complete` event. */
   agentName?: string;
   agentFindingCount?: number;
   agentDurationMs?: number;
@@ -519,6 +528,14 @@ export interface ReviewProgress {
   heuristicFallback?: boolean;
   /** True on the `judging` event of a round with nothing to judge, which calls no judge. */
   judgeSkipped?: boolean;
+  /** On a `side-check` event: the step and how its checks go, with the findings of each one that ended. */
+  sideCheck?: { kind: SideCheckKind } & CheckEvent<number>;
+  /** On a `refuter` event: how the refuter's checks go, with the outcome of each one that ended. */
+  refuterCheck?: CheckEvent<RefutationOutcome>;
+  /** On a `graded` event: what the judge made of the findings, before the refuter checks them. */
+  graded?: GradedCounts;
+  /** Set on the `verdict-reader` event that says the verdict reader ended. */
+  verdictReaderDone?: true;
 }
 
 /** Lists the changed files for the planner, fenced as untrusted data. The PR title and description are left out. */
@@ -980,8 +997,10 @@ export async function runReview(
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;
   const comparisonDeadline = new AbortController();
+  const sideProgress = (kind: SideCheckKind): CheckProgress<number> | undefined =>
+    onProgress && reportChecks(event => onProgress({ phase: 'side-check', sideCheck: { kind, ...event } }));
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
-    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal,
+    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal, progress: sideProgress('comparison'),
   });
   const checkWorkspace = quickCheckOnly(team) ? undefined : workspace;
   // Lines of the related repos for the claims' own checks. A repo is fetched for them also when the diff's names start no search of their own.
@@ -1014,7 +1033,7 @@ export async function runReview(
       return { lines: new Map<number, string[]>(), record: undefined };
     }), cut]);
     const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
-      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal,
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal, progress: sideProgress('claim'),
     });
     return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims), terms };
   });
@@ -1028,7 +1047,9 @@ export async function runReview(
   const relatedTools = related && { ...related, ...(guides && { guides }) };
   // Each counterpart in a related repo gets a call of its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
   const relatedChecksPromise = runRelatedChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'related_check', reviewer),
-    checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], { effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal });
+    checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], {
+      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'),
+    });
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;
   const readingUses = uses.readingSection + relatedUses.readingSection;
@@ -1042,6 +1063,7 @@ export async function runReview(
   const finderOptions = (finder: Finder, retryNote?: string, oneSlice?: number): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, ...usesFor(finder),
     lockfileChanges, instructionFiles: options.instructionFiles,
+    ...(onProgress && { onToolStep: () => onProgress({ phase: 'agent-step', agentName: finder.name }) }),
     ...(retryNote && { retryNote }),
     ...(oneSlice !== undefined && { oneSlice }),
   });
@@ -1127,6 +1149,7 @@ export async function runReview(
   core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
   const agentPromises = team.finders.map(agent => {
     const startTime = Date.now();
+    onProgress?.({ phase: 'agent-start', agentName: agent.name });
     return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
       .then(first => askAgain(agent, first))
       .then(agentResult => {
@@ -1222,6 +1245,7 @@ export async function runReview(
 
     const retryPromises = agentsToRetry.map(agent => {
       const startTime = Date.now();
+      onProgress?.({ phase: 'agent-start', agentName: agent.name });
       return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, takeRetryNote(agent.name)))
         .then(first => askAgain(agent, first))
         .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
@@ -1431,6 +1455,7 @@ export async function runReview(
     related: relatedTools,
     ...(clients.refuterPair?.repoTools && { pair: lateFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
     doubtBudget: { left: MAX_DOUBT_CHECKS },
+    ...(onProgress && { progress: reportChecks<RefutationOutcome>(event => onProgress({ phase: 'refuter', refuterCheck: event })) }),
   } : undefined;
   if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.second_refuter` needs the PR head checked out and repository tools on both its model and the judge\'s');
   const judgeInput: JudgeInput = {
@@ -1459,6 +1484,7 @@ export async function runReview(
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
     carriedWarnings,
+    ...(onProgress && { onGraded: (graded: GradedCounts) => onProgress({ phase: 'graded', graded }) }),
   };
   if (judgeSkipped) {
     core.info('No finding, open thread or carried warning to judge, so the judge is skipped');
@@ -1525,7 +1551,7 @@ export async function runReview(
   const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
   if (sweepSources.length > 0) {
     const sweep = await runSweeps(reviewer => lateFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
-      rawDiff, effort: comparisonEffort, workspace, related: relatedTools,
+      rawDiff, effort: comparisonEffort, workspace, related: relatedTools, progress: sideProgress('sweep'),
     });
     sweeps = sweep.sweeps;
     // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
@@ -1564,7 +1590,7 @@ export async function runReview(
         // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
         const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
         // A rank only compares the notes of one judge call, so only the first call's ranks order the notes.
-        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads, carriedWarnings: undefined })).findings
+        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads, carriedWarnings: undefined, onGraded: undefined })).findings
           .map(({ noteRank: _, ...f }): Finding => f);
         allJudgedFindings = [...(allJudgedFindings ?? []), ...judged];
         const kept = judged.filter(f => f.severity !== 'ignore');
@@ -1597,7 +1623,7 @@ export async function runReview(
     const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
     const kept = finalFindings;
     const checked = await refuteBlockers(refutation.client, kept, {
-      workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+      workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
       outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
       preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
     });
@@ -1662,7 +1688,7 @@ export async function runReview(
     memorySuppressed = [...memorySuppressed, ...suppression.suppressed];
     const doubtCheck = refutation && {
       refute: (findings: Finding[]) => refuteBlockers(refutation.client, findings, {
-        workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+        workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
         outsideInput: config.review?.outside_input, rules: config.review?.rules,
       }),
       workspace: refutation.workspace, pair: !!refutation.pair, changeDigest: options.changeDigest, cited: scope.cited, priorRounds: priorRounds ?? [],
@@ -1730,6 +1756,7 @@ export async function runReview(
     // The reader reads the slices the finders read, so no slice of the diff is cut.
     const slices = roundSlices;
     if (slices.length > 1) core.info(`The verdict reader reads the diff in ${slices.length} slices`);
+    onProgress?.({ phase: 'verdict-reader' });
     let reports: VerdictReport[];
     try {
       reports = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
@@ -1746,6 +1773,7 @@ export async function runReview(
         ? limitEnd([{ error, readers: [] }], automaticRetry)
         : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${retryHint(automaticRetry)}`);
     }
+    onProgress?.({ phase: 'verdict-reader', verdictReaderDone: true });
     readerRaw = reports.flatMap(report => report.blockers);
     if (stopped) return incompleteAfterJudge(stopped);
     if (slicing) slicing.reader = reports.map(report => ({ verdict: report.verdict, blockers: report.blockers.length }));
@@ -1762,7 +1790,7 @@ export async function runReview(
       // A disproof never lowers a blocker of the reader's, so the outcome stands and the refutation only shows what it
       // found. It drops a claimed build failure that was posted as a warning.
       const refuted = (refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
       const foldWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
@@ -1943,6 +1971,7 @@ interface RunReviewerAgentOptions {
   retryNote?: string;
   /** The one slice a second ask reads, from `askAgainSlice`, when the diff is read in slices. */
   oneSlice?: number;
+  onToolStep?: SendMessageOptions['onToolStep'];
 }
 
 /**
@@ -2066,7 +2095,7 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, workspace, related, changedSinceLastRound, interRoundDiff, earlierBlockers, usesOutsideDiff, openListed, lockfileChanges, instructionFiles, retryNote } = options;
+  const { effort, language, workspace, related, changedSinceLastRound, interRoundDiff, earlierBlockers, usesOutsideDiff, openListed, lockfileChanges, instructionFiles, retryNote, onToolStep } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, tools);
   const message = buildReviewerUserMessage(rawDiff, repoContext, {
@@ -2078,6 +2107,7 @@ async function runReviewerOnSlice(
     ...(effort && { effort }),
     timeoutMs: FINDER_TOOLS_TIMEOUT_MS,
     ...(tools && { repoTools: repoTools(workspace!, finder.steps, related, openListed ? 'read' : 'find') }),
+    ...(onToolStep && { onToolStep }),
   };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {

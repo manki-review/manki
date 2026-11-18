@@ -279,8 +279,11 @@ describe('runClaimChecks', () => {
     const unchecked = (call: string) => claims.map((c, i) => ({ ...c, reviewer: `Claim check ${i + 1}`, status: 'unchecked', call }));
     const proven = answer('proven', ['src/export.ts:2'], [defect]);
 
+    // A failed check made its call, so the progress counts it as ended.
     const failing = fakeClient(() => new Error('overloaded'));
-    expect(await run(failing)).toEqual({ findings: [], claims: unchecked('failed') });
+    const failedProgress = { started: jest.fn(), ended: jest.fn() };
+    expect(await runClaimChecks(() => failing, claims, { rawDiff, workspace: root, progress: failedProgress })).toEqual({ findings: [], claims: unchecked('failed') });
+    expect(failedProgress.ended.mock.calls).toEqual([[0], [0]]);
 
     // A reply that cannot be read is asked for once more, and a second one fails the check.
     for (const reply of ['The statement holds.', answer('probably', ['src/export.ts:2']), { content: proven.slice(0, 40), truncated: true as const }]) {
@@ -303,9 +306,12 @@ describe('runClaimChecks', () => {
     expect(await run(late, { workspace: root, signal: deadline.signal })).toEqual({ findings: [], claims: unchecked('timed_out') });
     expect(late.calls).toHaveLength(0);
 
-    // Without a checkout or repository tools a claim cannot be checked against code, so no call is made.
+    // Without a checkout or repository tools a claim cannot be checked against code, so no call is made, and the
+    // progress hears that each check made none.
     const idle = fakeClient(() => proven);
-    expect(await run(idle, {})).toEqual({ findings: [], claims: unchecked('skipped') });
+    const progress = { started: jest.fn(), ended: jest.fn() };
+    expect(await runClaimChecks(() => idle, claims, { rawDiff, progress })).toEqual({ findings: [], claims: unchecked('skipped') });
+    expect([progress.started.mock.calls, progress.ended.mock.calls]).toEqual([[[2]], [[undefined], [undefined]]]);
     const noTools = fakeClient(() => proven, false);
     expect(await run(noTools)).toEqual({ findings: [], claims: unchecked('skipped') });
     expect(idle.calls.length + noTools.calls.length).toBe(0);

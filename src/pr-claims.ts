@@ -9,7 +9,7 @@ import { repoTools } from './related-repos';
 import { fencePrText, parseFindings, unmarkedText } from './review';
 import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
-import { EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
+import { CheckProgress, EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -236,6 +236,8 @@ interface ClaimCheckOptions {
   relatedLines?: ReadonlyMap<number, readonly string[]>;
   /** Stops the checks still running or not yet asked, which are then recorded as `timed_out`. */
   signal?: AbortSignal;
+  /** Hears how many checks are asked and the findings of each. A check skipped for want of tools made no call. */
+  progress?: CheckProgress<number>;
 }
 
 /**
@@ -245,10 +247,11 @@ interface ClaimCheckOptions {
  * failed or was stopped by `signal` is `unchecked`, with why in `call`. It never throws.
  */
 export async function runClaimChecks(
-  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, relatedLines, signal }: ClaimCheckOptions,
+  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, relatedLines, signal, progress }: ClaimCheckOptions,
 ): Promise<{ findings: Finding[]; claims: RoundPrClaim[] }> {
   // A name never carries text from the PR, so each check is numbered and its record holds the quote.
   const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}`, lines: relatedLines?.get(i) }));
+  progress?.started(asked.length);
   const answers = await mapWithConcurrency(asked, MAX_PARALLEL_CHECKS, async ({ claim, reviewer, lines }): Promise<{ record: RoundPrClaim; findings: Finding[] }> => {
     const unchecked = (call: NonNullable<RoundPrClaim['call']>) => ({ record: { ...claim, reviewer, status: 'unchecked' as const, call }, findings: [] });
     const client = clientFor(reviewer);
@@ -277,7 +280,7 @@ export async function runClaimChecks(
       core.warning(`${reviewer} failed, so its claim stays unchecked this round: ${error}`);
       return unchecked('failed');
     }
-  });
+  }, ({ record, findings }) => progress?.ended(record.call === 'skipped' ? undefined : findings.length));
   return { findings: answers.flatMap(a => a.findings), claims: answers.map(a => a.record) };
 }
 

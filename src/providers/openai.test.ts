@@ -493,7 +493,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
   const instructionsPath = (args: string[]): string => JSON.parse(args.find(arg => arg.startsWith('model_instructions_file='))!.replace(/^model_instructions_file=/, ''));
 
   /** One run of the mocked CLI. It ends after `ms`, or `RUN_MS`, and with `hangs` only once it is killed. */
-  interface CodexRun { stdout?: string; exitCode?: number; signal?: NodeJS.Signals; stderr?: string; ms?: number; hangs?: true }
+  /** One run of the mocked CLI. `chunks` splits its stdout at those offsets, as a pipe can. */
+  interface CodexRun { stdout?: string; exitCode?: number; signal?: NodeJS.Signals; stderr?: string; ms?: number; hangs?: true; chunks?: number[] }
   const RUN_MS = 5;
 
   /**
@@ -506,7 +507,8 @@ describe('sendViaCLI (Codex CLI path)', () => {
       const proc = { stdin, stdout: { on: jest.fn() }, stderr: { on: jest.fn() }, on: jest.fn(), kill: jest.fn() };
       proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data' && run.stdout) {
-          setTimeout(() => cb(Buffer.from(run.stdout!)), 0);
+          const cuts = [0, ...(run.chunks ?? []), run.stdout.length];
+          for (let i = 1; i < cuts.length; i++) setTimeout(() => cb(Buffer.from(run.stdout!.slice(cuts[i - 1], cuts[i]))), 0);
         }
       });
       proc.stderr.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
@@ -1073,6 +1075,18 @@ describe('sendViaCLI (Codex CLI path)', () => {
       setupSpawnMock(stdout);
       expect((await client.sendMessage('sys', 'user')).content).toBe(content);
     }
+
+    // Each call of Manki's tool server is one step as Codex starts it, though Codex reports its start and its end, and
+    // a line can arrive in two parts.
+    const onToolStep = jest.fn();
+    const steps = jsonl(
+      started(), TURN, { type: 'item.started', item: { ...toolCall, result: null, status: 'in_progress' } },
+      { type: 'item.completed', item: { ...toolCall, result: { content: [] }, status: 'completed' } },
+      { type: 'item.completed', item: { ...toolCall, id: 'item_4', result: { content: [] }, status: 'completed' } }, message('[]', 'item_5'), COMPLETED,
+    );
+    setupSpawnMock(steps, { chunks: [steps.indexOf('item_4')] });
+    expect((await client.sendMessage('sys', 'user', { onToolStep })).content).toBe('[]');
+    expect(onToolStep).toHaveBeenCalledTimes(2);
 
     // A turn that reports no token counts leaves them unknown.
     setupSpawnMock(jsonl(started(), TURN, message('[]'), { type: 'turn.completed' }));

@@ -7,7 +7,7 @@ import * as core from '@actions/core';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, RoundContext, RulesMode, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { agreedOutcome, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RoundContext, RulesMode, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -236,7 +236,12 @@ describe('refuteBlockers', () => {
       })),
     ];
 
-    const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff, pair });
+    const progress = { started: jest.fn(), ended: jest.fn() };
+    const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff, pair, progress });
+    // The progress hears of every finding checked, with the outcome both refuters agree on.
+    expect(progress.started.mock.calls).toEqual([[findings.length]]);
+    expect(progress.ended.mock.calls.map(([outcome]) => outcome).sort())
+      .toEqual(result.map(f => agreedOutcome([f.refutation, f.pairRefutation].filter((r): r is Refutation => !!r))).sort());
 
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.pairRefutation?.outcome, disproof(f)?.reason])).toEqual([
       ['Both confirm', 'blocker', 'confirmed', 'confirmed', undefined],

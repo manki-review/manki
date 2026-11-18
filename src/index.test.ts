@@ -227,6 +227,8 @@ jest.mock('./github', () => ({
   postProgressComment: jest.fn().mockResolvedValue(1),
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
+  startLiveEdits: jest.requireActual('./github').startLiveEdits,
+  LIVE_EDIT_MS: jest.requireActual('./github').LIVE_EDIT_MS,
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false, warningsHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
@@ -5138,8 +5140,8 @@ describe('runFullReview orchestration', () => {
     expect(postedFindings.length).toBeGreaterThan(0);
   });
 
-  it('updates dashboard on agent-complete progress', async () => {
-    jest.useFakeTimers();
+  it('mirrors each progress event on the dashboard at the next live edit, and makes none after the round', async () => {
+    jest.useFakeTimers({ now: 0 });
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5148,29 +5150,70 @@ describe('runFullReview orchestration', () => {
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    // The live edits pass the same dashboard each time, so each edit keeps a copy.
+    const edits: import('./types').DashboardData[] = [];
+    jest.mocked(ghUtils.updateProgressDashboard).mockImplementation(async (_octokit, _owner, _repo, _id, dashboard) => {
+      edits.push(structuredClone(dashboard));
+    });
+    const edit = async (): Promise<import('./types').DashboardData> => {
+      jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
+      await Promise.resolve();
+      return edits.at(-1)!;
+    };
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, { onProgress }) => {
-        if (onProgress) {
-          onProgress({
-            phase: 'planning',
-            plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
-            teamAgentNames: ['general'],
-          });
-          onProgress({
-            phase: 'agent-complete',
-            agentName: 'general',
-            agentFindingCount: 2,
-            agentDurationMs: 100,
-            agentStatus: 'success',
-            rawFindingCount: 2,
-            completedAgents: 1,
-            totalAgents: 1,
-          });
-        }
-        // Flush the debounce timer
-        jest.advanceTimersByTime(600);
-        await Promise.resolve();
+        onProgress!({ phase: 'planning' });
+        expect((await edit()).plannerStartedAt).toBe(0);
+        onProgress!({
+          phase: 'planning',
+          plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
+          teamAgentNames: ['general', 'second'],
+        });
+        onProgress!({ phase: 'side-check', sideCheck: { kind: 'comparison', total: 2 } });
+        onProgress!({ phase: 'side-check', sideCheck: { kind: 'related', total: 0 } });
+        // A finder's time counts from the start of its call, not from the planner naming it.
+        onProgress!({ phase: 'agent-start', agentName: 'general' });
+        onProgress!({ phase: 'agent-step', agentName: 'general' });
+        onProgress!({ phase: 'agent-step', agentName: 'general' });
+        onProgress!({ phase: 'side-check', sideCheck: { kind: 'comparison', ended: 1 } });
+        onProgress!({ phase: 'side-check', sideCheck: { kind: 'claim', total: 2 } });
+        // A check that made no call leaves the total.
+        onProgress!({ phase: 'side-check', sideCheck: { kind: 'claim', ended: undefined } });
+        expect(await edit()).toMatchObject({
+          phase: 'started',
+          agentProgress: [{ name: 'general', status: 'reviewing', startedAt: 20_000, toolSteps: 2 }, { name: 'second', status: 'reviewing' }],
+          sideChecks: {
+            comparison: { total: 2, ended: 1, findings: 1, startedAt: 20_000 },
+            related: { total: 0, ended: 0, findings: 0, startedAt: 20_000, endedAt: 20_000 },
+            claim: { total: 1, ended: 0, findings: 0, startedAt: 20_000 },
+          },
+        });
+        onProgress!({
+          phase: 'agent-complete', agentName: 'general', agentFindingCount: 2, agentDurationMs: 100, agentStatus: 'success', rawFindingCount: 2, completedAgents: 1, totalAgents: 2,
+        });
+        onProgress!({ phase: 'side-check', sideCheck: { kind: 'comparison', ended: 0 } });
+        onProgress!({ phase: 'side-check', sideCheck: { kind: 'claim', ended: 0 } });
+        // A retry starts the time and the tool steps again.
+        onProgress!({ phase: 'agent-start', agentName: 'second' });
+        onProgress!({ phase: 'agent-step', agentName: 'second' });
+        onProgress!({ phase: 'agent-start', agentName: 'second' });
+        const sideDone = await edit();
+        expect(sideDone.agentProgress![0]).toMatchObject({ name: 'general', status: 'done', findingCount: 2 });
+        expect(sideDone.agentProgress![1]).toEqual({ name: 'second', status: 'reviewing', startedAt: 40_000 });
+        expect(sideDone.sideChecks?.claim).toMatchObject({ total: 1, ended: 1, endedAt: 40_000 });
+        onProgress!({ phase: 'reviewed', rawFindingCount: 3 });
+        onProgress!({ phase: 'judging', rawFindingCount: 3, judgeInputCount: 3, staticDedupCount: 0, llmDedupCount: 0 });
+        expect(await edit()).toMatchObject({ phase: 'reviewed', judgeStartedAt: 60_000, judgeInputCount: 3 });
+        onProgress!({ phase: 'graded', graded: { kept: 2, dropped: 1, merged: 0 } });
+        onProgress!({ phase: 'refuter', refuterCheck: { total: 2 } });
+        onProgress!({ phase: 'refuter', refuterCheck: { ended: 'disproved' } });
+        onProgress!({ phase: 'verdict-reader' });
+        expect(await edit()).toMatchObject({
+          graded: { kept: 2, dropped: 1, merged: 0, durationMs: 20_000 }, refuter: { total: 2, outcomes: { disproved: 1 } }, verdictReader: { startedAt: 100_000 },
+        });
+        onProgress!({ phase: 'verdict-reader', verdictReaderDone: true });
+        expect((await edit()).verdictReader).toEqual({ startedAt: 100_000, durationMs: 20_000 });
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
@@ -5179,21 +5222,14 @@ describe('runFullReview orchestration', () => {
       },
     );
 
-    await callRunFullReview();
-    jest.useRealTimers();
-
-    // The debounced flush should have called updateProgressDashboard
-    const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
-    // At least the initial dashboard + the agent-complete flush
-    expect(dashboardCalls.length).toBeGreaterThanOrEqual(2);
-
-    // Verify dashboard content reflects agent-complete status
-    const agentFlushDashboard = dashboardCalls[1][4];
-    expect(agentFlushDashboard.agentProgress).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: 'general', status: 'done', findingCount: 2 }),
-      ]),
-    );
+    try {
+      await callRunFullReview();
+      const count = edits.length;
+      jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS * 3);
+      expect(edits).toHaveLength(count);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('updates dashboard on agent-complete with failure status', async () => {
@@ -5227,7 +5263,7 @@ describe('runFullReview orchestration', () => {
           });
           onProgress({ phase: 'agent-complete', agentName: 'general', notStarted: ['not retried: it ran out of time, and a retry would start over'] });
         }
-        jest.advanceTimersByTime(600);
+        jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
         await Promise.resolve();
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
@@ -5279,7 +5315,7 @@ describe('runFullReview orchestration', () => {
               plannerDurationMs: 250,
             });
           }
-          jest.advanceTimersByTime(600);
+          jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
           await Promise.resolve();
           return {
             verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
@@ -5308,6 +5344,7 @@ describe('runFullReview orchestration', () => {
   });
 
   it('sets heuristicFallback and phase on dashboard when judging follows heuristic-fallback planning', async () => {
+    jest.useFakeTimers();
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5337,6 +5374,7 @@ describe('runFullReview orchestration', () => {
           });
           onProgress({ phase: 'judging', rawFindingCount: 0, judgeInputCount: 0 });
         }
+        jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
@@ -5346,6 +5384,7 @@ describe('runFullReview orchestration', () => {
     );
 
     await callRunFullReview();
+    jest.useRealTimers();
 
     const judgingSnapshot = snapshots.find(s => s.phase === 'reviewed');
     expect(judgingSnapshot).toBeDefined();
@@ -5377,7 +5416,7 @@ describe('runFullReview orchestration', () => {
             plannerDurationMs: 400,
           });
         }
-        jest.advanceTimersByTime(600);
+        jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
         await Promise.resolve();
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
@@ -5409,7 +5448,8 @@ describe('runFullReview orchestration', () => {
     );
   });
 
-  it('flushes dashboard immediately on judging progress', async () => {
+  it('shows judging progress at the next live edit', async () => {
+    jest.useFakeTimers();
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5435,6 +5475,7 @@ describe('runFullReview orchestration', () => {
             llmDedupCount: 0,
           });
         }
+        jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
@@ -5460,6 +5501,7 @@ describe('runFullReview orchestration', () => {
     // A round with nothing to judge shows the judge as skipped, and neither the dashboard nor the record gives it a duration.
     jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, { onProgress }) => {
       onProgress?.({ phase: 'judging', rawFindingCount: 0, judgeInputCount: 0, judgeSkipped: true });
+      jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
       return { verdict: 'APPROVE', outcome: 'READY', summary: 'No new problems found.', findings: [], highlights: [], reviewComplete: true, agentNames: [], judgeSkipped: true };
     });
     jest.mocked(ghUtils.postReview).mockClear();
@@ -5471,9 +5513,11 @@ describe('runFullReview orchestration', () => {
     const judge = jest.mocked(ghUtils.postReview).mock.calls[0][7]!.judge;
     expect(judge).toMatchObject({ skipped: 'nothing_to_judge', summary: 'No new problems found.' });
     expect(judge).not.toHaveProperty('durationMs');
+    jest.useRealTimers();
   });
 
-  it('flushes dashboard immediately on reviewed progress', async () => {
+  it('shows reviewed progress at the next live edit', async () => {
+    jest.useFakeTimers();
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5496,6 +5540,7 @@ describe('runFullReview orchestration', () => {
             rawFindingCount: 4,
           });
         }
+        jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
@@ -5512,6 +5557,7 @@ describe('runFullReview orchestration', () => {
     expect(lastDashboard.phase).toBe('reviewed');
     expect(lastDashboard.rawFindingCount).toBe(4);
     expect(lastDashboard.agentProgress).toBeDefined();
+    jest.useRealTimers();
   });
 
   it('reflects suppression-reduced judgeInputCount in dashboard', async () => {
@@ -5963,7 +6009,7 @@ describe('runFullReview orchestration', () => {
           onProgress({ phase: 'planning' });
           onProgress({ phase: 'planning', plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const }, teamAgentNames: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'] });
         }
-        jest.advanceTimersByTime(600);
+        jest.advanceTimersByTime(ghUtils.LIVE_EDIT_MS);
         await Promise.resolve();
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],

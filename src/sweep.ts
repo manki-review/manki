@@ -8,7 +8,7 @@ import { LLMClient, NotStartedError, SendMessageOptions } from './providers';
 import { checkStatus } from './refute';
 import { repoTools } from './related-repos';
 import { parseFindings, parseLocation, parseProof, truncateDiff } from './review';
-import { CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode, sweepName } from './types';
+import { CheckProgress, CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode, sweepName } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -123,6 +123,8 @@ export interface SweepOptions {
   workspace?: string;
   /** The round's related repos, which the tools also read. */
   related?: RelatedRepoTools;
+  /** Hears how many sweeps are asked and the findings of each. A sweep the round did not start made no call. */
+  progress?: CheckProgress<number>;
 }
 
 /**
@@ -134,7 +136,7 @@ export interface SweepOptions {
  * `failed`. A call the round did not start or stopped has no record. It never throws.
  */
 export async function runSweeps(
-  clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace, related }: SweepOptions,
+  clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace, related, progress }: SweepOptions,
 ): Promise<{ findings: Finding[]; sweeps: RoundSweep[] }> {
   const ordered = byPriority(sources);
   // A name never carries text a model wrote from the PR, so each sweep is numbered and its record names the source's location.
@@ -142,6 +144,7 @@ export async function runSweeps(
   const asked = ordered.slice(0, MAX_SWEEPS).map((source, i) => ({ source, reviewer: names[i] }));
   const from = (f: Finding): Pick<RoundSweep, 'source' | 'severity'> => ({ source: `${f.file}:${f.line}`, severity: f.severity });
   if (asked.length > 0) core.info(`Sweeping the diff for ${asked.length} defect class(es)${ordered.length > asked.length ? `, ${ordered.length - asked.length} cut by the cap` : ''}`);
+  progress?.started(asked.length);
   const answers = await mapWithConcurrency(asked, MAX_SWEEPS, async ({ source, reviewer }): Promise<{ record?: RoundSweep; findings: Finding[] }> => {
     const client = clientFor(reviewer);
     const tools = !!workspace && !!client.repoTools;
@@ -173,7 +176,7 @@ export async function runSweeps(
       core.warning(`${reviewer} failed, so its finding's class goes unswept this round: ${error}`);
       return { record: { ...record, status: 'failed' }, findings: [] };
     }
-  });
+  }, ({ record, findings }) => progress?.ended(record ? findings.length : undefined));
   return {
     findings: answers.flatMap(a => a.findings),
     sweeps: [...answers.flatMap(a => a.record ? [a.record] : []), ...ordered.slice(MAX_SWEEPS).map((f, i) => ({ reviewer: names[MAX_SWEEPS + i], ...from(f), status: 'cut' as const }))],

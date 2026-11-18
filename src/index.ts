@@ -57,6 +57,7 @@ import {
   TooManyFilesError,
   postProgressComment,
   updateProgressComment,
+  startLiveEdits,
   updateProgressDashboard,
   dismissPreviousReviews,
   postReview,
@@ -840,10 +841,10 @@ interface RunTarget {
   baseRef: string;
 }
 
-/** The progress comment of a run, its pending dashboard update and whether its review is posted, which the failure path also reads. */
+/** The progress comment of a run, its live dashboard edits and whether its review is posted, which the failure path also reads. */
 interface RunProgress {
   commentId?: number;
-  flushTimer: ReturnType<typeof setTimeout> | null;
+  liveEdits?: { stop(): Promise<void> };
   reviewPosted: boolean;
   /** Stops the head watcher, so a later push no longer stops the round. */
   stopHeadWatch: () => void;
@@ -939,11 +940,10 @@ interface ReviewStageResult {
   judgeEndTime: number;
 }
 
-function cancelDashboardFlush(progress: RunProgress): void {
-  if (progress.flushTimer) {
-    clearTimeout(progress.flushTimer);
-    progress.flushTimer = null;
-  }
+/** Stops the live dashboard edits of the run and waits for one in flight, so the edit that follows lands last. */
+async function stopLiveEdits(progress: RunProgress): Promise<void> {
+  await progress.liveEdits?.stop();
+  progress.liveEdits = undefined;
 }
 
 /**
@@ -1459,21 +1459,13 @@ async function reviewRound(
 ): Promise<ReviewStageResult> {
   const { octokit, owner, repo, commentId, dashboard, progress } = run;
   let reviewEndTime = run.parseEndTime;
-
-  function scheduleDashboardFlush(): void {
-    if (progress.flushTimer) clearTimeout(progress.flushTimer);
-    progress.flushTimer = setTimeout(() => {
-      progress.flushTimer = null;
-      updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(run, progress))
-        .catch(err => core.warning(`Failed to update dashboard: ${err}`));
-    }, 500);
-  }
-
-  const result = await runReview(clients, {
-    ...inputs,
-    onProgress: (event) => {
+  progress.liveEdits = startLiveEdits(() => updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(run, progress)));
+  try {
+    const result = await runReview(clients, { ...inputs, onProgress: event => {
+      const now = Date.now();
       if (event.phase === 'planning') {
         core.info('Planner analyzing PR content...');
+        dashboard.plannerStartedAt ??= now;
         if (event.teamAgentNames) {
           if (event.plannerResult) {
             dashboard.plannerInfo = {
@@ -1489,8 +1481,17 @@ async function reviewRound(
           dashboard.plannerDurationMs = event.plannerDurationMs;
           if (event.heuristicFallback) dashboard.heuristicFallback = true;
           dashboard.phase = 'started';
-          scheduleDashboardFlush();
         }
+      } else if (event.phase === 'agent-start') {
+        // A retry counts from its own start, as the time it ends with does.
+        const entry = dashboard.agentProgress?.find(a => a.name === event.agentName);
+        if (entry) {
+          entry.startedAt = now;
+          delete entry.toolSteps;
+        }
+      } else if (event.phase === 'agent-step') {
+        const entry = dashboard.agentProgress?.find(a => a.name === event.agentName);
+        if (entry) entry.toolSteps = (entry.toolSteps ?? 0) + 1;
       } else if (event.phase === 'agent-complete') {
         if (dashboard.agentProgress && event.agentName) {
           const entry = dashboard.agentProgress.find(a => a.name === event.agentName);
@@ -1510,28 +1511,45 @@ async function reviewRound(
             }
           }
         }
-        scheduleDashboardFlush();
+      } else if (event.phase === 'side-check' && event.sideCheck) {
+        const { kind, ...check } = event.sideCheck;
+        const checks = dashboard.sideChecks ??= {};
+        const step = checks[kind] ??= { total: 0, ended: 0, findings: 0, startedAt: now };
+        if ('total' in check) step.total += check.total;
+        else if (check.ended === undefined) step.total--;
+        else {
+          step.ended++;
+          step.findings += check.ended;
+        }
+        step.endedAt = step.ended === step.total ? now : undefined;
       } else if (event.phase === 'reviewed') {
-        cancelDashboardFlush(progress);
-        reviewEndTime = Date.now();
+        reviewEndTime = now;
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(run, progress))
-          .catch(err => core.warning(`Failed to update dashboard: ${err}`));
+        dashboard.judgeStartedAt = now;
       } else if (event.phase === 'judging') {
-        cancelDashboardFlush(progress);
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
         dashboard.judgeInputCount = event.judgeInputCount;
         if (event.judgeSkipped) dashboard.judgeSkipped = true;
         dashboard.staticDedupCount = event.staticDedupCount;
         dashboard.llmDedupCount = event.llmDedupCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(run, progress))
-          .catch(err => core.warning(`Failed to update dashboard: ${err}`));
+      } else if (event.phase === 'graded' && event.graded) {
+        dashboard.graded = { ...event.graded, durationMs: now - (dashboard.judgeStartedAt ?? now) };
+      } else if (event.phase === 'refuter' && event.refuterCheck) {
+        const refuter = dashboard.refuter ??= { total: 0, outcomes: {} };
+        const check = event.refuterCheck;
+        if ('total' in check) refuter.total += check.total;
+        else if (check.ended) refuter.outcomes[check.ended] = (refuter.outcomes[check.ended] ?? 0) + 1;
+      } else if (event.phase === 'verdict-reader') {
+        if (!event.verdictReaderDone) dashboard.verdictReader = { startedAt: now };
+        else if (dashboard.verdictReader) dashboard.verdictReader.durationMs = now - dashboard.verdictReader.startedAt;
       }
-    },
-  });
-  return { result, reviewEndTime, judgeEndTime: Date.now() };
+    } });
+    return { result, reviewEndTime, judgeEndTime: Date.now() };
+  } finally {
+    await stopLiveEdits(progress);
+  }
 }
 
 /**
@@ -1541,7 +1559,7 @@ async function reviewRound(
 async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildContext: () => RoundContext, reviewTimeMs: number): Promise<CheckReport> {
   const { octokit, bot, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-  cancelDashboardFlush(run.progress);
+  await stopLiveEdits(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true, rules: run.config.review?.rules });
@@ -2013,7 +2031,7 @@ async function runFullReview(
 
   const headMoved = new AbortController();
   const stop = stopWritesOn(headMoved.signal);
-  const progress: RunProgress = { flushTimer: null, reviewPosted: false, stopHeadWatch: watchHead(target, headMoved) };
+  const progress: RunProgress = { reviewPosted: false, stopHeadWatch: watchHead(target, headMoved) };
   let check: ReviewCheck | undefined;
   // Stays unset when the run is cancelled, so the post step reports the check cancelled.
   let checkReport: CheckReport | undefined;
@@ -2230,7 +2248,7 @@ async function runFullReview(
     const summary = unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(roundSentence(result))].filter(Boolean).join('\n\n') : roundSummary(result);
     checkReport = outcomeReport(result.outcome, [summary, alsoWarnings].filter(Boolean).join('\n\n'), posted.approvalHeld);
   } catch (caught) {
-    cancelDashboardFlush(progress);
+    await stopLiveEdits(progress);
     // A stopped run reports the stop, whatever error it ended on.
     const error = stop.signal.aborted ? stop.signal.reason : caught;
     if (error instanceof RunCancelledError) {

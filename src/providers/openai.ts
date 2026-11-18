@@ -271,6 +271,12 @@ const agentMessage = (event: CodexEvent): string | undefined => {
   return event.type === 'item.completed' && item?.type === 'agent_message' ? textOf(item.text) : undefined;
 };
 
+/** Returns the id of the call of Manki's tool server that `event` starts or ends, or `undefined` when it is none. */
+function toolCallId(event: CodexEvent | undefined): string | undefined {
+  const item = event?.item as { type?: unknown; id?: unknown } | undefined;
+  return (event?.type === 'item.started' || event?.type === 'item.completed') && item?.type === 'mcp_tool_call' ? textOf(item.id) : undefined;
+}
+
 /** Reads the token counts of a `turn.completed` event's `usage`, or `undefined` when it has none. */
 function codexUsage(value: unknown): LLMUsage | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -624,6 +630,18 @@ export class OpenAIClient implements LLMClient {
       const carry = (error: unknown): never => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); };
       const run = async (runArgs: string[], input: string, usedMs?: number): Promise<CliExit & { events: CodexRunEvents }> => {
         output = '';
+        // Where the lines of `output` not read for tool calls yet start, and the calls seen, which each start and end once.
+        let unread = 0;
+        const toolCalls = new Set<string>();
+        const readToolCalls = (onToolStep: () => void): void => {
+          for (let end = output.indexOf('\n', unread); end !== -1; end = output.indexOf('\n', unread)) {
+            const id = toolCallId(parseCodexEvent(output.slice(unread, end)));
+            unread = end + 1;
+            if (id === undefined || toolCalls.has(id)) continue;
+            toolCalls.add(id);
+            onToolStep();
+          }
+        };
         const exit = await runCli({
           label: 'Codex',
           cliPath,
@@ -640,7 +658,10 @@ export class OpenAIClient implements LLMClient {
             unreachable: () => usedMs === undefined && reachedNoModel(output) ? unreachableLimit : undefined,
           },
           retrying: () => retryNote(output),
-          onStdout: (chunk) => { output += chunk; },
+          onStdout: (chunk) => {
+            output += chunk;
+            if (options?.onToolStep) readToolCalls(options.onToolStep);
+          },
         }).catch(carry);
         return { ...exit, events: readCodexEvents(output, exit) };
       };

@@ -1729,6 +1729,38 @@ export interface AgentProgressEntry {
   retryCount?: number;
   /** Why a retry or a move to the fallback model of the finder was not started, one line each. */
   notStarted?: string[];
+  /** When the finder's call started, in ms since the epoch, for its time so far. A retry starts it again. */
+  startedAt?: number;
+  /** The tool calls the finder started so far. */
+  toolSteps?: number;
+}
+
+/** A step of calls that run beside the finders, or after the judge for the sweeps. */
+export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'sweep';
+
+/** Hears of the checks of one step as they run. */
+export interface CheckProgress<R> {
+  /** Called once with how many checks the step asks. */
+  started(total: number): void;
+  /** Called as each check ends, with its result, or with `undefined` when it made no call. */
+  ended(result: R | undefined): void;
+}
+
+/** What the judge made of the findings it graded, before the refuter checks them. `merged` folded into another finding. */
+export interface GradedCounts {
+  kept: number;
+  dropped: number;
+  merged: number;
+}
+
+/** How one step of side checks is going. */
+export interface SideCheckState {
+  total: number;
+  ended: number;
+  findings: number;
+  startedAt: number;
+  /** Set once every check of the step ended. */
+  endedAt?: number;
 }
 
 export interface DashboardData {
@@ -1771,6 +1803,14 @@ export interface DashboardData {
   routing?: Pick<TeamRouting, 'class' | 'group' | 'deeperSameEffort'>;
   /** Set when the token service's catch-up started the run, which the first line says. */
   catchUp?: true;
+  /** When the planner started, in ms since the epoch. The times below are too. */
+  plannerStartedAt?: number;
+  sideChecks?: Partial<Record<SideCheckKind, SideCheckState>>;
+  /** When the finders ended, which starts the judge's time. */
+  judgeStartedAt?: number;
+  graded?: GradedCounts & { durationMs: number };
+  refuter?: { total: number; outcomes: Partial<Record<RefutationOutcome, number>> };
+  verdictReader?: { startedAt: number; durationMs?: number };
 }
 
 /** A finding the judge dropped because a tool check disproved it, with the reason the check gave. */

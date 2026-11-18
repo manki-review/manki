@@ -396,6 +396,7 @@ export class AnthropicClient implements LLMClient {
       for (const limit of delta.limits ?? []) limits.set(limit.window, limit);
       if (delta.requestInput !== undefined) requestInputs.push(delta.requestInput);
       for (const { id, tool, file } of delta.toolUses ?? []) {
+        if (!toolStarts.has(id)) options?.onToolStep?.();
         toolStarts.set(id, { tool, start: Date.now() });
         if (file) filesRead.add(root && isAbsolute(file) ? relative(root, file) : file);
       }

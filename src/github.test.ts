@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -3256,6 +3256,90 @@ describe('fetchRepoContext instruction files', () => {
 
 describe('buildDashboard', () => {
 
+  it('shows each running stage with one live detail, and the finished comment without them', () => {
+    const lines = (...rows: string[]) => rows.map(row => row.replace(/^> /, INDENT)).join('\n');
+    const planner = lines('**Planner** (6s)', '> feat · 954 lines · 2 agents', '> judge effort: high');
+    const claude = { name: 'Claude Opus 5.5 · high', status: 'reviewing' as const, startedAt: 12_000 };
+    const gpt = { name: 'GPT 6.2 Sol · high', status: 'reviewing' as const, startedAt: 12_000 };
+    const claudeDone = { ...claude, status: 'done' as const, findingCount: 4, durationMs: 353_000 };
+    const gptDone = { ...gpt, status: 'done' as const, findingCount: 3, durationMs: 440_000 };
+    const side = (comparisons: number, claims: number, findings: number, endedAt?: number): DashboardData['sideChecks'] => ({
+      comparison: { total: 3, ended: comparisons, findings, startedAt: 12_000, ...(comparisons === 3 && { endedAt: endedAt ?? 0 }) },
+      related: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 },
+      claim: { total: 2, ended: claims, findings: 0, startedAt: 12_000, ...(endedAt && { endedAt }) },
+    });
+    const started: DashboardData = {
+      phase: 'started', lineCount: 954, agentCount: 2, plannerStartedAt: 0, plannerDurationMs: 6000,
+      plannerInfo: { agentCount: 2, judgeEffort: 'high', prType: 'feat' }, routing: { class: 'behavior', group: 'full' },
+    };
+    const reviewed: DashboardData = {
+      ...started, phase: 'reviewed', rawFindingCount: 8, judgeInputCount: 8, judgeStartedAt: 452_000,
+      agentProgress: [claudeDone, gptDone], sideChecks: side(3, 2, 1, 238_000),
+    };
+    const sideDone = '> ✅ Comparisons and claim checks: 5 of 5 done, 1 finding (3m 46s)';
+    const reviewDone = ['**Review (behavior · full):** 8 findings', '> ✅ Claude Opus 5.5 · high: 4 findings (5m 53s)', '> ✅ GPT 6.2 Sol · high: 3 findings (7m 20s)'];
+    const graded = { graded: { kept: 5, dropped: 3, merged: 0, durationMs: 86_000 } };
+    const steps: [number, DashboardData, string][] = [
+      [5, { phase: 'planning', lineCount: 954, agentCount: 0, plannerStartedAt: 0 }, lines(
+        '**Review in progress**', '', '**Planner**', '> analyzing... (5s so far)', '', '**Review**', '> pending', '', '**Judge**', '> pending',
+      )],
+      [40, { ...started, agentProgress: [{ ...claude, toolSteps: 2 }, { ...gpt, toolSteps: 1 }], sideChecks: side(0, 0, 0) }, lines(
+        '**Review in progress**', '', planner, '',
+        '**Review (behavior · full):** 0/2 agents complete', '> ⏳ Claude Opus 5.5 · high: 2 tool steps · 28s so far', '> ⏳ GPT 6.2 Sol · high: 1 tool step · 28s so far',
+        '> ⏳ Comparisons and claim checks: 0 of 5 done', '', '**Judge**', '> pending',
+      )],
+      [135, { ...started, agentProgress: [{ ...claude, toolSteps: 9 }, { ...gpt, toolSteps: 6 }], sideChecks: side(2, 0, 1) }, lines(
+        '**Review in progress**', '', planner, '',
+        '**Review (behavior · full):** 0/2 agents complete', '> ⏳ Claude Opus 5.5 · high: 9 tool steps · 2m 3s so far', '> ⏳ GPT 6.2 Sol · high: 6 tool steps · 2m 3s so far',
+        '> ⏳ Comparisons and claim checks: 2 of 5 done, 1 finding', '', '**Judge**', '> pending',
+      )],
+      [290, { ...started, agentProgress: [{ ...claude, toolSteps: 21 }, { ...gpt, toolSteps: 12 }], sideChecks: side(3, 2, 1, 238_000) }, lines(
+        '**Review in progress**', '', planner, '',
+        '**Review (behavior · full):** 0/2 agents complete', '> ⏳ Claude Opus 5.5 · high: 21 tool steps · 4m 38s so far', '> ⏳ GPT 6.2 Sol · high: 12 tool steps · 4m 38s so far',
+        sideDone, '', '**Judge**', '> pending',
+      )],
+      [365, { ...started, agentProgress: [claudeDone, { ...gpt, toolSteps: 19 }], sideChecks: side(3, 2, 1, 238_000) }, lines(
+        '**Review in progress**', '', planner, '',
+        '**Review (behavior · full):** 1/2 agents complete', '> ✅ Claude Opus 5.5 · high: 4 findings (5m 53s)', '> ⏳ GPT 6.2 Sol · high: 19 tool steps · 5m 53s so far',
+        sideDone, '', '**Judge**', '> pending',
+      )],
+      [472, reviewed, lines('**Review in progress**', '', planner, '', ...reviewDone, sideDone, '', '**Judge**', '> grading 8 findings · 20s so far')],
+      [560, { ...reviewed, ...graded, refuter: { total: 3, outcomes: { disproved: 1 } } }, lines(
+        '**Review in progress**', '', planner, '', ...reviewDone, sideDone, '',
+        '**Judge**', '> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> refuter: 1 of 3 checks done · 1 disproved',
+      )],
+      [645, { ...reviewed, ...graded, refuter: { total: 3, outcomes: { unsettled: 1, disproved: 1, confirmed: 1 } }, verdictReader: { startedAt: 624_000 } }, lines(
+        '**Review in progress**', '', planner, '', ...reviewDone, sideDone, '',
+        '**Judge**', '> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> refuter: 3 of 3 checks done · 1 confirmed · 1 disproved · 1 unsettled',
+        '> verdict reader: reading the diff · 21s so far',
+      )],
+      [692, {
+        ...reviewed, ...graded, refuter: { total: 3, outcomes: { unsettled: 1, disproved: 1, confirmed: 1 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 },
+        phase: 'complete', keptCount: 3, droppedCount: 5, judgeDurationMs: 238_000, keptSeverities: { warning: 1, note: 2 }, droppedSeverities: { blocker: 1, warning: 2, note: 2 },
+      }, lines(
+        planner, '', ...reviewDone, '', '**Judge:** 3 kept · 5 dropped (3m 58s)', '> kept: 1 warning · 2 suggestions', '> dropped: 1 blocker · 2 warnings · 2 suggestions',
+      )],
+    ];
+    for (const [second, data, expected] of steps) expect(buildDashboard(data, second * 1000)).toBe(expected);
+
+    // The verdict reader keeps its time once it ended, and a sweep after the judge gets a line of its own.
+    const sweeping = buildDashboard({ ...reviewed, ...graded, sideChecks: { ...side(3, 2, 1, 238_000), sweep: { total: 2, ended: 1, findings: 0, startedAt: 560_000 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 } }, 700_000);
+    expect(sweeping).toContain(lines(sideDone, '> ⏳ Sweeps: 1 of 2 done'));
+    expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> verdict reader: read the diff (47s)'));
+    // The findings the judge folded into another one are counted too, so the graded line adds up.
+    expect(buildDashboard({ ...reviewed, graded: { kept: 4, dropped: 2, merged: 2, durationMs: 86_000 } }, 560_000))
+      .toContain('> graded 8 findings: 4 kept · 2 dropped · 2 merged (1m 26s)'.replace('> ', INDENT));
+    // A finder that has started no tool call shows its time alone, one whose call has not started shows no time, and the
+    // side checks show once a step asks one.
+    const quiet = buildDashboard({ ...started, agentProgress: [claude, { name: gpt.name, status: 'reviewing' }], sideChecks: { comparison: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 } } }, 20_000);
+    expect(quiet).toContain(lines('**Review (behavior · full):** 0/2 agents complete', '> ⏳ Claude Opus 5.5 · high: 8s so far', '> ⏳ GPT 6.2 Sol · high', '', '**Judge**'));
+    // The side checks stay running until every step beside the finders reported, and name the related repo checks.
+    expect(buildDashboard({ ...started, sideChecks: { related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 } } }, 40_000))
+      .toContain('> ⏳ Related checks: 1 of 1 done'.replace('> ', INDENT));
+    expect(buildDashboard({ ...started, sideChecks: { ...side(3, 2, 0, 238_000), related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 } } }, 300_000))
+      .toContain('> ✅ Comparisons, related checks and claim checks: 6 of 6 done (3m 46s)'.replace('> ', INDENT));
+  });
+
   it('renders the started phase with running review and pending judge', () => {
     const data: DashboardData = { phase: 'started', lineCount: 150, agentCount: 5 };
     const md = buildDashboard(data);
@@ -3342,23 +3426,23 @@ describe('buildDashboard', () => {
     expect(md).toContain('**Review in progress**');
     expect(md).toContain('**Review:** 12 findings');
     expect(md).toContain('**Judge**');
-    expect(md).toContain(`${INDENT}evaluating 12 findings...`);
+    expect(md).toContain(`${INDENT}grading 12 findings`);
   });
 
   it('renders judgeInputCount separately from rawFindingCount in reviewed phase', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 12, judgeInputCount: 10 };
     const md = buildDashboard(data);
     expect(md).toContain('**Review:** 12 findings');
-    expect(md).toContain(`${INDENT}evaluating 10 findings...`);
+    expect(md).toContain(`${INDENT}grading 10 findings`);
     expect(buildDashboard({ ...data, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0 }))
-      .toContain(`${INDENT}evaluating 0 findings (1 dropped as a repeat of an earlier resolved finding)...`);
+      .toContain(`${INDENT}grading 0 findings (1 dropped as a repeat of an earlier resolved finding)`);
     expect(buildDashboard({ ...data, staticDedupCount: 1, llmDedupCount: 1 }))
-      .toContain(`${INDENT}evaluating 10 findings (2 dropped as repeats of earlier resolved findings)...`);
+      .toContain(`${INDENT}grading 10 findings (2 dropped as repeats of earlier resolved findings)`);
     // A round with nothing to judge shows the judge as skipped while it runs and once it is done, never as pending.
     for (const phase of ['reviewed', 'complete'] as const) {
       const skipped = buildDashboard({ ...data, phase, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0, keptCount: 0, droppedCount: 0, judgeSkipped: true });
       expect(skipped).toContain(`**Judge:** skipped, nothing to judge\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
-      expect(skipped).not.toContain('evaluating');
+      expect(skipped).not.toContain('grading');
       expect(skipped).not.toContain('kept');
     }
   });
@@ -3378,7 +3462,7 @@ describe('buildDashboard', () => {
     expect(md).toContain(`${INDENT}✅ Security & Safety: 3 findings (4s)`);
     expect(md).toContain(`${INDENT}✅ Correctness & Logic: 4 findings (3s)`);
     expect(md).toContain(`${INDENT}✅ Architecture & Design: 0 findings (3s)`);
-    expect(md).toContain(`${INDENT}evaluating 7 findings...`);
+    expect(md).toContain(`${INDENT}grading 7 findings`);
   });
 
   it('renders the complete phase with kept/dropped counts', () => {
@@ -3731,7 +3815,7 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('2/3 agents complete');
-    expect(md).toContain(`${INDENT}⚠️ Security & Safety: retrying (2/2)`);
+    expect(md).toContain(`${INDENT}🔁 Security & Safety: retrying (2/2)`);
     expect(md).toContain(`${INDENT}✅ Architecture & Design: 2 findings (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
   });
@@ -3744,7 +3828,7 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}⚠️ Security & Safety: retrying`);
+    expect(md).toContain(`${INDENT}🔁 Security & Safety: retrying`);
   });
 
   it('renders failed agent with retry count showing total attempts', () => {
@@ -3993,7 +4077,7 @@ describe('updateProgressComment', () => {
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, dashboard, baseMetadata);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain('**Judge:** 3 kept · 7 dropped');
-    expect(body).not.toContain('evaluating');
+    expect(body).not.toContain('grading');
   });
 
   it('includes REVIEW_COMPLETE_MARKER in the updated comment body', async () => {
@@ -4367,6 +4451,44 @@ describe('updateProgressDashboard', () => {
     // A newer progress comment took the block, so this one stays without it.
     await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, running);
     expect(updateCommentMock.mock.calls[2][0].body).not.toContain('manki-settings');
+  });
+
+  it('edits at most once per `LIVE_EDIT_MS` without waiting, only warns on a failed edit, and edits nothing once stopped', async () => {
+    jest.useFakeTimers();
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    try {
+      let finish: (() => void) | undefined;
+      const edit = jest.fn()
+        .mockRejectedValueOnce(new Error('rate limited'))
+        .mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }))
+        .mockResolvedValue(undefined);
+      const live = startLiveEdits(edit);
+      expect(edit).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(LIVE_EDIT_MS - 1);
+      expect(edit).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(edit).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(warningSpy).toHaveBeenCalledWith('Failed to update the progress comment: rate limited');
+
+      // An edit still running skips the next one, so edits never pile up.
+      await jest.advanceTimersByTimeAsync(LIVE_EDIT_MS);
+      await jest.advanceTimersByTimeAsync(LIVE_EDIT_MS);
+      expect(edit).toHaveBeenCalledTimes(2);
+
+      // Stopping waits for the edit in flight, so the edit after it lands last.
+      let stopped = false;
+      const stopping = live.stop().then(() => { stopped = true; });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(stopped).toBe(false);
+      finish!();
+      await stopping;
+      await jest.advanceTimersByTimeAsync(LIVE_EDIT_MS * 3);
+      expect(edit).toHaveBeenCalledTimes(2);
+    } finally {
+      warningSpy.mockRestore();
+      jest.useRealTimers();
+    }
   });
 });
 

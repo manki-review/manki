@@ -249,6 +249,8 @@ export interface SendMessageOptions {
   promptTemplate?: string;
   /** Marks a call that runs for a finding a sweep raised, so the call's record shows it. No provider sends it. */
   sweep?: true;
+  /** Called as the model starts each tool call. Only a CLI client that streams its tool calls calls it. */
+  onToolStep?: () => void;
 }
 
 export interface LLMClient {

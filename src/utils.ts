@@ -219,10 +219,10 @@ export function ownMarker(body: string, opener: string, anchor?: string): string
 }
 
 /**
- * Maps `items` through `fn` with at most `limit` calls in flight, keeping the order of `items`. After a call
- * rejects, no further call starts and the first rejection is thrown.
+ * Maps `items` through `fn` with at most `limit` calls in flight, keeping the order of `items`, and passes each result
+ * to `onResult` as it arrives. After a call rejects, no further call starts and the first rejection is thrown.
  */
-export async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>, onResult?: (result: R) => void): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
   let failed = false;
@@ -231,6 +231,7 @@ export async function mapWithConcurrency<T, R>(items: readonly T[], limit: numbe
       const index = next++;
       try {
         results[index] = await fn(items[index]);
+        onResult?.(results[index]);
       } catch (error) {
         failed = true;
         throw error;

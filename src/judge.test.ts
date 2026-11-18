@@ -3815,6 +3815,14 @@ describe('runJudgeAgent', () => {
         { ...verdict('Leaked timeout handle', 'blocker', 1), security: true },
       ]);
       expect(secured.map(f => [f.title, f.tags])).toEqual([['Timer never cleared', ['security']], ['Unrelated naming', undefined]]);
+
+      // The counts reported once the judge graded add up to the findings it was given, with the folded ones as merged.
+      const onGraded = jest.fn();
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [
+        verdict('Timer never cleared', 'warning'), verdict('Unrelated naming', 'ignore'), verdict('Leaked timeout handle', 'blocker', 1),
+      ] }) });
+      await runJudgeAgent(mockClient, makeConfig(), { findings: three(), diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, onGraded });
+      expect(onGraded.mock.calls).toEqual([[{ kept: 1, dropped: 1, merged: 1 }]]);
     });
 
     it('follows a chain of duplicates to the first finding', async () => {
