@@ -372,7 +372,26 @@ const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 const INLINE_TYPES = new Set(['object_type', 'struct_type']);
 // Nodes that wrap a declaration, so the comments above them belong to it.
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
-const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|spec)s?\.\w+$|(?:^|\/)test_[^/]*\.py$/;
+// The file extensions of a language, so a test name counts only where that language's tools use it.
+const sourceOf = (extensions: string) => String.raw`\.(?:${extensions})$`;
+const SCRIPT = 'ts|tsx|mts|cts|js|jsx|mjs|cjs';
+/**
+ * Test code and its fixtures. Any file, data and documents too, counts under a `test/`, `tests/`, `__tests__/`,
+ * `testdata/` or `test_utils/` folder. Every other mark counts only in the languages whose test tools use it, such as
+ * `spec/` and `a_spec.rb` for Ruby, `a.test.ts` for TypeScript and JavaScript, `a_test.go`, `test_a.py`, a Rust
+ * `tests.rs`, `ATests.swift` or C#'s `App.Tests/`, so an `api/spec/openapi.yaml` or a `PodSpec.kt` stays code.
+ */
+export const TEST_PATH = new RegExp([
+  String.raw`(?:^|/)(?:tests?|__tests__|testdata|test_utils)/`,
+  String.raw`(?:^|/)spec/.*` + sourceOf(`rb|${SCRIPT}`),
+  String.raw`[^/]\.(?:test|spec)` + sourceOf(SCRIPT),
+  String.raw`_test` + sourceOf(`go|py|rb|rs|${SCRIPT}`),
+  String.raw`_tests` + sourceOf('rs'),
+  String.raw`_spec` + sourceOf(`rb|${SCRIPT}`),
+  String.raw`(?:^|/)(?:test_[^/]*|conftest|tests)\.py$|(?:^|/)tests\.rs$`,
+  String.raw`(?:(?:^|/)[^/]*Tests?/.*|Tests?)` + sourceOf('swift|java|kt|kts|scala|groovy|cs'),
+  String.raw`Spec` + sourceOf('scala|groovy'),
+].join('|'));
 // Code a repository carries from another project, whose namesakes say nothing about the reference itself.
 const VENDORED_PATH = /(?:^|\/)(?:vendor|third_party|thirdparty|external|extern|depends|deps|node_modules)\//;
 // Code a tool writes, by a directory such as `gen/` or a file name such as `schema.generated.ts`, `api.gen.go` or `app.min.js`.

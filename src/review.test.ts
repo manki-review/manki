@@ -2355,7 +2355,7 @@ describe('runReview', () => {
     }
   }, GIT_TEST_TIMEOUT_MS);
 
-  it('asks a finder that opened none of the listed files once more, and keeps its first answer when the second ask fails', async () => {
+  it('asks a finder that opened none of the listed files once more, in one call when it reads in slices, and keeps its first answer when the second ask fails', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const fee = (body: string) => `package main\n\nfunc main() {}\n${body}`;
     const functions = ['ComputeFeeA', 'ComputeFeeB', 'ComputeFeeC'];
@@ -2365,8 +2365,13 @@ describe('runReview', () => {
     const base = { 'cmd/fee.go': fee(''), 'cmd/limit.go': limit, ...users };
     const head = { 'cmd/fee.go': fee(functions.map(name => `\nfunc ${name}(n int) int { return n }\n`).join('')), 'cmd/limit.go': `${limit}\nvar limit = 1\n` };
     const change = gitWorkspace(base, head);
-    // The same change with a file long enough that the diff is read in slices.
-    const sliced = gitWorkspace(base, { ...head, 'notes/rates.txt': 'rate\n'.repeat(1600) });
+    // The same change with a file long enough that the diff is read in slices, which comes first.
+    const rates = { 'assets/rates.txt': 'rate\n'.repeat(1600) };
+    const sliced = gitWorkspace(base, { ...head, ...rates });
+    // The sliced change with a changed line in the large file that names one of the new functions.
+    const mentioned = gitWorkspace(base, { ...head, 'assets/rates.txt': `${rates['assets/rates.txt']}ComputeFeeC\n` });
+    // A sliced change whose new function only a reference repo line uses.
+    const referenceOnly = gitWorkspace({ 'cmd/fee.go': fee('') }, { 'cmd/fee.go': fee('\nfunc ComputeFeeA(n int) int { return n }\n'), ...rates });
     // No other file and no reference line holds what this change adds, so both lists are empty.
     const unlisted = gitWorkspace({ 'cmd/fee.go': fee('') }, { 'cmd/fee.go': fee('\nfunc RoundDown(n int) int { return n }\n') });
     // A docs change the trivial verifier reads, which names a function another file uses.
@@ -2375,16 +2380,21 @@ describe('runReview', () => {
     writeFileSync(join(reference, 'fee.cpp'), 'CAmount ComputeFeeA(int n) { return n; }\n');
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }]);
     const NOTE = '\n\nYou answered this message before without opening any file outside the changed files that "Uses Outside the Diff" or "In the Reference Repos" lists. ';
+    const ASKED = 'without opening any file outside the changed files that';
     const answer = (title: string) => ({ content: JSON.stringify([{ severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
-    type Asked = { first: { toolSteps?: []; filesRead?: string[] }; second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string };
-    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner }: Asked) => {
+    type Reads = { toolSteps?: []; filesRead?: string[] };
+    type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string; leaveOut?: string };
+    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, leaveOut }: Asked) => {
       const clients = makeClients();
-      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(NOTE) ? second() : { ...answer('First'), ...first }));
+      const reads = (message: string) => (typeof first === 'function' ? first(message) : first);
+      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(ASKED) ? second() : { ...answer('First'), ...reads(message) }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
-      const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(workspace.diff), repoContext: '', workspace: workspace.root });
+      // `leaveOut` drops a file from the diff the finders read, but not from the one the uses are listed for.
+      const read = { ...workspace.diff, files: workspace.diff.files.filter(f => f.path !== leaveOut) };
+      const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(read), repoContext: '', workspace: workspace.root });
       const messages = sendMessage.mock.calls.filter(([system]) => !isRelatedCheck(system)).map(call => call[1]);
-      return { result, first: messages.filter(m => !m.includes(NOTE)), again: messages.filter(m => m.includes(NOTE)), kept: [...new Set(result.rawFindings?.map(f => f.title))] };
+      return { result, first: messages.filter(m => !m.includes(ASKED)), again: messages.filter(m => m.includes(ASKED)), kept: [...new Set(result.rawFindings?.map(f => f.title))], judged: mockedRunJudgeAgent.mock.calls.at(-1)?.[2].findings ?? [] };
     };
     try {
       // A changed file counts for nothing, also one the lists name, and the second answer replaces the first.
@@ -2413,14 +2423,54 @@ describe('runReview', () => {
       // Nothing is listed, so there is nothing to ask for.
       const empty = await run({ first: { toolSteps: [] }, workspace: unlisted });
       expect([empty.result.usesOutsideDiff?.symbols, empty.result.usesOutsideDiff?.reference, empty.again, empty.result.agentsAskedAgain]).toEqual([undefined, undefined, [], []]);
-      // A finder without tools, one whose client does not report what it read and one that reads the diff in slices are never asked again.
+      // A finder without tools, one whose client does not report what it read and one with a slice whose client does not are never asked again.
       const reads: { toolSteps: [] } = { toolSteps: [] };
-      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: reads, workspace: sliced }]) {
+      const ratesSlice = (message: string) => message.includes('diff --git a/assets/rates.txt');
+      for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: (message: string) => (ratesSlice(message) ? {} : reads), workspace: sliced }]) {
         const result = await run(unknown);
         if (unknown.workspace === sliced) expect(result.first.every(message => message.startsWith('## Slice'))).toBe(true);
         expect(result.result.usesOutsideDiff?.symbols).toHaveLength(3);
         expect([result.again, result.result.agentsAskedAgain]).toEqual([[], []]);
       }
+
+      // The slices of a finder count together, so a listed file one slice opened is enough.
+      const oneSlice = await run({ first: (message: string) => (ratesSlice(message) ? { toolSteps: [], filesRead: [listed[0]] } : reads), workspace: sliced });
+      expect([oneSlice.first.length, oneSlice.again, oneSlice.result.agentsAskedAgain]).toEqual([2 * oneSlice.result.agentNames.length, [], []]);
+      // A finder whose slices opened none is asked once, in one call on the slice that declares the listed functions, and keeps its findings of the slices.
+      const slices = await run({ first: reads, workspace: sliced });
+      expect(slices.result.agentsAskedAgain).toEqual(slices.result.agentNames);
+      expect([slices.first.length, slices.again.length]).toEqual([2 * slices.result.agentNames.length, slices.result.agentNames.length]);
+      const feeSlice = slices.first.find(message => !ratesSlice(message))!;
+      expect(feeSlice.startsWith('## Slice\n\nThis is slice 2 of 2 ')).toBe(true);
+      for (const message of slices.again) {
+        expect(message.startsWith(feeSlice)).toBe(true);
+        expect(message).toContain('assets/rates.txt');
+        expect(message.slice(feeSlice.length)).toMatch(/^\n\nYou read this diff before, in slices, without opening any file outside the changed files /);
+        expect(message.endsWith(`Then answer with only the findings you add. Your earlier findings are kept. Reply with only the JSON array the system prompt describes, with no text, markdown or code fence around it.`)).toBe(true);
+      }
+      // A name only a reference repo line uses picks the slice whose changed lines name it.
+      const referenced = await run({ first: reads, workspace: referenceOnly });
+      expect([referenced.result.usesOutsideDiff?.symbols, referenced.result.usesOutsideDiff?.reference]).toEqual([undefined, [{ name: 'ComputeFeeA', lines: ['o/ref:fee.cpp:1'] }]]);
+      expect(referenced.again.length).toBe(referenced.result.agentNames.length);
+      for (const message of referenced.again) expect(message.startsWith(referenced.first.find(m => !ratesSlice(m))!)).toBe(true);
+      // A finder is not asked again when no slice it reads holds a name the listed files use.
+      const untied = await run({ first: reads, workspace: sliced, leaveOut: 'cmd/fee.go' });
+      expect(untied.result.usesOutsideDiff?.symbols).toHaveLength(3);
+      expect([untied.first.length, untied.again, untied.result.agentsAskedAgain]).toEqual([2 * untied.result.agentNames.length, [], []]);
+      // The note names the files that use the names of the chosen slice first, then the rest up to the cap.
+      const tied = await run({ first: reads, workspace: mentioned, leaveOut: 'cmd/fee.go' });
+      expect(tied.again.length).toBe(tied.result.agentNames.length);
+      const own = listed.filter(file => file.startsWith('cmd/computefeec_'));
+      expect(own).toHaveLength(3);
+      for (const message of tied.again) {
+        expect(message.startsWith(tied.first.find(ratesSlice)!)).toBe(true);
+        const [, files] = /```\n([^`]*)\n```/.exec(message.slice(message.indexOf('Open the files below')))!;
+        expect(files.split('\n')).toEqual([...own, ...listed.filter(file => !own.includes(file))].slice(0, 8));
+      }
+      expect(slices.result.rawFindings?.map(f => [f.reviewers, f.title])).toEqual(slices.result.agentNames.flatMap(name => ['First', 'First', 'Second'].map(title => [[name], title])));
+      // A finding the call repeats goes to the judge as one more copy of the same finder, which the judge folds like two slices' copies.
+      const repeated = await run({ first: reads, workspace: sliced, second: async () => ({ ...answer('First'), toolSteps: [] }) });
+      expect(repeated.judged.map(f => [f.reviewers, f.title])).toEqual(repeated.result.agentNames.flatMap(name => Array(3).fill([[name], 'First'])));
       // Neither is the trivial verifier.
       const trivial = await run({ first: { toolSteps: [] }, workspace: docs, planner: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) });
       expect(trivial.result.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
@@ -2444,7 +2494,7 @@ describe('runReview', () => {
     } finally {
       fetchSpy.mockRestore();
       warnSpy.mockRestore();
-      for (const dir of [change.root, sliced.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [change.root, sliced.root, mentioned.root, referenceOnly.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
     }
   }, 4 * GIT_TEST_TIMEOUT_MS);
 
@@ -7013,7 +7063,8 @@ describe('runReview post-judge suppression', () => {
   it('drops a note on a test file in round 2, never a security finding or a tool alert', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        ...['src/foo.test.ts', 'web/cart.spec.js', 'crate/tests/sync.rs', 'src/__tests__/parse.ts'].map(file => makeFinding({ severity: 'note', file, title: 'Could simplify' })),
+        ...['src/foo.test.ts', 'web/cart.spec.js', 'crate/tests/sync.rs', 'src/__tests__/parse.ts', 'pkg/sync_test.go', 'Tests/AppTests/LoginTests.swift', 'src/test/java/LoginTest.java']
+          .map(file => makeFinding({ severity: 'note', file, title: 'Could simplify' })),
         makeFinding({ severity: 'note', file: 'src/contest.ts', title: 'Rename the helper' }),
         makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Token logged in a fixture', tags: ['security'] }),
         makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Unused import', toolSource: 'eslint' }),
@@ -7030,7 +7081,7 @@ describe('runReview post-judge suppression', () => {
       },
     );
     expect(result.findings.map(f => f.title)).toEqual(['Rename the helper', 'Token logged in a fixture', 'Unused import']);
-    expect(result.testNitSuppressedCount).toBe(4);
+    expect(result.testNitSuppressedCount).toBe(7);
   });
 
   it('keeps a note on a test file in round 1', async () => {
