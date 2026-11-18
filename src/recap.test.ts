@@ -2484,24 +2484,29 @@ describe('llmDeduplicateFindings', () => {
     // The same problem in another file is another place, so a model match there changes nothing.
     const elsewhere = { ...second, file: 'src/index.ts' };
     expect(await llmDeduplicateFindings([elsewhere], [waived], match)).toEqual({ unique: [elsewhere], duplicates: [] });
-    // Unless the round pairs the two, as by a line both cite.
+    // Unless the round pairs the two, as by a line both cite, and no push since may have changed the code. A match in
+    // another file can be a fix that came back there, so after a change, or with the push unknown, it goes to the judge
+    // on its own, to be posted at its own place.
     const paired = (prev: PreviousFinding, f: Finding) => prev.title === waived.title && f.file === elsewhere.file;
-    expect(await llmDeduplicateFindings([elsewhere], [waived], match, paired)).toEqual({ unique: [], duplicates: [{ finding: elsewhere, matchedTitle: waived.title, matchType: 'llm' }] });
-    // A thread Manki resolved after an answer that accepted no fix was decided too, in its own file and in another, but
-    // only for the code its answer read. After a push that may have changed it, the repeat goes to the judge with the
-    // answer, as static dedup sends one. One whose answers do not show a decision may have been fixed, so a repeat there
-    // goes to the judge on its own.
+    const dropped = (finding: Finding) => ({ unique: [], duplicates: [{ finding, matchedTitle: waived.title, matchType: 'llm' }] });
+    expect(await llmDeduplicateFindings([elsewhere], [waived], match, paired, () => false)).toEqual(dropped(elsewhere));
+    expect(await llmDeduplicateFindings([elsewhere], [waived], match, paired, () => true)).toEqual({ unique: [elsewhere], duplicates: [] });
+    expect(await llmDeduplicateFindings([elsewhere], [waived], match, paired)).toEqual({ unique: [elsewhere], duplicates: [] });
+    // In its own file a thread a person resolved drops the repeat whatever a push changed, as in static dedup.
+    expect(await llmDeduplicateFindings([second], [waived], match, paired, () => true)).toEqual(dropped(second));
+    // A thread Manki resolved after an answer that accepted no fix was decided too, but only for the code its answer
+    // read. After a push that may have changed it, a repeat in its own file goes to the judge with the answer, as static
+    // dedup sends one, and a repeat in another file goes on its own. One whose answers do not show a decision may have
+    // been fixed, so a repeat there goes to the judge on its own.
     const settledByReply = { ...waived, status: 'auto-resolved' as const };
     const decided = { ...settledByReply, decidedWithoutFix: true };
-    for (const finding of [second, elsewhere]) {
-      expect(await llmDeduplicateFindings([finding], [decided], match, paired, () => false)).toEqual({ unique: [], duplicates: [{ finding, matchedTitle: waived.title, matchType: 'llm' }] });
-      const rechecked = { ...finding, answeredIn: { threadId: 'T1', answer: waived.answer, grade: { severity: waived.severity } } };
+    const answeredIn = { threadId: 'T1', answer: waived.answer, grade: { severity: waived.severity } };
+    for (const [finding, rechecked] of [[second, { ...second, answeredIn }], [elsewhere, elsewhere]] as const) {
+      expect(await llmDeduplicateFindings([finding], [decided], match, paired, () => false)).toEqual(dropped(finding));
       expect(await llmDeduplicateFindings([finding], [decided], match, paired, () => true)).toEqual({ unique: [rechecked], duplicates: [] });
       expect(await llmDeduplicateFindings([finding], [decided], match, paired)).toEqual({ unique: [rechecked], duplicates: [] });
       expect(await llmDeduplicateFindings([finding], [settledByReply], match, paired, () => false)).toEqual({ unique: [finding], duplicates: [] });
     }
-    // A thread a person resolved stays dropped whatever a push changed, as in static dedup.
-    expect(await llmDeduplicateFindings([second], [waived], match, paired, () => true)).toEqual({ unique: [], duplicates: [{ finding: second, matchedTitle: waived.title, matchType: 'llm' }] });
 
     // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.
     const suggestion = { ...waived, severity: 'note' as const };

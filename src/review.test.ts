@@ -5829,7 +5829,10 @@ describe('runReview', () => {
     expect(judgeInput.findings).toEqual([]);
 
     // A model match in another file counts only when the finding cites a line of the thread's finding or a line that
-    // finding cited in the round record. One that shares no line stays, whatever the model says. Each finder reports all three.
+    // finding cited in the round record, and only while no push since the thread was raised changed its file, a file its
+    // findings cited or a file the repeat cites. Otherwise, or with the push unknown, the repeat goes to the judge on its
+    // own, to be posted at its own place. That holds for a thread a person resolved and one Manki resolved on an answer
+    // that accepted no fix. Each finder reports all three findings.
     const cited = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' } })]);
     cited.findings.entries[0].evidence = { checks: [], proof: ['src/lib.ts:7'] };
     const elsewhere = (title: string, file: string, proof: string[]) => ({ severity: 'blocker', title, file, line: 30, description: 'Bug.', proof });
@@ -5839,23 +5842,11 @@ describe('runReview', () => {
       elsewhere('Unchecked locks reach the log', 'src/d.ts', ['src/d.ts:30', 'src/a.ts:40']),
     ]) });
     jest.mocked(clients.dedup!.sendMessage).mockResolvedValue({ content: JSON.stringify([1, 2, 3, 4, 5, 6].map(index => ({ index, matchedResolved: 1 }))) });
-    mockedRunJudgeAgent.mockClear();
-    const crossFile = await runReview(clients, {
-      config, diff, rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, priorRounds: [cited], openThreads: [],
-      previousFindings: [{ ...previousFindings[0], threadId: 'T1' }],
-    });
-    expect([...new Set(crossFile.duplicateMatches?.map(m => m.droppedTitle))]).toEqual(['Unchecked locks reach the wallet', 'Unchecked locks reach the cache']);
-    expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['Unchecked locks reach the log', 'Unchecked locks reach the log']);
-
-    // A thread Manki resolved on an answer that accepted no fix drops a repeat only while no push since the thread was
-    // raised changed its file, a file its findings cited or a file the repeat cites. Otherwise, or with the push unknown,
-    // the repeat goes to the judge with the answer.
-    const decidedThread = { ...previousFindings[0], threadId: 'T1', status: 'auto-resolved' as const, decidedWithoutFix: true, answer: 'Withdrawn. The caller checks it.' };
     const push = (file: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-a\n+b\n`;
-    const afterPush = async (interRoundDiff: string | undefined) => {
+    const afterPush = async (thread: PreviousFinding, interRoundDiff: string | undefined) => {
       mockedRunJudgeAgent.mockClear();
       const run = await runReview(clients, {
-        config, diff, rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, priorRounds: [cited], openThreads: [], previousFindings: [decidedThread], interRoundDiff,
+        config, diff, rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, priorRounds: [cited], openThreads: [], previousFindings: [thread], interRoundDiff,
       });
       const judged = mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => `${f.title}${f.answeredIn ? ` (${f.answeredIn.threadId})` : ''}`);
       return [[...new Set(run.duplicateMatches?.map(m => m.droppedTitle) ?? [])], [...new Set(judged)]];
@@ -5863,9 +5854,18 @@ describe('runReview', () => {
     const wallet = 'Unchecked locks reach the wallet';
     const cache = 'Unchecked locks reach the cache';
     const log = 'Unchecked locks reach the log';
-    expect(await afterPush('')).toEqual([[wallet, cache], [log]]);
-    expect(await afterPush(push('src/b.ts'))).toEqual([[cache], [`${wallet} (T1)`, log]]);
-    for (const unsure of [push('src/lib.ts'), undefined]) expect(await afterPush(unsure)).toEqual([[], [`${wallet} (T1)`, `${cache} (T1)`, log]]);
+    const answer = 'Withdrawn. The caller checks it.';
+    const threads: PreviousFinding[] = [
+      { ...previousFindings[0], threadId: 'T1', answer },
+      { ...previousFindings[0], threadId: 'T1', status: 'auto-resolved', decidedWithoutFix: true, answer },
+    ];
+    for (const thread of threads) {
+      // An empty diff since the round that raised the thread proves the code unchanged, as when a blocker dismissed as
+      // fixed in another PR comes back from another file after a rebase.
+      expect([thread.status, await afterPush(thread, '')]).toEqual([thread.status, [[wallet, cache], [log]]]);
+      expect([thread.status, await afterPush(thread, push('src/b.ts'))]).toEqual([thread.status, [[cache], [wallet, log]]]);
+      for (const unsure of [push('src/lib.ts'), undefined]) expect([thread.status, await afterPush(thread, unsure)]).toEqual([thread.status, [[], [wallet, cache, log]]]);
+    }
 
     // Finders that leave less than 30 seconds start no dedup call, and the round ends incomplete before the judge. Its
     // record keeps what the static dedup dropped before that call.

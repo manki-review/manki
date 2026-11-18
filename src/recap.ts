@@ -1344,10 +1344,11 @@ function describeForDedup(f: DedupItem): string {
 /**
  * Asks `client` which findings repeat an earlier resolved one, or an `auto-resolved` one `decidedWithoutFix`, in any
  * wording. A match counts in the same file, or in another file when `acrossFiles` pairs the two. A repeat of a waived
- * finding is dropped, and a repeat of a fixed one goes to the judge with a note. A repeat of an `auto-resolved` thread
- * is dropped only while `mayHaveChanged` says no push could have changed its code. Otherwise it goes to the judge with
- * the thread's answer as `answeredIn`, as static dedup sends an answered repeat. A failed call, or one the round did not
- * start or stopped, keeps every finding.
+ * finding is dropped, and a repeat of a fixed one goes to the judge with a note. A repeat of an `auto-resolved` thread,
+ * and any repeat in another file, is dropped only while `mayHaveChanged` says no push could have changed its code.
+ * Otherwise a repeat in the thread's own file goes to the judge with the thread's answer as `answeredIn`, as static
+ * dedup sends an answered repeat, and one in another file goes to the judge on its own. A failed call, or one the round
+ * did not start or stopped, keeps every finding.
  */
 async function llmDeduplicateFindings(
   findings: Finding[],
@@ -1389,11 +1390,14 @@ async function llmDeduplicateFindings(
       // A finding in another file is another place, which the static matcher never matches either, unless `acrossFiles` pairs them.
       const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedResolved - 1])
         .filter(p => !!p && (p.file === findings[i].file || acrossFiles(p, findings[i])));
-      // Manki's answer on an `auto-resolved` thread held for the code it read, so after a change the judge checks it again.
-      const recheck = (p: PreviousFinding) => p.status === 'auto-resolved' && mayHaveChanged(p, findings[i]);
+      // Manki's answer on an `auto-resolved` thread held for the code it read, and a match in another file can be a fix
+      // that came back there, so after a change the judge checks either again.
+      const sameFile = (p: PreviousFinding) => p.file === findings[i].file;
+      const recheck = (p: PreviousFinding) => (p.status === 'auto-resolved' || !sameFile(p)) && mayHaveChanged(p, findings[i]);
       const waived = priors.find(p => mayWaive(p, findings[i]) && !recheck(p));
       const fixed = priors.find(p => p.fixed);
-      const answered = priors.filter(p => mayWaive(p, findings[i])).find(isAnswered);
+      // Only a repeat in the thread's own file is answered there. One in another file keeps its own place and thread.
+      const answered = priors.filter(p => sameFile(p) && mayWaive(p, findings[i])).find(isAnswered);
       if (waived) {
         core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${waived.title}"`);
         duplicates.push({ finding: findings[i], matchedTitle: waived.title ?? 'unknown', matchType: 'llm' });
