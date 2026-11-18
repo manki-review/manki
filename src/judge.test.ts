@@ -22,7 +22,7 @@ import {
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
-import { LLMClient, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
+import { LLMClient, NotStartedError, QuotaError, RefusalError, SendMessageOptions, TimeoutError } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { repoToolsPrompt } from './providers/cli-utils';
 import * as mcpServer from './mcp-server';
@@ -1738,6 +1738,13 @@ describe('runJudgeAgent', () => {
       await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBe(slow);
       expect(limits()).toEqual([900_000, 300_000]);
 
+      // A call the round has no time to start is not tried again without tools.
+      const late = new NotStartedError('A judge call was not started');
+      mockSendMessage.mockReset();
+      mockSendMessage.mockRejectedValueOnce(late);
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBe(late);
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+
       // A finding the judge with tools leaves out twice fails that attempt like any other failure. Its second call
       // gets the time the first left, and so does the retry.
       const empty = { content: JSON.stringify({ summary: 'ok', findings: [] }) };
@@ -2521,8 +2528,8 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', ...answers[title] })),
     }) });
-    const run = async (rules?: RulesMode, pair?: LLMClient) => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
-      findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace, ...(pair && { pair }) },
+    const run = async (rules?: RulesMode, pair?: LLMClient, client = refuter) => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
+      findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client, workspace, ...(pair && { pair }) },
     })).findings;
     const graded = async (rules?: RulesMode, pair?: LLMClient) => (await run(rules, pair)).map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
 
@@ -2573,6 +2580,19 @@ describe('runJudgeAgent', () => {
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
       expect(await graded('warn', second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
       expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
+      // A check the round did not start leaves its note as an unsettled check does: without the rule's grade, and without
+      // the fact as a doubt. The checks that answered stand, and no warning names the check.
+      const warnSpy = jest.spyOn(core, 'warning');
+      const refusing: LLMClient = {
+        repoTools: true,
+        sendMessage: (system, user, options) => user.includes(': Fact confirmed\n') ? Promise.reject(new NotStartedError('A refuter call was not started')) : refuter.sendMessage(system, user, options),
+      };
+      const unchecked = await run('warn', undefined, refusing);
+      expect(unchecked.map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]))
+        .toEqual(expected('warning').map(row => row[0] === 'Fact confirmed' ? ['Fact confirmed', 'note', 'unproven', undefined] : row));
+      expect(unchecked.filter(f => f.title === 'Fact confirmed').map(f => [f.gradeIfConfirmed, f.doubts, f.refutation])).toEqual([[undefined, undefined, undefined]]);
+      expect(warnSpy.mock.calls.filter(([message]) => String(message).includes('not started'))).toEqual([]);
+      warnSpy.mockRestore();
 
       // The damage the check disproved goes from the warning the fact raised, as from 'Damage disproved' below. An unsettled damage keeps its doubts.
       const byTitle = Object.fromEntries((await run('warn')).map(f => [f.title, f]));
@@ -4107,6 +4127,14 @@ describe('runJudgeAgent', () => {
         { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
       ]);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge retry failed'));
+
+      // A retry the round did not start keeps the first reply the same way, without a warning that the retry failed.
+      warnSpy.mockClear();
+      mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [], threadEvaluations: [{ threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' }] }) })
+        .mockRejectedValueOnce(new NotStartedError('A judge call was not started'));
+      const kept = await runJudgeAgent(mockClient, makeConfig(), { findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3, openThreads });
+      expect(kept.threadEvaluations).toEqual(result.threadEvaluations);
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('Judge retry failed'));
       warnSpy.mockRestore();
     });
 

@@ -9,7 +9,7 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
-import { LLMClient, LLMResponse } from './providers';
+import { LLMClient, LLMResponse, NotStartedError } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
@@ -626,8 +626,8 @@ export interface RefuteOptions {
  * `doubtsToCheck` picks, with read-only tools on the workspace, at most `MAX_PARALLEL_REFUTATIONS` at a time, and grades
  * each by the outcome. With a `pair`, both refuters check each finding at the same time. An earlier round's outcome for the same
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
- * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge. With `roundEnd` it makes
- * only the checks `doubtsToCheck` picks.
+ * `gradeIfConfirmed`. A call that fails, or that the round did not start or stopped, leaves the grade to the other
+ * refuter, or to the judge. With `roundEnd` it makes only the checks `doubtsToCheck` picks.
  */
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
@@ -653,6 +653,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
       return refutation;
     } catch (error) {
+      if (error instanceof NotStartedError) return undefined;
       core.warning(`Could not check "${finding.title}" for a ${label}: ${error}`);
       return undefined;
     }

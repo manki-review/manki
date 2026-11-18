@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { LLMClient } from './providers';
+import { LLMClient, NotStartedError } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -1321,7 +1321,8 @@ function describeForDedup(f: DedupItem): string {
 
 /**
  * Asks `client` which findings repeat an earlier resolved one in the same file, in any wording. A repeat of a waived
- * finding is dropped, and a repeat of a fixed one goes to the judge with a note.
+ * finding is dropped, and a repeat of a fixed one goes to the judge with a note. A failed call, or one the round did
+ * not start or stopped, keeps every finding.
  */
 async function llmDeduplicateFindings(
   findings: Finding[],
@@ -1377,14 +1378,15 @@ async function llmDeduplicateFindings(
 
     return { unique, duplicates };
   } catch (error) {
-    core.warning(`LLM dedup failed, keeping all findings: ${error}`);
+    if (!(error instanceof NotStartedError)) core.warning(`LLM dedup failed, keeping all findings: ${error}`);
     return { unique: findings, duplicates: [] };
   }
 }
 
 /**
  * Asks `client` whether the two findings of each pair describe the same defect, and returns one answer per pair. Only an
- * explicit yes counts, so a failed call or a reply that does not parse answers no for every pair.
+ * explicit yes counts, so a failed call, one the round did not start or stopped, or a reply that does not parse answers
+ * no for every pair.
  */
 async function llmSameDefects(pairs: Array<[DedupItem, DedupItem]>, client: LLMClient): Promise<boolean[]> {
   const list = pairs.map(([a, b], i) => `${i + 1}.\n   A: ${describeForDedup(a)}\n   B: ${describeForDedup(b)}`).join('\n');
@@ -1398,7 +1400,7 @@ async function llmSameDefects(pairs: Array<[DedupItem, DedupItem]>, client: LLMC
     if (!Array.isArray(answers)) throw new Error('the reply is not a JSON array');
     return pairs.map((_, i) => answers.some(answer => answer?.pair === i + 1 && answer?.sameDefect === true));
   } catch (error) {
-    core.warning(`LLM dedup of nearby findings failed, keeping them apart: ${error}`);
+    if (!(error instanceof NotStartedError)) core.warning(`LLM dedup of nearby findings failed, keeping them apart: ${error}`);
     return pairs.map(() => false);
   }
 }
