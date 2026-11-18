@@ -2826,7 +2826,7 @@ describe('runReview', () => {
       });
       return clients;
     };
-    const reviewerCalls = (clients: ReviewClients) => jest.mocked(clients.reviewer.sendMessage).mock.calls;
+    const reviewerCalls = (clients: ReviewClients) => jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => !isPatternCheck(system));
 
     it('checks each claim in a call of its own beside the finders, without the PR description, and hands the judge only what a check disproved', async () => {
       const { root, diff } = gitWorkspace({ 'src/export.ts': exportFile('  return merge(rows.sort());\n') }, files);

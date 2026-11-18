@@ -293,11 +293,15 @@ describe('runPatternChecks', () => {
         ],
       };
     });
-    let result;
+    const pieces = [piece('refund', { kind: 'file', name: 'src/refund.ts' }), piece('Refund', { kind: 'type' }), piece('refunds', { kind: 'key' }), piece('Refunds', { kind: 'type' })];
+    let result: Awaited<ReturnType<typeof runPatternChecks>>;
+    let retried: Awaited<ReturnType<typeof runPatternChecks>>;
+    const again = fakeClient(() => ({ answer: 'follows' }));
     try {
-      result = await runPatternChecks(() => client, [
-        piece('refund', { kind: 'file', name: 'src/refund.ts' }), piece('Refund', { kind: 'type' }), piece('refunds', { kind: 'key' }), piece('Refunds', { kind: 'type' }),
-      ], { effort: 'high', workspace: root, diff, instructionFiles });
+      result = await runPatternChecks(() => client, pieces, { effort: 'high', workspace: root, diff, instructionFiles });
+      // A retry of the round keeps each answer whose question is unchanged, with its findings, and asks nothing again.
+      const answers = new Map(result.comparisons.map(c => [c.reviewer, { record: c, findings: result.findings.filter(f => f.reviewers.includes(c.reviewer)) }]));
+      retried = await runPatternChecks(() => again, pieces, { effort: 'high', workspace: root, diff, instructionFiles, earlier: { answers, confirm: async () => true } });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -324,12 +328,15 @@ describe('runPatternChecks', () => {
     // A place is compared by its path from the root and its lines, a made-up line is left out, and the finding's own line closes the proof.
     expect(result.findings[1]).toEqual(expect.objectContaining({ file: 'src/refund.ts', evidence: expect.objectContaining({ proof: ['src/refund.ts:2'] }) }));
     expect(result.comparisons).toEqual([
-      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 7 },
-      { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0 },
-      { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0 },
+      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 7, inputDigest: expect.any(String) },
+      { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0, inputDigest: expect.any(String) },
+      { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0, inputDigest: expect.any(String) },
       // A difference whose findings are all unusable keeps its answer and places.
-      { kind: 'pattern', reviewer: 'Pattern check: Refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1'], findings: 0, dropped: 1 },
+      { kind: 'pattern', reviewer: 'Pattern check: Refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1'], findings: 0, dropped: 1, inputDigest: expect.any(String) },
     ]);
+    expect(again.calls).toEqual([]);
+    expect(retried.findings).toEqual(result.findings);
+    expect(retried.comparisons).toEqual(result.comparisons.map(c => ({ ...c, reused: true })));
   });
 
   it('asks at most four pieces in their order and records the rest as cut, names a file of no plain name by its kind, and asks none without repository tools', async () => {
