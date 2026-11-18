@@ -2365,8 +2365,11 @@ describe('runReview', () => {
     const base = { 'cmd/fee.go': fee(''), 'cmd/limit.go': limit, ...users };
     const head = { 'cmd/fee.go': fee(functions.map(name => `\nfunc ${name}(n int) int { return n }\n`).join('')), 'cmd/limit.go': `${limit}\nvar limit = 1\n` };
     const change = gitWorkspace(base, head);
-    // The same change with a file long enough that the diff is read in slices.
-    const sliced = gitWorkspace(base, { ...head, 'notes/rates.txt': 'rate\n'.repeat(1600) });
+    // The same change with a file long enough that the diff is read in slices, which comes first.
+    const rates = { 'assets/rates.txt': 'rate\n'.repeat(1600) };
+    const sliced = gitWorkspace(base, { ...head, ...rates });
+    // A sliced change whose new function only a reference repo line uses.
+    const referenceOnly = gitWorkspace({ 'cmd/fee.go': fee('') }, { 'cmd/fee.go': fee('\nfunc ComputeFeeA(n int) int { return n }\n'), ...rates });
     // No other file and no reference line holds what this change adds, so both lists are empty.
     const unlisted = gitWorkspace({ 'cmd/fee.go': fee('') }, { 'cmd/fee.go': fee('\nfunc RoundDown(n int) int { return n }\n') });
     // A docs change the trivial verifier reads, which names a function another file uses.
@@ -2375,18 +2378,21 @@ describe('runReview', () => {
     writeFileSync(join(reference, 'fee.cpp'), 'CAmount ComputeFeeA(int n) { return n; }\n');
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }]);
     const NOTE = '\n\nYou answered this message before without opening any file outside the changed files that "Uses Outside the Diff" or "In the Reference Repos" lists. ';
+    const ASKED = 'without opening any file outside the changed files that';
     const answer = (title: string) => ({ content: JSON.stringify([{ severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
     type Reads = { toolSteps?: []; filesRead?: string[] };
-    type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string };
-    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner }: Asked) => {
+    type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string; leaveOut?: string };
+    const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, leaveOut }: Asked) => {
       const clients = makeClients();
       const reads = (message: string) => (typeof first === 'function' ? first(message) : first);
-      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(NOTE) ? second() : { ...answer('First'), ...reads(message) }));
+      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : message.includes(ASKED) ? second() : { ...answer('First'), ...reads(message) }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
-      const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(workspace.diff), repoContext: '', workspace: workspace.root });
+      // `leaveOut` drops a file from the diff the finders read, but not from the one the uses are listed for.
+      const read = { ...workspace.diff, files: workspace.diff.files.filter(f => f.path !== leaveOut) };
+      const result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff: workspace.diff, rawDiff: rebuildRawDiff(read), repoContext: '', workspace: workspace.root });
       const messages = sendMessage.mock.calls.filter(([system]) => !isRelatedCheck(system)).map(call => call[1]);
-      return { result, first: messages.filter(m => !m.includes(NOTE)), again: messages.filter(m => m.includes(NOTE)), kept: [...new Set(result.rawFindings?.map(f => f.title))], judged: mockedRunJudgeAgent.mock.calls.at(-1)?.[2].findings ?? [] };
+      return { result, first: messages.filter(m => !m.includes(ASKED)), again: messages.filter(m => m.includes(ASKED)), kept: [...new Set(result.rawFindings?.map(f => f.title))], judged: mockedRunJudgeAgent.mock.calls.at(-1)?.[2].findings ?? [] };
     };
     try {
       // A changed file counts for nothing, also one the lists name, and the second answer replaces the first.
@@ -2417,7 +2423,7 @@ describe('runReview', () => {
       expect([empty.result.usesOutsideDiff?.symbols, empty.result.usesOutsideDiff?.reference, empty.again, empty.result.agentsAskedAgain]).toEqual([undefined, undefined, [], []]);
       // A finder without tools, one whose client does not report what it read and one with a slice whose client does not are never asked again.
       const reads: { toolSteps: [] } = { toolSteps: [] };
-      const ratesSlice = (message: string) => message.includes('diff --git a/notes/rates.txt');
+      const ratesSlice = (message: string) => message.includes('diff --git a/assets/rates.txt');
       for (const unknown of [{ first: reads, tools: false }, { first: {} }, { first: (message: string) => (ratesSlice(message) ? {} : reads), workspace: sliced }]) {
         const result = await run(unknown);
         if (unknown.workspace === sliced) expect(result.first.every(message => message.startsWith('## Slice'))).toBe(true);
@@ -2433,11 +2439,22 @@ describe('runReview', () => {
       expect(slices.result.agentsAskedAgain).toEqual(slices.result.agentNames);
       expect([slices.first.length, slices.again.length]).toEqual([2 * slices.result.agentNames.length, slices.result.agentNames.length]);
       const feeSlice = slices.first.find(message => !ratesSlice(message))!;
+      expect(feeSlice.startsWith('## Slice\n\nThis is slice 2 of 2 ')).toBe(true);
       for (const message of slices.again) {
         expect(message.startsWith(feeSlice)).toBe(true);
-        expect(message).toContain('notes/rates.txt');
+        expect(message).toContain('assets/rates.txt');
+        expect(message.slice(feeSlice.length)).toMatch(/^\n\nYou read this diff before, in slices, without opening any file outside the changed files /);
         expect(message.endsWith(`Then answer with only the findings you add. Your earlier findings are kept. Reply with only the JSON array the system prompt describes, with no text, markdown or code fence around it.`)).toBe(true);
       }
+      // A name only a reference repo line uses picks the slice whose changed lines name it.
+      const referenced = await run({ first: reads, workspace: referenceOnly });
+      expect([referenced.result.usesOutsideDiff?.symbols, referenced.result.usesOutsideDiff?.reference]).toEqual([undefined, [{ name: 'ComputeFeeA', lines: ['o/ref:fee.cpp:1'] }]]);
+      expect(referenced.again.length).toBe(referenced.result.agentNames.length);
+      for (const message of referenced.again) expect(message.startsWith(referenced.first.find(m => !ratesSlice(m))!)).toBe(true);
+      // A finder is not asked again when no slice it reads holds a name the listed files use.
+      const untied = await run({ first: reads, workspace: sliced, leaveOut: 'cmd/fee.go' });
+      expect(untied.result.usesOutsideDiff?.symbols).toHaveLength(3);
+      expect([untied.first.length, untied.again, untied.result.agentsAskedAgain]).toEqual([2 * untied.result.agentNames.length, [], []]);
       expect(slices.result.rawFindings?.map(f => [f.reviewers, f.title])).toEqual(slices.result.agentNames.flatMap(name => ['First', 'First', 'Second'].map(title => [[name], title])));
       // A finding the call repeats goes to the judge as one more copy of the same finder, which the judge folds like two slices' copies.
       const repeated = await run({ first: reads, workspace: sliced, second: async () => ({ ...answer('First'), toolSteps: [] }) });
@@ -2465,7 +2482,7 @@ describe('runReview', () => {
     } finally {
       fetchSpy.mockRestore();
       warnSpy.mockRestore();
-      for (const dir of [change.root, sliced.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [change.root, sliced.root, referenceOnly.root, unlisted.root, docs.root, reference]) rmSync(dir, { recursive: true, force: true });
     }
   }, 4 * GIT_TEST_TIMEOUT_MS);
 
