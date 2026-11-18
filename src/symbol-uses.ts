@@ -372,21 +372,25 @@ const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 const INLINE_TYPES = new Set(['object_type', 'struct_type']);
 // Nodes that wrap a declaration, so the comments above them belong to it.
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
-// Languages that mark tests by a capital `Test` or `Tests` at the end of a folder or file name.
-const CAPITAL_TEST_LANGUAGES = String.raw`\.(?:swift|java|kt|kts|scala|groovy|cs)$`;
-// Languages whose test frameworks name a test `...Spec`. In Java, Kotlin and C# that is mostly a production type.
-const SPEC_TEST_LANGUAGES = String.raw`\.(?:swift|scala|groovy)$`;
+// The file extensions of a language, so a test name counts only where that language's tools use it.
+const sourceOf = (extensions: string) => String.raw`\.(?:${extensions})$`;
+const SCRIPT = 'ts|tsx|mts|cts|js|jsx|mjs|cjs';
 /**
- * Test code and its fixtures, by a directory such as `tests/`, `src/test/`, `__tests__/` or `testdata/`, by a file name
- * such as `a.test.ts`, `a_test.go`, `test_a.py` or a Rust `tests.rs`, in `CAPITAL_TEST_LANGUAGES` by a name such as
- * Swift's `Tests/` and `ATests.swift` or C#'s `App.Tests/`, and in `SPEC_TEST_LANGUAGES` by a name such as `ASpec.scala`.
+ * Test code and its fixtures. Any file, data and documents too, counts under a `test/`, `tests/`, `__tests__/`,
+ * `testdata/` or `test_utils/` folder. Every other mark counts only in the languages whose test tools use it, such as
+ * `spec/` and `a_spec.rb` for Ruby, `a.test.ts` for TypeScript and JavaScript, `a_test.go`, `test_a.py`, a Rust
+ * `tests.rs`, `ATests.swift` or C#'s `App.Tests/`, so an `api/spec/openapi.yaml` or a `PodSpec.kt` stays code.
  */
 export const TEST_PATH = new RegExp([
-  String.raw`(?:^|/)(?:tests?|__tests__|test_utils|testdata|spec)/`,
-  String.raw`[._](?:test|spec)s?\.[^/]+$`,
-  String.raw`(?:^|/)(?:test_[^/]*|conftest)\.py$|(?:^|/)tests\.rs$`,
-  String.raw`(?:(?:^|/)[^/]*Tests?/.*|Tests?)` + CAPITAL_TEST_LANGUAGES,
-  String.raw`Spec` + SPEC_TEST_LANGUAGES,
+  String.raw`(?:^|/)(?:tests?|__tests__|testdata|test_utils)/`,
+  String.raw`(?:^|/)spec/.*` + sourceOf(`rb|${SCRIPT}`),
+  String.raw`[^/]\.(?:test|spec)` + sourceOf(SCRIPT),
+  String.raw`_test` + sourceOf(`go|py|rb|rs|${SCRIPT}`),
+  String.raw`_tests` + sourceOf('rs'),
+  String.raw`_spec` + sourceOf(`rb|${SCRIPT}`),
+  String.raw`(?:^|/)(?:test_[^/]*|conftest|tests)\.py$|(?:^|/)tests\.rs$`,
+  String.raw`(?:(?:^|/)[^/]*Tests?/.*|Tests?)` + sourceOf('swift|java|kt|kts|scala|groovy|cs'),
+  String.raw`Spec` + sourceOf('scala|groovy'),
 ].join('|'));
 // Code a repository carries from another project, whose namesakes say nothing about the reference itself.
 const VENDORED_PATH = /(?:^|\/)(?:vendor|third_party|thirdparty|external|extern|depends|deps|node_modules)\//;

@@ -1335,20 +1335,51 @@ describe('declarationPattern', () => {
 
 describe('TEST_PATH', () => {
   it.each([
-    ['TypeScript', ['src/parse.test.ts', 'web/cart.spec.tsx', 'src/__tests__/parse.ts', 'test/parse.ts', 'src/parse.test.d.ts'], ['src/contest.ts', 'src/attestation.ts', 'src/testing.ts', 'vitest.config.ts', 'src/components/SpeedTest/index.tsx', 'src/ABTest/variant.ts']],
+    ['TypeScript', ['src/parse.test.ts', 'web/cart.spec.tsx', 'src/__tests__/parse.ts', 'test/parse.ts', 'src/parse_test.ts'], ['src/contest.ts', 'src/attestation.ts', 'src/testing.ts', 'vitest.config.ts', 'src/components/SpeedTest/index.tsx', 'src/ABTest/variant.ts']],
     ['JavaScript', ['lib/cart.spec.js', 'test/cart.js', 'lib/__tests__/cart.js', 'lib/cart.test.mjs'], ['lib/latest.js', 'jest.config.js']],
     ['Go', ['pkg/sync/sync_test.go', 'pkg/sync/testdata/block.bin'], ['latest/x.go', 'pkg/contest/x.go', 'pkg/testing.go', 'internal/LoadTest/run.go', 'internal/Tests/run.go']],
     ['Rust', ['crate/tests/sync.rs', 'crate/src/sync/tests.rs', 'crate/src/sync_tests.rs', 'crate/src/test_utils/mod.rs'], ['crate/src/attest.rs', 'crate/src/protest.rs']],
-    ['Swift', ['Tests/AppTests/LoginTests.swift', 'App/AppUITests/LaunchTests.swift', 'Sources/App/LoginTest.swift', 'Sources/App/LoginSpec.swift'], ['Sources/App/Latest.swift', 'Sources/App/Contest.swift', 'Sources/Testing/Login.swift']],
+    ['Swift', ['Tests/AppTests/LoginTests.swift', 'App/AppUITests/LaunchTests.swift', 'Sources/App/LoginTest.swift'], ['Sources/App/Latest.swift', 'Sources/App/Contest.swift', 'Sources/Testing/Login.swift', 'Sources/UI/StackLayoutSpec.swift']],
     ['Java', ['src/test/java/org/app/LoginTest.java', 'src/main/java/org/app/LoginTests.java', 'src/test/java/org/app/PaymentSpec.java'], ['src/main/java/org/app/Latest.java', 'src/main/java/org/app/Contest.java', 'src/main/java/org/app/Attestation.java', 'src/main/java/org/app/PaymentSpec.java']],
     ['Kotlin', ['src/test/kotlin/app/LoginTest.kt', 'app/src/main/kotlin/LoginTests.kt'], ['src/main/kotlin/app/Latest.kt', 'src/main/kotlin/app/Protest.kt', 'src/main/kotlin/app/PodSpec.kt', 'build/LoginSpec.kts']],
     ['C#', ['App.Tests/LoginTests.cs', 'App.Test/Login.cs', 'src/App/LoginTest.cs'], ['src/App/Latest.cs', 'src/App.Testing/Login.cs', 'src/App/ServiceSpec.cs']],
     ['Scala and Groovy', ['src/main/scala/app/LoginSpec.scala', 'src/app/LoginSpec.groovy'], ['src/main/scala/app/Inspect.scala']],
-    ['Python', ['tests/test_login.py', 'app/test_login.py', 'app/login_test.py', 'app/conftest.py'], ['app/contest.py', 'app/latest_test_data.py', 'app/testing.py']],
+    ['Python', ['tests/test_login.py', 'app/test_login.py', 'app/login_test.py', 'app/conftest.py', 'shop/tests.py'], ['app/contest.py', 'app/latest_test_data.py', 'app/testing.py', 'spec/login.py']],
     ['Ruby', ['spec/models/user_spec.rb', 'test/models/user_test.rb', 'lib/user_spec.rb'], ['lib/contest.rb', 'lib/latest.rb', 'lib/inspect.rb']],
+    ['data and documents', ['test/fixtures/user.json', 'pkg/testdata/block.bin', 'src/__tests__/snap.yaml', 'tests/data.toml'], ['api/spec/openapi.yaml', 'openapi_spec.yaml', 'docs/api.spec.json', 'config_test.yaml', 'test_data.json', 'docs/LoginTests.md', 'spec/schema.sql', 'proto/login_test.proto']],
   ])('matches the test layouts of %s and no look-alike', (_language, tests, others) => {
     expect(tests.filter(path => !TEST_PATH.test(path))).toEqual([]);
     expect(others.filter(path => TEST_PATH.test(path))).toEqual([]);
+  });
+
+  // Each mark of a test against a file of each language, and of data and documents, with the languages whose test tools use it.
+  const EXTENSIONS = { TypeScript: 'ts', JavaScript: 'js', Go: 'go', Rust: 'rs', Python: 'py', Ruby: 'rb', Swift: 'swift', Java: 'java', Kotlin: 'kt', Scala: 'scala', Groovy: 'groovy', 'C#': 'cs', YAML: 'yaml', JSON: 'json', TOML: 'toml', Markdown: 'md', protobuf: 'proto', SQL: 'sql' };
+  const EVERY = Object.keys(EXTENSIONS);
+  const CAPITAL = ['Swift', 'Java', 'Kotlin', 'Scala', 'Groovy', 'C#'];
+  it.each<[string, (ext: string) => string, string[]]>([
+    ['test/', ext => `src/test/app/login.${ext}`, EVERY],
+    ['tests/', ext => `tests/login.${ext}`, EVERY],
+    ['__tests__/', ext => `src/__tests__/login.${ext}`, EVERY],
+    ['testdata/', ext => `pkg/testdata/login.${ext}`, EVERY],
+    ['test_utils/', ext => `src/test_utils/login.${ext}`, EVERY],
+    ['spec/', ext => `spec/models/login.${ext}`, ['TypeScript', 'JavaScript', 'Ruby']],
+    ['.test.', ext => `src/login.test.${ext}`, ['TypeScript', 'JavaScript']],
+    ['.spec.', ext => `src/login.spec.${ext}`, ['TypeScript', 'JavaScript']],
+    ['_test', ext => `src/login_test.${ext}`, ['TypeScript', 'JavaScript', 'Go', 'Rust', 'Python', 'Ruby']],
+    ['_tests', ext => `src/login_tests.${ext}`, ['Rust']],
+    ['_spec', ext => `src/login_spec.${ext}`, ['TypeScript', 'JavaScript', 'Ruby']],
+    ['test_ prefix', ext => `app/test_login.${ext}`, ['Python']],
+    ['conftest', ext => `app/conftest.${ext}`, ['Python']],
+    ['tests module', ext => `src/sync/tests.${ext}`, ['Rust', 'Python']],
+    ['Test name', ext => `src/LoginTest.${ext}`, CAPITAL],
+    ['Tests name', ext => `src/LoginTests.${ext}`, CAPITAL],
+    ['Tests/ folder', ext => `Tests/AppTests/login.${ext}`, CAPITAL],
+    ['.Tests/ folder', ext => `App.Tests/login.${ext}`, CAPITAL],
+    ['Test/ folder', ext => `app/src/androidTest/login.${ext}`, CAPITAL],
+    ['Spec name', ext => `src/LoginSpec.${ext}`, ['Scala', 'Groovy']],
+  ])('counts %s as a test only in the languages whose test tools use it', (_mark, path, languages) => {
+    const wrong = Object.entries(EXTENSIONS).filter(([language, ext]) => TEST_PATH.test(path(ext)) !== languages.includes(language)).map(([language]) => language);
+    expect(wrong).toEqual([]);
   });
 });
 
