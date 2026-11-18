@@ -6333,6 +6333,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug C', file: 'src/app.ts', line: 8, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
         { title: 'Bug D', file: 'src/app.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl' },
         { title: 'Bug E', file: 'src/app.ts', line: 7, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_mno' },
+        { title: 'This change may not be useful as it stands', file: '', line: 0, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_pqr' },
       ],
     );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
@@ -6346,6 +6347,8 @@ describe('runFullReview orchestration', () => {
     const restated = { ...variant, title: 'Bug C again', variantOf: undefined };
     const inBlockerThread = { ...restated, severity: 'blocker' as const, title: 'Bug C crashes', threadId: 'PRRT_jkl' };
     const unreplied = { ...variant, title: 'Bug E in another field', threadId: 'PRRT_mno' };
+    // A doubt the scope reader gave anew goes as a reply into the open thread of its kind.
+    const doubt = { severity: 'warning' as const, title: 'This change may not be useful as it stands', file: '', line: 0, description: 'Nothing calls it.', reviewers: ['Scope reader'], threadId: 'PRRT_pqr' };
     mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
       if (query.includes('addPullRequestReviewThreadReply') && vars.threadId === 'PRRT_mno') throw new Error('rate limited');
       if (query.includes('addPullRequestReviewThreadReply')) return { addPullRequestReviewThreadReply: { comment: { id: `C_${vars.threadId}` } } };
@@ -6353,8 +6356,8 @@ describe('runFullReview orchestration', () => {
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, inBlockerThread, unreplied],
-      highlights: [], reviewComplete: true,
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, inBlockerThread, doubt, unreplied],
+      highlights: [], reviewComplete: true, scope: { doubt: doubt.description, proof: ['src/app.ts:1'] },
       agentNames: ['general'],
       threadEvaluations: [
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in latest push' },
@@ -6416,10 +6419,11 @@ describe('runFullReview orchestration', () => {
       ...(posted ? [
         { threadId: 'PRRT_abc', body: 'Fixed in 1111111.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
         { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
+        { threadId: 'PRRT_pqr', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
       ] : []),
     ]);
-    // Every answered finding of a thread is in its one reply.
-    if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith([worse, worse]);
+    // Every answered finding of a thread is in its one reply. The open scope thread is not reopened.
+    if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply).mock.calls).toEqual([[[worse, worse], true], [[doubt], false]]);
     expect(jest.mocked(ghUtils.formatVariantReply)).toHaveBeenCalledWith(variants);
     // Taken out of its thread, a finding is posted even beside an open thread with its title.
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][5].findings.at(-1)).toEqual({ ...unreplied, threadId: undefined, variantOf: undefined, ownThread: true });
@@ -6428,7 +6432,7 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('deletePullRequestReviewComment')).map(([, vars]) => vars))
       .toEqual(outcome === 'superseded' ? [{ id: 'C_PRRT_ghi' }] : []);
     mockGraphql.mockResolvedValue({ resolveReviewThread: { thread: { isResolved: true } } });
-    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', undefined]);
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', 'PRRT_pqr', undefined]);
   });
 
   it('resolves only threads with status addressed', async () => {

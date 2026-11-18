@@ -25,7 +25,7 @@ import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions,
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
-import { confirmDoubt, runScopeReader, sameAsAnswered, scopeWarnings } from './scope';
+import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -1587,20 +1587,21 @@ export async function runReview(
     });
   }
   // A judgment of the PR as a whole skips the judge's grading. With `review.scope_blocks` it is posted as a warning, never
-  // a blocker: a split `runScopeReader` checked against the diff, and a doubt only once the refuter confirms it. Dedup
-  // drops a repeat of one whose thread was resolved.
+  // a blocker: a split `runScopeReader` checked against the diff, and a doubt only once the refuter confirms it. Each goes
+  // to the one thread of its kind as `placeScopeWarning` decides, not through dedup, which matches by text and place.
   let scope = await scopePromise;
   if (config.review?.scope_blocks && (scope.doubt || scope.split)) {
-    const warnings = scopeWarnings(scope);
-    const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
-    const deduped = previousFindings?.length ? deduplicateFindings(warnings, previousFindings, changed) : { unique: warnings, duplicates: [] };
-    // They skip the judge, which decides for any other finding whether an answered thread settled it. One that says what its
-    // thread was answered on is dropped. Any other is a new judgment, so it is not tied to the answer.
-    const settled = deduped.unique.filter(w => w.answeredIn && sameAsAnswered(w, scope, priorRounds ?? []));
-    const duplicates = [...deduped.duplicates, ...settled.map(finding => ({ finding, matchedTitle: finding.title, matchType: 'exact' as const }))];
-    const unique = deduped.unique.filter(w => !settled.includes(w)).map(({ answeredIn: _answeredIn, ...w }) => w);
-    for (const d of duplicates) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
-    staticDedupCount += duplicates.length;
+    const unique: Finding[] = [];
+    for (const warning of scopeWarnings(scope)) {
+      const placed = placeScopeWarning(warning, scope.purpose, previousFindings ?? [], priorRounds ?? []);
+      if (placed) {
+        unique.push(placed);
+        continue;
+      }
+      core.info(`Scope reader: "${warning.title}" stays out, since its thread is settled and the PR title and description did not change`);
+      duplicateMatches.push({ droppedTitle: warning.title, matchedTitle: warning.title, matchType: 'exact' });
+      staticDedupCount++;
+    }
     // Added after the round's suppression step, so it runs on them here, before a refuter call is spent on a dismissed doubt.
     const suppression = memory?.suppressions?.length ? applySuppressions(unique, memory.suppressions) : { kept: unique, suppressed: [] };
     suppressionCount += suppression.suppressed.length;
@@ -1610,7 +1611,7 @@ export async function runReview(
         workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
         outsideInput: config.review?.outside_input, rules: config.review?.rules,
       }),
-      workspace: refutation.workspace, pair: !!refutation.pair, changeDigest: options.changeDigest, priorRounds: priorRounds ?? [],
+      workspace: refutation.workspace, pair: !!refutation.pair, changeDigest: options.changeDigest, cited: scope.cited, priorRounds: priorRounds ?? [],
     };
     const posted: Finding[] = [];
     for (const warning of suppression.kept) {

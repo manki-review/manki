@@ -5765,6 +5765,10 @@ describe('postReview non-blocking findings', () => {
       '**Fix:**',
       '```ts\nCap it.\n```',
     ]);
+    // A scope warning comes back to a settled thread only after the PR text changed, and to an open one reworded.
+    const [doubt] = scopeWarnings({ doubt: 'Nothing calls the new `parseDate`.', proof: ['src/a.ts:3'] });
+    expect(formatFoundAgainReply([doubt]).split('\n\n')[0]).toBe('The PR title or description changed since this thread was settled, and the scope reader raises this again.');
+    expect(formatFoundAgainReply([doubt], false).split('\n\n')[0]).toBe('The scope reader read the PR again and still raises this, in these words.');
     // An open thread gets the other instances of its problem in one reply.
     const variant = nonBlocking('warning', 'The filter misses `pending`', 11, { description: 'A pending entry survives.' });
     expect(formatVariantReply([variant]).split('\n\n')).toEqual([

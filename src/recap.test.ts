@@ -78,15 +78,6 @@ describe('deduplicateFindings', () => {
     expect(deduplicateFindings(findings, [{ ...answered, answer: undefined }], new Set()).unique).toEqual(findings);
     const unrelated = [makeFinding({ title: 'Unrelated race', file: 'src/foo.ts', line: 42 })];
     expect(deduplicateFindings(unrelated, [answered], new Set()).unique).toEqual(unrelated);
-
-    // A finding tied to no file repeats only one with its exact title, and no push leaves its code unchanged.
-    const scope = [makeFinding({ title: 'This PR mixes topics that belong in separate PRs', file: '', line: 0 })];
-    const scoped = { ...answered, title: scope[0].title, file: '', line: 0, detached: true };
-    expect(deduplicateFindings(scope, [scoped], new Set()).unique).toEqual([{ ...scope[0], answeredIn: { threadId: 'T1', answer: answered.answer, grade: { severity: answered.severity } } }]);
-    expect(deduplicateFindings(scope, [{ ...scoped, detached: undefined, status: 'resolved' }]).duplicates).toEqual([{ finding: scope[0], matchedTitle: scope[0].title, matchType: 'exact' }]);
-    for (const title of ['This PR mixes topics', 'Topics that belong in separate PRs are mixed']) {
-      expect(deduplicateFindings(scope, [{ ...scoped, title, detached: undefined, status: 'resolved' }]).unique).toEqual(scope);
-    }
   });
 
   it('attributes match types: exact, substring, word_overlap', () => {

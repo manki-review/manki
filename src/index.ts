@@ -32,7 +32,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_NAME, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -1690,18 +1690,21 @@ async function findFixingCommit(run: ReviewRun): Promise<(thread: OpenThread) =>
 
 /**
  * Reopens each closed answered thread where the judge kept a finding that repeats its problem, and replies there.
- * A thread gets one reply per round. The round record, not the reply, makes the thread block for a blocker.
+ * A thread gets one reply per round. The round record, not the reply, makes the thread block for a blocker. A scope
+ * warning the reader gave anew also gets a reply in the open thread of its kind, which shows its current wording.
  */
 async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
   const byThread = new Map<string, Finding[]>();
+  const askedAnew = result.scope !== undefined && result.scope.skipped === undefined;
   for (const f of result.findings) {
-    const threadId = f.answeredIn?.threadId;
+    const threadId = f.answeredIn?.threadId ?? (askedAnew && f.reviewers.includes(SCOPE_READER_NAME) ? f.threadId : undefined);
     if (threadId) byThread.set(threadId, [...(byThread.get(threadId) ?? []), f]);
   }
   for (const [threadId, findings] of byThread) {
     const thread = run.recap.previousFindings.find(t => t.threadId === threadId);
+    const closed = !!thread && thread.status !== 'open' && thread.status !== 'replied';
     // Reopened first, so the thread a blocker was listed under stays open even when the reply fails.
-    if (thread && thread.status !== 'open' && thread.status !== 'replied') {
+    if (closed) {
       try {
         await unresolveReviewThread(run.octokit, threadId);
       } catch (error) {
@@ -1709,7 +1712,7 @@ async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promi
       }
     }
     try {
-      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(findings), FOUND_AGAIN_MARKER);
+      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(findings, closed), FOUND_AGAIN_MARKER);
     } catch (error) {
       core.warning(`Failed to reply on answered thread ${threadId}: ${error}`);
     }

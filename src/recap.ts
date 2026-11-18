@@ -1173,8 +1173,7 @@ interface DuplicateMatch {
 
 /**
  * A finding that repeats a problem Manki already answered in a thread is dropped when `changedFiles`, the files changed
- * since the last round, leaves its file out. Otherwise it goes to the judge with `answeredIn` set. A finding tied to no
- * file always goes on, since no push leaves its code unchanged.
+ * since the last round, leaves its file out. Otherwise it goes to the judge with `answeredIn` set.
  */
 function deduplicateFindings(
   newFindings: Finding[],
@@ -1197,7 +1196,7 @@ function deduplicateFindings(
       unique.push(resemblingFixed(finding, matched.prev));
     } else if (matched) {
       duplicates.push({ finding, matchedTitle: matched.prev.title, matchType: matched.matchType });
-    } else if (answeredMatch && changedFiles && finding.file && !changedFiles.has(finding.file)) {
+    } else if (answeredMatch && changedFiles && !changedFiles.has(finding.file)) {
       core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
       duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
     } else if (answeredMatch) {
@@ -1302,8 +1301,6 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
   if (!matchType) return null;
 
   if (finding.file !== previous.file) return null;
-  // A finding tied to no file has no line to narrow the match, so it repeats only one with the same title.
-  if (!finding.file) return titleToSlug(finding.title) === titleToSlug(previous.title) ? matchType : null;
 
   // A thread posted on another file for a finding without a line stands for the whole file. No line narrows the match there, so the title has to be the same.
   if (previous.detached && !previous.line) return titleToSlug(finding.title) === titleToSlug(previous.title) ? matchType : null;

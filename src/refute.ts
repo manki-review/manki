@@ -69,7 +69,7 @@ Respond with ONLY a JSON object. Leave out \`premises\` when the message lists n
 {"outcome": "disproved" | "confirmed" | "unsettled", "rule": "The general rule the finding relies on, in one sentence", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"], "premises": [{"outcome": "disproved" | "confirmed" | "unsettled", "reason": "One plain sentence on what decides this premise", "proof": ["file:line"]}]}`;
 
 /** Returns the SHA-256 over `files` in the workspace, each path with its content, or `undefined` when one cannot be read there. */
-function codeDigest(workspace: string, files: readonly string[]): string | undefined {
+export function codeDigest(workspace: string, files: readonly string[]): string | undefined {
   const hash = createHash('sha256');
   try {
     for (const file of files) {

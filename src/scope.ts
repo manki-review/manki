@@ -2,10 +2,11 @@ import { createHash } from 'crypto';
 
 import * as core from '@actions/core';
 
-import { fileList, LinkedIssue } from './github';
+import { fileList, LinkedIssue, titleToSlug } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
-import { isDiffLocation, restsOnSameCode, shownLines } from './refute';
+import { codeDigest, isDiffLocation, restsOnSameCode, shownLines } from './refute';
+import { PreviousFinding } from './recap';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
 import { agreedOutcome, confirmsAll, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic } from './types';
@@ -102,17 +103,37 @@ function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | u
   const problem = answer.split.length > 0 ? splitProblem(answer.split, diff) : undefined;
   if (problem) dropped.push({ part: 'split', reason: problem });
   const split = answer.split.length > 0 && !problem ? answer.split : [];
+  const cited = workspace && proof.length > 0 ? citedDigest(proof, workspace) : undefined;
   return {
     ...(answer.doubt && proof.length > 0 && { doubt: answer.doubt, proof }),
+    ...(cited && { cited }),
     ...(topics.length > 0 && { topics }),
     ...(split.length > 0 && { split }),
     ...(dropped.length > 0 && { dropped }),
   };
 }
 
+/** Returns the `codeDigest` of the files that `proof` cites in `workspace`. */
+function citedDigest(proof: readonly string[], workspace: string): string | undefined {
+  return codeDigest(workspace, [...new Set(proof.flatMap(at => parseLocation(at)?.file ?? []))].sort());
+}
+
+const digestOf = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
 /** Returns the `purpose` digest of the PR title and description in `prContext`. */
 function purposeOf(prContext: PrContext | undefined): string {
-  return createHash('sha256').update(JSON.stringify([prContext?.title ?? '', prContext?.body ?? ''])).digest('hex');
+  return digestOf([prContext?.title ?? '', prContext?.body ?? '']);
+}
+
+/**
+ * Whether the lines a doubt of `scope` cites are as the reader saw them: the cited files are unchanged in `workspace`
+ * when the reader checked them there, else each cited line is still a line of `diff`.
+ */
+function citedUnchanged(scope: RoundScope, diff: ParsedDiff, workspace: string | undefined): boolean {
+  const proof = [...(scope.proof ?? []), ...(scope.dropped ?? []).flatMap(d => d.proof ?? [])];
+  if (proof.length === 0) return true;
+  if (scope.cited) return !!workspace && citedDigest(proof, workspace) === scope.cited;
+  return proof.every(at => isDiffLocation(at, diff));
 }
 
 /** Returns the latest of `priorRounds` with a scope answer: one the reader gave, or one carried from it. */
@@ -147,21 +168,23 @@ export interface ScopeOptions {
 
 /**
  * Asks one call whether the PR is useful and covers one topic, and returns the round's record of it. It is skipped for a
- * trivial change, and when the diff and the PR's stated purpose are those of the last round with an answer, whose answer
- * it carries then. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
+ * trivial change, and when the diff, the PR title and description, the linked issues and the lines a doubt cites are
+ * those of the last round with an answer, whose answer it carries then. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
  * It never throws.
  */
 export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [] }: ScopeOptions): Promise<RoundScope> {
   if (trivial) return { skipped: 'trivial' };
   const purpose = purposeOf(prContext);
+  const issues = digestOf((linkedIssues ?? []).map(i => [i.number, i.title, i.body]));
+  const tools = !!workspace && !!client.repoTools;
   const last = lastScopeRound(priorRounds);
-  if (changeDigest && last?.diff.changeDigest === changeDigest && last.scope!.purpose === purpose) {
-    const since = last.scope!.since ?? last.meta.round;
-    core.info(`Scope reader: the diff and the PR text did not change since round ${since}, so it is not asked again`);
-    const { dropped, ...answer } = carriedAnswer(last.scope!);
+  const carried = last?.scope;
+  if (changeDigest && carried && last.diff.changeDigest === changeDigest && carried.purpose === purpose && carried.issues === issues && citedUnchanged(carried, diff, tools ? workspace : undefined)) {
+    const since = carried.since ?? last.meta.round;
+    core.info(`Scope reader: the diff, the PR text, the linked issues and the cited lines did not change since round ${since}, so it is not asked again`);
+    const { dropped, ...answer } = carriedAnswer(carried);
     return { ...answer, ...(dropped && { dropped }), skipped: 'unchanged', since };
   }
-  const tools = !!workspace && !!client.repoTools;
   const options: SendMessageOptions = { effort: 'medium', timeoutMs: SCOPE_TIMEOUT_MS, ...(tools && { repoTools: repoTools(workspace!, SCOPE_STEPS, undefined) }) };
   const message = `${buildReviewerUserMessage(rawDiff, '', { prContext, linkedIssues })}\n\n${jsonOnlyReply()}`;
   try {
@@ -174,13 +197,13 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
       },
       error => core.warning(`Scope reader reply could not be used (${error}), asking once more`),
     );
-    const scope = { ...checkScope(answer, diff, tools ? workspace : undefined), purpose };
+    const scope = { ...checkScope(answer, diff, tools ? workspace : undefined), purpose, issues };
     core.info(`Scope reader: ${scope.doubt ? 'a usefulness doubt' : 'no usefulness doubt'}, ${scope.topics?.length ?? 0} topic(s)${scope.split ? `, a split into ${scope.split.length} PRs` : ''}${scope.dropped ? `, ${scope.dropped.length} part(s) dropped by the check` : ''}`);
     return scope;
   } catch (error) {
     const reason = (error instanceof Error ? error.message : String(error)).slice(0, MAX_FAILURE_CHARS);
     core.warning(`Scope reader failed, so the round says nothing about the PR's scope: ${reason}`);
-    return { failed: reason, purpose };
+    return { failed: reason, purpose, issues };
   }
 }
 
@@ -211,14 +234,21 @@ export function scopeWarnings(scope: RoundScope): Finding[] {
 }
 
 /**
- * Whether `warning`, which repeats the scope warning of an answered thread, says what that thread was answered on: the
- * latest earlier round that posted it gave the same text for the same stated purpose. A scope warning rests on no code
- * of its own, so its text and the PR's title and description stand in for the code a push may change.
+ * Places the scope warning `warning` by its kind alone, never by its text, since the reader words each answer anew. A PR
+ * has at most one thread per kind. While that thread is open, the warning goes into it. Once it is settled (withdrawn,
+ * agreed or resolved), it stays settled until the PR's title or description changes from what the latest earlier round
+ * that raised the kind read, and then the warning reopens it. Returns `undefined` for a warning its settled thread keeps out.
  */
-export function sameAsAnswered(warning: Finding, scope: RoundScope, priorRounds: readonly RoundContext[]): boolean {
-  const round = [...priorRounds].sort((a, b) => b.meta.round - a.meta.round).find(r => r.findings.entries.some(e => e.title === warning.title));
-  const earlier = round?.scope && scopeWarnings(round.scope).find(w => w.title === warning.title);
-  return !!earlier && earlier.description === warning.description && round!.scope!.purpose === scope.purpose;
+export function placeScopeWarning(warning: Finding, purpose: string | undefined, previousFindings: readonly PreviousFinding[], priorRounds: readonly RoundContext[]): Finding | undefined {
+  const threads = previousFindings.filter(t => t.threadId && !t.file && titleToSlug(t.title) === titleToSlug(warning.title));
+  const open = threads.find(t => t.status === 'open' || t.status === 'replied');
+  if (open) return { ...warning, threadId: open.threadId };
+  const settled = threads[0];
+  if (!settled) return warning;
+  const raised = [...priorRounds].sort((a, b) => b.meta.round - a.meta.round).find(r => r.findings.entries.some(e => e.title === warning.title));
+  if (!purpose || !raised?.scope?.purpose || raised.scope.purpose === purpose) return undefined;
+  const { severity, recordedGrade, peakGrade, gradeUnknown } = settled;
+  return { ...warning, answeredIn: { threadId: settled.threadId!, answer: settled.answer ?? '', grade: { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }), ...(gradeUnknown && { gradeUnknown }) } } };
 }
 
 export interface DoubtCheck {
@@ -229,18 +259,20 @@ export interface DoubtCheck {
   pair: boolean;
   /** The `changeDigest` of the PR's diff. Unset never reuses an earlier check. */
   changeDigest?: string;
+  /** The round's `RoundScope.cited`. An earlier check is reused only for the same cited code. */
+  cited?: string;
   priorRounds: readonly RoundContext[];
 }
 
 /**
  * Returns the checks that confirmed the doubt `warning` on the latest earlier round that posted it, when that round had
- * the same doubt and the same `changeDigest`, and the files each check rests on are unchanged. The warning is tied to no
+ * the same doubt, the same `cited` code and the same `changeDigest`, and the files each check rests on are unchanged. The warning is tied to no
  * file, so the refuter's own store never finds its check.
  */
-function storedConfirmation(warning: Finding, { workspace, pair, changeDigest, priorRounds }: DoubtCheck): Refutation[] | undefined {
+function storedConfirmation(warning: Finding, { workspace, pair, changeDigest, cited, priorRounds }: DoubtCheck): Refutation[] | undefined {
   const round = [...priorRounds].sort((a, b) => b.meta.round - a.meta.round).find(r => r.findings.entries.some(e => e.title === SCOPE_DOUBT_TITLE));
   const entry = round?.findings.entries.find(e => e.title === SCOPE_DOUBT_TITLE);
-  if (!round || !entry || !changeDigest || round.diff.changeDigest !== changeDigest || round.scope?.doubt !== warning.description) return undefined;
+  if (!round || !entry || !changeDigest || round.diff.changeDigest !== changeDigest || round.scope?.doubt !== warning.description || round.scope.cited !== cited) return undefined;
   const stored = [entry.refutation, ...(pair ? [entry.pairRefutation] : [])];
   if (stored.some(c => !c)) return undefined;
   const checks = stored as Refutation[];

@@ -2651,57 +2651,47 @@ describe('runReview', () => {
       expect(jest.mocked(runScopeReader).mock.calls[0][1]).toMatchObject({ trivial: true });
     });
 
-    it('posts a repeat into the open thread of the same warning, whatever lines a doubt cites, and drops one whose thread was resolved without a fix', async () => {
-      // The earlier doubt cited `src/x.ts:1`. This round's cites another file.
-      jest.mocked(runScopeReader).mockResolvedValue({ doubt: scope.doubt, proof: ['src/y.ts:1'], split: scope.split });
+    it('puts each scope warning into the open thread of its kind, whatever it says or cites, and never into another thread', async () => {
       const entry = (title: string, threadId: string) => makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(title) }, severity: 'warning', title, threadId, reviewers: ['Scope reader'] });
-      const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: { warning: 2 }, entries: [entry(doubtTitle, 'T8'), entry(splitTitle, 'T9')] } })];
+      const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: { warning: 2 }, entries: [entry(doubtTitle, 'T8'), entry(splitTitle, 'T9')] }, scope: { ...scope, purpose: 'purpose-1' } })];
       const config = makeConfig({ review: { scope_blocks: true } });
-      const prior = (status: 'open' | 'resolved') => [doubtTitle, splitTitle].map((title, i) => ({ title, file: '', line: 0, severity: 'warning' as const, status, threadId: `T${8 + i}` }));
-
       // Another thread tied to no file, whose title the doubt's contains, never takes the doubt.
       const other = { threadId: 'T7', title: 'This change may not be useful', file: '', line: 0, severity: 'warning' as const };
-      const open = await runReview(refutingClients('confirmed'), {
-        ...options, config, priorRounds, interRoundDiff: '', workspace: root,
-        openThreads: [other, ...[doubtTitle, splitTitle].map((title, i) => ({ threadId: `T${8 + i}`, title, file: '', line: 0, severity: 'warning' as const }))],
-        previousFindings: [{ ...other, status: 'open' }, ...prior('open')],
-      });
-      expect(fromScope(open)).toEqual([expect.objectContaining({ title: doubtTitle, threadId: 'T8' }), expect.objectContaining({ title: splitTitle, threadId: 'T9' })]);
+      const threads = [other, ...[doubtTitle, splitTitle].map((title, i) => ({ threadId: `T${8 + i}`, title, file: '', line: 0, severity: 'warning' as const }))];
 
-      const clients = refutingClients('confirmed');
-      const resolved = await runReview(clients, { ...options, config, priorRounds, interRoundDiff: '', workspace: root, previousFindings: prior('resolved') });
-      expect(fromScope(resolved)).toEqual([]);
-      expect(resolved.duplicateMatches).toEqual([doubtTitle, splitTitle].map(title => ({ droppedTitle: title, matchedTitle: title, matchType: 'exact' })));
-      // A doubt dedup drops takes no refuter call.
-      expect(refuterCalls(clients)).toEqual([]);
+      // Each push brings another doubt with other lines, and each goes into the one doubt thread.
+      for (const [doubt, proof] of [['Nothing calls the new `parseDate`.', 'src/x.ts:1'], ['Nothing reads the new flag.', 'src/y.ts:1']]) {
+        jest.mocked(runScopeReader).mockResolvedValue({ doubt, proof: [proof], split: scope.split, purpose: 'purpose-1' });
+        const result = await runReview(refutingClients('confirmed'), {
+          ...options, config, priorRounds, interRoundDiff: '', workspace: root, openThreads: threads, previousFindings: threads.map(t => ({ ...t, status: 'open' as const })),
+        });
+        expect(fromScope(result).map(f => [f.title, f.description, f.threadId, f.answeredIn])).toEqual([[doubtTitle, doubt, 'T8', undefined], [splitTitle, expect.any(String), 'T9', undefined]]);
+      }
     }, GIT_TEST_TIMEOUT_MS);
 
-    it('keeps a scope thread its answer or a maintainer settled after a push that changes neither the warning nor the PR text, and posts a new thread once one of them changed', async () => {
+    it('keeps a scope thread its answer or a maintainer settled through pushes that change the diff and the doubt, and reopens it once the PR title or description changed', async () => {
       const answer = { doubt: scope.doubt, proof: ['src/x.ts:1'], split: scope.split, purpose: 'purpose-1' };
       const entry = (title: string) => makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(title) }, severity: 'warning', title, reviewers: ['Scope reader'] });
       const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: { warning: 2 }, entries: [entry(doubtTitle), entry(splitTitle)] }, scope: { ...answer, warned: true } })];
       const config = makeConfig({ review: { scope_blocks: true } });
-      // The push changed a file the doubt cites, which would send any other finding on to the judge.
       const push = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n';
       const settledBy = (status: 'auto-resolved' | 'resolved', reply?: string) => [doubtTitle, splitTitle].map((title, i) => ({
         title, file: '', line: 0, severity: 'warning' as const, status, threadId: `T${8 + i}`, detached: true, ...(reply && { answer: reply }),
       }));
-      const round = async (previousFindings: ReturnType<typeof settledBy>, current: RoundScope = answer) => {
+      const round = async (previousFindings: ReturnType<typeof settledBy>, current: RoundScope) => {
         jest.mocked(runScopeReader).mockResolvedValue(current);
         const clients = refutingClients('confirmed');
         const result = await runReview(clients, { ...options, config, priorRounds, interRoundDiff: push, workspace: root, previousFindings });
-        return { posted: fromScope(result), dropped: result.duplicateMatches?.map(d => d.droppedTitle), calls: refuterCalls(clients).length };
+        return { posted: fromScope(result).map(f => [f.title, f.threadId, f.answeredIn?.threadId]), dropped: result.duplicateMatches?.map(d => d.droppedTitle), calls: refuterCalls(clients).length };
       };
 
       for (const settled of [settledBy('auto-resolved', 'Withdrawn. The CLI calls it.'), settledBy('auto-resolved', 'Agreed. A follow-up issue tracks it.'), settledBy('resolved')]) {
-        expect(await round(settled)).toEqual({ posted: [], dropped: [doubtTitle, splitTitle], calls: 0 });
-      }
-      // A new doubt, or a PR whose title or description changed, is a new judgment, posted in a thread of its own.
-      const withdrawn = settledBy('auto-resolved', 'Withdrawn. The CLI calls it.');
-      for (const current of [{ ...answer, doubt: 'Nothing reads the new flag.' }, { ...answer, purpose: 'purpose-2' }]) {
-        const { posted, calls } = await round(withdrawn, current);
-        expect(calls).toBe(1);
-        expect(posted.map(f => [f.title, f.answeredIn, f.threadId])).toEqual(current.purpose === 'purpose-2' ? [[doubtTitle, undefined, undefined], [splitTitle, undefined, undefined]] : [[doubtTitle, undefined, undefined]]);
+        // Pushes that change the diff and the reader's wording leave it settled, and spend no refuter call.
+        for (const current of [{ ...answer, doubt: 'Nothing reads the new flag.', proof: ['src/y.ts:1'] }, { ...answer, doubt: 'It repeats `src/y.ts`.' }]) {
+          expect(await round(settled, current)).toEqual({ posted: [], dropped: [doubtTitle, splitTitle], calls: 0 });
+        }
+        // A new PR title or description reopens each thread with the round's warning, and posts no second thread.
+        expect(await round(settled, { ...answer, purpose: 'purpose-2' })).toEqual({ posted: [[doubtTitle, undefined, 'T8'], [splitTitle, undefined, 'T9']], dropped: undefined, calls: 1 });
       }
     }, GIT_TEST_TIMEOUT_MS);
 

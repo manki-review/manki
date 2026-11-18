@@ -7,7 +7,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
@@ -1665,9 +1665,17 @@ function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
     : []));
 }
 
-/** Returns Manki's reply in an answered thread when the problem of `findings` came back and the code there got worse. */
-export function formatFoundAgainReply(findings: Finding[]): string {
-  return formatReplyListing('This came up again, and the code here is worse than when this thread was answered.', findings);
+/**
+ * Returns Manki's reply in an answered thread when the problem of `findings` came back and the code there got worse. A
+ * scope warning rests on no code. It comes back to a `closed` thread only after the PR title or description changed, and
+ * to an open one with the reader's current wording, and its reply says which.
+ */
+export function formatFoundAgainReply(findings: Finding[], closed = true): string {
+  const scope = findings.every(f => f.reviewers.includes(SCOPE_READER_NAME));
+  const lead = !scope ? 'This came up again, and the code here is worse than when this thread was answered.'
+    : closed ? 'The PR title or description changed since this thread was settled, and the scope reader raises this again.'
+      : 'The scope reader read the PR again and still raises this, in these words.';
+  return formatReplyListing(lead, findings);
 }
 
 /** Returns Manki's reply in an open thread that lists `variants`, other instances of the problem the thread names. */
