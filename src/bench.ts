@@ -566,21 +566,21 @@ interface ScoredReview {
 
 type KeyScore = Pick<RunScore, 'matches' | 'mustCatchRecall' | 'weightedRecall' | 'verdictCorrect' | 'falseBlockers' | 'unexpectedWarnings' | 'extraFindings' | 'duplicates' | 'followUp'>;
 
+/** Matches `item` to `findings`. The matcher reads only the findings `candidateFindings` keeps, and is not asked when there is none. */
+async function matchItem(benchCase: BenchCase, item: KeyItem, findings: MatchedFinding[], matcher: Matcher): Promise<ItemMatch> {
+  const candidates = candidateFindings(item, findings);
+  if (candidates.length === 0) return { item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' };
+  const decision = await quietly(benchCase, () => matcher(item, candidates.map(i => findings[i])));
+  const named = decision.findings.map(i => candidates[i]);
+  const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
+  return { item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason };
+}
+
 /** Matches the findings of one review to the case's key and returns the part of its score that the key decides. */
 async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved, threads, foldsStored }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
   const matches: ItemMatch[] = [];
   const repeats = repeatItems(benchCase);
-  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) {
-    const candidates = candidateFindings(item, findings);
-    if (candidates.length === 0) {
-      matches.push({ item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' });
-      continue;
-    }
-    const decision = await quietly(benchCase, () => matcher(item, candidates.map(i => findings[i])));
-    const named = decision.findings.map(i => candidates[i]);
-    const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
-    matches.push({ item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason });
-  }
+  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) matches.push(await matchItem(benchCase, item, findings, matcher));
   const isRepeat = (id: string) => repeats.some(item => item.id === id);
   const keyMatches = matches.filter(m => !isRepeat(m.item));
   const restated = restatedFindings(matches.filter(m => isRepeat(m.item)), n => findings[n].foldedInto);
