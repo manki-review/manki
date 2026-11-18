@@ -2220,6 +2220,14 @@ describe('handleBoxCommand', () => {
     })]);
     // A dismissal that resolved the thread leaves the reply record that later rounds and the fix rate read as a settled thread.
     expect(replies.map((r: { body: string }) => settlingDecision(r.body))).toEqual([writer ? { outcome: 'Agreed', thread: 'resolves' } : undefined]);
+    // A suggestion a later round raised to a warning gets no such record, since the record would lift the warning's hold.
+    if (writer) {
+      jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'Token' }]);
+      dismissed.rest.pulls.createReplyForReviewComment.mockClear();
+      expect(await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 })).toBe(true);
+      const raised = jest.mocked(dismissed.rest.pulls.createReplyForReviewComment).mock.calls.map((call: unknown[]) => (call[0] as { body: string }).body);
+      expect([raised.length, raised.map((body: string) => settlingDecision(body))]).toEqual([1, [undefined]]);
+    }
     // A thread someone resolved already is left as it is, so the dismiss did nothing.
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: 'writer', isBlocking: false, findingTitle: 'Token' }]);
     jest.mocked(state.resolveReviewThread).mockClear();

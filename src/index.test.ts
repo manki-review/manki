@@ -8562,6 +8562,17 @@ describe('settings box tick', () => {
     jest.mocked(core.getInput).mockReturnValue('');
   });
 
+  it('puts back a Review again box whose run fails before it settles the box', async () => {
+    jest.clearAllMocks();
+    _resetOctokitCache();
+    jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(true);
+    jest.mocked(authModule.fetchPrState).mockRejectedValueOnce(new Error('token service is down'));
+    const body = 'Text.\n\n<!-- manki-issue-box -->\n- [x] Review again <!-- manki-box:again -->\n\n<!-- manki -->';
+    setContext({ eventName: 'pull_request_review', payload: { action: 'edited', sender: { login: 'alice', type: 'User' }, pull_request: { number: 5, base: { ref: 'main' }, head: { sha: 'abc123' } }, review: { id: 77, body, user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } } } });
+    await expect(run()).rejects.toThrow('token service is down');
+    expect(jest.mocked(issueTick.settleTickedBox).mock.calls).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind: 'review', id: 77 }, 'again', undefined, undefined]]);
+  });
+
   it('runs the issue box and the other boxes of a tick independently, then rethrows the first failure', async () => {
     jest.clearAllMocks();
     _resetOctokitCache();
@@ -8574,6 +8585,11 @@ describe('settings box tick', () => {
     expect(jest.mocked(issueTick.handleIssueBoxTick)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(interaction.handleBoxCommand)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(issueTick.settleTickedBox).mock.calls).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind: 'review_comment', id: 77 }, 'dismiss', undefined, 'alice']]);
+    // When both fail, the first failure is thrown and the second is logged.
+    jest.mocked(issueTick.handleIssueBoxTick).mockRejectedValueOnce(new Error('issue filing failed'));
+    jest.mocked(interaction.handleBoxCommand).mockRejectedValueOnce(new Error('dismiss failed'));
+    await expect(run()).rejects.toThrow('issue filing failed');
+    expect(jest.mocked(core.error)).toHaveBeenCalledWith('A second tick handler failed too: dismiss failed');
   });
 
   it.each([

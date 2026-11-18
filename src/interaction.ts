@@ -838,7 +838,7 @@ async function handleDismiss(
  */
 async function resolveDismissedThread(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined, inThread: number | undefined,
-): Promise<{ resolved: boolean; changed?: boolean; note?: string } | undefined> {
+): Promise<{ resolved: boolean; changed?: boolean; suggestion?: boolean; note?: string } | undefined> {
   const payload = github.context.payload;
   if (!inThread || eventPrClosed()) return undefined;
   const senderLogin = payload.sender?.login;
@@ -859,7 +859,7 @@ async function resolveDismissedThread(
       const now = thread.isWarning ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch(() => undefined) : undefined;
       const holds = now && await warningHoldNote(octokit, bot, owner, repo, now, clearRole);
       // `resolveThreadOf` leaves a resolved thread as it is unless the resolve did not count.
-      return { resolved: true, changed: !thread.isResolved || held, ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}${clearRole ? ' Reopen the thread before you resolve it by hand.' : ''}` }) };
+      return { resolved: true, changed: !thread.isResolved || held, suggestion: !thread.isWarning && !isGuarded(thread), ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}${clearRole ? ' Reopen the thread before you resolve it by hand.' : ''}` }) };
     }
     // Without an override the PR author may not clear the thread. Anyone else's dismissal failed: an override was not recorded, or the thread was not reopened.
     return { resolved: false, note: authorOverride || mayClear ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false, clearRole, thread.isResolved) };
@@ -1298,8 +1298,9 @@ export async function handleBoxCommand(
     case 'dismiss': {
       const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, config.author_clear_role, commentId);
       if (commentId && (thread?.note || thread?.changed)) {
-        // The reply record of an accepted answer is what later rounds and the fix rate read as a dismissal.
-        const record = thread.changed ? [boxDismissRecord(prNumber)] : [];
+        // The reply record of an accepted answer is what later rounds and the fix rate read as a dismissal. It would also
+        // lift a warning's hold, so a thread a later round raised to a warning or a blocker gets none.
+        const record = thread.changed && thread.suggestion ? [boxDismissRecord(prNumber)] : [];
         const text = [thread.changed && `Dismissed by \`@${github.context.payload.sender?.login}\`.`, thread.note].filter(Boolean).join('\n\n');
         await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(text, BOT_MARKER, ...record) });
       }

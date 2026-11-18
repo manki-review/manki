@@ -2413,6 +2413,7 @@ async function handleTicks(): Promise<void> {
       failures.push(error);
     }
   }
+  for (const later of failures.slice(1)) core.error(`A second tick handler failed too: ${later instanceof Error ? later.message : later}`);
   if (failures.length > 0) throw failures[0];
 }
 
@@ -2447,19 +2448,28 @@ async function handleBoxTick(): Promise<void> {
   const ticked = tickedMessageBoxes(object.body ?? '');
   const commands = ticked.flatMap(({ box, id }) => (box === 'again' ? [] : [{ box, id }]));
   const again = ticked.some(({ box }) => box === 'again');
+  const { owner, repo } = github.context.repo;
+  // A Review again run that fails, before or after it settles its box, leaves no ticked box behind.
+  const triggerAgain = async (): Promise<void> => {
+    try {
+      await handleCommentTrigger(true, message);
+    } catch (error) {
+      await getAuth().then(({ octokit }) => settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, undefined), () => undefined);
+      throw error;
+    }
+  };
   if (commands.length === 0) {
-    if (again) await handleCommentTrigger(true, message);
+    if (again) await triggerAgain();
     return;
   }
   const { octokit, bot } = await getAuth();
-  const { owner, repo } = github.context.repo;
   const settled = new Set<(typeof commands)[number]>();
   const settle = async (command: (typeof commands)[number], editor?: string): Promise<void> => {
     settled.add(command);
     await settleTickedBox(octokit, owner, repo, prNumber, message, command.box, command.id, editor);
   };
   try {
-    if (again) await handleCommentTrigger(true, message);
+    if (again) await triggerAgain();
     const baseRef: unknown = payload.pull_request?.base?.ref ?? (await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })).data.base.ref;
     const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(baseRef, 'base branch'));
     const memory = commands.some(({ box }) => box === 'forget') ? (await openMemoryStore(octokit, config.memory, owner, repo, prNumber)).store : undefined;
