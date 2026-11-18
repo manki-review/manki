@@ -4186,6 +4186,17 @@ describe('runReview', () => {
     expect(far.calls).toHaveLength(0);
     expect(far.result.findings.map(f => f.title)).toEqual(['Connection leaked on the error path', 'Close is skipped after an early return']);
 
+    // A finding in another file that cites the blocker's line goes to the dedup model too. One that cites a line two off it shares no line.
+    const elsewhere = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}]' }), [
+      { ...nearbyFindings[0], title: 'Caller never closes the handle', file: 'src/b.ts', line: 5, evidence: { checks: [], proof: ['src/b.ts:5', 'src/a.ts:40'] } },
+      { ...nearbyFindings[1], file: 'src/b.ts', line: 9, evidence: { checks: [], proof: ['src/b.ts:9', 'src/a.ts:42'] } },
+    ]);
+    expect(elsewhere.calls).toHaveLength(1);
+    expect(elsewhere.calls[0][1]).toBe('## Pairs:\n1.\n   A: "Close is skipped after an early return" (src/a.ts:40): "The handle stays open."\n   B: "Caller never closes the handle" (src/b.ts:5): "Leaks a socket."');
+    expect(elsewhere.result.findings.map(f => [f.title, f.description])).toEqual([
+      ['Buffer is never flushed', 'Loses data.'], ['Close is skipped after an early return', 'The handle stays open.\n\nAlso reported as: Caller never closes the handle'],
+    ]);
+
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason closes the fold under the finding, after the fix and the checks.
     const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-refute-'));
@@ -4860,6 +4871,9 @@ describe('runReview', () => {
       // The dedup model decides a nearby pair the static check leaves apart.
       finding('note', 'Helper is misnamed', 'src/y.ts', 7),
       finding('warning', 'File handle leaks', 'src/x.ts', 14, { evidence: undefined }),
+      // So does a pair in two files when one cites the other's line. A line two off it is no shared line.
+      finding('note', 'Caller passes a vague name', 'src/x.ts', 60, { evidence: { checks: [], proof: ['src/x.ts:60', 'src/y.ts:5'] } }),
+      finding('note', 'Caller passes a long name', 'src/x.ts', 70, { evidence: { checks: [], proof: ['src/x.ts:70', 'src/y.ts:7'] } }),
       // A thread the judge finds addressed takes nothing, and a judge link to it is ignored.
       finding('warning', 'Cache never cleared', 'src/x.ts', 40, { variantOf: 'src/x.ts:40:40:cache-never-cleared' }),
       // A note on a file the PR did not change is recorded without being posted, before the fold.
@@ -4867,7 +4881,7 @@ describe('runReview', () => {
     ];
     const judged = { findings, summary: 'Findings.', threadEvaluations: [{ threadId: 'T2', status: 'addressed' as const, reason: 'Cleared now.' }] };
     mockedRunJudgeAgent.mockResolvedValue(judged);
-    const dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}, {"pair": 2, "sameDefect": false}]' }) } as unknown as LLMClient;
+    const dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}, {"pair": 2, "sameDefect": false}, {"pair": 3, "sameDefect": true}]' }) } as unknown as LLMClient;
     const options = {
       config: makeConfig(),
       diff: diffChanging('src/x.ts', 'src/y.ts'),
@@ -4888,10 +4902,12 @@ describe('runReview', () => {
       ['Retry never ends', 'T1', undefined, undefined],
       ['Name is vague', undefined, undefined, 1],
       ['Helper is misnamed', undefined, undefined, 1],
+      ['Caller passes a vague name', undefined, undefined, 1],
+      ['Caller passes a long name', undefined, undefined, undefined],
       ['Cache never cleared', undefined, 'src/x.ts:40:40:cache-never-cleared', undefined],
     ]);
     // A restatement of a review body finding names it, whichever check made the link.
-    expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
+    expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
     // Three warnings cite no proving line. Only the one no earlier finding is linked to is left out for it.
     expect(result.unposted?.map(f => [f.title, f.unpostedReason])).toEqual([['File handle leaks', 'no_proof']]);
     expect(result.unpostedPreExisting?.map(f => f.title)).toEqual(['Old helper is unused']);
@@ -4899,7 +4915,7 @@ describe('runReview', () => {
     expect(result.verdictTrace?.unresolvedPriors).toEqual([]);
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
     expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"');
+    expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"\n3.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Caller passes a vague name" (src/x.ts:60): "d"');
     // A judge that leaves less than 30 seconds starts no dedup call on the nearby pairs, and the round ends incomplete.
     jest.mocked(dedup.sendMessage).mockClear();
     const unfolded = await lateRound((deadline, leave) => {

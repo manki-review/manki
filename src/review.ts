@@ -1565,7 +1565,7 @@ export async function runReview(
       return !cited;
     });
     // A sweep finding near one the round judged, or sharing a line it cites in any file, can say the same in other words, so the dedup model checks those pairs.
-    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) || sharesCitedLine(f, s) ? [{ i, f }] : []));
+    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => mayRestate(f, s) ? [{ i, f }] : []));
     const dedupClient = clients.dedup && lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
@@ -2951,7 +2951,7 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 
 /**
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
- * thread. A pair `sameProblem` does not settle but that sits near each other is folded when `dedup` says both describe
+ * thread. A pair `sameProblem` does not settle but that `mayRestate` pairs is folded when `dedup` says both describe
  * the same defect, asked in one call for the whole round. The blocker keeps its grade and takes what `foldInto` merges.
  * It takes the finding's code fix only when it has none and both sit on one line, since a one-line fix replaces the line
  * its comment sits on. A title the blocker's does not contain is added to its description, so a second defect folded
@@ -2961,7 +2961,7 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
   const merged = blockers.map(b => ({ ...b }));
   // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
   const matched = findings.map(f => blockers.findIndex(b => sameProblem(b, f)));
-  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => nearEachOther(b, f) ? [{ i, j }] : []) : []);
+  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => mayRestate(b, f) ? [{ i, j }] : []) : []);
   if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} nearby finding pairs stay apart unchecked, since the round has no dedup model`);
   const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [blockers[j], findings[i]]), dedup) : [];
   pairs.forEach(({ i, j }, k) => {
@@ -3051,7 +3051,7 @@ export function restatesEarlier(earlier: EarlierFinding[], f: Finding): boolean 
  * Points each finding that restates one of the `earlier` findings at it, so the review posts no second copy. A finding
  * restating an open thread or a finding recorded under one takes its `threadId`, and one restating a finding listed in
  * an earlier review body takes `raisedIn`. The judge's `sameAs` counts first. A finding the judge left unlinked is
- * matched by `sameProblem`, then by the `dedup` model for nearby pairs, asked in one call for the whole round. A finding
+ * matched by `sameProblem`, then by the `dedup` model for the pairs `mayRestate` makes, asked in one call for the whole round. A finding
  * the judge calls a variant of an open thread's finding goes to that thread too, and keeps `variantOf` so it is posted
  * there as a reply, unless the same checks find it restates a finding recorded under that thread. A security finding
  * joins only a security thread, and one no thread carries is marked `ownThread`.
@@ -3078,7 +3078,7 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
     const same = candidates(f, links[i]).find(e => sameProblem(e.finding, f));
     if (same) links[i] = { earlier: same, variant: false };
   });
-  const pairs = findings.flatMap((f, i) => candidates(f, links[i]).flatMap(e => nearEachOther(e.finding, f) ? [{ i, e }] : []));
+  const pairs = findings.flatMap((f, i) => candidates(f, links[i]).flatMap(e => mayRestate(e.finding, f) ? [{ i, e }] : []));
   if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} findings near an earlier finding stay apart unchecked, since the round has no dedup model`);
   const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, e }) => [e.finding, findings[i]]), dedup) : [];
   pairs.forEach(({ i, e }, k) => {
@@ -3206,6 +3206,11 @@ export function sameProblem(a: Located, b: Located): boolean {
   if (overlap === null) return false;
   if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
   return citesLineOf(a, b) || citesLineOf(b, a) || near;
+}
+
+/** Whether `a` and `b` may name one defect in other words, so the dedup model is asked: they sit near each other in one file, or share a cited line in any file. */
+function mayRestate(a: Located, b: Located): boolean {
+  return nearEachOther(a, b) || sharesCitedLine(a, b);
 }
 
 /** Whether `a` and `b` sit in one file, and their lines or the narrow proof lines they cite there are at most `DISMISSED_LINE_TOLERANCE` apart. */
