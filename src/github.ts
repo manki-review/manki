@@ -1991,7 +1991,8 @@ export async function postReview(
   const leftTo = new Map<Finding, string>();
   /** The findings an open thread already carries. */
   const carriedFindings = new Set<Finding>();
-  const carriedThreadIds = new Set<string>();
+  /** The open threads that carry a finding, each with whether one of its findings is a blocker. */
+  const carriedThreads = new Map<string, boolean>();
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
   const followUps = agreedFollowUps(existingThreads);
@@ -2068,7 +2069,7 @@ export async function postReview(
     if (threadId && openThread && !gradedAbove(f.severity, openThread)) {
       core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
       carriedFindings.add(f);
-      carriedThreadIds.add(threadId);
+      carriedThreads.set(threadId, !!carriedThreads.get(threadId) || isCountedBlocker(f));
       if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
         stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, links)}`.replace(/^(?=.)/gm, '  ')}`);
@@ -2117,7 +2118,11 @@ export async function postReview(
   const blockingFindings = result.findings.filter(f => isCountedBlocker(f) && !listedByHuman(f));
   const relisted = blockingFindings.filter(f => f.relisted).length;
   const priors = (result.verdictTrace?.unresolvedPriors ?? []).filter(p => !humanFingerprints.has(p.fingerprint));
-  const earlier = [...carriedThreadIds].filter(id => !humanThreads.has(id)).length + relisted + priors.length;
+  // A thread counts once: as an earlier blocker when `priors` lists it or a blocker restates it, else as a warning.
+  const priorThreads = new Set(priors.map(p => p.threadId));
+  const restated = [...carriedThreads].filter(([id]) => !humanThreads.has(id) && !priorThreads.has(id));
+  const earlier = restated.filter(([, blocker]) => blocker).length + relisted + priors.length;
+  const restatedWarnings = restated.length - restated.filter(([, blocker]) => blocker).length;
   const fresh = blockingFindings.filter(f => !carriedFindings.has(f)).length - relisted;
   const blockerCounts: BlockerCounts = { fresh, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
@@ -2163,7 +2168,7 @@ export async function postReview(
     const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     // Without their threads, the body lists them, so the verdict line still counts them.
     const listed = [...bodyFindings, ...listedNotes, ...unthreadedWarnings, ...(withoutLineThreads ? inline : [])];
-    const lead = formatLead(result, blockerCounts, { threads, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
+    const lead = formatLead(result, blockerCounts, { threads, restatedWarnings, listed, carried, hold, warningHold, autoApprove }, limitWarning, unreadRecords);
     const line = approvalRefusal ? APPROVAL_REFUSED_LINES[approvalRefusal] : heldLines;
     let head = line ? `${line}\n\n${lead}` : lead;
     if (context?.meta.trigger?.catchUp) head += `\n\n${CATCH_UP_LINE}`;
@@ -2563,31 +2568,44 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
     if (all.length === 0) return APPROVED_LINE;
     return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;
   },
-  ADDRESS_FIRST: (_result, blockers, { threads }) => {
-    const others = formatNonBlockingThreads(threads);
+  ADDRESS_FIRST: (_result, blockers, { threads, restatedWarnings }) => {
+    const others = formatNonBlockingThreads(threads, restatedWarnings);
     return `🔴 **Changes requested:** ${formatBlockerCounts(blockers)}${others ? `, plus ${others}` : ''}.`;
   },
   INCOMPLETE: result => `${REVIEW_INCOMPLETE_LINE} ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
-  NOT_CONVERGING: (result, blockers, { threads }) => {
+  NOT_CONVERGING: (result, blockers, { threads, restatedWarnings }) => {
     const listed = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
-    const others = [blockers.fresh + blockers.earlier > 0 ? formatBlockerCounts(blockers) : '', formatNonBlockingThreads(threads)].filter(Boolean);
-    // A part that already joins two counts with "and" is set apart by a comma.
-    const plus = others.length > 0 ? `, plus ${others.join(others.some(o => o.includes(' and ')) ? ', and ' : ' and ')}` : '';
+    const others = [blockers.fresh + blockers.earlier > 0 ? formatBlockerCounts(blockers) : '', formatNonBlockingThreads(threads, restatedWarnings)];
+    const plus = others.some(Boolean) ? `, plus ${joinCounts(others)}` : '';
     return result.needsHuman?.cause === 'budget'
       ? `🛑 **Needs a human:** ${listed} still open after the last automatic round${plus}.`
       : `🛑 **Needs a human:** ${listed} came back after a fix${plus}.`;
   },
 };
 
-/** Returns the counts of the findings posted as threads that do not block, as "1 warning in threads", or '' when there are none. */
-function formatNonBlockingThreads(threads: Finding[]): string {
+/**
+ * Returns the counts of the findings posted as threads that do not block, and of the `earlier` warning threads this
+ * round restates, as "1 warning in threads and 1 warning still open from an earlier review", or '' when there are none.
+ */
+function formatNonBlockingThreads(threads: Finding[], earlier: number): string {
   const others = threads.filter(f => !isCountedBlocker(f));
-  return others.length > 0 ? `${formatSeverityCounts(others)} in threads` : '';
+  return joinCounts([
+    others.length > 0 ? `${formatSeverityCounts(others)} in threads` : '',
+    earlier > 0 ? `${countOf(earlier, 'warning')} still open from ${earlier === 1 ? 'an earlier review' : 'earlier reviews'}` : '',
+  ]);
+}
+
+/** Joins the non-empty `parts` with "and". A part that already joins two counts with "and" is set apart by a comma. */
+function joinCounts(parts: string[]): string {
+  const kept = parts.filter(Boolean);
+  return kept.join(kept.some(p => p.includes(' and ')) ? ', and ' : ' and ');
 }
 
 /** The findings this round posts: as threads, listed in the body, and the hold on an approval. */
 interface PostedFindings {
   threads: Finding[];
+  /** The earlier warning threads a finding of this round restates, which no blocker of this round or earlier one shares. */
+  restatedWarnings: number;
   listed: Finding[];
   /** The warnings carried from earlier rounds, which an approval counts with the findings it lists. */
   carried: FindingFingerprintEntry[];

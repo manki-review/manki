@@ -1256,6 +1256,13 @@ describe('formatBlockingPriorThreads', () => {
       },
     });
     expect(formatBlockingPriorThreads(result)).toBe('**Still open from earlier reviews:**\n- `a.ts:1`: x');
+    // A blocker of the round that restates the prior on its open thread leaves the prior listed.
+    const restating = makeResult({
+      ...result,
+      findings: [{ severity: 'blocker', title: 'x again', file: 'a.ts', line: 1, description: 'D.', reviewers: [], sameAs: 'a.ts:1:1:x', threadId: 'B1' }],
+      verdictTrace: { ...result.verdictTrace!, unresolvedPriors: [{ ...result.verdictTrace!.unresolvedPriors[0], threadId: 'B1' }] },
+    });
+    expect(formatBlockingPriorThreads(restating)).toBe('**Still open from earlier reviews:**\n- `a.ts:1`: x');
   });
 
   it('returns null when there are no unresolved priors on the trace', () => {
@@ -2194,15 +2201,35 @@ describe('postReview body lead', () => {
     ]);
     expect(body).not.toContain(`[${blocker.title}]`);
     expect(body).not.toContain('What this does');
-    // A warning thread counts as a warning. A thread that carries a warning stays counted as still open, as it is listed.
+    // A warning thread counts as a warning, also an earlier one that a finding of the round restates.
     const warning: Finding = { ...blocker, severity: 'warning', title: 'Retry has no limit', line: 8 };
     const carriedWarning: Finding = { ...warning, title: 'Cache is never cleared', threadId: 'W1' };
     const warningThread: PreviousFinding = { title: carriedWarning.title, file: 'src/a.ts', line: 8, severity: 'warning', status: 'open', threadId: 'W1' };
     const warned = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, findings: [blocker, warning] });
     expect(lead(warned.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker, plus 1 warning in threads\.\n/u);
     const carriedOpen = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, findings: [blocker, warning, carriedWarning] }, [warningThread]);
-    expect(lead(carriedOpen.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 1 still open, plus 1 warning in threads\.\n/u);
+    expect(lead(carriedOpen.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker, plus 1 warning in threads and 1 warning still open from an earlier review\.\n/u);
     expect(carriedOpen.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:8`: Cache is never cleared');
+
+    // Each earlier thread counts once: as a blocker when it carries one or the round's priors list it, else as a warning.
+    const blockerThread = (threadId: string, line: number): PreviousFinding => ({ title: `Thread ${threadId}`, file: 'src/a.ts', line, severity: 'blocker', status: 'open', threadId });
+    const onB1: Finding = { ...warning, title: 'Warning on a listed prior', line: 3, threadId: 'B1' };
+    const onB2 = [{ ...blocker, title: 'Blocker on B2', line: 4, threadId: 'B2' }, { ...warning, title: 'Warning on B2', line: 4, threadId: 'B2' }];
+    const onW2 = [{ ...carriedWarning, threadId: 'W2' }, { ...warning, title: 'Second warning on W2', threadId: 'W2' }];
+    const mixed = await postedBody({
+      ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined,
+      findings: [blocker, onB1, ...onB2, ...onW2],
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [{ file: 'src/a.ts', line: 3, title: 'Thread B1', fingerprint: 'kb1', threadId: 'B1' }] },
+    }, [blockerThread('B1', 3), blockerThread('B2', 4), { ...warningThread, threadId: 'W2' }]);
+    expect(lead(mixed.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 2 still open, plus 1 warning still open from an earlier review\.\n/u);
+    // A blocker that restates a prior on its open thread is counted and listed as still open.
+    const restated = await postedBody({
+      ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined,
+      findings: [{ ...blocker, title: 'Restated blocker', line: 3, sameAs: 'kb1', threadId: 'B1' }],
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [] },
+    }, [blockerThread('B1', 3)]);
+    expect(lead(restated.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\.\n/u);
+    expect(restated.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:3`: Thread B1');
   });
 
   it('opens a NOT_CONVERGING round with "Needs a human" and its blockers', async () => {
