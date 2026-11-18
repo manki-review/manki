@@ -2829,20 +2829,29 @@ function findRepeatedBlockers(
   });
 }
 
-/**
- * Whether a push since `p` was last raised may have changed its file or a file it cites. Only the inter-round diffs prove a
- * file unchanged: this round's, and an empty one in the record of every round since. A missing record, an unknown diff or a
- * finding tied to no file counts as a change.
- */
+/** Whether a push since `p` was last raised may have changed its file, a file it cites or a file its thread links. A finding tied to no file counts as changed. */
 function citedPlaceMayHaveChanged(p: PriorFinding, sortedPriorRounds: RoundContext[], interRoundDiff: string | undefined, previousFindings: PreviousFinding[] | undefined): boolean {
   const { fingerprint, evidence, threadId } = p.entry;
-  if (interRoundDiff === undefined || !fingerprint.file) return true;
-  const later = sortedPriorRounds.filter(r => r.meta.round > p.round);
-  if (!later.every((r, i) => r.meta.round === p.round + i + 1 && r.judge.interRoundDiffState === 'empty')) return true;
-  const changed = filesChangedByPush(interRoundDiff);
-  const cited = [fingerprint.file, ...[...(evidence?.proof ?? []), ...parseProof(evidence?.checks)].flatMap(at => parseLocation(at)?.file ?? [])];
   const thread = previousFindings?.find(t => t.threadId === threadId);
-  return cited.some(file => changed.has(file)) || (!!thread && pushTouchesThread(thread, changed));
+  const files = [...citedFiles({ file: fingerprint.file, evidence }), ...(thread ? [thread.file, ...(thread.evidenceFiles ?? [])] : [])];
+  return !fingerprint.file || filesMayHaveChangedSince(p.round, files, sortedPriorRounds, interRoundDiff);
+}
+
+/**
+ * Whether a push since round `round` may have changed one of `files`. Only the inter-round diffs prove a file unchanged:
+ * this round's, and an empty one in the record of every round since. A missing record or an unknown diff counts as a change.
+ */
+function filesMayHaveChangedSince(round: number, files: readonly string[], sortedPriorRounds: RoundContext[], interRoundDiff: string | undefined): boolean {
+  if (interRoundDiff === undefined) return true;
+  const later = sortedPriorRounds.filter(r => r.meta.round > round);
+  if (!later.every((r, i) => r.meta.round === round + i + 1 && r.judge.interRoundDiffState === 'empty')) return true;
+  const changed = filesChangedByPush(interRoundDiff);
+  return files.some(file => changed.has(file));
+}
+
+/** Returns the file `f` sits in and the files it cites in its proof or checks. */
+function citedFiles(f: { file: string; evidence?: FindingEvidence }): string[] {
+  return [f.file, ...[...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)].flatMap(at => parseLocation(at)?.file ?? [])].filter(Boolean);
 }
 
 /**

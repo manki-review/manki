@@ -1218,9 +1218,7 @@ function deduplicateFindings(
       core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
       duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
     } else if (answeredMatch) {
-      const { threadId, answer, severity, recordedGrade, peakGrade, gradeUnknown } = answeredMatch.prev;
-      const grade = { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }), ...(gradeUnknown && { gradeUnknown }) };
-      unique.push({ ...finding, answeredIn: { threadId, answer, grade } });
+      unique.push({ ...finding, answeredIn: answeredInOf(answeredMatch.prev) });
     } else {
       unique.push(finding);
     }
@@ -1247,6 +1245,12 @@ function withPostedLine(previousFindings: PreviousFinding[]): PreviousFinding[] 
 
 function isAnswered(f: PreviousFinding): f is PreviousFinding & { answer: string; threadId: string } {
   return !!f.answer && !!f.threadId;
+}
+
+/** Returns the thread and Manki's answer there that a finding repeating the answered `prev` goes to the judge with. */
+function answeredInOf(prev: PreviousFinding & { answer: string; threadId: string }): NonNullable<Finding['answeredIn']> {
+  const { threadId, answer, severity, recordedGrade, peakGrade, gradeUnknown } = prev;
+  return { threadId, answer, grade: { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }), ...(gradeUnknown && { gradeUnknown }) } };
 }
 
 function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]): { prev: P; matchType: DuplicateMatchType } | undefined {
