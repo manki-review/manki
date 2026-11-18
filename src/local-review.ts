@@ -367,6 +367,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       headSha: head,
       excludedPaths: excludedFiles.map(f => f.path),
       lockfiles,
+      changeDigest: changeDigest(fullDiff),
       signal,
       ...(input.relatedReposAsOf && { relatedReposAsOf: input.relatedReposAsOf }),
       // A local review without an earlier round has no thread, so a round with nothing to judge skips the judge.

@@ -7,7 +7,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, agreedOutcome, confirmsAll, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
@@ -1665,9 +1665,17 @@ function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
     : []));
 }
 
-/** Returns Manki's reply in an answered thread when the problem of `findings` came back and the code there got worse. */
-export function formatFoundAgainReply(findings: Finding[]): string {
-  return formatReplyListing('This came up again, and the code here is worse than when this thread was answered.', findings);
+/**
+ * Returns Manki's reply in an answered thread when the problem of `findings` came back and the code there got worse. A
+ * scope warning rests on no code. It comes back to a `closed` thread only after the PR title or description changed, and
+ * to an open one with the reader's current wording, and its reply says which.
+ */
+export function formatFoundAgainReply(findings: Finding[], closed = true): string {
+  const scope = findings.every(f => f.reviewers.includes(SCOPE_READER_NAME));
+  const lead = !scope ? 'This came up again, and the code here is worse than when this thread was answered.'
+    : closed ? 'The PR title or description changed since this thread was settled, and the scope reader raises this again.'
+      : 'The scope reader read the PR again and still raises this, in these words.';
+  return formatReplyListing(lead, findings);
 }
 
 /** Returns Manki's reply in an open thread that lists `variants`, other instances of the problem the thread names. */
@@ -2039,6 +2047,7 @@ export async function postReview(
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
+      formatScope(result.scope, linkTo),
       overrides,
       readyReport?.whatToTest,
       // The fold points at the progress comment's "Judge decisions", which an incomplete round does not have.
@@ -2571,6 +2580,32 @@ const RELATION_ACTION: Record<Extract<RelatedRelation, 'duplicate' | 'fixes_issu
   duplicate: link => `${link} seems to make the same change. Close one of the two if so.`,
   fixes_issue: (link, number) => `This PR may fix ${link}. Add \`Closes #${number}\` to the description if it does.`,
 };
+
+/** Files a list of files shows by name before it counts the rest. */
+const MAX_LISTED_FILES = 10;
+
+/** Returns `files` as inline code, at most `MAX_LISTED_FILES` of them and a count of the rest. */
+export function fileList(files: readonly string[]): string {
+  const shown = files.slice(0, MAX_LISTED_FILES).map(f => inlineCode(sanitizeFilePath(f))).join(', ');
+  return files.length > MAX_LISTED_FILES ? `${shown} and ${files.length - MAX_LISTED_FILES} more` : shown;
+}
+
+/**
+ * Returns the review body's Scope section: the scope reader's doubt that the change is useful and its proposed split,
+ * or null when it has neither, or when `review.scope_blocks` posted them as warnings.
+ */
+function formatScope(scope: RoundScope | undefined, linkTo: LineLink): string | null {
+  if (!scope || scope.warned || (!scope.doubt && !scope.split)) return null;
+  const cited = (scope.proof ?? []).flatMap(at => {
+    const range = lineRange(at.slice(0, at.lastIndexOf(':')), at.slice(at.lastIndexOf(':') + 1));
+    return range ? [linkedRange(range, linkTo)] : [];
+  });
+  const parts = [
+    scope.doubt && `**Is this change useful?** ${sanitizeMarkdown(scope.doubt)}${cited.length > 0 ? ` See ${cited.join(', ')}.` : ''}`,
+    scope.split && `**Split into ${scope.split.length} PRs?** The change covers topics that each make sense on their own:\n\n${scope.split.map((part, i) => `${i + 1}. ${sanitizeMarkdown(part.name)}: ${fileList(part.files)}`).join('\n')}`,
+  ].filter(Boolean);
+  return `**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.\n\n${parts.join('\n\n')}`;
+}
 
 /**
  * Returns the note listing the open PRs this PR may duplicate and the open issues it may fix, each with what to do, or

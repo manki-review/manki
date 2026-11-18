@@ -17,6 +17,7 @@ import { RunCancelledError, stopWritesOn } from './abort';
 import * as auth from './auth';
 import { REOPENED_MARKER } from './recap';
 import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
+import { scopeWarnings } from './scope';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -1038,6 +1039,27 @@ describe('handleReviewCommentReply', () => {
     expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
     expect(body.endsWith(`\n${REOPENED_MARKER}`)).toBe(noted);
     expect(jest.mocked(state.reopenThread).mock.calls).toEqual(authorResolved || (resolved && reason) ? [[octokit, 'PRRT_this']] : []);
+  });
+
+  it('settles a warning of the scope reader like any warning: the PR author\'s reason why the change is needed resolves its thread', async () => {
+    setContext({
+      comment: { id: 1, body: 'The CLI calls it, see src/file.ts:10.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'NONE' },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: 'pr-author' },
+    });
+    const [doubt] = scopeWarnings({ doubt: 'Nothing calls the new `parseTimeout`.', proof: ['src/file.ts:3'] });
+    const octokit = createMockOctokit();
+    const body = jest.requireActual('./github').formatFindingComment({ ...doubt, tags: ['follow-up'] }, TEST_LINKS, 'detached');
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body, path: 'src/file.ts', line: null } });
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Withdrawn. The CLI calls `parseTimeout` at `src/file.ts:10`.') });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: doubt.title }]);
+    jest.mocked(state.resolveReviewThread).mockClear();
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+    expect(jest.mocked(client.sendMessage).mock.calls[0][1]).toContain(doubt.title);
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'INVALID']]);
   });
 
   // The statements of the developer's reply are listed below the answer. No status of one reaches a thread.

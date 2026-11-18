@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckStatus, confirmsAll, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -69,7 +69,7 @@ Respond with ONLY a JSON object. Leave out \`premises\` when the message lists n
 {"outcome": "disproved" | "confirmed" | "unsettled", "rule": "The general rule the finding relies on, in one sentence", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"], "premises": [{"outcome": "disproved" | "confirmed" | "unsettled", "reason": "One plain sentence on what decides this premise", "proof": ["file:line"]}]}`;
 
 /** Returns the SHA-256 over `files` in the workspace, each path with its content, or `undefined` when one cannot be read there. */
-function codeDigest(workspace: string, files: readonly string[]): string | undefined {
+export function codeDigest(workspace: string, files: readonly string[]): string | undefined {
   const hash = createHash('sha256');
   try {
     for (const file of files) {
@@ -81,6 +81,11 @@ function codeDigest(workspace: string, files: readonly string[]): string | undef
     return undefined;
   }
   return hash.digest('hex');
+}
+
+/** Whether the files `check` rests on are in `workspace` as they were when it ran, so a later round may reuse it. */
+export function restsOnSameCode(check: Refutation, workspace: string): boolean {
+  return codeDigest(workspace, check.files) === check.codeDigest;
 }
 
 function locationFile(location: string): string {
@@ -186,7 +191,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       ...(round.judge.dropped ?? []).map(d => ({ ...d, refutation: d[field] })),
     ].find(({ title, file, line, refutation }) => refutation?.defect && file === finding.file && Math.abs(line - finding.line) <= LINE_TOLERANCE
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
-      && codeDigest(workspace, refutation.files) === refutation.codeDigest)?.refutation;
+      && restsOnSameCode(refutation, workspace))?.refutation;
     if (!refutation) continue;
     const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes'
       && (outcomeOf(refutation) !== 'disproved' || (refutation.defect !== 'confirmed' && citesFindingCode(finding.file, refutation.proof ?? [], diff)));
@@ -475,9 +480,11 @@ const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.len
 /**
  * Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted
  * either way. So is a finding `gradedByRule` under `rules`: the judge confirmed the quoted rule and the cited line that breaks it.
+ * So is the scope reader's split, which the code checked against the diff before it became a warning.
  */
 export function needsProof(finding: Finding, rules?: RulesMode): boolean {
-  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !gradedByRule(finding, rules);
+  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !gradedByRule(finding, rules)
+    && !(finding.reviewers.includes(SCOPE_READER_NAME) && finding.title === SCOPE_SPLIT_TITLE);
 }
 
 /**

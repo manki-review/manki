@@ -10,6 +10,7 @@ import { withMarkers } from './utils';
 import { parsePRDiff } from './diff';
 import { extractReviewRecords, formatApprovalRecord, hasOwnMarker } from './review-record';
 import { withoutFences } from './issue-box';
+import { scopeWarnings } from './scope';
 import { isSecurityThread, parseFindingData, parseFindingFromComment, threadMarkerSlug, threadSeverity, type PreviousFinding } from './recap';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
@@ -5715,6 +5716,46 @@ describe('postReview non-blocking findings', () => {
     expect(createReview.mock.calls[1][0].body).not.toContain('Related work');
   });
 
+  it('lists the scope reader\'s doubt and split under Scope only when it has one, and posts them as holding warnings once `review.scope_blocks` made them findings', async () => {
+    const { octokit, createReview, createReviewComment } = makeOctokit();
+    const scope = {
+      doubt: 'Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one.', proof: ['src/a.ts:3', 'src/a.ts:7-9'],
+      topics: [{ name: 'Date parsing', files: ['src/a.ts'] }, { name: 'Flag rename', files: ['src/b.ts'] }],
+      split: [{ name: 'Date parsing', files: ['src/a.ts'] }, { name: 'Flag [rename]', files: ['src/b.ts', 'src/c`d.ts'] }],
+    };
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), scope }, diff);
+    const advisory = createReview.mock.calls[0][0];
+    expect(advisory.event).toBe('APPROVE');
+    expect(advisory.body).toContain([
+      '**Scope:** a judgment of the PR as a whole, not a defect in its code. It never holds the approval.',
+      '',
+      '**Is this change useful?** Nothing calls the new `parseDate`, and `utils/dates.ts` already exports one. See [`src/a.ts:3`](https://github.com/owner/repo/blob/sha/src/a.ts#L3), [`src/a.ts:7-9`](https://github.com/owner/repo/blob/sha/src/a.ts#L7-L9).',
+      '',
+      '**Split into 2 PRs?** The change covers topics that each make sense on their own:',
+      '',
+      '1. Date parsing: `src/a.ts`',
+      "2. Flag [rename]: `src/b.ts`, `src/c'd.ts`",
+    ].join('\n'));
+
+    // A PR that is useful and covers one topic shows no section, and neither does a round that posted the answer as warnings.
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([]), scope: { topics: scope.topics.slice(0, 1) } }, diff);
+    const warnings = scopeWarnings(scope).map(f => ({ ...f, tags: ['follow-up'] }));
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult(warnings), scope: { ...scope, warned: true } }, diff);
+    for (const call of createReview.mock.calls.slice(1)) expect(call[0].body).not.toContain('**Scope:**');
+    // Each warning is a thread tied to no file that holds the approval, posted on the first changed file. The doubt lists the lines it cites.
+    const held = createReview.mock.calls[2][0];
+    expect(held.event).toBe('COMMENT');
+    expect(held.comments).toEqual([]);
+    const threads = createReviewComment.mock.calls.map(call => call[0]);
+    expect(threads).toEqual([0, 1].map(() => expect.objectContaining({
+      path: 'src/a.ts', subject_type: 'file', body: expect.stringContaining('This is not tied to a file or line. Comments are only possible on changed files, so the thread is posted here.'),
+    })));
+    expect(threads[0].body).toContain('**This change may not be useful as it stands**');
+    expect(threads[0].body).toContain('**Checked in the code**\nhttps://github.com/owner/repo/blob/sha/src/a.ts#L2-L9');
+    expect(threads[1].body).toContain('**This PR mixes topics that belong in separate PRs**');
+  });
+
   it('formats the reply to an answered thread whose problem came back worse', () => {
     expect(formatFoundAgainReply([nonBlocking('warning', 'Retry has no `limit`', 11, { description: 'It retries forever.', suggestedFix: 'Cap it.' })]).split('\n\n')).toEqual([
       'This came up again, and the code here is worse than when this thread was answered.',
@@ -5724,6 +5765,10 @@ describe('postReview non-blocking findings', () => {
       '**Fix:**',
       '```ts\nCap it.\n```',
     ]);
+    // A scope warning comes back to a settled thread only after the PR text changed, and to an open one reworded.
+    const [doubt] = scopeWarnings({ doubt: 'Nothing calls the new `parseDate`.', proof: ['src/a.ts:3'] });
+    expect(formatFoundAgainReply([doubt]).split('\n\n')[0]).toBe('The PR title or description changed since this thread was settled, and the scope reader raises this again.');
+    expect(formatFoundAgainReply([doubt], false).split('\n\n')[0]).toBe('The scope reader read the PR again and still raises this, in these words.');
     // An open thread gets the other instances of its problem in one reply.
     const variant = nonBlocking('warning', 'The filter misses `pending`', 11, { description: 'A pending entry survives.' });
     expect(formatVariantReply([variant]).split('\n\n')).toEqual([

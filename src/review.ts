@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, disproof, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -25,6 +25,7 @@ import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions,
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
+import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -711,6 +712,8 @@ export interface ReviewOptions {
   lockfiles?: LockfileDiff[];
   /** Reads the related repos as they were at this ISO 8601 time. A pull request round sets none and reads their newest commit. */
   relatedReposAsOf?: string;
+  /** The `changeDigest` of the PR's diff, which tells whether the scope reader runs again. */
+  changeDigest?: string;
 }
 
 export async function runReview(
@@ -919,6 +922,10 @@ export async function runReview(
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
   if (related && unread) return incomplete(unread);
+  // Asked beside the finders on the judge's client. Only the round's end reads the answer, so nothing waits for it before then.
+  const scopePromise = runScopeReader(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'scope'), {
+    diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds,
+  });
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;
   const comparisonDeadline = new AbortController();
@@ -1579,6 +1586,47 @@ export async function runReview(
       return false;
     });
   }
+  // A judgment of the PR as a whole skips the judge's grading. With `review.scope_blocks` it is posted as a warning, never
+  // a blocker: a split `runScopeReader` checked against the diff, and a doubt only once the refuter confirms it. Each goes
+  // to the one thread of its kind as `placeScopeWarning` decides, not through dedup, which matches by text and place.
+  let scope = await scopePromise;
+  if (config.review?.scope_blocks && (scope.doubt || scope.split)) {
+    const unique: Finding[] = [];
+    for (const warning of scopeWarnings(scope)) {
+      const placed = placeScopeWarning(warning, scope.purpose, previousFindings ?? [], priorRounds ?? []);
+      if (placed) {
+        unique.push(placed);
+        continue;
+      }
+      core.info(`Scope reader: "${warning.title}" stays out, since its thread is settled and the PR title and description did not change`);
+      duplicateMatches.push({ droppedTitle: warning.title, matchedTitle: warning.title, matchType: 'exact' });
+      staticDedupCount++;
+    }
+    // Added after the round's suppression step, so it runs on them here, before a refuter call is spent on a dismissed doubt.
+    const suppression = memory?.suppressions?.length ? applySuppressions(unique, memory.suppressions) : { kept: unique, suppressed: [] };
+    suppressionCount += suppression.suppressed.length;
+    memorySuppressed = [...memorySuppressed, ...suppression.suppressed];
+    const doubtCheck = refutation && {
+      refute: (findings: Finding[]) => refuteBlockers(refutation.client, findings, {
+        workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+        outsideInput: config.review?.outside_input, rules: config.review?.rules,
+      }),
+      workspace: refutation.workspace, pair: !!refutation.pair, changeDigest: options.changeDigest, cited: scope.cited, priorRounds: priorRounds ?? [],
+    };
+    const posted: Finding[] = [];
+    for (const warning of suppression.kept) {
+      const kept = warning.title === SCOPE_DOUBT_TITLE ? await confirmDoubt(warning, doubtCheck) : warning;
+      if (!('reason' in kept)) {
+        posted.push(kept);
+        continue;
+      }
+      core.info(`Scope reader: the doubt is dropped, since ${kept.reason}`);
+      const { doubt, proof, ...rest } = scope;
+      scope = { ...rest, dropped: [...(scope.dropped ?? []), { part: 'doubt', reason: kept.reason, ...(!kept.final && { doubt, proof }) }] };
+    }
+    finalFindings = [...finalFindings, ...posted];
+    scope = { ...scope, warned: true };
+  }
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
@@ -1774,6 +1822,7 @@ export async function runReview(
     ...relatedRecord(),
     ...(sweeps && { sweeps }),
     ...(relatedWork && { relatedWork }),
+    scope,
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team),
   };
 }
@@ -3063,6 +3112,8 @@ type Located = Pick<Finding, 'title' | 'file' | 'line' | 'evidence'>;
  */
 export function sameProblem(a: Located, b: Located): boolean {
   if (a.file !== b.file) return false;
+  // Without a file, no line or proof line places a finding, so only the same title names the same problem.
+  if (!a.file) return titleToSlug(a.title) === titleToSlug(b.title);
   const near = Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
   if (near && sharesProofLine(a, b)) return true;
   const overlap = titleOverlapType(a.title, b.title);

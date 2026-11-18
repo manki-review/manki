@@ -190,6 +190,12 @@ export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 export const FOLLOW_UP_TAG = 'follow-up' as const;
 /** Names the verdict reader as the reviewer of the blockers it reports. */
 export const VERDICT_READER_NAME = 'Verdict reader';
+/** Names the scope reader as the reviewer of the warnings `review.scope_blocks` posts. */
+export const SCOPE_READER_NAME = 'Scope reader';
+/** The title of the warning `review.scope_blocks` posts for a usefulness doubt. Fixed, so a repeat folds into its thread. */
+export const SCOPE_DOUBT_TITLE = 'This change may not be useful as it stands';
+/** The title of the warning `review.scope_blocks` posts for a split. Fixed, so a repeat folds into its thread. */
+export const SCOPE_SPLIT_TITLE = 'This PR mixes topics that belong in separate PRs';
 /** Returns the reviewer name of a round's sweep number `n`, which the findings of that sweep carry. */
 export const sweepName = (n: number): string => `Sweep ${n}`;
 /** Whether `reviewer` is the name of a sweep. */
@@ -722,6 +728,45 @@ export interface RoundPrClaims {
   claims?: RoundPrClaim[];
 }
 
+/** A topic the scope reader sees in a PR, with the changed files that belong to it. */
+export interface ScopeTopic {
+  name: string;
+  files: string[];
+}
+
+/** How the scope reader judged the PR as a whole on a round. */
+export interface RoundScope {
+  /**
+   * Why the reader did not run: a trivial change, or a diff that did not change since `since`, the last round it ran on.
+   * An `unchanged` round carries that round's answer.
+   */
+  skipped?: 'trivial' | 'unchanged';
+  since?: number;
+  /** SHA-256 over the PR title and description the answer was given for, its stated purpose. */
+  purpose?: string;
+  /** SHA-256 over the linked issues the answer was given for. */
+  issues?: string;
+  /** The `codeDigest` of the files a doubt's `proof` cites, when the reader checked them in a checkout. */
+  cited?: string;
+  /** Why the call failed or its reply could not be used. */
+  failed?: string;
+  /** The reader's doubt that the change is useful, kept only with `proof`. With `review.scope_blocks`, also only once the refuter confirms it. */
+  doubt?: string;
+  /** The lines that back `doubt`, each checked to exist. */
+  proof?: string[];
+  /** The distinct topics the reader sees. */
+  topics?: ScopeTopic[];
+  /** The proposed PRs of a split, each with its files, kept only when every file of the diff is in exactly one of them. */
+  split?: ScopeTopic[];
+  /**
+   * The parts of the answer the code check or the refuter left out, with why. Neither shows nor holds the approval. A
+   * doubt the refuter left unsettled keeps its text and lines here, so a later round on the same diff checks it again.
+   */
+  dropped?: Array<{ part: 'doubt' | 'split'; reason: string; doubt?: string; proof?: string[] }>;
+  /** Set when `review.scope_blocks` posted the kept parts as warnings instead of listing them in the review body. */
+  warned?: true;
+}
+
 export interface RoundSlicing {
   /** The changed files in each slice. A file split across slices counts in each. */
   files: number[];
@@ -1133,6 +1178,8 @@ export interface ReviewResult {
   sweeps?: RoundSweep[];
   /** The statements of the PR text the change relies on, each with how its check ended. */
   prClaims?: RoundPrClaims;
+  /** Whether the PR is useful and covers one topic, by the scope reader. */
+  scope?: RoundScope;
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
   /** The threads where a fix was claimed: confirmed by an earlier round, counted as resolved, agreed away by someone who may clear them, or gone. */
@@ -1304,6 +1351,8 @@ export interface ReviewRoutingConfig {
   notes?: number;
   /** Whether a broken required rule of the instruction files is graded by its damage alone (`auto`), at least a warning (`warn`) or blocks (`block`). */
   rules?: RulesMode;
+  /** Whether the scope reader's doubt or split is posted as a warning that holds the approval, instead of only listed in the review body. */
+  scope_blocks?: boolean;
 }
 
 /** How a round's review group was picked. */
@@ -1820,6 +1869,8 @@ export interface RoundContext {
   sweeps?: RoundSweep[];
   /** The statements of the PR text the change relies on, each with how its check ended. */
   prClaims?: RoundPrClaims;
+  /** Whether the PR is useful and covers one topic, by the scope reader. */
+  scope?: RoundScope;
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
   /** The retries, moves to a fallback model and judge calls the round did not start, and why. */
@@ -2648,7 +2699,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'related_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'related_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

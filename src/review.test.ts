@@ -34,7 +34,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, RoundNotStarted, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -46,6 +46,7 @@ import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
+import { runScopeReader } from './scope';
 import { repoToolsPrompt } from './providers/cli-utils';
 
 /** A planner whose call fails, so the round takes the fail-safe triage. */
@@ -1857,6 +1858,9 @@ jest.mock('./judge', () => ({
   MAX_INTER_ROUND_DIFF_CHARS: jest.requireActual('./judge').MAX_INTER_ROUND_DIFF_CHARS,
 }));
 
+// The scope reader asks the judge's client, so a test of that client's calls sees it only where the test asks for it.
+jest.mock('./scope', () => ({ ...jest.requireActual('./scope'), runScopeReader: jest.fn().mockResolvedValue({}) }));
+
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
 jest.mock('./ast-grep', () => ({ ...jest.requireActual('./ast-grep'), loadAstGrep: async () => jest.requireActual('@ast-grep/napi') }));
 
@@ -2560,6 +2564,173 @@ describe('runReview', () => {
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer, at: ['src/queue.ts:6'], status: 'answered', findings: 1 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'compare').map(c => c.agent)).toEqual([reviewer]);
     expect(result.agentNames).not.toContain(reviewer);
+  });
+
+  describe('scope reader', () => {
+    const scope = {
+      doubt: 'Nothing calls the new `parseDate`.', proof: ['src/x.ts:1'],
+      topics: [{ name: 'Date parsing', files: ['src/x.ts'] }, { name: 'Flag rename', files: ['src/y.ts'] }],
+      split: [{ name: 'Date parsing', files: ['src/x.ts'] }, { name: 'Flag rename', files: ['src/y.ts'] }],
+    };
+    const diff = makeDiff({ files: [{ path: 'src/x.ts', changeType: 'modified', hunks: [] }, { path: 'src/y.ts', changeType: 'modified', hunks: [] }] });
+    const options = { diff, rawDiff: 'raw diff', repoContext: '', changeDigest: 'digest-2', openThreads: [] };
+    const fromScope = (r: ReviewResult) => r.findings.filter(f => f.reviewers.includes('Scope reader'));
+    const doubtTitle = 'This change may not be useful as it stands';
+    const splitTitle = 'This PR mixes topics that belong in separate PRs';
+    const answer = (outcome: string) => JSON.stringify({ outcome, reason: 'The lines decide it.', proof: ['src/x.ts:1'], premises: [{ outcome, reason: 'r', proof: ['src/x.ts:1'] }] });
+    /** Clients whose judge model has repository tools and answers each refuter call with `outcome`. */
+    const refutingClients = (outcome: string): ReviewClients => {
+      const clients = makeClients();
+      Object.assign(clients.judge, { repoTools: true });
+      jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string) => ({ content: system.startsWith('You check one finding') ? answer(outcome) : READY_VERDICT }));
+      return clients;
+    };
+    const refuterCalls = (clients: ReviewClients) => jest.mocked(clients.judge.sendMessage).mock.calls.filter(([system]) => system.startsWith('You check one finding'));
+    let root: string;
+    beforeEach(() => {
+      ({ root } = gitWorkspace({ 'src/x.ts': 'old\n', 'src/y.ts': 'old\n' }, { 'src/x.ts': 'export function parseDate() {}\n', 'src/y.ts': 'const FLAG = 1;\n' }));
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    it('asks the reader beside the finders, lists its answer by default, and with `review.scope_blocks` posts it as warnings that skip the judge and never block, a doubt only once the refuter confirms it', async () => {
+      jest.mocked(runScopeReader).mockResolvedValue(scope);
+      const priorRounds = [makeRoundContext(1)];
+      const prContext = { title: 'Parse dates', body: 'Also renames a flag.', baseBranch: 'main' };
+      const linkedIssues = [{ number: 7, title: 'Dates', body: 'Parse them.' }];
+      const blocks = makeConfig({ review: { scope_blocks: true } });
+
+      const advisory = await runReview(makeClients(RAISED), { ...options, config: makeConfig(), prContext, linkedIssues, priorRounds });
+      const confirming = refutingClients('confirmed');
+      const blocking = await runReview(confirming, { ...options, config: blocks, prContext, linkedIssues, priorRounds, workspace: root });
+
+      expect(jest.mocked(runScopeReader).mock.calls[0][1]).toEqual({
+        diff, rawDiff: 'raw diff', prContext, linkedIssues, workspace: undefined, trivial: false, changeDigest: 'digest-2', priorRounds,
+      });
+      expect(advisory.scope).toEqual(scope);
+      expect(fromScope(advisory)).toEqual([]);
+      expect(blocking.scope).toEqual({ ...scope, warned: true });
+      // The judge never sees them, and each stays a warning, so the round is still ready.
+      for (const call of mockedRunJudgeAgent.mock.calls) expect(call[2].findings.flatMap(f => f.reviewers)).not.toContain('Scope reader');
+      expect(blocking.outcome).toBe('READY');
+      // The refuter reads the doubt on its first cited line, and the warning it confirms is tied to no file again.
+      expect(refuterCalls(confirming)).toHaveLength(1);
+      expect(refuterCalls(confirming)[0][1]).toContain(`## Warning no cited line proves: ${doubtTitle}\n\n- **Location**: src/x.ts:1`);
+      expect(fromScope(blocking)).toEqual([
+        expect.objectContaining({
+          severity: 'warning', title: doubtTitle, file: '', line: 0, description: scope.doubt,
+          evidence: { checks: [], proof: ['src/x.ts:1'] }, tags: ['follow-up'], checkStatus: 'confirmed',
+        }),
+        expect.objectContaining({ severity: 'warning', title: splitTitle, file: '', line: 0, tags: ['follow-up'], checkStatus: 'unconfirmed' }),
+      ]);
+      expect(fromScope(blocking)[1].description).toContain('1. Date parsing: `src/x.ts`\n2. Flag rename: `src/y.ts`');
+
+      // A doubt the refuter does not confirm, or one no refuter can check, is dropped into the record. The split needs no refuter.
+      const disproving = refutingClients('disproved');
+      const disproved = await runReview(disproving, { ...options, config: blocks, workspace: root });
+      const unchecked = await runReview(makeClients(), { ...options, config: blocks });
+      const { doubt: _doubt, proof: _proof, ...splitOnly } = scope;
+      // Only a disproof drops the doubt for good. One no check settled keeps its text and lines, so the next round checks it again.
+      expect(disproved.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'the refuter disproved it' }], warned: true });
+      expect(unchecked.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'no check with repository tools could run', doubt: scope.doubt, proof: scope.proof }], warned: true });
+      for (const result of [disproved, unchecked]) expect(fromScope(result).map(f => f.title)).toEqual([splitTitle]);
+
+      // An answer with nothing to say, or one the checks left nothing of, adds no warning and leaves the record as it is.
+      const dropped = { topics: scope.topics, dropped: [{ part: 'split' as const, reason: 'a split needs at least two PRs' }] };
+      jest.mocked(runScopeReader).mockResolvedValue(dropped);
+      const nothing = await runReview(makeClients(RAISED), { ...options, config: blocks });
+      expect(nothing.scope).toEqual(dropped);
+      expect(fromScope(nothing)).toEqual([]);
+    }, GIT_TEST_TIMEOUT_MS);
+
+    it('tells the reader when the quick check alone reads the change', async () => {
+      const clients = makeClients();
+      clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as LLMClient;
+      const docs = makeDiff({ files: [{ path: 'README.md', changeType: 'modified', hunks: [] }] });
+      await runReview(clients, { config: makeConfig(), diff: docs, rawDiff: 'raw diff', repoContext: '' });
+      expect(jest.mocked(runScopeReader).mock.calls[0][1]).toMatchObject({ trivial: true });
+    });
+
+    it('puts each scope warning into the open thread of its kind, whatever it says or cites, and never into another thread', async () => {
+      const entry = (title: string, threadId: string) => makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(title) }, severity: 'warning', title, threadId, reviewers: ['Scope reader'] });
+      const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: { warning: 2 }, entries: [entry(doubtTitle, 'T8'), entry(splitTitle, 'T9')] }, scope: { ...scope, purpose: 'purpose-1' } })];
+      const config = makeConfig({ review: { scope_blocks: true } });
+      // Another thread tied to no file, whose title the doubt's contains, never takes the doubt.
+      const other = { threadId: 'T7', title: 'This change may not be useful', file: '', line: 0, severity: 'warning' as const };
+      const threads = [other, ...[doubtTitle, splitTitle].map((title, i) => ({ threadId: `T${8 + i}`, title, file: '', line: 0, severity: 'warning' as const }))];
+
+      // Each push brings another doubt with other lines, and each goes into the one doubt thread.
+      for (const [doubt, proof] of [['Nothing calls the new `parseDate`.', 'src/x.ts:1'], ['Nothing reads the new flag.', 'src/y.ts:1']]) {
+        jest.mocked(runScopeReader).mockResolvedValue({ doubt, proof: [proof], split: scope.split, purpose: 'purpose-1' });
+        const result = await runReview(refutingClients('confirmed'), {
+          ...options, config, priorRounds, interRoundDiff: '', workspace: root, openThreads: threads, previousFindings: threads.map(t => ({ ...t, status: 'open' as const })),
+        });
+        expect(fromScope(result).map(f => [f.title, f.description, f.threadId, f.answeredIn])).toEqual([[doubtTitle, doubt, 'T8', undefined], [splitTitle, expect.any(String), 'T9', undefined]]);
+      }
+    }, GIT_TEST_TIMEOUT_MS);
+
+    it('keeps a scope thread its answer or a maintainer settled through pushes that change the diff and the doubt, and reopens it once the PR title or description changed', async () => {
+      const answer = { doubt: scope.doubt, proof: ['src/x.ts:1'], split: scope.split, purpose: 'purpose-1' };
+      const entry = (title: string) => makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(title) }, severity: 'warning', title, reviewers: ['Scope reader'] });
+      const priorRounds = [makeRoundContext(1, { findings: { count: 2, severityCounts: { warning: 2 }, entries: [entry(doubtTitle), entry(splitTitle)] }, scope: { ...answer, warned: true } })];
+      const config = makeConfig({ review: { scope_blocks: true } });
+      const push = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n';
+      const settledBy = (status: 'auto-resolved' | 'resolved', reply?: string) => [doubtTitle, splitTitle].map((title, i) => ({
+        title, file: '', line: 0, severity: 'warning' as const, status, threadId: `T${8 + i}`, detached: true, ...(reply && { answer: reply }),
+      }));
+      const round = async (previousFindings: ReturnType<typeof settledBy>, current: RoundScope) => {
+        jest.mocked(runScopeReader).mockResolvedValue(current);
+        const clients = refutingClients('confirmed');
+        const result = await runReview(clients, { ...options, config, priorRounds, interRoundDiff: push, workspace: root, previousFindings });
+        return { posted: fromScope(result).map(f => [f.title, f.threadId, f.answeredIn?.threadId]), dropped: result.duplicateMatches?.map(d => d.droppedTitle), calls: refuterCalls(clients).length };
+      };
+
+      for (const settled of [settledBy('auto-resolved', 'Withdrawn. The CLI calls it.'), settledBy('auto-resolved', 'Agreed. A follow-up issue tracks it.'), settledBy('resolved')]) {
+        // Pushes that change the diff and the reader's wording leave it settled, and spend no refuter call.
+        for (const current of [{ ...answer, doubt: 'Nothing reads the new flag.', proof: ['src/y.ts:1'] }, { ...answer, doubt: 'It repeats `src/y.ts`.' }]) {
+          expect(await round(settled, current)).toEqual({ posted: [], dropped: [doubtTitle, splitTitle], calls: 0 });
+        }
+        // A new PR title or description reopens each thread with the round's warning, and posts no second thread.
+        expect(await round(settled, { ...answer, purpose: 'purpose-2' })).toEqual({ posted: [[doubtTitle, undefined, 'T8'], [splitTitle, undefined, 'T9']], dropped: undefined, calls: 1 });
+      }
+    }, GIT_TEST_TIMEOUT_MS);
+
+    it('reuses the confirmation of an unchanged doubt on an unchanged diff, and asks the refuter again once the doubt, the diff or the code it read changed', async () => {
+      const answer = { doubt: scope.doubt, proof: ['src/x.ts:1'] };
+      jest.mocked(runScopeReader).mockResolvedValue(answer);
+      const config = makeConfig({ review: { scope_blocks: true } });
+      const [confirmed] = fromScope(await runReview(refutingClients('confirmed'), { ...options, config, workspace: root }));
+      const record = (doubt: string, changeDigest: string) => [makeRoundContext(1, {
+        findings: { count: 1, severityCounts: { warning: 1 }, entries: [{ ...makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(doubtTitle) }, severity: 'warning', title: doubtTitle, reviewers: ['Scope reader'] }), refutation: confirmed.refutation }] },
+        scope: { ...answer, doubt, warned: true },
+        diff: { changeDigest, lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
+      })];
+      const round = async (priorRounds: RoundContext[]) => {
+        const clients = refutingClients('confirmed');
+        const result = await runReview(clients, { ...options, config, workspace: root, priorRounds });
+        return [refuterCalls(clients).length, fromScope(result).map(f => f.checkStatus)];
+      };
+
+      expect(await round(record(scope.doubt, 'digest-2'))).toEqual([0, ['confirmed']]);
+      expect(await round(record('Another doubt.', 'digest-2'))).toEqual([1, ['confirmed']]);
+      expect(await round(record(scope.doubt, 'digest-1'))).toEqual([1, ['confirmed']]);
+      writeFileSync(join(root, 'src/x.ts'), 'export function parseDate(text: string) {}\n');
+      expect(await round(record(scope.doubt, 'digest-2'))).toEqual([1, ['confirmed']]);
+    }, GIT_TEST_TIMEOUT_MS);
+
+    it('hides a scope warning that a stored dismissal matches, before the refuter reads it', async () => {
+      jest.mocked(runScopeReader).mockResolvedValue(scope);
+      mockedApplySuppressions.mockImplementation(jest.requireActual<typeof import('./memory')>('./memory').applySuppressions);
+      const memory = { suppressions: [{ id: '7', pattern: 'may not be useful', reason: 'The change is wanted.', created_by: 'maintainer', created_at: '2026-01-01', pr_ref: '#1' }], learnings: [] };
+      const clients = refutingClients('confirmed');
+
+      const result = await runReview(clients, { ...options, config: makeConfig({ review: { scope_blocks: true } }), workspace: root, memory });
+
+      expect(fromScope(result).map(f => f.title)).toEqual([splitTitle]);
+      expect(result.memorySuppressed).toEqual([expect.objectContaining({ title: doubtTitle, suppressedBy: '7' })]);
+      expect(result.suppressionCount).toBe(1);
+      expect(refuterCalls(clients)).toEqual([]);
+    }, GIT_TEST_TIMEOUT_MS);
   });
 
   describe('claims of the PR text', () => {

@@ -4472,7 +4472,7 @@ describe('runFullReview orchestration', () => {
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
-    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons, the claims of the PR text and the token service calls', async () => {
+    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons, the claims of the PR text, the scope answer and the token service calls', async () => {
       const blocker = { file: 'src/app.ts', line: 5, title: 'Bug', fingerprint: 'k' };
       const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
@@ -4490,6 +4490,7 @@ describe('runFullReview orchestration', () => {
           { quote: 'the index already rejects duplicates', source: 'description', reviewer: 'Claim check 2', status: 'unchecked' as const, call: 'timed_out' as const },
         ],
       };
+      const scope = { topics: [{ name: 'Fix', files: ['src/app.ts'] }, { name: 'Rename', files: ['src/b.ts'] }], split: [{ name: 'Fix', files: ['src/app.ts'] }, { name: 'Rename', files: ['src/b.ts'] }], warned: true as const };
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING' as const, summary: 'Paused',
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -4503,6 +4504,7 @@ describe('runFullReview orchestration', () => {
         ],
         comparisons,
         prClaims,
+        scope,
         sweeps: [{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker' as const, status: 'answered' as const, class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note' as const, status: 'cut' as const }],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
@@ -4541,6 +4543,10 @@ describe('runFullReview orchestration', () => {
       expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'], compare: ['dddddddddddd'] });
       expect(rc.comparisons).toEqual(comparisons);
       expect(rc.prClaims).toEqual(prClaims);
+      expect(rc.scope).toEqual(scope);
+      // The scope reader asks again only when the change differs from the last round it ran on.
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].changeDigest).toEqual(expect.stringMatching(/^[0-9a-f]{64}$/));
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].changeDigest).toBe(rc.diff.changeDigest);
       expect(rc.sweeps).toEqual([{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note', status: 'cut' }]);
       expect(rc.usage.perStage?.compare).toMatchObject({ calls: 1 });
       expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
@@ -6327,6 +6333,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug C', file: 'src/app.ts', line: 8, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
         { title: 'Bug D', file: 'src/app.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl' },
         { title: 'Bug E', file: 'src/app.ts', line: 7, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_mno' },
+        { title: 'This change may not be useful as it stands', file: '', line: 0, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_pqr' },
       ],
     );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
@@ -6340,6 +6347,8 @@ describe('runFullReview orchestration', () => {
     const restated = { ...variant, title: 'Bug C again', variantOf: undefined };
     const inBlockerThread = { ...restated, severity: 'blocker' as const, title: 'Bug C crashes', threadId: 'PRRT_jkl' };
     const unreplied = { ...variant, title: 'Bug E in another field', threadId: 'PRRT_mno' };
+    // A doubt the scope reader gave anew goes as a reply into the open thread of its kind.
+    const doubt = { severity: 'warning' as const, title: 'This change may not be useful as it stands', file: '', line: 0, description: 'Nothing calls it.', reviewers: ['Scope reader'], threadId: 'PRRT_pqr' };
     mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
       if (query.includes('addPullRequestReviewThreadReply') && vars.threadId === 'PRRT_mno') throw new Error('rate limited');
       if (query.includes('addPullRequestReviewThreadReply')) return { addPullRequestReviewThreadReply: { comment: { id: `C_${vars.threadId}` } } };
@@ -6347,8 +6356,8 @@ describe('runFullReview orchestration', () => {
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, inBlockerThread, unreplied],
-      highlights: [], reviewComplete: true,
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, inBlockerThread, doubt, unreplied],
+      highlights: [], reviewComplete: true, scope: { doubt: doubt.description, proof: ['src/app.ts:1'] },
       agentNames: ['general'],
       threadEvaluations: [
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in latest push' },
@@ -6410,10 +6419,11 @@ describe('runFullReview orchestration', () => {
       ...(posted ? [
         { threadId: 'PRRT_abc', body: 'Fixed in 1111111.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
         { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
+        { threadId: 'PRRT_pqr', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
       ] : []),
     ]);
-    // Every answered finding of a thread is in its one reply.
-    if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith([worse, worse]);
+    // Every answered finding of a thread is in its one reply. The open scope thread is not reopened.
+    if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply).mock.calls).toEqual([[[worse, worse], true], [[doubt], false]]);
     expect(jest.mocked(ghUtils.formatVariantReply)).toHaveBeenCalledWith(variants);
     // Taken out of its thread, a finding is posted even beside an open thread with its title.
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][5].findings.at(-1)).toEqual({ ...unreplied, threadId: undefined, variantOf: undefined, ownThread: true });
@@ -6422,7 +6432,7 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('deletePullRequestReviewComment')).map(([, vars]) => vars))
       .toEqual(outcome === 'superseded' ? [{ id: 'C_PRRT_ghi' }] : []);
     mockGraphql.mockResolvedValue({ resolveReviewThread: { thread: { isResolved: true } } });
-    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', undefined]);
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', 'PRRT_pqr', undefined]);
   });
 
   it('resolves only threads with status addressed', async () => {
