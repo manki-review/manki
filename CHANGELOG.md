@@ -9,17 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.6.3] - 2026-11-18
 
-Manki 7.6.3 makes a review finish when a model is limited or its endpoint cannot be reached. A limited stage moves to its fallback model, a reviewer that ran out of time is not started over, and a round keeps inside the job's time so it always posts. Codex reviewers also lose the built-in tools they were never meant to have. No setting changes.
+Manki 7.6.3 makes a review finish when a model is limited or its endpoint cannot be reached. A limited or unreachable reviewer moves to its fallback model, a reviewer that ran out of time is not started over, and a round keeps inside the job's time so it always posts. Codex reviewers run in a home folder of their own, with only Manki's tools, and wait until those tools are ready. A review that is held by earlier warnings now names them. No setting changes.
+
+### Review loop and verdicts
+
+- On a repository with `related_repos`, each counterpart the related repository search lists for the finders now also gets a small call of its own beside the finders. A reference counterpart is compared with the change, a consumer is checked for uses the change breaks, and a dependency for assumptions the change makes about it. Finders had opened few of the listed files ([#1796](https://github.com/manki-review/manki/pull/1796)).
+
+### Review format
+
+- A review held only by warning threads of earlier rounds said how many warnings were left to address but named none of them. It now lists each one under its first line, with its file, the line its finding names and a link to its thread. When the approval check holds the approval for a new reason, such as a conflict with the base branch, its notice first says which earlier holds have cleared, for example that every warning is handled ([#1809](https://github.com/manki-review/manki/pull/1809)).
+
+### Security
+
+- A Codex reviewer was offered tools of Codex's own, such as subagents, goal tools and a request for user input, although `docs/security.md` said it had only Manki's read-only tools. Four more Codex switches now remove them. What Codex 0.166.0 still offers and cannot switch off is listed in `docs/security.md`: a script host without file, network or shell access, empty resource tools, and a patch tool whose writes the sandbox refuses but which can confirm a guessed line of a file the runner user can read. A new CI check fails when a Codex version offers a tool that is not on the recorded list ([#1786](https://github.com/manki-review/manki/pull/1786)).
+- Codex no longer sends usage events to OpenAI's analytics during a review, and no longer adds the text of its built-in skills to the prompt ([#1795](https://github.com/manki-review/manki/pull/1795)).
+- Codex read the runner user's own `~/.codex` and `~/.agents`, so skills, instructions, MCP servers, hooks, a key in `.env` or a changed endpoint there could reach a review on a self-hosted runner. Each run now gets a private Codex home that holds only what Manki writes, deleted when the run ends ([#1799](https://github.com/manki-review/manki/pull/1799)).
 
 ### Reliability
 
 - A model that hit a rate limit, a used-up quota or a "model at capacity" error ended the review incomplete. That stage now moves to its fallback model with the time its call has left, the same model a safety refusal moves to (`models.fallback`, or else the first other model of the `full` group). A finder that reads the repository with tools moves only to a fallback that has them too, and two finders never move onto one model ([#1777](https://github.com/manki-review/manki/pull/1777)).
 - A reviewer that used up its time was started again from scratch with the same time, which could run past the job's limit, and a job that is stopped posts nothing. A reviewer that timed out is now not retried. A round in the action keeps its model calls inside 25 minutes and stops the finders 8 minutes before that, so the judge and the posting always fit within the template's 30-minute job. A stage that no longer fits ends the round incomplete, with the findings of the finders that finished, and the review says why a retry or fallback did not start. A workflow with a longer `timeout-minutes` still stops at 25 minutes, and one with a shorter limit is not covered ([#1789](https://github.com/manki-review/manki/pull/1789)).
-- A Codex call whose endpoint could not be reached printed only "Reconnecting... waiting for network" and waited out its whole time limit. It now ends after 2 minutes of only that line and counts as a failed connection ([#1789](https://github.com/manki-review/manki/pull/1789)).
+- Every model call after the finders, such as the judge, a refuter check, a sweep, a dedup call or the verdict reader, now checks the time left before it starts. A call that no longer fits is not started, the calls running beside it are stopped, and the round ends incomplete right there, keeping everything it produced so far ([#1794](https://github.com/manki-review/manki/pull/1794)).
+- A Codex call whose endpoint could not be reached printed only "Reconnecting... waiting for network" and waited out its whole time limit. It now ends after 2 minutes of only that line ([#1789](https://github.com/manki-review/manki/pull/1789)). When Codex shows that no request reached the model, the reviewer moves to its fallback model under the same rules as a limit, instead of a retry on the same network ([#1807](https://github.com/manki-review/manki/pull/1807)).
+- Codex sent its first request before Manki's tool server had started, so a slow start left the model without Manki's read tools for the whole call. Codex now waits for the tool server, and a call fails when the server does not start ([#1799](https://github.com/manki-review/manki/pull/1799)).
 
-### Security
+### Internal
 
-- A Codex reviewer was offered tools of Codex's own, such as subagents, goal tools and a request for user input, although `docs/security.md` said it had only Manki's read-only tools. Four more Codex switches now remove them. What Codex 0.166.0 still offers and cannot switch off is listed in `docs/security.md`: a script host without file, network or shell access, empty resource tools, and a patch tool whose writes the sandbox refuses but which can confirm a guessed line of a file the runner user can read. A new CI check fails when a Codex version offers a tool that is not on the recorded list ([#1786](https://github.com/manki-review/manki/pull/1786)).
+- `review-stats` reports the share of blockers and warnings found in round 1, and how often finders open files with their tools ([#1780](https://github.com/manki-review/manki/pull/1780), [#1788](https://github.com/manki-review/manki/pull/1788)).
+- The benchmark gate reruns the cases of an item that looks lost before it fails, and scores a finding folded into an earlier thread as not posted again ([#1782](https://github.com/manki-review/manki/pull/1782), [#1783](https://github.com/manki-review/manki/pull/1783)).
 
 ## [7.6.2] - 2026-11-18
 
