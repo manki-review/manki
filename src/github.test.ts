@@ -2222,6 +2222,9 @@ describe('postReview body lead', () => {
       verdictTrace: { survivingBlockers: [], unresolvedPriors: [{ file: 'src/a.ts', line: 3, title: 'Thread B1', fingerprint: 'kb1', threadId: 'B1' }] },
     }, [blockerThread('B1', 3), blockerThread('B2', 4), { ...warningThread, threadId: 'W2' }]);
     expect(lead(mixed.body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 2 still open, plus 1 warning still open from an earlier review\.\n/u);
+    // The prior thread B1 is listed once, although a warning of the round restates it.
+    expect(mixed.body.split('Thread B1')).toHaveLength(2);
+    expect(mixed.body).not.toContain('Warning on a listed prior');
     // A blocker that restates a prior on its open thread is counted and listed as still open.
     const restated = await postedBody({
       ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined,

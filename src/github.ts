@@ -2070,7 +2070,9 @@ export async function postReview(
       core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
       carriedFindings.add(f);
       carriedThreads.set(threadId, !!carriedThreads.get(threadId) || isCountedBlocker(f));
-      if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
+      // "Needs a human" and `formatBlockingPriorThreads` already list their threads.
+      const listed = [...(result.needsHuman?.blockers ?? []), ...(result.verdictTrace?.unresolvedPriors ?? [])];
+      if (!listed.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
         stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, links)}`.replace(/^(?=.)/gm, '  ')}`);
       }
