@@ -828,21 +828,20 @@ async function handleDismiss(
 }
 
 /**
- * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
- * On a blocking or security thread the PR author may do so too when their role is at least `clearRole`, the repo's `author_clear_role`.
- * Returns whether the thread is resolved, with a note when it is not or when it is a warning that still holds the
- * approval, or `undefined` outside a Manki finding's thread and on a merged or closed PR.
+ * Resolves the Manki thread that review comment `inThread` belongs to, for a dismiss by the sender, who must be someone
+ * who could resolve it by hand. On a blocking or security thread the PR author may do so too when their role is at least
+ * `clearRole`, the repo's `author_clear_role`. Returns whether the thread is resolved, with a note when it is not or when
+ * it is a warning that still holds the approval, or `undefined` outside a Manki finding's thread and on a merged or closed PR.
  */
 async function resolveDismissedThread(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined, inThread: number | undefined,
 ): Promise<{ resolved: boolean; note?: string } | undefined> {
   const payload = github.context.payload;
-  const inReplyTo = payload.comment?.in_reply_to_id;
-  if (!inReplyTo || eventPrClosed()) return undefined;
+  if (!inThread || eventPrClosed()) return undefined;
   const senderLogin = payload.sender?.login;
   try {
-    const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
-    const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
+    const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inThread });
+    const root = await fetchThreadRoot(octokit, owner, repo, inThread, parent);
     if (!root || !isOwnComment(bot, root.comment)) return undefined;
     const prAuthorLogin: string | undefined = payload.pull_request?.user?.login;
     const { mayResolve, isPrAuthor, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
@@ -1235,7 +1234,7 @@ export async function handleReviewCommentCommand(
   switch (command.type) {
     case 'dismiss': {
       const dismissal = await handleDismiss(octokit, bot, owner, repo, prNumber, command.args, memory);
-      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, clearRole);
+      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, clearRole, github.context.payload.comment?.in_reply_to_id);
       // A resolved thread needs no note unless it still holds the approval, and outside a Manki finding's thread only a named finding can be dismissed.
       // Once the thread is resolved, text that named no posted finding was a remark, not a failed dismiss.
       const threadNote = thread ? thread.note : dismissal ? undefined : DISMISS_NO_FINDING;
