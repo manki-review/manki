@@ -6,18 +6,10 @@ import { promisify } from 'util';
 import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, cliHome, matchQuotaText, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail, withPromptDir } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
-
-export function resolveGeminiCredsDir(): string {
-  const home = process.env.HOME;
-  if (!home) {
-    throw new Error('Cannot seed Gemini OAuth credentials: $HOME is not set in the environment.');
-  }
-  return join(home, '.gemini');
-}
 
 const GEMINI_OAUTH_BOOTSTRAP_HINT =
   'Bootstrap with `gemini` (sign in with Google using a Gemini Code Assist Standard or Enterprise account) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires. Personal accounts can no longer sign in, so use gemini_api_key instead.';
@@ -56,7 +48,13 @@ export function geminiThinkingConfig(model: string, effort: SendMessageOptions['
 export const GEMINI_CLI_VERSION = '0.66.0';
 
 // A user-tier rule at the top priority, so no setting can allow a tool again. A denied tool never reaches the model.
-const GEMINI_NO_TOOLS_POLICY = '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n';
+export const GEMINI_NO_TOOLS_POLICY = '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n';
+
+/** Returns the Gemini CLI arguments for one call on `model`, with the policy file at `policyPath`. */
+export function geminiCliArgs(model: string, policyPath: string): string[] {
+  // Headless runs refuse an untrusted directory. `runCli` runs the CLI in an empty one.
+  return ['--skip-trust', `--model=${model}`, '--policy', policyPath];
+}
 
 // `finishReason` and `promptFeedback.blockReason` values that mean a safety or policy filter declined the request.
 const POLICY_BLOCK_REASONS: ReadonlySet<string> = new Set(['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'MODEL_ARMOR']);
@@ -153,7 +151,7 @@ export class GeminiClient implements LLMClient {
     // Use a structural delimiter that is harder to spoof from inside diff content
     // than a bare `---` markdown rule, and explicitly mark the user content as untrusted.
     const fullPrompt = `${systemPrompt}\n\n=== USER CONTENT (untrusted) ===\n\n${userMessage}\n\n=== END USER CONTENT ===`;
-    const geminiCredsDir = resolveGeminiCredsDir();
+    const credsPath = join(cliHome('gemini'), '.gemini', 'oauth_creds.json');
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const startTime = Date.now();
@@ -162,7 +160,7 @@ export class GeminiClient implements LLMClient {
       seedAuthFile({
         secret: oauthToken,
         inputName: 'gemini_oauth_token',
-        targetPath: join(geminiCredsDir, 'oauth_creds.json'),
+        targetPath: credsPath,
         requiredFields: ['access_token', 'refresh_token'],
         bootstrapHint: GEMINI_OAUTH_BOOTSTRAP_HINT,
       });
@@ -177,12 +175,7 @@ export class GeminiClient implements LLMClient {
       return runCli({
         label: 'Gemini',
         cliPath,
-        args: [
-          // Headless runs refuse an untrusted directory. `runCli` runs the CLI in an empty one.
-          '--skip-trust',
-          `--model=${this.model}`,
-          '--policy', policyPath,
-        ],
+        args: geminiCliArgs(this.model, policyPath),
         env: cliEnv('gemini', {
           // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
           // non-interactive mode. The CLI then loads its credentials from the
@@ -199,7 +192,7 @@ export class GeminiClient implements LLMClient {
     }).catch((error: unknown) => {
       warnReplyTail('Gemini CLI', output);
       throw error;
-    }).finally(() => registerAuthFileSecrets(join(geminiCredsDir, 'oauth_creds.json')));
+    }).finally(() => registerAuthFileSecrets(credsPath));
 
     if (code !== 0) {
       // The CLI logs 429 retries it recovered from, so only its final error line counts. Stack frames are skipped.

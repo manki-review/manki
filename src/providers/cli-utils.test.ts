@@ -84,12 +84,21 @@ describe('cliEnv', () => {
   const passed = (...args: Parameters<typeof cliEnv>): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(cliEnv(...args)).filter(([name]) => !HOME_NAMES.includes(name)));
 
   it('points `HOME` and the CLI\'s own folder at a private folder of the run, whatever the runner or the call sets', () => {
-    const env = { PATH: '/usr/bin', HOME: '/runner-home', CODEX_HOME: '/runner-home/.codex' };
-    const home = cliHome('codex');
-    expect(cliEnv('codex', { HOME: '/call-home', CODEX_HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: home, CODEX_HOME: home });
-    expect(home).not.toMatch(/^\/(?:runner|call)-home/);
-    expect(statSync(home).mode & 0o777).toBe(0o700);
-    expect(cliHome('codex')).toBe(home);
+    const own = { CLAUDE_CONFIG_DIR: '/runner-home/.claude', CODEX_HOME: '/runner-home/.codex', GEMINI_CLI_HOME: '/runner-home' };
+    const env = { PATH: '/usr/bin', HOME: '/runner-home', ...own };
+    const claude = cliHome('claude');
+    const codex = cliHome('codex');
+    const gemini = cliHome('gemini');
+    expect(cliEnv('claude', { HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: claude, CLAUDE_CONFIG_DIR: join(claude, '.claude') });
+    expect(cliEnv('codex', { HOME: '/call-home', CODEX_HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: codex, CODEX_HOME: codex });
+    expect(cliEnv('gemini', { HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', HOME: gemini, GEMINI_CLI_HOME: gemini });
+    // Each CLI has its own, so none sees what another wrote, and the calls of a run share it.
+    expect(new Set([claude, codex, gemini]).size).toBe(3);
+    for (const home of [claude, codex, gemini]) {
+      expect(home).not.toMatch(/^\/(?:runner|call)-home/);
+      expect(statSync(home).mode & 0o777).toBe(0o700);
+    }
+    expect(cliHome('claude')).toBe(claude);
   });
 
   it('keeps only the variables a CLI needs, so a secret under any name stays out', () => {

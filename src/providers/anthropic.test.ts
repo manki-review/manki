@@ -451,8 +451,10 @@ describe('sendViaOAuth — error paths', () => {
     expect(result.content).toBe('hello world');
   });
 
-  it('sets CLAUDE_CODE_OAUTH_TOKEN and caps output at the API path\'s limit in spawn env', async () => {
+  it('sets CLAUDE_CODE_OAUTH_TOKEN, caps output at the API path\'s limit and gives the CLI a home of its own in spawn env', async () => {
     const ambient = {
+      HOME: '/runner-home',
+      CLAUDE_CONFIG_DIR: '/runner-home/.claude',
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000',
       CLAUDE_CODE_OAUTH_TOKEN: 'ambient-oauth-token',
       GITHUB_TOKEN: 'ghs_workflow',
@@ -480,6 +482,8 @@ describe('sendViaOAuth — error paths', () => {
     // A call without tools is one request, so it caches nothing.
     expect([spawnOpts.env.CLAUDE_CODE_PROMPT_CACHE_TTL, spawnOpts.env.DISABLE_PROMPT_CACHING]).toEqual(['5m', '1']);
     expect(spawnOpts.env.PATH).toBe(process.env.PATH);
+    expect(spawnOpts.env.HOME).not.toMatch(/^\/runner-home/);
+    expect(spawnOpts.env.CLAUDE_CONFIG_DIR).toBe(join(spawnOpts.env.HOME, '.claude'));
     for (const name of ['GITHUB_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'INPUT_GITHUB_TOKEN']) {
       expect(spawnOpts.env).not.toHaveProperty(name);
     }

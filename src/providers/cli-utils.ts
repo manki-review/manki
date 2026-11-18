@@ -381,7 +381,7 @@ export type CliProvider = 'claude' | 'codex' | 'gemini';
 const PROVIDER_ENV: Record<CliProvider, RegExp> = {
   claude: new RegExp([
     '^(?:ANTHROPIC_|CLAUDE_CODE_|DISABLE_|VERTEX_REGION_)',
-    '^(?:CLAUDE_CONFIG_DIR|API_TIMEOUT_MS|MAX_THINKING_TOKENS|MCP_TIMEOUT|MCP_TOOL_TIMEOUT|CLOUD_ML_REGION)$',
+    '^(?:API_TIMEOUT_MS|MAX_THINKING_TOKENS|MCP_TIMEOUT|MCP_TOOL_TIMEOUT|CLOUD_ML_REGION)$',
     // Bedrock reads the standard AWS SDK credential chain. Its secret-named keys stay out.
     '^AWS_(?:REGION|DEFAULT_REGION|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE|ROLE_ARN|ROLE_SESSION_NAME|WEB_IDENTITY_TOKEN_FILE|CONTAINER_CREDENTIALS_(?:RELATIVE|FULL)_URI)$',
   ].join('|'), 'i'),
@@ -405,8 +405,10 @@ const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names:
 let warnedDroppedHeaders = false;
 
 // The variables that point a CLI at its own folder, which a runner can set to a folder of its user.
-const HOME_VARS: Partial<Record<CliProvider, (home: string) => NodeJS.ProcessEnv>> = {
+const HOME_VARS: Record<CliProvider, (home: string) => NodeJS.ProcessEnv> = {
+  claude: home => ({ CLAUDE_CONFIG_DIR: join(home, '.claude') }),
   codex: home => ({ CODEX_HOME: home }),
+  gemini: home => ({ GEMINI_CLI_HOME: home }),
 };
 
 const cliHomes = Object.fromEntries(Object.keys(HOME_VARS).map(provider => [provider, processFolder(() => makeScratchDir(`${provider}-home`))]));
@@ -434,8 +436,7 @@ export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, cred
   }
   const credentials = new Set([...(credential ? [credential] : []), ...modeCredentials]);
   const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name) || modeCredentials.includes(name));
-  const homeVars = HOME_VARS[provider];
-  const home: NodeJS.ProcessEnv = homeVars ? { HOME: cliHome(provider), ...homeVars(cliHome(provider)) } : {};
+  const home = { HOME: cliHome(provider), ...HOME_VARS[provider](cliHome(provider)) };
   const result = Object.fromEntries([...needed, ...Object.entries(vars), ...Object.entries(home)].filter(([name]) => credentials.has(name) || !isSecretName(name)));
   for (const name of modeCredentials) {
     const value = result[name];
