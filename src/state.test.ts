@@ -1014,6 +1014,9 @@ describe('checkAndAutoApprove', () => {
         `1 thread blocks the approval:\n- Lock is never released\n\n${NOT_REVIEWED_YET}${AGAIN_BOX}`],
       ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
         NOT_REVIEWED_YET + AGAIN_BOX],
+      // The box sits under the sentence that names the review, and a hold line that names the same step adds no second one.
+      ['a draft head no review covers, with `auto_approve` off', { draft: true, existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
+        `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.`, { auto_approve: false }, 'draft'],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
       // An open blocking or warning thread declines beside an approval that stands, and neither dismisses that approval.
       ['an open blocking thread beside an approval that stands', { threads: [thread('t1', 'blocker')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
@@ -1034,10 +1037,10 @@ describe('checkAndAutoApprove', () => {
         threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }],
       }, `${WARNING_THREAD}\n\n${HELD_FOR_PERSON}`, undefined, 'warnings'],
       ['an open warning thread beside a warning the review lists with no thread', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: held([warning('body')]), state: 'COMMENTED', commit_id: HEAD, user }] },
-        `${NO_WARNING_THREAD}\n\n${NEXT_ROUND}\n\n${WARNING_THREAD}${AGAIN_BOX}`, undefined, 'warnings'],
+        `${NO_WARNING_THREAD}\n\n${NEXT_ROUND}${AGAIN_BOX}\n\n${WARNING_THREAD}`, undefined, 'warnings'],
       ['an open warning thread on a head no review covers',
         { threads: [thread('t1', 'warning', undefined, { commit: testSha('01d') })], existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
-        `${NOT_REVIEWED_YET}\n\n${WARNING_THREAD}${AGAIN_BOX}`],
+        `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n${WARNING_THREAD}`],
       ['an open blocking thread and an open warning thread on a draft that conflicts', { threads: [thread('t1', 'blocker'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })], draft: true, mergeable: false },
         `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}${CHECK_BOX}`, undefined, 'draft'],
       ['an open warning thread on a PR that conflicts', { threads: [thread('t1', 'warning')], mergeable: false },

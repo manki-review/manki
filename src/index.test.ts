@@ -8541,12 +8541,15 @@ describe('settings box tick', () => {
   ] as const)('runs the command of %s for a writer\'s tick only, then settles the box', async (_case, eventName, box, id, kind) => {
     const object = { id: 77, body: `Text.\n\n<!-- manki-issue-box -->\n- [x] Label <!-- manki-box:${box}${id ? `:${id}` : ''} -->\n\n<!-- manki -->`, user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } };
     const pullRequest = { number: 5, base: { ref: 'main' } };
-    const tick = async (sender: string, fails = false) => {
+    const tick = async (sender: string, outcome: 'acted' | 'nothing' | 'fails' = 'acted') => {
       jest.clearAllMocks();
       _resetOctokitCache();
       jest.mocked(ghUtils.hasWriteAccess).mockImplementation(async (_o, _owner, _repo, login) => login !== 'reader');
       jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, auto_approve: true, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } } as never);
-      if (fails) jest.mocked(interaction.handleBoxCommand).mockRejectedValueOnce(new Error('GitHub is down'));
+      jest.mocked(interaction.handleBoxCommand).mockImplementation(async () => {
+        if (outcome === 'fails') throw new Error('GitHub is down');
+        return outcome === 'acted';
+      });
       setContext({ eventName, payload: { action: 'edited', sender: { login: sender, type: 'User' }, pull_request: pullRequest, [eventName === 'pull_request_review' ? 'review' : 'comment']: object } });
       await run().catch(() => undefined);
       return { ran: jest.mocked(interaction.handleBoxCommand).mock.calls, settled: jest.mocked(issueTick.settleTickedBox).mock.calls };
@@ -8556,8 +8559,10 @@ describe('settings box tick', () => {
     expect(await tick('alice')).toEqual({ ran, settled: [[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, 'alice']] });
     // Only a dismiss can resolve the last thread that blocks, so only it runs the approval check after.
     expect(jest.mocked(stateModule.checkAndAutoApprove).mock.calls).toHaveLength(box === 'dismiss' ? 1 : 0);
-    // A command that fails puts the box back, so it can be ticked again.
-    expect((await tick('alice', true)).settled).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, undefined]]);
+    // A command that did nothing, such as a dismiss of a thread already resolved, names no one and puts the box back.
+    expect((await tick('alice', 'nothing')).settled).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, undefined]]);
+    // So does a command that fails, so the box can be ticked again.
+    expect((await tick('alice', 'fails')).settled).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, undefined]]);
     expect(await tick('reader')).toEqual({ ran: [], settled: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } } as never);
   });

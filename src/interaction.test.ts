@@ -2192,28 +2192,36 @@ describe('handleBoxCommand', () => {
     // Check approval runs the approval check of `/manki check` and answers as it does.
     const checked = createMockOctokit();
     jest.mocked(state.approveOrSayWhy).mockClear().mockResolvedValueOnce({ approved: false, why: async () => 'A thread blocks.' });
-    await handleBoxCommand(checked, TEST_BOT, 'test-owner', 'test-repo', 1, 'check', undefined, { config, configHeld: false });
+    expect(await handleBoxCommand(checked, TEST_BOT, 'test-owner', 'test-repo', 1, 'check', undefined, { config, configHeld: false })).toBe(writer);
     expect(jest.mocked(state.approveOrSayWhy).mock.calls).toEqual(writer ? [[checked, TEST_BOT, 'test-owner', 'test-repo', 1, config]] : []);
     expect(comments(checked)).toEqual([writer ? 'A thread blocks.\n\n<!-- manki -->' : 'Only repo collaborators can trigger auto-approve.\n\n<!-- manki -->']);
 
     // Forget this learning removes the learning its box names, as `/manki forget <id>` does.
     const forgot = createMockOctokit();
     (memory.removeLearning as jest.Mock).mockClear().mockResolvedValueOnce({ removed: { content: 'old learning' }, remaining: 2 });
-    await handleBoxCommand(forgot, TEST_BOT, 'test-owner', 'test-repo', 1, 'forget', 'learn-1700000000000', { memory: MEMORY, config, configHeld: false });
+    expect(await handleBoxCommand(forgot, TEST_BOT, 'test-owner', 'test-repo', 1, 'forget', 'learn-1700000000000', { memory: MEMORY, config, configHeld: false })).toBe(writer);
     expect((memory.removeLearning as jest.Mock).mock.calls).toEqual(writer ? [[MEMORY, 'learn-1700000000000']] : []);
     expect(comments(forgot)).toEqual([writer ? 'Removed learning: `old learning` (2 remaining)\n\n<!-- manki -->' : 'Only repo collaborators can change review memory.\n\n<!-- manki -->']);
+    // A learning that is gone already, say after a second tick, is no removal.
+    (memory.removeLearning as jest.Mock).mockResolvedValueOnce({ removed: null, remaining: 2 });
+    expect(await handleBoxCommand(forgot, TEST_BOT, 'test-owner', 'test-repo', 1, 'forget', 'learn-1700000000000', { memory: MEMORY, config, configHeld: false })).toBe(false);
 
     // Dismiss this finding resolves the thread its comment starts, as a dismiss reply in that thread does.
     const dismissed = createMockOctokit();
     dismissed.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'Token' }]);
     jest.mocked(state.resolveReviewThread).mockClear();
-    await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 });
+    expect(await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 })).toBe(writer);
     expect(jest.mocked(dismissed.rest.pulls.getReviewComment).mock.calls[0]?.[0]).toEqual({ owner: 'test-owner', repo: 'test-repo', comment_id: 99 });
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(writer ? [[dismissed, 'PRRT_this', 'WONT_FIX']] : []);
     expect(jest.mocked(dismissed.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
       writer ? [] : [[expect.objectContaining({ comment_id: 99, body: expect.stringContaining('Only the PR author or someone with write access can dismiss this finding') })]],
     );
+    // A thread someone resolved already is left as it is, so the dismiss did nothing.
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: 'writer', isBlocking: false, findingTitle: 'Token' }]);
+    jest.mocked(state.resolveReviewThread).mockClear();
+    expect(await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 })).toBe(false);
+    expect(state.resolveReviewThread).not.toHaveBeenCalled();
   });
 });
 

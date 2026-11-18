@@ -977,14 +977,15 @@ async function approveOrSayWhy(
     const open = unclearedThreads(threads, bot, prAuthorLogin, role, block?.named);
     const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, role, clearRole);
     const hold = pr.draft ? { reason: 'draft' as const } : await fetchApprovalHold(octokit, owner, repo, prNumber);
-    const text = [
-      open.length > 0 ? blockingThreadsLine(open, block?.named ?? new Set(), bot, clearRole, instead || undefined) : instead,
+    const lead = open.length > 0 ? blockingThreadsLine(open, block?.named ?? new Set(), bot, clearRole, instead || undefined) : instead;
+    const holdBox = hold && approvalHoldBox(hold, config?.auto_approve);
+    // `instead` ends the lead and names the review box or the review command as the next step, so its box follows the lead.
+    return [
+      lead && withMessageBoxes(lead, [!!instead && 'again']),
       warnings.length > 0 && warningThreadsLine(warnings, bot, clearRole),
       covered && heldForPerson(bot, reviews, pr.head.sha) && HELD_FOR_PERSON_LINE,
-      hold && approvalHoldLine(hold, config?.auto_approve),
+      hold && withMessageBoxes(approvalHoldLine(hold, config?.auto_approve), [!(instead && holdBox === 'again') && holdBox]),
     ].filter((line): line is string => !!line).join('\n\n');
-    // `instead` names the review box or the review command as the next step.
-    return withMessageBoxes(text, [!!instead && 'again', hold && approvalHoldBox(hold, config?.auto_approve)]);
   };
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');

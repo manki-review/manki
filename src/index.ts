@@ -2425,7 +2425,7 @@ async function handleIssueTick(): Promise<void> {
 /**
  * Acts on each box the editor ticked in Manki's comment, review or review comment, other than an issue box. Review again
  * reviews as a tick in the settings block does. Every other box runs its command for the editor, then names who asked
- * for it, or is unticked again when the command failed.
+ * for it, or is unticked again when the command did nothing or failed.
  */
 async function handleBoxTick(): Promise<void> {
   const { eventName, payload } = github.context;
@@ -2447,8 +2447,7 @@ async function handleBoxTick(): Promise<void> {
   for (const { box, id } of commands) {
     let done = false;
     try {
-      await handleBoxCommand(octokit, bot, owner, repo, prNumber, box, id, { memory, config, configHeld: held, commentId });
-      done = true;
+      done = await handleBoxCommand(octokit, bot, owner, repo, prNumber, box, id, { memory, config, configHeld: held, commentId });
     } finally {
       await settleTickedBox(octokit, owner, repo, prNumber, message, box, id, done ? payload.sender?.login : undefined);
     }
