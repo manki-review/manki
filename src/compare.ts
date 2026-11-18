@@ -199,12 +199,16 @@ export interface EarlierAnswers<R> {
   confirm: () => Promise<boolean>;
 }
 
-/** How a step asks its questions: what its log calls them, its system prompt, how it reads a reply, and whether a call needs repository tools. */
+/**
+ * How a step asks its questions: what its log calls them, its system prompt, how it reads a reply, whether a call needs
+ * repository tools, and whether a reply is a JSON object instead of an array.
+ */
 interface Asking {
   what: string;
   system: (tools: boolean) => string;
   parse: (content: string, reviewer: string) => { findings: Finding[]; dropped?: number };
   needsTools?: boolean;
+  shape?: 'object' | 'array';
 }
 
 type Answers = { findings: Finding[]; comparisons: RoundComparison[] };
@@ -215,7 +219,7 @@ type Answers = { findings: Finding[]; comparisons: RoundComparison[] };
  * as `timed_out`, and with `needsTools` one whose client has no repository tools as `skipped`. It never throws.
  */
 async function ask(
-  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal, progress, earlier }: ComparisonOptions, { what, system, parse, needsTools }: Asking,
+  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal, progress, earlier }: ComparisonOptions, { what, system, parse, needsTools, shape = 'array' }: Asking,
 ): Promise<Answers> {
   if (asked.length > 0) core.info(`Asking ${asked.length} ${what} question(s)${cut.length > 0 ? `, ${cut.length} cut by the cap` : ''}`);
   progress?.started(asked.length);
@@ -246,7 +250,7 @@ async function ask(
           return parse(reply.content, q.reviewer);
         },
         error => core.warning(`${q.reviewer} reply could not be used (${error}), asking once more`),
-        'array',
+        shape,
       );
       core.info(`${q.reviewer}: ${findings.length} finding(s)${dropped ? `, ${dropped} dropped without a cited line on both sides` : ''}`);
       return { record: { ...record, status: 'answered', findings: findings.length, ...(dropped && { dropped }), inputDigest }, findings };
