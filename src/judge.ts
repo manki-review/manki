@@ -1754,7 +1754,7 @@ export async function runJudgeAgent(
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
   // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting), staysPreExisting)
+  const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
     .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules));
@@ -1849,8 +1849,8 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
 }
 
 /**
- * Applies the judge's entries to the findings they name by `id`, then folds the
- * findings the judge marked as duplicates. A `sameAs` or `variantOf` that names no entry of
+ * Applies the judge's entries to the findings they name by `id`, then folds the findings the judge marked as
+ * duplicates, and then the copies `deduplicateFindings` merges by title and file. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
  */
 export function mapJudgedToFindings(
@@ -1860,12 +1860,16 @@ export function mapJudgedToFindings(
   staysPreExisting?: (copy: Finding) => boolean,
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
+  const roots = duplicateRoots(aligned);
+  // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
+  const groups = roots.map(root => mergeKey(original[root - 1]));
+  const filedBlocker = (i: number): boolean => original.every((f, j) => groups[j] !== groups[i] || finderGrade(f, 'lowest') === 'blocker');
   const graded = original.map((o, i) => {
     const finding = { ...o };
     const match = aligned[i];
     if (!match) throw new Error(`Finding ${i + 1} "${safeTruncate(o.title, 80)}" has no judge entry`);
     if (!match.preExisting) delete finding.preExisting;
-    Object.assign(finding, gradeByCell(o, match));
+    Object.assign(finding, gradeByCell(o, match, filedBlocker(i)));
     if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
     finding.judgeNotes = match.reasoning;
     if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
@@ -1887,7 +1891,7 @@ export function mapJudgedToFindings(
     if (variantOf) finding.variantOf = variantOf;
     return finding;
   });
-  return foldDuplicates(graded, aligned, staysPreExisting).map(capUnconfirmedBuildClaim).map(capUnprovenBlocker);
+  return deduplicateFindings(foldDuplicates(graded, roots, staysPreExisting).map(capUnconfirmedBuildClaim).map(capUnprovenBlocker), staysPreExisting);
 }
 
 /**
@@ -1896,12 +1900,12 @@ export function mapJudgedToFindings(
  * warning that only a refuter confirming every doubt can raise. It stays a warning then too when the judge stated `warning` as its
  * `gradeIfConfirmed`, which is read for no other finding. A doubt that only decides the cell counts only on a row where
  * `columnDecidesBlock`. A `consequence` premise counts only beside such a doubt on a blocker cell that can be held
- * down, of a finding no finder filed as a blocker and with no `warning` the judge stated. A finding that `isRareClaim`
+ * down, when not every finder filed the finding as a blocker (`filedBlocker`) and the judge stated no `warning`. A finding that `isRareClaim`
  * gets `REACH_DOUBT` and the grade of the `normal` column as its `gradeIfConfirmed`. So the refuter checks it, and it
  * has no `pendingGrade`: no answer raises it. A tool
  * alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade }: JudgedFinding, filedBlocker: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter never checks a finding marked `ignore`.
   if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(named.length > 0 && !o.toolSource && { doubts: named }) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
@@ -1913,9 +1917,9 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   if (o.toolSource) return { ...gradeStep(o, stated, 'judge'), cell };
   const checkedRare = isRareClaim(cell);
   const holding = named.filter(d => !d.consequence && (d.decides === 'defect' || columnDecidesBlock(row)));
-  // A consequence never holds a finding down alone. Beside no other doubt, on a finder's blocker or where no blocker is
-  // held, the finding is graded as if the judge had not named it.
-  const asksConsequence = holding.length > 0 && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && finderGrade(o) !== 'blocker';
+  // A consequence never holds a finding down alone. Beside no other doubt, on a blocker every finder filed or where no
+  // blocker is held, the finding is graded as if the judge had not named it.
+  const asksConsequence = holding.length > 0 && stated === 'blocker' && !isSecurity && judgeGrade !== 'warning' && !filedBlocker;
   const counted = named.filter(d => (d.consequence ? asksConsequence : holding.includes(d)));
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
   const doubts = checkedRare ? withReachDoubt(counted) : counted;
@@ -2101,11 +2105,11 @@ function closestTitle(title: string, candidates: Array<string | undefined>): num
 }
 
 /**
- * Removes each finding the judge marked as `duplicateOf` an earlier one and adds its reviewers to that earlier finding.
- * `findings[i]` is "Finding i + 1" and `judged[i]` is the judge's entry for it. A self-reference, a forward pointer or an
- * out-of-range pointer is ignored. A duplicate of a finding graded `ignore` is removed while that finding stays `ignore`.
+ * Returns, for each of the judge's entries, the number of the finding it is kept under: the first one its `duplicateOf`
+ * chain leads to, or its own. `judged[i]` is the entry for "Finding i + 1". A self-reference, a forward pointer or an
+ * out-of-range pointer ends the chain.
  */
-function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undefined>, staysPreExisting?: (copy: Finding) => boolean): Finding[] {
+function duplicateRoots(judged: Array<JudgedFinding | undefined>): number[] {
   const rootOf = (n: number): number => {
     let node = n;
     for (;;) {
@@ -2114,11 +2118,19 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
       node = to;
     }
   };
+  return judged.map((_, i) => rootOf(i + 1));
+}
 
+/**
+ * Removes each finding whose entry in `roots`, from `duplicateRoots`, names an earlier finding and adds its reviewers to
+ * that earlier finding. `findings[i]` is "Finding i + 1". A duplicate of a finding graded `ignore` is removed while that
+ * finding stays `ignore`.
+ */
+function foldDuplicates(findings: Finding[], roots: number[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const result = findings.map(f => ({ ...f }));
   const folded = new Set<number>();
   for (let i = 0; i < findings.length; i++) {
-    const root = rootOf(i + 1);
+    const root = roots[i];
     if (root === i + 1) continue;
     folded.add(i);
     foldInto(result[root - 1], findings[i], staysPreExisting);
@@ -2127,21 +2139,27 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
   return result.filter((_, i) => !folded.has(i));
 }
 
-/** Returns the grade a finder gave `copy` when it is above every grade a finder gave `survivor`, since the highest counts when finders disagree. */
-function higherFinderGrade(survivor: Finding, copy: Finding): FindingSeverity | undefined {
-  const filed = finderGrade(copy);
-  return SEVERITY_ORDER.indexOf(filed) < SEVERITY_ORDER.indexOf(finderGrade(survivor)) ? filed : undefined;
+/**
+ * Returns the finder grades `survivor` takes when `copy` merges into it: the highest grade a finder gave either one,
+ * when it is above the survivor's, and the lowest one, when the finders split. Only a blocker every finder filed skips
+ * the check of its consequence.
+ */
+function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 'reviewerSeverity' | 'lowestReviewerSeverity'> {
+  const rank = (grade: FindingSeverity): number => SEVERITY_ORDER.indexOf(grade);
+  const own = finderGrade(survivor);
+  const highest = rank(finderGrade(copy)) < rank(own) ? finderGrade(copy) : own;
+  const lowest = [finderGrade(survivor, 'lowest'), finderGrade(copy, 'lowest')].reduce((a, b) => (rank(b) > rank(a) ? b : a));
+  return { ...(highest !== own && { reviewerSeverity: highest }), ...(lowest !== highest && { lowestReviewerSeverity: lowest }) };
 }
 
 /**
- * Merges the duplicate `copy` into `survivor`: its reviewers, its finder's grade, its prior-round match and open thread, its
+ * Merges the duplicate `copy` into `survivor`: its reviewers, its finder grades, its prior-round match and open thread, its
  * fix in words and what it cites. The survivor is a security finding when either one is.
  */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
   survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
   if (copy.tags?.includes(SECURITY_TAG)) Object.assign(survivor, asSecurity(survivor));
-  const filed = higherFinderGrade(survivor, copy);
-  if (filed) survivor.reviewerSeverity = filed;
+  Object.assign(survivor, mergedFinderGrades(survivor, copy));
   survivor.sameAs ??= copy.sameAs;
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
@@ -2353,24 +2371,25 @@ function hasReversalWord(finding: Finding): boolean {
   return REVERSAL_WORDS.some(word => new RegExp(`\\b${word}\\b`).test(haystack));
 }
 
+const mergeKey = (f: Pick<Finding, 'title' | 'file'>): string => `${f.title}::${f.file}`;
+
 /**
- * Keeps the first finding per title and file, with the highest grade a finder gave any copy and the first rule a copy
- * quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
+ * Keeps the first finding per title and file, with the finder grades `mergedFinderGrades` gives and the first rule a
+ * copy quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
  * marked so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const kept = new Map<string, Finding>();
   for (const f of findings) {
-    const key = `${f.title}::${f.file}`;
+    const key = mergeKey(f);
     const first = kept.get(key);
     if (!first) {
       kept.set(key, f);
       continue;
     }
-    const filed = higherFinderGrade(first, f);
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...(f.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, f) });
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...mergedFinderGrades(first, f), ...(f.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, f) });
   }
   return [...kept.values()];
 }

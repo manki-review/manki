@@ -2045,7 +2045,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].tags).toBeUndefined();
   });
 
-  it('shows the code a finding cites outside the diff, and sends a finding with a doubt or in the `rare` column to the refuter, which gives a blocker cell its grade once the doubts hold only when a finder filed a blocker or the check confirms the defect and its consequence, and never moves a finding out of the `rare` column', async () => {
+  it('shows the code a finding cites outside the diff, and sends a finding with a doubt or in the `rare` column to the refuter, which gives a blocker cell its grade once the doubts hold only when every finder filed a blocker or the check confirms the defect and its consequence, and never moves a finding out of the `rare` column', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -2229,6 +2229,25 @@ describe('runJudgeAgent', () => {
       });
       expect(refuterMessages).toEqual([]);
       expect(unchanged.findings.map(f => [f.title, f.severity, f.preExisting, f.refutation])).toEqual([['Old lock order', 'warning', 'The lock order predates this PR.', undefined], ['Lock order', 'warning', undefined, undefined]]);
+
+      // Two finders' copies with one title and file merge after the judge. One filed a blocker and the other a warning, so
+      // the merged finding keeps the consequence premise, whichever copy comes first, and rises only once every check confirms it.
+      const copy = (severity: Finding['severity']) => makeFinding({ title: 'Rows lost on retry', severity, line: 18, evidence: { checks: [], proof: ['src/index.ts:18'] } });
+      const doubted = {
+        title: 'Rows lost on retry', row: 'severe', column: 'normal', gradeIfConfirmed: 'blocker', reasoning: 'warning. The retry path sits outside the code shown.',
+        doubts: [{ premise: 'The retry skips the rows already sent', decides: 'defect' }, { premise: 'The stored table misses those rows', decides: 'consequence' }],
+      };
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [1, 2].map(id => ({ id, ...doubted })) }) });
+      const skips = { outcome: 'confirmed', reason: 'It skips them.', proof: ['src/index.ts:18'] };
+      const judgeSplit = async (order: readonly Finding['severity'][], consequenceAnswer: object) => {
+        replies['Rows lost on retry'] = { ...skips, premises: [skips, consequenceAnswer] };
+        const split = await runJudgeAgent(mockClient, makeConfig(), { findings: order.map(copy), diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace } });
+        return split.findings.map(f => [f.severity, f.lowestReviewerSeverity, f.doubts?.filter(d => d.consequence).length]);
+      };
+      const missing = { outcome: 'confirmed', reason: 'The table misses them.', proof: ['src/index.ts:19'] };
+      expect(await judgeSplit(['blocker', 'warning'], missing)).toEqual([['blocker', 'warning', 1]]);
+      expect(await judgeSplit(['warning', 'blocker'], missing)).toEqual([['blocker', 'warning', 1]]);
+      expect(await judgeSplit(['blocker', 'warning'], { outcome: 'unsettled', reason: 'A later sync may restore them.' })).toEqual([['warning', 'warning', 1]]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -4645,6 +4664,27 @@ describe('mapJudgedToFindings', () => {
       { id: 2, title: 'Total leaks the token', row: 'severe', security: true, duplicateOf: 1, reasoning: 'r' },
     ]);
     expect(merged.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.tags])).toEqual([['Wrong total', 'warning', 'blocker', ['security']]]);
+    // Copies the judge merges are graded as one finding. Only when every copy was filed as a blocker is the consequence dropped.
+    const consequence = { row: 'severe' as const, ...ifBlocker, doubts: [doubt, harm] };
+    const filedAs = (kept: Finding['severity'], copy: Finding['severity']) => mapJudgedToFindings(
+      [proven('Rows lost on retry', { severity: kept }), proven('Retry drops rows', { severity: copy })],
+      [{ id: 1, title: 'Rows lost on retry', ...consequence }, { id: 2, title: 'Retry drops rows', ...consequence, duplicateOf: 1 }],
+    );
+    expect([filedAs('blocker', 'warning'), filedAs('warning', 'blocker'), filedAs('blocker', 'blocker')].map(([f, ...rest]) => [rest.length, f.severity, f.doubts, f.reviewerSeverity, f.lowestReviewerSeverity])).toEqual([
+      [0, 'warning', [doubt, harm], 'blocker', 'warning'],
+      [0, 'warning', [doubt, harm], 'blocker', 'warning'],
+      [0, 'warning', [doubt], 'blocker', undefined],
+    ]);
+    // Copies merged by title and file after the judge are graded as one finding in the same way.
+    const sameTitle = (kept: Finding['severity'], copy: Finding['severity']) => mapJudgedToFindings(
+      [proven('Rows lost on retry', { severity: kept }), proven('Rows lost on retry', { severity: copy })],
+      [1, 2].map(id => ({ id, title: 'Rows lost on retry', ...consequence })),
+    );
+    expect([sameTitle('blocker', 'warning'), sameTitle('warning', 'blocker'), sameTitle('blocker', 'blocker')].map(([f, ...rest]) => [rest.length, f.severity, f.doubts, f.reviewerSeverity, f.lowestReviewerSeverity])).toEqual([
+      [0, 'warning', [doubt, harm], 'blocker', 'warning'],
+      [0, 'warning', [doubt, harm], 'blocker', 'warning'],
+      [0, 'warning', [doubt], 'blocker', undefined],
+    ]);
     expect(warnSpy).toHaveBeenCalledTimes(2);
     warnSpy.mockRestore();
   });
@@ -4685,15 +4725,17 @@ describe('mapJudgedToFindings', () => {
     expect(fold({ ...proven, relatedProof: related(1, 8) }, { ...proven, relatedProof: related(9, 14) }).evidence?.relatedProof).toEqual(related(1, 10));
     expect(fold(proven, proven).evidence).not.toHaveProperty('relatedProof');
 
-    // The kept finding takes the highest grade a finder gave it or a duplicate, so a blocker one finder filed is never the judge's alone.
+    // The kept finding takes the highest grade a finder gave it or a duplicate, so a blocker one finder filed is never the
+    // judge's alone. The lowest grade is kept beside it when the finders split.
     const filedAt = (kept: Finding['severity'], duplicate: Finding['severity']) => mapJudgedToFindings(
       [makeFinding({ title: 'Overflow in sum', severity: kept, evidence: proven }), makeFinding({ title: 'Sum overflows', severity: duplicate })],
       judged,
     )[0];
-    expect(filedAt('note', 'warning')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'warning', gradePath: [{ from: 'note', to: 'blocker', by: 'judge' }] });
-    expect(filedAt('note', 'blocker')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker' });
-    expect(filedAt('warning', 'note')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'warning' });
-    expect(filedAt('blocker', 'warning').reviewerSeverity).toBeUndefined();
+    expect(filedAt('note', 'warning')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'warning', lowestReviewerSeverity: 'note', gradePath: [{ from: 'note', to: 'blocker', by: 'judge' }] });
+    expect(filedAt('note', 'blocker')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note' });
+    expect(filedAt('warning', 'note')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'warning', lowestReviewerSeverity: 'note' });
+    expect([filedAt('blocker', 'warning').reviewerSeverity, filedAt('blocker', 'warning').lowestReviewerSeverity]).toEqual([undefined, 'warning']);
+    expect(filedAt('blocker', 'blocker')).not.toHaveProperty('lowestReviewerSeverity');
   });
 
   it('maps reordered entries by id instead of position or title', () => {
@@ -5286,9 +5328,12 @@ describe('deduplicateFindings', () => {
     // The kept finding takes the highest grade a finder gave any copy, read from where a copy's grade path starts.
     const raised: Finding = { ...findings[0], severity: 'blocker', reviewerSeverity: 'note', gradePath: [{ from: 'note', to: 'blocker', by: 'judge' }] };
     const capped: Finding = { ...findings[1], severity: 'warning', gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] };
-    expect(deduplicateFindings([raised, capped])[0]).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', reviewers: ['R1'] });
-    expect(deduplicateFindings([raised, { ...findings[1], severity: 'warning' }])[0].reviewerSeverity).toBe('warning');
-    expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0].reviewerSeverity).toBe('note');
+    expect(deduplicateFindings([raised, capped])[0]).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note', reviewers: ['R1'] });
+    expect(deduplicateFindings([raised, { ...findings[1], severity: 'warning' }])[0]).toMatchObject({ reviewerSeverity: 'warning', lowestReviewerSeverity: 'note' });
+    expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0]).toMatchObject({ reviewerSeverity: 'note' });
+    expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0]).not.toHaveProperty('lowestReviewerSeverity');
+    // A third copy keeps the lowest grade an earlier merge recorded.
+    expect(deduplicateFindings([raised, capped, { ...findings[1], severity: 'warning' }])[0]).toMatchObject({ reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note' });
   });
 
   it('keeps findings with same title but different files', () => {

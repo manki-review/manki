@@ -431,6 +431,8 @@ interface FinderSteps {
 interface GradeRoute {
   /** What `finderGrade` returns. */
   finderGrade: FindingSeverity;
+  /** What `finderGrade` returns for the lowest grade, when the finders split on it. */
+  lowestFinderGrade?: FindingSeverity;
   cell?: GradeCell;
   gradeIfConfirmed?: FindingSeverity;
   /** The judge's own answer for `gradeIfConfirmed`. A finding the judge stated none for has none. */
@@ -858,6 +860,7 @@ function gradeRoute(f: Finding): GradeRoute {
   const doubtsOf = (decides: Doubt['decides']) => doubts.filter(d => d.decides === decides).length;
   return {
     finderGrade: finderGrade(f),
+    ...(f.lowestReviewerSeverity && { lowestFinderGrade: f.lowestReviewerSeverity }),
     ...(cell && { cell: { row: cell.row, column: cell.column, ...(cell.judgeColumn && { judgeColumn: cell.judgeColumn }) } }),
     ...(gradeIfConfirmed && { gradeIfConfirmed }),
     ...(judgeIfConfirmed && { judgeIfConfirmed }),
@@ -1644,19 +1647,19 @@ type BlockerRoute = keyof typeof BLOCKER_ROUTES;
 
 /**
  * Returns which stage made a posted blocker a blocker. A blocker a finder filed as one is `finder`, whatever lowered
- * and restored it between. Any other blocker is named by the last step that raised it to blocker. A step that gives
- * back the blocker an `unproven` cap lowered is no raise. A raise by `judge` is the judge's cell alone, and a raise by
- * `refutation` is a check that confirmed the doubts holding the finding down, `consequence` when they include a
- * `consequence` premise, which only a finding that needed it keeps. A blocker only claim checks reported is `claim`,
- * whatever grade it was filed at. It is `unknown` without a stored route.
+ * and restored it between, unless the finders split on its grade and a check raised it. Any other blocker is named by
+ * the last step that raised it to blocker. A step that gives back the blocker an `unproven` cap lowered is no raise. A
+ * raise by `judge` is the judge's cell alone, and a raise by `refutation` is a check that confirmed the doubts holding
+ * the finding down, `consequence` when they include a `consequence` premise, which only a finding that needed it keeps.
+ * A blocker only claim checks reported is `claim`, whatever grade it was filed at. It is `unknown` without a stored route.
  */
 function blockerRoute(route: GradeRoute | undefined): BlockerRoute {
   if (!route) return 'unknown';
   if (route.byReader) return 'reader';
   if (route.byClaimCheck) return 'claim';
-  if (route.finderGrade === 'blocker') return 'finder';
   const steps = route.gradePath ?? [];
   const raise = steps.filter((step, i) => step.to === 'blocker' && steps[i - 1]?.by !== 'unproven').at(-1);
+  if (route.finderGrade === 'blocker' && !(route.lowestFinderGrade && raise?.by === 'refutation')) return 'finder';
   if (raise?.by === 'refutation') return route.doubts?.consequence ? 'consequence' : 'doubt';
   return raise?.by === 'judge' ? 'judge' : 'other';
 }
