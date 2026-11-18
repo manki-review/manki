@@ -450,6 +450,40 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('### `slice_lines` (config key)\n\n```\ndeclared at manki.yml:3\nsrc/config.ts:1: export const lines = (c: Config) => c.slice_lines;\n```');
   });
 
+  it('lists the structure the change adds, the largest first, each with its added lines, leaving out what it changes, moves, tests or excludes', async () => {
+    const { pieces } = await usesFor({
+      'src/orders.rs': 'pub enum OrderError {\n    Missing,\n}\n\npub fn place() {}\n\nfn round_cents(n: u64) -> u64 { n }\n',
+      'src/util.rs': 'pub fn noop() {}\n',
+      'src/ledger.ts': 'export const VERSION = 1;\n',
+      'app/handlers.py': 'def charge(order):\n    return order\n',
+      'cmd/main.swift': 'import Foundation\n',
+      'manki.yml': 'review:\n  noise: low\n',
+    }, {
+      'src/orders.rs': 'pub enum OrderError {\n    Missing,\n    Rejected,\n}\n\npub fn place() { todo!() }\n',
+      'src/util.rs': 'pub fn noop() {}\n\nfn round_cents(n: u64) -> u64 { n }\n',
+      'src/ledger.ts': 'export const VERSION = 1;\n\n// Sums what each order paid.\nexport class Ledger {\n  total = 0;\n  add(n: number) {\n    this.total += n;\n  }\n}\n\nexport const loadLedger = async () => {\n  return new Ledger();\n};\n',
+      'src/invoice.ts': 'export function invoice() {\n  return 1;\n}\n',
+      'src/ledger.test.ts': 'test("adds", () => {});\n',
+      'docs/billing.md': '# Billing\n',
+      'build/out.ts': 'export function built() {}\n',
+      'app/handlers.py': 'def charge(order):\n    return order\n\n\ndef refund(order):\n    return order\n',
+      'cmd/main.swift': `import Foundation\n\nfunc computeFee(n: Int) -> Int {\n    return n\n}\nstruct Fee {}\nfunc ${'a'.repeat(200)}() {}\n`,
+      'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n',
+    }, ['build/**']);
+
+    expect(pieces?.map(p => `${p.kind} ${p.name} ${p.file}:${p.start}-${p.end} (${p.size})`)).toEqual([
+      'type Ledger src/ledger.ts:3-9 (7)',
+      'function computeFee cmd/main.swift:3-5 (3)',
+      'file src/invoice.ts src/invoice.ts:1-3 (3)',
+      'function loadLedger src/ledger.ts:11-13 (3)',
+      'function refund app/handlers.py:5-6 (2)',
+      'type Fee cmd/main.swift:6-6 (1)',
+      'key slice_lines manki.yml:3-3 (1)',
+      'error Rejected src/orders.rs:3-3 (1)',
+    ]);
+    expect(pieces?.find(p => p.name === 'refund')?.code).toBe('5:+ def refund(order):\n6:+     return order');
+  });
+
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
@@ -528,7 +562,11 @@ describe('listUsesOutsideDiff', () => {
       { name: 'real_function_here', declared: 'tools/gen.rb:18', uses: ['tools/run.rb:1'] },
     ]);
     expect(overlong.referenceNames).toEqual(['real_field_here', 'real_function_here']);
-    expect(JSON.stringify(overlong)).not.toContain('aaaa');
+    // Only the excerpt of the new file quotes them, each of its lines cut.
+    const { pieces, ...listed } = overlong;
+    expect(JSON.stringify(listed)).not.toContain('aaaa');
+    expect(pieces?.map(p => p.name)).toEqual(['tools/gen.rb']);
+    expect(Math.max(...pieces![0].code.split('\n').map(line => line.length))).toBeLessThan(320);
 
     // Names that each fit an identifier can still be too long to search for together, since a `$` takes two bytes of the
     // pattern. The ones left out are named as not searched, in the section and in the record.
@@ -990,7 +1028,7 @@ ${body}	return true
       expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ ...NOTHING, referenceNames: ['compute_total'] });
-      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons$/));
+      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons and 0 added pieces$/));
       // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name.
       rmSync(join(root, '.git'), { recursive: true, force: true });
       mkdirSync(join(root, '.git'));

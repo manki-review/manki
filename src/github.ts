@@ -848,9 +848,9 @@ function reviewHeading(routing: DashboardData['routing']): string {
   return `Review (${sanitizeMarkdown(route)})`;
 }
 
-const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', sweep: 'sweeps' };
-// `runReview` starts these three steps beside the finders in every round, the sweeps only after the judge.
-const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim'];
+const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', sweep: 'sweeps' };
+// `runReview` starts these four steps beside the finders in every round, the sweeps only after the judge.
+const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern'];
 
 /**
  * The line of the side checks of `kinds`, such as `⏳ Comparisons and claim checks: 2 of 5 done, 1 finding`. It is done

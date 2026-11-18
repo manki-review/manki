@@ -361,11 +361,17 @@ const IDENTIFIER = new RegExp(`^[A-Za-z_$][\\w$]{0,${MAX_NAME_LENGTH - 1}}$`);
 // A type or trait named by a plain path such as `bincode::Decode`. Any other text, such as a macro, is never quoted in a prompt.
 const TYPE_PATH = /^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$/;
 // A file name safe to quote in a prompt heading.
-const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
+export const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
 // A declaration a keyword opens, for languages without a grammar here.
 const DECLARATION_LINE = /^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|async|final|abstract|open|data|sealed)\s+)*(def|class|func|function|fn|struct|interface|enum|trait|type|const|record|object)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/;
 const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'function', function: 'function', fn: 'function', const: 'constant' };
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
+// A type named for errors, such as `ParseError`, `IOException` or `ApiErr`, whose new variants are new kinds of error.
+const ERROR_TYPE = /(?:Error|Exception|Err|Failure|Fault)s?$/;
+// A constant that holds a function, such as `export const load = async () => {`.
+const FUNCTION_VALUE = /=>|\bfunction\b/;
+/** Pieces of added structure `listUsesOutsideDiff` lists, the largest first. */
+const MAX_LISTED_PIECES = 20;
 // A config key. Only keys with an underscore, such as `max_diff_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 // Type expressions that declare fields in place, such as a TypeScript `{ a: number }` or a Go `struct { A int }`.
@@ -512,6 +518,21 @@ export interface SiblingQuestions {
   implementations: SiblingImplementationQuestion[];
 }
 
+/** A piece of structure the change adds, to compare with how the repository already does the same kind of thing. */
+export interface AddedPiece {
+  /** `error` is a type or enum variant whose type is named for errors, such as `ParseError` or a variant of `ApiError`. */
+  kind: 'file' | 'type' | 'function' | 'error' | 'key';
+  /** The declared name, or the path of a file. */
+  name: string;
+  file: string;
+  start: number;
+  end: number;
+  /** How many lines the diff adds to it. */
+  size: number;
+  /** Its added lines, each prefixed with its line number and `+`, at most `MAX_EXCERPT_LINES`. */
+  code: string;
+}
+
 interface Lookup {
   field: string;
   item: string;
@@ -544,6 +565,8 @@ export interface UsesOutsideDiff {
   /** The names the added comments mention, then those the diff calls or reads outside tests and does not declare, to search the dependency repos for. */
   dependencyNames?: string[];
   siblings: SiblingQuestions;
+  /** The structure the change adds, the largest pieces first. */
+  pieces?: AddedPiece[];
 }
 
 export interface UsesOptions {
@@ -561,9 +584,9 @@ const NO_SECTION = { section: '', finderSection: '', readingSection: '' };
  * Returns a prompt section that lists, for each type, field, variant, function, constant and config key the diff changes,
  * where the head commit in `workspace` uses it outside the changed lines, other packages first, then other files, then
  * the same file. It also lists the types whose fields the diff reads or changes, with all their fields. The record holds
- * the same list without the quoted code. From the same parse it returns the sibling comparisons worth asking about. The
- * section is empty, with no record, when there is nothing to list, and on any failure, which it logs and which also
- * returns no comparisons.
+ * the same list without the quoted code. From the same parse it returns the sibling comparisons worth asking about and
+ * the structure the change adds. The section is empty, with no record, when there is nothing to list, and on any
+ * failure, which it logs and which also returns no comparisons and no pieces.
  */
 export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], dependencyNames: forDependency = false, loadApi = loadAstGrep }: UsesOptions = {}): Promise<UsesOutsideDiff> {
   if (!workspace || !existsSync(join(workspace, '.git'))) {
@@ -574,7 +597,7 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
     const started = Date.now();
     const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency);
     const { fields, implementations } = uses.siblings;
-    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons`);
+    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons and ${uses.pieces?.length ?? 0} added pieces`);
     return uses;
   } catch (error) {
     const failed = (error instanceof Error ? error.message : String(error)).slice(0, MAX_FAILURE_CHARS);
@@ -923,11 +946,14 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const references = new Map<string, { code: number; count: number; files: Set<string> }>();
   const reliedOn = new Map<string, number>();
   const lookups: Array<Lookup & { file: string }> = [];
+  // Every declaration the diff touches, the namesakes `symbols` keeps one of included.
+  const declared: ChangedSymbol[] = [];
   for (const file of files) {
     const lines = touched.get(file.path)!;
     const parsed = parser.parse(file.path, lines);
     if (parsed) {
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
+      for (const symbol of changed) declared.push(symbol);
       for (const symbol of changed) addSymbol(symbols, symbol);
       for (const { name, kind, owner } of changed) if (kind === 'field' && owner) appendTo(changedOwners, name, { owner, file: file.path });
       const replaced = replacedLines(file);
@@ -959,9 +985,14 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       if (!TEST_PATH.test(file.path)) for (const lookup of parsed.lookups) lookups.push({ ...lookup, file: file.path });
       if (parsed.reliedOn.length > 0 && !TEST_PATH.test(file.path)) for (const name of parsed.reliedOn) reliedOn.set(name, (reliedOn.get(name) ?? 0) + 1);
     } else {
-      for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
+      for (const symbol of keywordDeclarations(file)) {
+        declared.push(symbol);
+        addSymbol(symbols, symbol);
+      }
     }
   }
+  const lastRanked = new LastRankedFiles(workspace);
+  const pieces = addedPieces(diff, declared, file => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file));
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -986,7 +1017,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     ...files.flatMap(mentionedNames),
     ...[...reliedOn].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).map(([name]) => name).filter(name => !symbols.has(name)),
   ])].filter(name => isSearchable(name) && isCodeLike(name)).slice(0, MAX_SYMBOLS) : [];
-  const nothing = { ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }) };
+  const nothing = {
+    ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }), ...(pieces.length > 0 && { pieces }),
+  };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
   // A file that names the type of a redefined field likely reads that type's field, not a namesake's. Only a searched
@@ -1043,7 +1076,6 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // A symbol that was not searched for is in a line only next to another name, so those lines are not its uses.
   const redefinedNames = new Set(redefined.keys());
   const found = findSymbolUses(searched.filter(s => !unsearched.has(s.name)), hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), redefinedNames, otherType);
-  const lastRanked = new LastRankedFiles(workspace);
   const { blocks: finderBlocks, symbols: listed, common, capped } = formatSymbolUses(found, packages, redefinedNames, typeFiles, file => lastRanked.has(file));
   const { blocks } = formatSymbolUses(found, packages, redefinedNames, typeFiles);
   // What follows the symbols in both copies of the section.
@@ -1227,6 +1259,72 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
     if (!match || (config && !match[1].includes('_'))) return [];
     const kind: SymbolKind = config ? 'key' : KEYWORD_KIND[match[1]] ?? 'type';
     return [{ name: config ? match[1] : match[2], kind, file: file.path, line, tier: 0 as const }];
+  });
+}
+
+/** Returns the kind of piece `symbol` adds, declared on `text`, or `undefined` when it adds no structure of its own, as a field does. */
+function pieceKind(symbol: ChangedSymbol, text: string): AddedPiece['kind'] | undefined {
+  switch (symbol.kind) {
+    case 'type': return ERROR_TYPE.test(symbol.name) ? 'error' : 'type';
+    case 'function': return 'function';
+    case 'constant': return FUNCTION_VALUE.test(text) ? 'function' : undefined;
+    case 'variant': return symbol.owner && ERROR_TYPE.test(symbol.owner) ? 'error' : undefined;
+    case 'key': return 'key';
+    default: return undefined;
+  }
+}
+
+/**
+ * Returns the structure the diff adds: each added file, and each type, function, error kind and config key declared on
+ * an added line of another file whose name is an identifier and no removed line holds, so a moved or renamed one is
+ * not new. A file `skip` names, and test code, add none. A piece inside a larger one is part of it. The largest pieces come first, at most
+ * `MAX_LISTED_PIECES`.
+ */
+function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], skip: (file: string) => boolean): AddedPiece[] {
+  const removed = new Set(diff.files.flatMap(file => file.hunks.flatMap(hunk =>
+    hunk.content.split('\n').filter(line => line.startsWith('-')).flatMap(line => line.match(/[\w$]+/g) ?? []))));
+  const files = new Map(diff.files.filter(f => f.changeType !== 'deleted' && !skip(f.path)).map(f => {
+    const added = addedLines(f);
+    return [f.path, { file: f, added, sorted: [...added.keys()].sort((a, b) => a - b) }];
+  }));
+  type Entry = NonNullable<ReturnType<typeof files.get>>;
+  const piece = (kind: AddedPiece['kind'], name: string, { file, sorted }: Entry, start: number, end: number) => {
+    const from = firstAtOrAfter(sorted, start);
+    return { kind, name, file: file.path, start, end, from, size: firstAtOrAfter(sorted, end + 1) - from };
+  };
+  const pieces: Array<ReturnType<typeof piece>> = [];
+  for (const entry of files.values()) {
+    if (entry.file.changeType === 'added' && entry.sorted.length > 0) pieces.push(piece('file', entry.file.path, entry, 1, entry.sorted.at(-1)!));
+  }
+  const starts = new Map<string, Set<number>>();
+  for (const symbol of declared) starts.set(symbol.file, (starts.get(symbol.file) ?? new Set()).add(symbol.line));
+  for (const symbol of declared) {
+    const entry = files.get(symbol.file);
+    const text = entry?.added.get(symbol.line);
+    const kind = text === undefined ? undefined : pieceKind(symbol, text);
+    if (!entry || !kind || entry.file.changeType === 'added' || symbol.test || !IDENTIFIER.test(symbol.name) || removed.has(symbol.name)) continue;
+    let end = symbol.end;
+    if (end === undefined) {
+      // A declaration found by its keyword runs over the added lines below it, up to the next declaration.
+      const others = starts.get(symbol.file)!;
+      for (end = symbol.line; entry.added.has(end + 1) && !others.has(end + 1); end++);
+    }
+    pieces.push(piece(kind, symbol.name, entry, symbol.start ?? symbol.line, end));
+  }
+  pieces.sort((a, b) => b.size - a.size || a.file.localeCompare(b.file) || a.start - b.start);
+  const kept: typeof pieces = [];
+  for (const [i, p] of pieces.entries()) {
+    if (kept.length === MAX_LISTED_PIECES) {
+      core.info(`The change adds more than ${MAX_LISTED_PIECES} pieces of structure, so the ${pieces.length - i} smallest are not listed`);
+      break;
+    }
+    if (!kept.some(k => k.file === p.file && k.start <= p.start && p.end <= k.end)) kept.push(p);
+  }
+  return kept.map(({ from, ...p }) => {
+    const { added, sorted } = files.get(p.file)!;
+    const lines = sorted.slice(from, from + Math.min(p.size, MAX_EXCERPT_LINES)).map(line => `${line}:+ ${shortLine(added.get(line)!)}`);
+    if (p.size > lines.length) lines.push(`... ${p.size - lines.length} more lines`);
+    return { ...p, code: lines.join('\n') };
   });
 }
 

@@ -22,7 +22,7 @@ import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH } from './symbol-uses';
-import { EarlierAnswer, EarlierAnswers, runComparisons, runRelatedChecks } from './compare';
+import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
@@ -1045,7 +1045,7 @@ export async function runReview(
     };
     return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit, finderDeadline)];
   }));
-  // The sibling comparisons, related repo checks, claim checks and sweeps run on the model of the group's first reader.
+  // The sibling comparisons, related repo checks, claim checks, pattern checks and sweeps run on the model of the group's first reader.
   const comparisonModel = team.finders[0].model;
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
   // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them. The
@@ -1159,6 +1159,13 @@ export async function runReview(
   const relatedChecksPromise = runRelatedChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'related_check', reviewer),
     checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], {
       effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: earlierOf(kept?.comparisons),
+    });
+  // Each piece of structure the change adds is compared with how the repository does the same kind of thing, in a call of
+  // its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
+  const patternChecksPromise = runPatternChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'pattern_check', reviewer),
+    checkWorkspace ? uses.pieces ?? [] : [], {
+      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('pattern'),
+      earlier: earlierOf(kept?.comparisons), diff, instructionFiles: options.instructionFiles,
     });
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;
@@ -1475,9 +1482,10 @@ export async function runReview(
   const { findings: comparisonFindings, comparisons: siblingComparisons } = await comparisonsPromise;
   const relatedChecks = await relatedChecksPromise;
   const claimChecks = await claimChecksPromise;
+  const patternChecks = await patternChecksPromise;
   clearTimeout(comparisonGrace);
-  allFindings.push(...comparisonFindings, ...relatedChecks.findings, ...claimChecks.findings);
-  const comparisons = [...siblingComparisons, ...relatedChecks.comparisons];
+  allFindings.push(...comparisonFindings, ...relatedChecks.findings, ...claimChecks.findings, ...patternChecks.findings);
+  const comparisons = [...siblingComparisons, ...relatedChecks.comparisons, ...patternChecks.comparisons];
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   const usesWithTerms = usesRecord || claimChecks.terms ? { ...usesRecord, ...(claimChecks.terms && { claimTerms: claimChecks.terms }) } : undefined;
   finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
