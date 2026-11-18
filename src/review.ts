@@ -2972,7 +2972,7 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     if (index === -1) return true;
     const blocker = merged[index];
     const overlap = titleOverlapType(blocker.title, f.title);
-    if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}${f.file === blocker.file ? '' : ` (${f.file}:${f.line})`}`;
+    if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}${f.file === blocker.file ? '' : ` (${f.file}${f.line > 0 ? `:${f.line}` : ''})`}`;
     foldInto(blocker, f);
     if (!blocker.suggestedFix && f.suggestedFix && f.file === blocker.file && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
@@ -3210,7 +3210,8 @@ export function sameProblem(a: Located, b: Located): boolean {
 
 /** Whether `a` and `b` may name one defect in other words, so the dedup model is asked: they sit near each other in one file, or share a cited line in any file. */
 function mayRestate(a: Located, b: Located): boolean {
-  return nearEachOther(a, b) || sharesCitedLine(a, b);
+  // A finding tied to no file, such as a scope warning, is matched only by its title, as in `sameProblem`.
+  return !!a.file && !!b.file && (nearEachOther(a, b) || sharesCitedLine(a, b));
 }
 
 /** Whether `a` and `b` sit in one file, and their lines or the narrow proof lines they cite there are at most `DISMISSED_LINE_TOLERANCE` apart. */

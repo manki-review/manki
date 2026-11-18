@@ -2667,6 +2667,22 @@ describe('runReview', () => {
         });
         expect(fromScope(result).map(f => [f.title, f.description, f.threadId, f.answeredIn])).toEqual([[doubtTitle, doubt, 'T8', undefined], [splitTitle, expect.any(String), 'T9', undefined]]);
       }
+
+      // A first doubt that cites the line of an earlier finding or of a reader blocker is never paired with either for
+      // the dedup model, which here calls every pair the same defect. It keeps its own thread.
+      jest.mocked(runScopeReader).mockResolvedValue({ doubt: scope.doubt, proof: ['src/x.ts:1'], purpose: 'purpose-1' });
+      const earlier = makeFindingFingerprintEntry({ title: '`parseDate` is never called', file: 'src/x.ts', lineStart: 1 });
+      const reading = refutingClients('confirmed');
+      jest.mocked(reading.judge.sendMessage).mockImplementation(async (system: string) => ({
+        content: system.startsWith('You check one finding') ? answer('confirmed')
+          : JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 1, title: 'Nothing calls `parseDate`', description: 'd' }], summary: 's', whatThisDoes: '', whatToTest: '' }),
+      }));
+      const dedup = { sendMessage: jest.fn(async (_system: string, user: string) => ({ content: JSON.stringify([...user.matchAll(/^(\d+)\.$/gm)].map(([, pair]) => ({ pair: Number(pair), sameDefect: true }))) })) } as unknown as LLMClient;
+      const first = await runReview({ ...reading, dedup }, {
+        ...options, config, interRoundDiff: '', workspace: root, priorRounds: [makeRoundContext(1, { findings: { count: 1, severityCounts: { warning: 1 }, entries: [earlier] } })],
+      });
+      expect(fromScope(first).map(f => [f.title, f.threadId, f.raisedIn, f.sameAs])).toEqual([[doubtTitle, undefined, undefined, undefined]]);
+      expect(jest.mocked(dedup.sendMessage).mock.calls.map(([, user]) => user).join('\n')).not.toContain(doubtTitle);
     }, GIT_TEST_TIMEOUT_MS);
 
     it('keeps a scope thread its answer or a maintainer settled through pushes that change the diff and the doubt, and reopens it once the PR title or description changed', async () => {
@@ -4202,6 +4218,11 @@ describe('runReview', () => {
       ['Buffer is never flushed', 'Loses data.'], ['Close is skipped after an early return', 'The handle stays open.\n\nAlso reported as: Caller never closes the handle (src/b.ts:40)'],
     ]);
     expect(elsewhere.result.findings[1]).not.toHaveProperty('suggestedFix');
+    // A finding on a whole file names only the file.
+    const wholeFile = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}]' }), [
+      { ...nearbyFindings[0], title: 'Caller never closes the handle', file: 'src/b.ts', line: 0, evidence: { checks: [], proof: ['src/a.ts:40'] } },
+    ]);
+    expect(wholeFile.result.findings.map(f => f.description)).toEqual(['The handle stays open.\n\nAlso reported as: Caller never closes the handle (src/b.ts)']);
 
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason closes the fold under the finding, after the fix and the checks.
