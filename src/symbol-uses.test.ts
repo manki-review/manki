@@ -1335,9 +1335,9 @@ describe('declarationPattern', () => {
 
 describe('TEST_PATH', () => {
   it.each([
-    ['TypeScript', ['src/parse.test.ts', 'web/cart.spec.tsx', 'src/__tests__/parse.ts', 'test/parse.ts', 'src/parse.test.d.ts'], ['src/contest.ts', 'src/attestation.ts', 'src/testing.ts', 'vitest.config.ts']],
+    ['TypeScript', ['src/parse.test.ts', 'web/cart.spec.tsx', 'src/__tests__/parse.ts', 'test/parse.ts', 'src/parse.test.d.ts'], ['src/contest.ts', 'src/attestation.ts', 'src/testing.ts', 'vitest.config.ts', 'src/components/SpeedTest/index.tsx', 'src/ABTest/variant.ts']],
     ['JavaScript', ['lib/cart.spec.js', 'test/cart.js', 'lib/__tests__/cart.js', 'lib/cart.test.mjs'], ['lib/latest.js', 'jest.config.js']],
-    ['Go', ['pkg/sync/sync_test.go', 'pkg/sync/testdata/block.bin'], ['latest/x.go', 'pkg/contest/x.go', 'pkg/testing.go']],
+    ['Go', ['pkg/sync/sync_test.go', 'pkg/sync/testdata/block.bin'], ['latest/x.go', 'pkg/contest/x.go', 'pkg/testing.go', 'internal/LoadTest/run.go', 'internal/Tests/run.go']],
     ['Rust', ['crate/tests/sync.rs', 'crate/src/sync/tests.rs', 'crate/src/sync_tests.rs', 'crate/src/test_utils/mod.rs'], ['crate/src/attest.rs', 'crate/src/protest.rs']],
     ['Swift', ['Tests/AppTests/LoginTests.swift', 'App/AppUITests/LaunchTests.swift', 'Sources/App/LoginTest.swift', 'Sources/App/LoginSpec.swift'], ['Sources/App/Latest.swift', 'Sources/App/Contest.swift', 'Sources/Testing/Login.swift']],
     ['Java', ['src/test/java/org/app/LoginTest.java', 'src/main/java/org/app/LoginTests.java'], ['src/main/java/org/app/Latest.java', 'src/main/java/org/app/Contest.java', 'src/main/java/org/app/Attestation.java']],
