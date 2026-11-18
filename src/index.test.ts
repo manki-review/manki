@@ -1222,7 +1222,7 @@ describe('handlePullRequest', () => {
       }
     });
 
-    it('retries an incomplete review on the tick of its own box, reusing its finished parts as the review command does', async () => {
+    it('reuses no part of an incomplete review whose own box was ticked, since the tick edited it', async () => {
       jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
       const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 2, totalDeletions: 0 });
@@ -1232,8 +1232,7 @@ describe('handlePullRequest', () => {
       const box = (head: string) => `${head}\n\n<!-- manki-issue-box -->\n- [x] Review again <!-- manki-box:again -->\n\n<!-- manki -->`;
       try {
         for (const [label, reviewId, head, handed] of [
-          ['the incomplete review', 7, '⏸️ **Review incomplete:** Retry with `/manki review`.', true],
-          ['a complete review', 7, 'Reviewed.', false],
+          ['the incomplete review', 7, '⏸️ **Review incomplete:** Retry with `/manki review`.', false],
           ['another review', 8, '⏸️ **Review incomplete:** Retry with `/manki review`.', false],
         ] as const) {
           jest.mocked(reviewModule.runReview).mockClear();

@@ -731,15 +731,12 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
 
   const { octokit, bot } = await getAuth();
   const settings = await loadSettings(owner, repo, prNumber);
-  const queued = reviewModes(settings);
-  if (message) await settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, queued.forced ? payload.sender?.login : undefined);
-  if (settingsTick && !queued.forced) {
+  const { forced, fullReview, deeper } = reviewModes(settings);
+  if (message) await settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, forced ? payload.sender?.login : undefined);
+  if (settingsTick && !forced) {
     core.info('The settings box tick queued no review for this run, nothing to do');
     return;
   }
-  // The box of an incomplete review retries it as the review command does: no forced or full review, and its finished parts are reused.
-  const retriesReview = message?.kind === 'review' && !!payload.review?.body?.startsWith(REVIEW_INCOMPLETE_LINE);
-  const { forced, fullReview, deeper } = retriesReview ? { forced: false, fullReview: false, deeper: false } : queued;
 
   // Acknowledge the command unconditionally so the user knows it was received.
   if (payload.comment?.id && !settingsTick) {
@@ -778,7 +775,6 @@ async function handleCommentTrigger(settingsTick = false, message?: TickedMessag
     draft,
     fullReview,
     deeper,
-    ...(retriesReview && { retryOfReview: message?.id }),
   });
 }
 
@@ -1095,14 +1091,12 @@ async function loadRecap(
 
 /**
  * Returns the PR's last attempt on `commitSha` when the round may keep results of it. Review again and Deeper review ask for
- * a new read, so they keep nothing, and neither does a round whose last attempt's review someone edited, unless the round
- * retries that review by the tick of its own box (`retryOfReview`).
+ * a new read, so they keep nothing, and neither does a round whose last attempt's review someone edited.
  */
-async function reusableAttempt(octokit: Octokit, recap: RecapState, commitSha: string, { fullReview, deeper, retryOfReview }: FullReviewOptions): Promise<EarlierAttempt | undefined> {
+async function reusableAttempt(octokit: Octokit, recap: RecapState, commitSha: string, { fullReview, deeper }: FullReviewOptions): Promise<EarlierAttempt | undefined> {
   const attempt = recap.lastAttempt;
   if (!attempt?.nodeId || attempt.record.meta.commitSha !== commitSha || fullReview || deeper) return undefined;
-  // Ticking the review's own box edits it, which says nothing about its record.
-  if (retryOfReview !== attempt.review && await wasEdited(octokit, attempt.nodeId)) {
+  if (await wasEdited(octokit, attempt.nodeId)) {
     core.info('The last attempt is not reused, since its review was edited');
     return undefined;
   }
