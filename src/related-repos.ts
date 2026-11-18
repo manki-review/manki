@@ -16,7 +16,7 @@ import { gitEnv } from './workspace';
 export const RELATED_REPO_HOST = 'https://github.com';
 // A tool call must end before `STALE_TIMEOUT_MS`. It can wait for another's fetch and then fetch in its place, so
 // `sharedCheckout` begins a fetch only while one still fits into the call, and stops waiting before the limit.
-const FETCH_TIMEOUT_MS = 60_000;
+export const FETCH_TIMEOUT_MS = 60_000;
 export const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
 /** Commits the first fetch of an older history reaches back. Each further fetch reaches twice as far. */
@@ -319,10 +319,14 @@ export function relatedRepoGuides(checkouts: RelatedCheckout[]): Record<string, 
   return guides.length > 0 ? Object.fromEntries(guides) : undefined;
 }
 
+/** The folder of a round's `stateDir` that holds the markers of its dependencies, apart from a related repo's of the same name. */
+export const DEPENDENCY_STATE = 'dependencies';
+
 /** Returns the checkout directory of each related repo or package a tool server of the round in `stateDir` fetched, by its name. */
 export function fetchedRelatedRepos(stateDir: string): Map<string, string> {
-  const done = readdirSync(stateDir).filter(f => f.endsWith('.done'));
-  return new Map(done.map(f => [decodeURIComponent(f.slice(0, -'.done'.length)), readFileSync(join(stateDir, f), 'utf-8')]));
+  const done = (dir: string) => (existsSync(dir) ? readdirSync(dir) : []).filter(f => f.endsWith('.done'))
+    .map((f): [string, string] => [decodeURIComponent(f.slice(0, -'.done'.length)), readFileSync(join(dir, f), 'utf-8')]);
+  return new Map([...done(stateDir), ...done(join(stateDir, DEPENDENCY_STATE))]);
 }
 
 const MAX_REASON_CHARS = 300;

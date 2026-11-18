@@ -2246,8 +2246,10 @@ describe('runReview', () => {
         // The refuter is the first to read the other repo, after the finders are done, and reads a dependency of the PR too.
         const { stateDir } = options!.repoTools!.related!;
         fetched(stateDir, 'acme/billing');
-        fetched(stateDir, 'crates.io/demo@1.0.0');
-        writeFileSync(join(stateDir, `${encodeURIComponent('crates.io/demo@1.0.0')}.from`), JSON.stringify({ registry: 'crates.io', name: 'demo', version: '1.0.0', source: 'lockfile', file: 'Cargo.lock' }));
+        // A package keeps its markers in a folder of its own.
+        mkdirSync(join(stateDir, 'dependencies'));
+        fetched(join(stateDir, 'dependencies'), 'crates.io/demo@1.0.0');
+        writeFileSync(join(stateDir, 'dependencies', `${encodeURIComponent('crates.io/demo@1.0.0')}.from`), JSON.stringify({ registry: 'crates.io', name: 'demo', version: '1.0.0', source: 'lockfile', file: 'Cargo.lock' }));
         const proof = ['src/queue.ts:6', 'acme/billing:src/import.ts:2', 'crates.io/demo@1.0.0:src/import.ts:1'];
         return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof }), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
       });

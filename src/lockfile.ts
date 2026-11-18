@@ -379,7 +379,7 @@ function sourceOrigin(source: string | undefined): string | undefined {
 }
 
 /** Whether a registry tarball URL names `name` and `version`, as `<registry>/<name>/-/<name>-<version>.tgz` does. */
-function namesTarball(source: string, name: string, version: string): boolean {
+export function namesTarball(source: string, name: string, version: string): boolean {
   let path: string;
   try {
     path = decodeURIComponent(new URL(source).pathname);

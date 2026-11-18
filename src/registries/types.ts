@@ -18,6 +18,10 @@ export interface ManifestFacts {
   requirements: Requirement[];
   /** Set, to how, when the manifest changes the package's code for an install, such as through `overrides` or `[patch]`. */
   overridden?: string;
+  /** Set, to why, when a fresh install may not pick the highest version a requirement allows, such as for Cargo's `rust-version`. */
+  freshPick?: string;
+  /** Set, to why, when the manifest takes its versions from a lockfile outside its own folder and the folders above it. */
+  lockedElsewhere?: string;
 }
 
 /** One published version of a package, with the checksum the registry states for its archive. */
@@ -43,12 +47,17 @@ export interface Registry {
   manifests: readonly string[];
   /** The file names of the lockfiles that lock versions. `lockedPackages` parses each of them. */
   lockfiles: readonly string[];
+  /** The file names of lockfiles and install settings Manki does not read, which decide the packages of the manifests in their folder and below. */
+  unreadInstallFiles: readonly string[];
   /** Whether `name` is a valid package name of the registry. No other name reaches a URL. */
   validName(name: string): boolean;
   /** Whether two spellings name the same package, such as `serde_json` and `serde-json` on crates.io. */
   sameName(a: string, b: string): boolean;
-  /** Whether a lockfile's source for a package names this registry, the only source Manki reads a package from. */
-  isRegistrySource(source: string | undefined): boolean;
+  /**
+   * Whether a lockfile's source for the package `name` at `version` is this registry's archive of that package, the
+   * only source Manki reads a package from.
+   */
+  isRegistrySource(source: string | undefined, name: string, version: string): boolean;
   /**
    * Whether a lockfile's source names the registry by its host. A source without one, such as Yarn's `npm`, means the
    * registry the project is set up with, so it counts only when `otherRegistry` finds no other one set.
@@ -59,13 +68,21 @@ export interface Registry {
    * for an install, such as an `.npmrc` or a `.cargo/config.toml`.
    */
   isConfigFile(path: string): boolean;
-  /** Returns which of `configs` sets another registry than this one for the package `name`, and to what, or `undefined`. */
+  /**
+   * Returns which of `configs` sets another registry than this one for the package `name`, and to what, or `undefined`.
+   * This and each other reason passes the PR's own text, such as a path, through `shown`.
+   */
   otherRegistry(name: string, configs: readonly RegistryConfig[]): string | undefined;
   /**
    * Returns how one of `configs` changes the code of the package `name` for an install, or `undefined`. Throws when
    * Manki cannot read one of them with certainty.
    */
   overriddenBy(name: string, configs: readonly RegistryConfig[]): string | undefined;
+  /**
+   * Returns which of `files`, the settings and manifests of the checkout, makes a fresh install pick another version
+   * than the highest a requirement allows, and how, or `undefined`. Throws when Manki cannot read one with certainty.
+   */
+  freshPick(files: readonly RegistryConfig[]): string | undefined;
   /**
    * Returns what a manifest's `text` says of the package `name`: its requirements, in the manifest's own syntax, and
    * whether it overrides the package. Throws when Manki cannot read the manifest with certainty.

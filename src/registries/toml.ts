@@ -10,6 +10,11 @@ class UncertainToml extends Error {}
 const BARE_KEY = /[A-Za-z0-9_-]/;
 const ESCAPES: Record<string, string> = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' };
 const BARE_SCALAR = /[A-Za-z0-9_:.+-]/;
+/** Keys that name a property every object inherits, which a key of the PR's text must never reach. */
+const INHERITED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** A new table without a prototype, so no key of it reads an inherited property. */
+const newTable = (): TomlTable => Object.create(null) as TomlTable;
 
 const isTable = (value: TomlValue | undefined): value is TomlTable => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -19,7 +24,7 @@ const isTable = (value: TomlValue | undefined): value is TomlTable => typeof val
  * or a line it does not recognise, so a caller never reads a guess. Scalars other than strings are not checked.
  */
 export function parseTomlSubset(text: string): TomlTable {
-  const root: TomlTable = {};
+  const root = newTable();
   const defined = new Set<TomlValue>();
   let at = 0;
   const fail = (what: string): never => {
@@ -103,6 +108,7 @@ export function parseTomlSubset(text: string): TomlTable {
         if (at === start) fail('a key it does not read');
         path.push(text.slice(start, at));
       }
+      if (INHERITED_KEYS.has(path.at(-1)!)) fail(`the key ${path.at(-1)!}`);
       skipSpaces();
       if (text[at] !== '.') return path;
       at++;
@@ -112,7 +118,7 @@ export function parseTomlSubset(text: string): TomlTable {
   const descend = (table: TomlTable, path: string[]): TomlTable => {
     let current = table;
     for (const part of path) {
-      const next = current[part] ?? (current[part] = {});
+      const next = current[part] ?? (current[part] = newTable());
       const last = Array.isArray(next) ? next.at(-1) : next;
       if (!isTable(last)) fail(`the key ${path.join('.')} set twice`);
       current = last as TomlTable;
@@ -145,7 +151,7 @@ export function parseTomlSubset(text: string): TomlTable {
     }
     if (c === '{') {
       at++;
-      const table: TomlTable = {};
+      const table = newTable();
       skipSpaces();
       if (text[at] === '}') {
         at++;
@@ -186,7 +192,7 @@ export function parseTomlSubset(text: string): TomlTable {
         const last = path.at(-1)!;
         const list = parent[last] ?? (parent[last] = []);
         if (!Array.isArray(list)) fail(`the table ${path.join('.')} set twice`);
-        table = {};
+        table = newTable();
         (list as TomlValue[]).push(table);
       } else {
         table = descend(root, path);
@@ -205,5 +211,5 @@ export function parseTomlSubset(text: string): TomlTable {
 
 /** Returns `value` as a table, or an empty one. */
 export function tableOf(value: TomlValue | undefined): TomlTable {
-  return isTable(value) ? value : {};
+  return isTable(value) ? value : newTable();
 }
