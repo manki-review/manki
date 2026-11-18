@@ -14,7 +14,7 @@ import { createMcpServer, McpServerOptions, readClosedCalls, runMcpServer } from
 import * as relatedRepos from './related-repos';
 import { git } from './test-utils';
 import { RelatedRepoTools } from './types';
-import { fetchWorkspace } from './workspace';
+import { BASE_READS_FILE, BASE_REF, fetchWorkspace } from './workspace';
 
 // The grammars are registered once per process, so every test file registers the same ones.
 napi.registerDynamicLanguage({ go, python, rust });
@@ -391,5 +391,81 @@ describe('Manki tool server', () => {
       await claude.close();
       await codex.close();
     }
+  });
+
+  it('reads a file at the PR\'s base with `ref`, and refuses there what is excluded, outside the repository or in .git', async () => {
+    const pr = join(base, 'pr');
+    git(base, 'init', '-q', pr);
+    mkdirSync(join(pr, 'src'));
+    writeFileSync(join(pr, 'src', 'a.ts'), 'const x = 1;\n');
+    writeFileSync(join(pr, 'src', 'gone.ts'), 'export const old = true;\n');
+    writeFileSync(join(pr, 'yarn.lock'), 'left: 1\n');
+    writeFileSync(join(pr, 'src', 'bin.dat'), 'a\0b');
+    symlinkSync(join(outside, 'secret.ts'), join(pr, 'src', 'link.ts'));
+    git(pr, 'add', '.');
+    git(pr, 'commit', '-qm', 'base');
+    const baseSha = git(pr, 'rev-parse', 'HEAD');
+    writeFileSync(join(pr, 'src', 'a.ts'), 'const x = 2;\n');
+    rmSync(join(pr, 'src', 'gone.ts'));
+    writeFileSync(join(pr, 'src', 'new.ts'), 'export const fresh = true;\n');
+    git(pr, 'add', '-A');
+    git(pr, 'commit', '-qm', 'head');
+
+    // Without its list of excluded paths, a workspace has no base to read, even with the ref set.
+    git(pr, 'update-ref', BASE_REF, baseSha);
+    const unlisted = await connect(pr);
+    expect((await unlisted.listTools()).tools.map(t => t.name)).not.toContain('read_file');
+    await unlisted.close();
+    writeFileSync(join(pr, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['*.lock'] }));
+
+    const claude = await connect(pr);
+    const codex = await connect(pr, { fileTools: true, steps: 30 });
+    try {
+      const { tools } = await claude.listTools();
+      const readFile = tools.find(t => t.name === 'read_file')!.inputSchema;
+      expect(tools.map(t => t.name).sort()).toEqual(['ast_grep', 'git_history', 'read_file', 'repo_info']);
+      expect(readFile.required).toEqual(['path']);
+      expect(readFile.properties).toHaveProperty('ref');
+      expect(readFile.properties).not.toHaveProperty('repo');
+
+      for (const client of [claude, codex]) {
+        expect(await call(client, 'read_file', { path: 'src/a.ts', ref: 'base' })).toEqual({ text: '1\tconst x = 1;\n2\t', isError: false });
+        expect((await call(client, 'read_file', { path: './src//gone.ts', ref: 'base' })).text).toBe('1\texport const old = true;\n2\t');
+        // A symlink at the base is its text, never its target.
+        expect((await call(client, 'read_file', { path: 'src/link.ts', ref: 'base' })).text).toBe(`1\t${join(outside, 'secret.ts')}`);
+      }
+      expect((await call(codex, 'read_file', { path: 'src/a.ts' })).text).toBe('1\tconst x = 2;\n2\t');
+      // Excluded paths are refused at the base only, so the head copy stays readable.
+      expect((await call(codex, 'read_file', { path: 'yarn.lock' })).text).toBe('1\tleft: 1\n2\t');
+      expect((await call(claude, 'read_file', { path: 'yarn.lock' })).text).toBe('Read the PR\'s head with your own file tools. This tool reads the PR\'s base with `ref` set to `base`.');
+      const refusals: [string, string][] = [
+        ['yarn.lock', 'yarn.lock matches *.lock in exclude_paths, so it is not read at the PR\'s base'],
+        ['src/new.ts', 'src/new.ts does not exist at the PR\'s base'],
+        ['src', 'src is not a file at the PR\'s base'],
+        ['src/bin.dat', 'src/bin.dat is binary at the PR\'s base'],
+        ['.git/config', '.git/config is in .git, which the tools do not read'],
+        ['src/../.git/HEAD', 'src/../.git/HEAD is in .git, which the tools do not read'],
+        ['../outside/secret.ts', '../outside/secret.ts is outside the repository'],
+        [join(outside, 'secret.ts'), `${join(outside, 'secret.ts')} is outside the repository`],
+        ['.', '. is not a file'],
+      ];
+      for (const [path, text] of refusals) expect(await call(claude, 'read_file', { path, ref: 'base' })).toEqual({ text, isError: true });
+    } finally {
+      await claude.close();
+      await codex.close();
+    }
+
+    // A read at the base takes a step like any call.
+    const budgeted = await connect(pr, { fileTools: true, steps: 1 });
+    expect((await call(budgeted, 'read_file', { path: 'src/a.ts', ref: 'base' })).isError).toBe(false);
+    expect((await call(budgeted, 'read_file', { path: 'src/a.ts', ref: 'base' })).text).toContain('all 1 tool steps are used');
+    await budgeted.close();
+
+    // A related repo is never read at the PR's base.
+    const related: RelatedRepoTools = { repos: [{ repo: 'o/r', kind: 'consumer' }], cacheDir: join(base, 'pr-related'), stateDir: join(base, 'pr-state') };
+    const withRelated = await connect(pr, { related });
+    expect(await call(withRelated, 'read_file', { repo: 'o/r', path: 'lib.rs', ref: 'base' }))
+      .toEqual({ text: '`ref` reads only the PR\'s own repository, so leave out `repo` to read the base.', isError: true });
+    await withRelated.close();
   });
 });

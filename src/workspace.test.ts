@@ -1,12 +1,14 @@
 import { execFileSync } from 'child_process';
 import { createServer } from 'http';
 import { AddressInfo } from 'net';
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import * as core from '@actions/core';
+
 import { git } from './test-utils';
-import { closedPathsOf, closePaths, fetchWorkspace } from './workspace';
+import { BASE_READS_FILE, BASE_REF, closedPathsOf, closePaths, fetchWorkspace } from './workspace';
 
 const TOKEN = 'ghs_workspaceFetchToken';
 // Several git processes per test can pass Jest's default 5 seconds on a slow runner.
@@ -131,5 +133,46 @@ describe('fetchWorkspace', () => {
     await closePaths(checkout, ['bench/holdout/**']);
     expect(readdirSync(join(checkout, 'src'))).toEqual(['a.ts']);
     rmSync(checkout, { recursive: true, force: true });
+  }, GIT_TEST_TIMEOUT_MS);
+
+  it('points the base ref at the merge base, fetching it only when the history lacks it, and leaves it out when it cannot be had', async () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => undefined);
+    writeFileSync(join(source, 'a.txt'), 'base\n');
+    git(source, 'add', '.');
+    git(source, 'commit', '-qm', 'base');
+    const inHistory = git(source, 'rev-parse', 'HEAD');
+    git(source, 'checkout', '-qb', 'other');
+    writeFileSync(join(source, 'a.txt'), 'other\n');
+    git(source, 'commit', '-qam', 'other');
+    const elsewhere = git(source, 'rev-parse', 'HEAD');
+    git(source, 'checkout', '-q', '-');
+    writeFileSync(join(source, 'a.txt'), 'head\n');
+    git(source, 'commit', '-qam', 'head');
+    const head = git(source, 'rev-parse', 'HEAD');
+    const excludePaths = ['*.lock'];
+
+    try {
+      for (const sha of [inHistory, elsewhere]) {
+        const dir = await fetchWorkspace(`file://${source}`, head, TOKEN, [], { sha, excludePaths });
+        expect(git(dir, 'rev-parse', BASE_REF)).toBe(sha);
+        expect(git(dir, 'rev-parse', 'HEAD')).toBe(head);
+        expect(JSON.parse(readFileSync(join(dir, '.git', BASE_READS_FILE), 'utf8'))).toEqual({ excludePaths });
+      }
+      // The commit off the head's history came alone, so the workspace's history stays the head's.
+      const dir = await fetchWorkspace(`file://${source}`, head, TOKEN, [], { sha: elsewhere, excludePaths });
+      expect(git(dir, 'log', '--format=%s', BASE_REF)).toBe('other');
+
+      for (const sha of ['f'.repeat(40), 'HEAD~1', `--upload-pack=touch ${join(root, 'ran')}`]) {
+        const without = await fetchWorkspace(`file://${source}`, head, TOKEN, [], { sha, excludePaths });
+        expect(git(without, 'rev-parse', 'HEAD')).toBe(head);
+        expect(() => git(without, 'rev-parse', '-q', '--verify', BASE_REF)).toThrow();
+        expect(existsSync(join(without, '.git', BASE_READS_FILE))).toBe(false);
+      }
+      expect(existsSync(join(root, 'ran'))).toBe(false);
+      expect(warning).toHaveBeenCalledTimes(3);
+      expect(warning.mock.calls.map(([m]) => String(m)).every(m => m.includes('so the tools read only the head'))).toBe(true);
+    } finally {
+      warning.mockRestore();
+    }
   }, GIT_TEST_TIMEOUT_MS);
 });

@@ -365,7 +365,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     if (hasTools) {
       // A fresh repo holding only the tracked files of `head` and its history, so the tools read no untracked file and
       // no later commit of the checkout.
-      workspace = await fetchWorkspace(pathToFileURL(repoRoot).href, head);
+      workspace = await fetchWorkspace(pathToFileURL(repoRoot).href, head, undefined, [], { sha: base, excludePaths: config.exclude_paths });
       if (patch !== undefined) await applyPatch(workspace, patch, head);
       // Closed after the patch, which can add or change a closed file.
       await closePaths(workspace, config.closed_paths ?? []);

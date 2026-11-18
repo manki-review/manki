@@ -1478,16 +1478,25 @@ async function collectRoundSignals(
 }
 
 /**
- * Fetches the PR head for the repository tools when any of `clients` has them, without the paths `closedPaths` closes.
- * Returns `undefined` when none has them, or when the fetch or the removal fails, and the models then run without tools.
+ * Fetches the PR head for the repository tools when any of `clients` has them, without the paths `closedPaths` closes,
+ * with the merge base the PR's diff starts from for reads at the base, which leave out `excludePaths`. Returns
+ * `undefined` when none has them, or when the fetch of the head or the removal fails, and the models then run without
+ * tools. A merge base that cannot be found leaves only the head.
  */
 async function fetchToolWorkspace(
-  { octokit, owner, repo, commitSha }: Pick<RunTarget, 'octokit' | 'owner' | 'repo' | 'commitSha'>, clients: LLMClient[], closedPaths: readonly string[] = [],
+  { octokit, owner, repo, commitSha, baseRef }: Pick<RunTarget, 'octokit' | 'owner' | 'repo' | 'commitSha' | 'baseRef'>, clients: LLMClient[],
+  excludePaths: readonly string[], closedPaths: readonly string[] = [],
 ): Promise<string | undefined> {
   if (!clients.some(client => client.repoTools)) return undefined;
   try {
-    const { token } = await octokit.auth() as { token?: string };
-    return await fetchWorkspace(`${github.context.serverUrl}/${owner}/${repo}.git`, commitSha, token, closedPaths);
+    const [{ token }, base] = await Promise.all([
+      octokit.auth() as Promise<{ token?: string }>,
+      fetchMergeBase(octokit, owner, repo, baseRef, commitSha).catch((error: unknown) => {
+        core.warning(`Could not find the PR's merge base, so the tools read only the head: ${failureReason(error)}`);
+        return undefined;
+      }),
+    ]);
+    return await fetchWorkspace(`${github.context.serverUrl}/${owner}/${repo}.git`, commitSha, token, closedPaths, base ? { sha: base, excludePaths } : undefined);
   } catch (error) {
     core.warning(`Could not fetch the PR head for the repository tools, so the models run without them: ${sanitizeTokens(String(error))}`);
     return undefined;
@@ -2202,7 +2211,7 @@ async function runFullReview(
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin, config.closed_paths);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, prContext),
-      fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])], config.closed_paths),
+      fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])], config.exclude_paths, config.closed_paths),
     ]);
 
     const run: ReviewRun = {
@@ -2577,8 +2586,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
       return;
     }
     const headSha: string | undefined = payload.pull_request?.head?.sha;
+    const baseRef: string | undefined = payload.pull_request?.base?.ref;
     const loadWorkspace = async () => {
-      if (!headSha) return undefined;
+      if (!headSha || !baseRef) return undefined;
       let closedPaths = config.closed_paths ?? [];
       try {
         // A file the PR renames out of a closed path holds the closed file's text at the head, so it is closed too.
@@ -2587,7 +2597,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
         core.warning(`Could not read the PR's diff to find the files it moves out of a closed path, so the reply runs without tools: ${failureReason(error)}`);
         return undefined;
       }
-      return fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client], closedPaths);
+      return fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha, baseRef }, [client], config.exclude_paths, closedPaths);
     };
     await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config, closedUnknown);
   }
