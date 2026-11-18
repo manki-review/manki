@@ -149,15 +149,16 @@ describe('confirmDoubt', () => {
   const [doubt] = scopeWarnings({ doubt: 'Nothing calls the new `parseDate`.', proof: ['src/dates.ts:2-3', 'src/cli.ts:1'] });
   const check = (outcome: Refutation['outcome'], defect = outcome): Refutation => ({ outcome, defect, reason: 'r', proof: ['src/dates.ts:2'], files: ['src/dates.ts'], codeDigest: 'd' });
   const refuter = (refutation?: Refutation, pairRefutation?: Refutation) => jest.fn(async (findings: Finding[]) => findings.map(f => ({ ...f, ...(refutation && { refutation }), ...(pairRefutation && { pairRefutation }) })));
+  const checkWith = (refute: ReturnType<typeof refuter>) => ({ refute, workspace: '/nowhere', pair: true, priorRounds: [] });
 
   it('asks the refuter about the doubt on its first cited line, and keeps it, tied to no file again, only when every check confirms it', async () => {
     const confirmed = refuter(check('confirmed'), check('confirmed'));
-    expect(await confirmDoubt(doubt, confirmed)).toEqual({ ...doubt, doubts: [{ premise: doubt.description, decides: 'defect' }], refutation: check('confirmed'), pairRefutation: check('confirmed') });
+    expect(await confirmDoubt(doubt, checkWith(confirmed))).toEqual({ ...doubt, doubts: [{ premise: doubt.description, decides: 'defect' }], refutation: check('confirmed'), pairRefutation: check('confirmed') });
     expect(confirmed.mock.calls[0][0]).toEqual([{ ...doubt, file: 'src/dates.ts', line: 2, doubts: [{ premise: doubt.description, decides: 'defect' }] }]);
 
     // A disproof, a check that settles nothing, a second check that does not agree, a failed call and a round without tools all drop it.
     for (const refute of [refuter(check('disproved')), refuter(check('unsettled')), refuter(check('confirmed'), check('unsettled')), refuter(check('confirmed', 'unsettled')), refuter()]) {
-      expect(await confirmDoubt(doubt, refute)).toBe('the refuter did not confirm it');
+      expect(await confirmDoubt(doubt, checkWith(refute))).toBe('the refuter did not confirm it');
     }
     expect(await confirmDoubt(doubt, undefined)).toBe('no check with repository tools could run');
   });

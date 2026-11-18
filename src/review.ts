@@ -1596,13 +1596,20 @@ export async function runReview(
     const { unique, duplicates } = previousFindings?.length ? deduplicateFindings(warnings, previousFindings, changed) : { unique: warnings, duplicates: [] };
     for (const d of duplicates) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
     staticDedupCount += duplicates.length;
-    const refute = refutation && ((findings: Finding[]) => refuteBlockers(refutation.client, findings, {
-      workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
-      outsideInput: config.review?.outside_input, rules: config.review?.rules,
-    }));
+    // Added after the round's suppression step, so it runs on them here, before a refuter call is spent on a dismissed doubt.
+    const suppression = memory?.suppressions?.length ? applySuppressions(unique, memory.suppressions) : { kept: unique, suppressed: [] };
+    suppressionCount += suppression.suppressed.length;
+    memorySuppressed = [...memorySuppressed, ...suppression.suppressed];
+    const doubtCheck = refutation && {
+      refute: (findings: Finding[]) => refuteBlockers(refutation.client, findings, {
+        workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+        outsideInput: config.review?.outside_input, rules: config.review?.rules,
+      }),
+      workspace: refutation.workspace, pair: !!refutation.pair, changeDigest: options.changeDigest, priorRounds: priorRounds ?? [],
+    };
     const posted: Finding[] = [];
-    for (const warning of unique) {
-      const kept = warning.title === SCOPE_DOUBT_TITLE ? await confirmDoubt(warning, refute) : warning;
+    for (const warning of suppression.kept) {
+      const kept = warning.title === SCOPE_DOUBT_TITLE ? await confirmDoubt(warning, doubtCheck) : warning;
       if (typeof kept !== 'string') {
         posted.push(kept);
         continue;

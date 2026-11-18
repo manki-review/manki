@@ -2672,6 +2672,43 @@ describe('runReview', () => {
       // A doubt dedup drops takes no refuter call.
       expect(refuterCalls(clients)).toEqual([]);
     }, GIT_TEST_TIMEOUT_MS);
+
+    it('reuses the confirmation of an unchanged doubt on an unchanged diff, and asks the refuter again once the doubt, the diff or the code it read changed', async () => {
+      const answer = { doubt: scope.doubt, proof: ['src/x.ts:1'] };
+      jest.mocked(runScopeReader).mockResolvedValue(answer);
+      const config = makeConfig({ review: { scope_blocks: true } });
+      const [confirmed] = fromScope(await runReview(refutingClients('confirmed'), { ...options, config, workspace: root }));
+      const record = (doubt: string, changeDigest: string) => [makeRoundContext(1, {
+        findings: { count: 1, severityCounts: { warning: 1 }, entries: [{ ...makeFindingFingerprintEntry({ fingerprint: { file: '', lineStart: 0, lineEnd: 0, slug: titleToSlug(doubtTitle) }, severity: 'warning', title: doubtTitle, reviewers: ['Scope reader'] }), refutation: confirmed.refutation }] },
+        scope: { ...answer, doubt, warned: true },
+        diff: { changeDigest, lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
+      })];
+      const round = async (priorRounds: RoundContext[]) => {
+        const clients = refutingClients('confirmed');
+        const result = await runReview(clients, { ...options, config, workspace: root, priorRounds });
+        return [refuterCalls(clients).length, fromScope(result).map(f => f.checkStatus)];
+      };
+
+      expect(await round(record(scope.doubt, 'digest-2'))).toEqual([0, ['confirmed']]);
+      expect(await round(record('Another doubt.', 'digest-2'))).toEqual([1, ['confirmed']]);
+      expect(await round(record(scope.doubt, 'digest-1'))).toEqual([1, ['confirmed']]);
+      writeFileSync(join(root, 'src/x.ts'), 'export function parseDate(text: string) {}\n');
+      expect(await round(record(scope.doubt, 'digest-2'))).toEqual([1, ['confirmed']]);
+    }, GIT_TEST_TIMEOUT_MS);
+
+    it('hides a scope warning that a stored dismissal matches, before the refuter reads it', async () => {
+      jest.mocked(runScopeReader).mockResolvedValue(scope);
+      mockedApplySuppressions.mockImplementation(jest.requireActual<typeof import('./memory')>('./memory').applySuppressions);
+      const memory = { suppressions: [{ id: '7', pattern: 'may not be useful', reason: 'The change is wanted.', created_by: 'maintainer', created_at: '2026-01-01', pr_ref: '#1' }], learnings: [] };
+      const clients = refutingClients('confirmed');
+
+      const result = await runReview(clients, { ...options, config: makeConfig({ review: { scope_blocks: true } }), workspace: root, memory });
+
+      expect(fromScope(result).map(f => f.title)).toEqual([splitTitle]);
+      expect(result.memorySuppressed).toEqual([expect.objectContaining({ title: doubtTitle, suppressedBy: '7' })]);
+      expect(result.suppressionCount).toBe(1);
+      expect(refuterCalls(clients)).toEqual([]);
+    }, GIT_TEST_TIMEOUT_MS);
   });
 
   describe('claims of the PR text', () => {

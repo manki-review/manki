@@ -83,6 +83,11 @@ function codeDigest(workspace: string, files: readonly string[]): string | undef
   return hash.digest('hex');
 }
 
+/** Whether the files `check` rests on are in `workspace` as they were when it ran, so a later round may reuse it. */
+export function restsOnSameCode(check: Refutation, workspace: string): boolean {
+  return codeDigest(workspace, check.files) === check.codeDigest;
+}
+
 function locationFile(location: string): string {
   return location.replace(/:\d+(?:-\d+)?$/, '');
 }
@@ -186,7 +191,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       ...(round.judge.dropped ?? []).map(d => ({ ...d, refutation: d[field] })),
     ].find(({ title, file, line, refutation }) => refutation?.defect && file === finding.file && Math.abs(line - finding.line) <= LINE_TOLERANCE
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
-      && codeDigest(workspace, refutation.files) === refutation.codeDigest)?.refutation;
+      && restsOnSameCode(refutation, workspace))?.refutation;
     if (!refutation) continue;
     const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes'
       && (outcomeOf(refutation) !== 'disproved' || (refutation.defect !== 'confirmed' && citesFindingCode(finding.file, refutation.proof ?? [], diff)));

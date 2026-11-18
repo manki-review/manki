@@ -3,7 +3,7 @@ import * as core from '@actions/core';
 import { fileList, LinkedIssue } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
-import { isDiffLocation, shownLines } from './refute';
+import { isDiffLocation, restsOnSameCode, shownLines } from './refute';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
 import { confirmsAll, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic } from './types';
@@ -190,15 +190,49 @@ export function scopeWarnings(scope: RoundScope): Finding[] {
   return warnings;
 }
 
+export interface DoubtCheck {
+  /** Runs the round's refuter on `findings`. */
+  refute: (findings: Finding[]) => Promise<Finding[]>;
+  workspace: string;
+  /** Whether a second refuter checks each finding beside the first. */
+  pair: boolean;
+  /** The `changeDigest` of the PR's diff. Unset never reuses an earlier check. */
+  changeDigest?: string;
+  priorRounds: readonly RoundContext[];
+}
+
+/**
+ * Returns the checks that confirmed the doubt `warning` on the latest earlier round that posted it, when that round had
+ * the same doubt and the same `changeDigest`, and the files each check rests on are unchanged. The warning is tied to no
+ * file, so the refuter's own store never finds its check.
+ */
+function storedConfirmation(warning: Finding, { workspace, pair, changeDigest, priorRounds }: DoubtCheck): Refutation[] | undefined {
+  const round = [...priorRounds].sort((a, b) => b.meta.round - a.meta.round).find(r => r.findings.entries.some(e => e.title === SCOPE_DOUBT_TITLE));
+  const entry = round?.findings.entries.find(e => e.title === SCOPE_DOUBT_TITLE);
+  if (!round || !entry || !changeDigest || round.diff.changeDigest !== changeDigest || round.scope?.doubt !== warning.description) return undefined;
+  const stored = [entry.refutation, ...(pair ? [entry.pairRefutation] : [])];
+  if (stored.some(c => !c)) return undefined;
+  const checks = stored as Refutation[];
+  return confirmsAll(checks) && checks.every(c => restsOnSameCode(c, workspace)) ? checks : undefined;
+}
+
 /**
  * Returns the doubt `warning` with the checks that confirm it, or why it is dropped. The reader's input is text the PR
- * author wrote, so a cited line that exists is not enough to hold the approval. `refute` reads the doubt on its first
- * cited line, since the warning is tied to no file, and every check has to confirm it.
+ * author wrote, so a cited line that exists is not enough to hold the approval. The refuter reads the doubt on its first
+ * cited line, since the warning is tied to no file, and every check has to confirm it. A `storedConfirmation` is
+ * reused without a call.
  */
-export async function confirmDoubt(warning: Finding, refute: ((findings: Finding[]) => Promise<Finding[]>) | undefined): Promise<Finding | string> {
+export async function confirmDoubt(warning: Finding, check: DoubtCheck | undefined): Promise<Finding | string> {
   const at = warning.evidence?.proof[0] ? parseLocation(warning.evidence.proof[0]) : undefined;
-  if (!refute || !at) return 'no check with repository tools could run';
-  const [checked] = await refute([{ ...warning, file: at.file, line: at.start, doubts: [{ premise: warning.description, decides: 'defect' }] }]);
+  if (!check || !at) return 'no check with repository tools could run';
+  const doubted: Finding = { ...warning, doubts: [{ premise: warning.description, decides: 'defect' }] };
+  const stored = storedConfirmation(warning, check);
+  if (stored) {
+    core.info('Scope reader: reusing the confirmation of the doubt from an earlier round, since the doubt and the diff are unchanged');
+    const [refutation, pairRefutation] = stored;
+    return { ...doubted, refutation, ...(pairRefutation && { pairRefutation }) };
+  }
+  const [checked] = await check.refute([{ ...doubted, file: at.file, line: at.start }]);
   const checks = [checked.refutation, checked.pairRefutation].filter((r): r is Refutation => !!r);
   return confirmsAll(checks) ? { ...checked, file: '', line: 0 } : 'the refuter did not confirm it';
 }
