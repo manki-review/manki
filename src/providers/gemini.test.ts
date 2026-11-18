@@ -473,7 +473,7 @@ describe('GeminiClient OAuth path', () => {
     );
   });
 
-  it('runs the CLI with the model and a policy that denies every tool, in an empty, trusted temp directory', async () => {
+  it('runs the CLI with the model and a policy that denies every tool, in a trusted temp directory with only empty `.env` files', async () => {
     const proc = setupOAuthSpawnMock({ stdout: 'ok' });
     let policy = '';
     mockSpawn.mockImplementationOnce((_command, spawnArgs) => {
@@ -490,7 +490,8 @@ describe('GeminiClient OAuth path', () => {
     expect(existsSync(args[3])).toBe(false);
     const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
     expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
-    expect(readdirSync(cwd)).toEqual([]);
+    expect(readdirSync(cwd, { recursive: true }).sort()).toEqual(['.env', '.gemini', join('.gemini', '.env')]);
+    expect([readFileSync(join(cwd, '.env'), 'utf8'), readFileSync(join(cwd, '.gemini', '.env'), 'utf8')]).toEqual(['', '']);
   });
 
   it('uses untrusted-content delimiter when concatenating prompts on stdin', async () => {

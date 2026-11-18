@@ -383,7 +383,7 @@ const PROVIDER_ENV: Record<CliProvider, RegExp> = {
     '^(?:ANTHROPIC_|CLAUDE_CODE_|DISABLE_|VERTEX_REGION_)',
     '^(?:API_TIMEOUT_MS|MAX_THINKING_TOKENS|MCP_TIMEOUT|MCP_TOOL_TIMEOUT|CLOUD_ML_REGION)$',
     // Bedrock reads the standard AWS SDK credential chain. Its secret-named keys stay out.
-    '^AWS_(?:REGION|DEFAULT_REGION|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE|ROLE_ARN|ROLE_SESSION_NAME|WEB_IDENTITY_TOKEN_FILE|CONTAINER_CREDENTIALS_(?:RELATIVE|FULL)_URI)$',
+    '^AWS_(?:REGION|DEFAULT_REGION|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE|LOGIN_CACHE_DIRECTORY|ROLE_ARN|ROLE_SESSION_NAME|WEB_IDENTITY_TOKEN_FILE|CONTAINER_CREDENTIALS_(?:RELATIVE|FULL)_URI)$',
   ].join('|'), 'i'),
   codex: /^(?:OPENAI_|CODEX_)/i,
   gemini: /^(?:GEMINI_|GOOGLE_|VERTEX_)/i,
@@ -394,10 +394,19 @@ function isOn(value: string | undefined): boolean {
   return !!value && !/^(?:0|false|no|off)$/i.test(value);
 }
 
-// The credentials each documented Claude setup reads, passed only while that setup is on.
-const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names: string[] }[] = [
-  { on: env => isOn(env.CLAUDE_CODE_USE_BEDROCK), names: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK'] },
-  { on: env => isOn(env.CLAUDE_CODE_USE_VERTEX), names: ['GOOGLE_APPLICATION_CREDENTIALS'] },
+// The credentials each documented Claude setup reads, passed only while that setup is on. `files` lists the credential
+// files it reads from the user's home by default, keyed by the variable that can name the file elsewhere.
+const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names: string[]; files?: Record<string, string[]> }[] = [
+  {
+    on: env => isOn(env.CLAUDE_CODE_USE_BEDROCK),
+    names: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK'],
+    files: { AWS_CONFIG_FILE: ['.aws', 'config'], AWS_SHARED_CREDENTIALS_FILE: ['.aws', 'credentials'], AWS_LOGIN_CACHE_DIRECTORY: ['.aws', 'login', 'cache'] },
+  },
+  {
+    on: env => isOn(env.CLAUDE_CODE_USE_VERTEX),
+    names: ['GOOGLE_APPLICATION_CREDENTIALS'],
+    files: { GOOGLE_APPLICATION_CREDENTIALS: ['.config', 'gcloud', 'application_default_credentials.json'] },
+  },
   { on: env => !!env.ANTHROPIC_BASE_URL, names: ['ANTHROPIC_AUTH_TOKEN'] },
   { on: env => !!(env.ANTHROPIC_BASE_URL || env.ANTHROPIC_BEDROCK_BASE_URL || env.ANTHROPIC_VERTEX_BASE_URL), names: ['ANTHROPIC_CUSTOM_HEADERS'] },
 ];
@@ -426,10 +435,17 @@ export function cliHome(provider: CliProvider): string {
  * Returns the environment for the `provider` CLI: the variables of `env` any CLI needs to run, the provider's own
  * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY_PROD`, passes, except `credential`
  * and, for Claude, the credentials of a Bedrock, Vertex or gateway setup that is on. Those are registered as secrets.
- * `HOME` and the CLI's own folder variable point at `cliHome`, whatever `env` and `vars` say.
+ * `HOME` and the CLI's own folder variable point at `cliHome`, whatever `env` and `vars` say. With a Bedrock or Vertex
+ * setup on, each credential file of that setup in the runner's home is passed by the variable that names it, unless
+ * `env` or `vars` set that variable.
  */
 export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const modeCredentials = provider === 'claude' ? CLAUDE_MODE_CREDENTIALS.filter(mode => mode.on(env)).flatMap(mode => mode.names) : [];
+  const modes = provider === 'claude' ? CLAUDE_MODE_CREDENTIALS.filter(mode => mode.on(env)) : [];
+  const modeCredentials = modes.flatMap(mode => mode.names);
+  const runnerHome = env.HOME || env.USERPROFILE;
+  const runnerFiles = runnerHome
+    ? modes.flatMap(mode => Object.entries(mode.files ?? {})).map(([name, path]) => [name, join(runnerHome, ...path)]).filter(([, path]) => existsSync(path))
+    : [];
   if (provider === 'claude' && env.ANTHROPIC_CUSTOM_HEADERS && !modeCredentials.includes('ANTHROPIC_CUSTOM_HEADERS') && !warnedDroppedHeaders) {
     warnedDroppedHeaders = true;
     core.warning('ANTHROPIC_CUSTOM_HEADERS is not passed to the Claude CLI, since it can hold a credential. It is passed only with a gateway set in ANTHROPIC_BASE_URL, ANTHROPIC_BEDROCK_BASE_URL or ANTHROPIC_VERTEX_BASE_URL.');
@@ -437,7 +453,7 @@ export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, cred
   const credentials = new Set([...(credential ? [credential] : []), ...modeCredentials]);
   const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name) || modeCredentials.includes(name));
   const home = { HOME: cliHome(provider), ...HOME_VARS[provider](cliHome(provider)) };
-  const result = Object.fromEntries([...needed, ...Object.entries(vars), ...Object.entries(home)].filter(([name]) => credentials.has(name) || !isSecretName(name)));
+  const result = Object.fromEntries([...runnerFiles, ...needed, ...Object.entries(vars), ...Object.entries(home)].filter(([name]) => credentials.has(name) || !isSecretName(name)));
   for (const name of modeCredentials) {
     const value = result[name];
     if (!value) continue;
@@ -629,6 +645,8 @@ export interface RunCliOptions {
   env: NodeJS.ProcessEnv;
   /** Written to stdin, which is then closed. */
   input: string;
+  /** The folder to run the CLI in. Defaults to an empty folder. */
+  cwd?: string;
   /** Receives decoded stdout text as it arrives, including the decoder's final flush. */
   onStdout: (chunk: string) => void;
   /**
@@ -670,7 +688,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
   if (opts.signal?.aborted) return Promise.reject(opts.signal.reason);
   return new Promise((resolve, reject) => {
     const child = spawn(opts.cliPath, opts.args, {
-      cwd: emptyCliCwd(),
+      cwd: opts.cwd ?? emptyCliCwd(),
       env: opts.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });

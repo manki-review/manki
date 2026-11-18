@@ -48,12 +48,12 @@ export function plantedProblems(label: string, cli: string, items: PlantedItem[]
 }
 
 /**
- * Returns each part of `items` that the run `label`, on the runner's own home, should have shown and did not. Such a
- * part could no longer fail the check, as when a new version of the CLI `cli` reads it from elsewhere.
+ * Returns each part of `items` that the control run `label`, without Manki's setup, should have shown and did not. Such
+ * a part could no longer fail the check, as when a new version of the CLI `cli` reads it from elsewhere.
  */
 export function controlProblems(label: string, cli: string, items: PlantedItem[], run: StandInRun, login = false): string[] {
   return items.filter(item => !!item.login === login && !item.found(run))
-    .map(item => `${label}: the runner's ${item.what} no longer reaches ${cli} from the runner's own home, so the check cannot see it`);
+    .map(item => `${label}: the runner's ${item.what} no longer reaches ${cli} in this control run, so the check cannot see it`);
 }
 
 /** Returns each host but `allowedHosts` that the run `label` tried to reach, once. */

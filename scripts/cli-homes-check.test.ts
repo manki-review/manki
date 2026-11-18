@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { CLAUDE_SETUP, GEMINI_SETUP, plantClaudeSetup, plantGeminiSetup } from './cli-homes-check';
+import { CLAUDE_SETUP, CLOUD_CREDENTIALS, GEMINI_SETUP, GEMINI_TEMP_DOTENV, plantClaudeSetup, plantCloudCredentials, plantGeminiSetup } from './cli-homes-check';
 import { controlProblems, newRun, plantedProblems, StandInRun } from './stand-in';
 
 describe('the planted Claude and Gemini setups', () => {
@@ -24,9 +24,10 @@ describe('the planted Claude and Gemini setups', () => {
     }
   });
 
-  it('plants a Gemini setup whose `.env` and telemetry point at the stand-in, with a login of its own', () => {
-    plantGeminiSetup(home, 'http://127.0.0.1:9', '/flags');
+  it('plants a Gemini setup whose `.env` files and telemetry point at the stand-in, with a login of its own', () => {
+    plantGeminiSetup(home, join(home, 'temp'), 'http://127.0.0.1:9', '/flags');
     expect(read('.gemini/.env')).toBe('CODE_ASSIST_ENDPOINT=http://127.0.0.1:9/runner-dotenv\n');
+    expect(read('temp/.env')).toBe('CODE_ASSIST_ENDPOINT=http://127.0.0.1:9/runner-temp-dotenv\n');
     expect(JSON.parse(read('.gemini/oauth_creds.json')).access_token).toBe('runner-oauth-token');
     const settings = JSON.parse(read('.gemini/settings.json'));
     expect(settings.telemetry.otlpEndpoint).toBe('http://127.0.0.1:9/runner-otel');
@@ -35,6 +36,14 @@ describe('the planted Claude and Gemini setups', () => {
     for (const file of ['.gemini/GEMINI.md', '.gemini/skills/runner-gemini-skill/SKILL.md', '.agents/skills/runner-agents-skill/SKILL.md']) {
       expect(existsSync(join(home, file))).toBe(true);
     }
+  });
+
+  it('plants the runner\'s Bedrock profile and Vertex login, and turns the setup for each on', () => {
+    expect(plantCloudCredentials(home, 'bedrock', 'http://127.0.0.1:9')).toEqual(expect.objectContaining({ CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_BEDROCK_BASE_URL: 'http://127.0.0.1:9', AWS_PROFILE: 'runner' }));
+    expect(read('.aws/credentials')).toContain('[runner]\naws_access_key_id = AKIARUNNERPROFILE\n');
+    expect(read('.aws/config')).toBe('[profile runner]\nregion = us-east-1\n');
+    expect(plantCloudCredentials(home, 'vertex', 'http://127.0.0.1:9')).toEqual(expect.objectContaining({ CLAUDE_CODE_USE_VERTEX: '1', ANTHROPIC_VERTEX_BASE_URL: 'http://127.0.0.1:9' }));
+    expect(JSON.parse(read('.config/gcloud/application_default_credentials.json'))).toEqual(expect.objectContaining({ type: 'authorized_user', refresh_token: 'runner-adc-refresh' }));
   });
 });
 
@@ -53,8 +62,8 @@ describe('the problems of a planted part', () => {
     const clean = run({ bodies: [{ system: 'Reply with OK.' }], paths: ['/v1/messages'], keys: ['Bearer manki'] });
     expect(plantedProblems('claude', 'Claude', CLAUDE_SETUP, clean)).toEqual([]);
     expect(controlProblems('control', 'Claude', CLAUDE_SETUP, run({ ...reached, ran: [], keys: [] }))).toEqual([
-      'control: the runner\'s hook in ~/.claude/settings.json no longer reaches Claude from the runner\'s own home, so the check cannot see it',
-      'control: the runner\'s apiKeyHelper in ~/.claude/settings.json no longer reaches Claude from the runner\'s own home, so the check cannot see it',
+      'control: the runner\'s hook in ~/.claude/settings.json no longer reaches Claude in this control run, so the check cannot see it',
+      'control: the runner\'s apiKeyHelper in ~/.claude/settings.json no longer reaches Claude in this control run, so the check cannot see it',
     ]);
   });
 
@@ -69,5 +78,18 @@ describe('the problems of a planted part', () => {
     const clean = run({ bodies: [{ request: 'Reply with OK.' }], paths: ['https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'], keys: ['Bearer manki'] });
     expect(plantedProblems('gemini', 'Gemini', GEMINI_SETUP, clean)).toEqual([]);
     expect(plantedProblems('gemini', 'Gemini', GEMINI_SETUP, run({ ran: ['extension-mcp-server'] }))).toEqual(['gemini: the runner\'s extension in ~/.gemini/extensions reached Gemini']);
+    expect(plantedProblems('gemini', 'Gemini', [GEMINI_TEMP_DOTENV], run({ paths: ['/runner-temp-dotenv/v1internal:loadCodeAssist'] })))
+      .toEqual(['gemini: the runner\'s .env in the temp folder above the working folder reached Gemini']);
+    expect(controlProblems('control', 'Gemini', [GEMINI_TEMP_DOTENV], clean)).toHaveLength(1);
+  });
+
+  it('sees the runner\'s Bedrock profile by the key a request is signed with, and its Vertex login by the token it refreshes with', () => {
+    const signed = run({ keys: ['AWS4-HMAC-SHA256 Credential=AKIARUNNERPROFILE/20261118/us-east-1/bedrock/aws4_request, SignedHeaders=host, Signature=0'] });
+    expect(controlProblems('claude on bedrock', 'Claude', [CLOUD_CREDENTIALS.bedrock], signed)).toEqual([]);
+    expect(controlProblems('claude on bedrock', 'Claude', [CLOUD_CREDENTIALS.bedrock], run({ keys: ['Bearer manki'] }))).toEqual([
+      'claude on bedrock: the runner\'s Bedrock profile in ~/.aws no longer reaches Claude in this control run, so the check cannot see it',
+    ]);
+    expect(CLOUD_CREDENTIALS.vertex.found(run({ ran: ['adc-refresh'] }))).toBe(true);
+    expect(CLOUD_CREDENTIALS.vertex.found(run({ keys: ['Bearer stand-in'] }))).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 import * as core from '@actions/core';
 
@@ -169,6 +169,7 @@ describe('cliEnv', () => {
       AWS_ROLE_ARN: 'arn:aws:iam::1:role/bedrock',
       AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/token',
       AWS_SHARED_CREDENTIALS_FILE: '/home/runner/.aws/credentials',
+      AWS_LOGIN_CACHE_DIRECTORY: '/home/runner/.aws/login/cache',
       AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials',
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       DISABLE_TELEMETRY: '1',
@@ -198,6 +199,7 @@ describe('cliEnv', () => {
       AWS_ROLE_ARN: 'arn:aws:iam::1:role/bedrock',
       AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/token',
       AWS_SHARED_CREDENTIALS_FILE: '/home/runner/.aws/credentials',
+      AWS_LOGIN_CACHE_DIRECTORY: '/home/runner/.aws/login/cache',
       AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials',
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       DISABLE_TELEMETRY: '1',
@@ -248,6 +250,37 @@ describe('cliEnv', () => {
       expect(passed(provider, {}, undefined, on)).not.toHaveProperty('AWS_ACCESS_KEY_ID');
     }
     expect(passed('gemini', {}, undefined, on)).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
+  });
+
+  it('points a Bedrock or Vertex setup at the credential files in the runner\'s home, unless the step names its own', () => {
+    const home = mkdtempSync(join(tmpdir(), 'manki-runner-home-'));
+    const files = {
+      AWS_CONFIG_FILE: join(home, '.aws', 'config'),
+      AWS_SHARED_CREDENTIALS_FILE: join(home, '.aws', 'credentials'),
+      AWS_LOGIN_CACHE_DIRECTORY: join(home, '.aws', 'login', 'cache'),
+      GOOGLE_APPLICATION_CREDENTIALS: join(home, '.config', 'gcloud', 'application_default_credentials.json'),
+    };
+    const { GOOGLE_APPLICATION_CREDENTIALS: adc, ...aws } = files;
+    const bedrock = { HOME: home, CLAUDE_CODE_USE_BEDROCK: '1' };
+    const vertex = { HOME: home, CLAUDE_CODE_USE_VERTEX: '1' };
+    try {
+      // A file the runner does not have stays unnamed, so Vertex can still fall back to the metadata server.
+      expect(passed('claude', {}, undefined, bedrock)).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1' });
+      expect(passed('claude', {}, undefined, vertex)).toEqual({ CLAUDE_CODE_USE_VERTEX: '1' });
+      mkdirSync(aws.AWS_LOGIN_CACHE_DIRECTORY, { recursive: true });
+      mkdirSync(dirname(adc), { recursive: true });
+      for (const file of [aws.AWS_CONFIG_FILE, aws.AWS_SHARED_CREDENTIALS_FILE, adc]) writeFileSync(file, '{}');
+
+      expect(passed('claude', {}, undefined, bedrock)).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', ...aws });
+      expect(passed('claude', {}, undefined, vertex)).toEqual({ CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: adc });
+      const named = { AWS_CONFIG_FILE: '/step/aws-config', GOOGLE_APPLICATION_CREDENTIALS: '/step/key.json' };
+      expect(passed('claude', {}, undefined, { ...bedrock, ...vertex, ...named }))
+        .toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', ...aws, ...named });
+      expect(passed('claude', {}, undefined, { HOME: home })).toEqual({});
+      for (const provider of ['codex', 'gemini'] as const) expect(passed(provider, {}, undefined, { ...bedrock, ...vertex })).toEqual({});
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('adds the provider variables, and of those named like a secret only the credential', () => {

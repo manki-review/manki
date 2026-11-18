@@ -120,16 +120,16 @@ describe('runProblems and controlProblems', () => {
       ]);
       expect(controlProblems('control', reached, false)).toEqual([]);
       expect(controlProblems('control', run({ bodies: [body] }), false)).toEqual([
-        'control: the runner\'s OPENAI_API_KEY in ~/.codex/.env no longer reaches Codex from the runner\'s own home, so the check cannot see it',
-        'control: the runner\'s otel exporter in ~/.codex/config.toml no longer reaches Codex from the runner\'s own home, so the check cannot see it',
-        'control: the runner\'s trusted hook in ~/.codex/hooks.json no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+        'control: the runner\'s OPENAI_API_KEY in ~/.codex/.env no longer reaches Codex in this control run, so the check cannot see it',
+        'control: the runner\'s otel exporter in ~/.codex/config.toml no longer reaches Codex in this control run, so the check cannot see it',
+        'control: the runner\'s trusted hook in ~/.codex/hooks.json no longer reaches Codex in this control run, so the check cannot see it',
       ]);
 
       const redirected = run({ paths: ['/runner-chatgpt/api/codex/accounts/check', '/runner-provider/v1/responses'], hosts: ['chatgpt.com:443'] });
       expect(runProblems('login', redirected, ['chatgpt.com:443'])).toEqual(['login: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml reached Codex']);
       expect(controlProblems('login control', redirected, true)).toEqual([]);
       expect(controlProblems('login control', run(), true)).toEqual([
-        'login control: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+        'login control: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml no longer reaches Codex in this control run, so the check cannot see it',
       ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
