@@ -2667,6 +2667,22 @@ describe('runReview', () => {
         });
         expect(fromScope(result).map(f => [f.title, f.description, f.threadId, f.answeredIn])).toEqual([[doubtTitle, doubt, 'T8', undefined], [splitTitle, expect.any(String), 'T9', undefined]]);
       }
+
+      // A first doubt that cites the line of an earlier finding or of a reader blocker is never paired with either for
+      // the dedup model, which here calls every pair the same defect. It keeps its own thread.
+      jest.mocked(runScopeReader).mockResolvedValue({ doubt: scope.doubt, proof: ['src/x.ts:1'], purpose: 'purpose-1' });
+      const earlier = makeFindingFingerprintEntry({ title: '`parseDate` is never called', file: 'src/x.ts', lineStart: 1 });
+      const reading = refutingClients('confirmed');
+      jest.mocked(reading.judge.sendMessage).mockImplementation(async (system: string) => ({
+        content: system.startsWith('You check one finding') ? answer('confirmed')
+          : JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 1, title: 'Nothing calls `parseDate`', description: 'd' }], summary: 's', whatThisDoes: '', whatToTest: '' }),
+      }));
+      const dedup = { sendMessage: jest.fn(async (_system: string, user: string) => ({ content: JSON.stringify([...user.matchAll(/^(\d+)\.$/gm)].map(([, pair]) => ({ pair: Number(pair), sameDefect: true }))) })) } as unknown as LLMClient;
+      const first = await runReview({ ...reading, dedup }, {
+        ...options, config, interRoundDiff: '', workspace: root, priorRounds: [makeRoundContext(1, { findings: { count: 1, severityCounts: { warning: 1 }, entries: [earlier] } })],
+      });
+      expect(fromScope(first).map(f => [f.title, f.threadId, f.raisedIn, f.sameAs])).toEqual([[doubtTitle, undefined, undefined, undefined]]);
+      expect(jest.mocked(dedup.sendMessage).mock.calls.map(([, user]) => user).join('\n')).not.toContain(doubtTitle);
     }, GIT_TEST_TIMEOUT_MS);
 
     it('keeps a scope thread its answer or a maintainer settled through pushes that change the diff and the doubt, and reopens it once the PR title or description changed', async () => {
@@ -3446,6 +3462,8 @@ describe('runReview', () => {
     const nearCited = { ...elsewhere, title: 'Shard key misses the region', line: 72, evidence: ['src/search.ts:72 builds the key'], proof: ['src/search.ts:72'] };
     const dropped = { severity: 'note', title: 'Rename the helper', file: 'src/retry.ts', line: 9, description: 'd', evidence: ['src/retry.ts:9 names it'], proof: ['src/search.ts:80'] };
     const citedByDropped = { ...elsewhere, title: 'Page key misses the region', line: 80, evidence: ['src/search.ts:80 builds the key'], proof: ['src/search.ts:80'] };
+    // Anchored in another file on the line of a judged finding, which the dedup model calls the same defect.
+    const crossFile = { ...elsewhere, title: 'The reason is lost on retry', file: 'src/queue.ts', line: 30, evidence: ['src/retry.ts:5 drops the reason'], proof: ['src/queue.ts:30', 'src/retry.ts:5'] };
     const sweeping = (system: string) => system.startsWith('A code review reported the finding');
     const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
     const evaluation: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'r' };
@@ -3460,12 +3478,16 @@ describe('runReview', () => {
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
         const reply = sweeping(system) ? await late?.on('sweep', options) : undefined;
         return {
-          content: typeof reply === 'string' ? reply : sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped] }) : JSON.stringify([original, other, dropped]),
+          content: typeof reply === 'string' ? reply : sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped, crossFile] }) : JSON.stringify([original, other, dropped]),
         };
       });
-      clients.dedup = { sendMessage: jest.fn().mockImplementation(async () => {
+      // The dedup model calls the reworded and the cross-file place the same defect as the judged finding they are paired with.
+      const dedupPairs: string[][] = [];
+      clients.dedup = { sendMessage: jest.fn().mockImplementation(async (_system: string, user: string) => {
         late?.on('dedup');
-        return { content: '[{"pair": 1, "sameDefect": true}]' };
+        const pairs = [...user.matchAll(/A: "([^"]*)".*\n\s*B: "([^"]*)"/g)].map(([, a, b]) => [a, b]);
+        dedupPairs.push(...pairs);
+        return { content: JSON.stringify(pairs.map(([, b], i) => ({ pair: i + 1, sameDefect: [reworded.title, crossFile.title].includes(b) }))) };
       }) } as unknown as import('./providers').LLMClient;
       mockedRunJudgeAgent.mockClear();
       // The sweep's judge call grades one finding as a note and ranks it first of its own notes.
@@ -3489,7 +3511,7 @@ describe('runReview', () => {
       });
       return {
         result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])), dedupCalls: jest.mocked(clients.dedup.sendMessage).mock.calls.length,
-        judgeCalls: mockedRunJudgeAgent.mock.calls.length,
+        dedupPairs, judgeCalls: mockedRunJudgeAgent.mock.calls.length,
       };
     };
 
@@ -3501,7 +3523,7 @@ describe('runReview', () => {
     // With `warnings`, the warning its cited lines prove starts one too, after the blocker's.
     expect((await run('warnings')).result.sweeps?.map(s => [s.reviewer, s.source, s.severity])).toEqual([['Sweep 1', 'src/cache.ts:10', 'blocker'], ['Sweep 2', 'src/retry.ts:5', 'warning']]);
 
-    const { result, sweeps } = await run('blockers');
+    const { result, sweeps, dedupPairs } = await run('blockers');
     const reviewer = 'Sweep 1';
     expect(sweeps).toHaveLength(1);
     // A place the round already judged is not judged twice, and the rest gets a judge call of its own, without the open threads.
@@ -3520,7 +3542,10 @@ describe('runReview', () => {
     // A rank from the sweep's judge call is on another scale, so only the first call's ranks stay.
     expect(result.findings.map(f => [f.severity, f.noteRank])).toEqual([['blocker', 1], ['warning', 1], ['blocker', undefined], ['note', undefined], ['blocker', undefined]]);
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
-    expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+    expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 7 }]);
+    // The dedup model gets each place near a judged finding in its file, or sharing a line it cites in any file, kept or
+    // dropped. A place two lines off a cited line shares none.
+    expect(dedupPairs).toEqual([[original.title, reworded.title], [dropped.title, citedByDropped.title], [other.title, crossFile.title]]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
     // The dedup call on the places near a judged finding names the sweep as its agent, so its cost counts as the sweep's.
     expect(result.llmCalls?.filter(c => c.agent === 'sweep').map(c => c.stage)).toEqual(['dedup']);
@@ -3532,7 +3557,7 @@ describe('runReview', () => {
       expect([failed.outcome, failed.verdict, failed.reviewComplete, failed.findings]).toEqual(['INCOMPLETE', 'COMMENT', false, []]);
       expect(failed.summary).toEqual(summary);
       expect(failed.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
-      expect(failed.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+      expect(failed.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 7 }]);
       // The record also keeps the places the sweep found, which the judge did not get to grade.
       expect(failed.rawFindings?.map(f => f.title)).toEqual(expect.arrayContaining([elsewhere.title, nearCited.title, citedByDropped.title]));
     }
@@ -3546,7 +3571,7 @@ describe('runReview', () => {
     // The places the sweep found that the round records as raw findings, after the dedup with the judged findings
     // near them, or without it when that dedup call did not start.
     const deduped = [elsewhere.title, nearCited.title, citedByDropped.title];
-    const undeduped = [elsewhere.title, reworded.title, nearCited.title, citedByDropped.title];
+    const undeduped = [elsewhere.title, reworded.title, nearCited.title, citedByDropped.title, crossFile.title];
     const cases = [
       ['judge', 1, 90_000, undefined, notStartedRound({ stage: 'sweep', agent: reviewer }, 'sweep call'), 0, undefined, []],
       ['sweep', 1, 20_000, undefined, notStartedRound(sweepDedup, 'dedup call on the sweep\'s findings', '20s', '30s'), 0, 'answered', undeduped],
@@ -4176,6 +4201,28 @@ describe('runReview', () => {
     const far = await foldNearby(async () => ({ content: '[]' }), [{ ...nearbyFindings[0], line: 90, evidence: { checks: [], proof: ['src/a.ts:90'] } }]);
     expect(far.calls).toHaveLength(0);
     expect(far.result.findings.map(f => f.title)).toEqual(['Connection leaked on the error path', 'Close is skipped after an early return']);
+
+    // A finding in another file that cites the blocker's line goes to the dedup model too. One that cites a line two off it
+    // shares no line. A fold takes the code fix of a finding on the blocker's line only in the blocker's file, since the
+    // fix replaces the line the blocker's comment sits on.
+    const fix = 'handle.close();';
+    const sameLine = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}]' }), [{ ...nearbyFindings[0], line: 40, suggestedFix: fix }]);
+    expect(sameLine.result.findings).toEqual([expect.objectContaining({ title: 'Close is skipped after an early return', suggestedFix: fix })]);
+    const elsewhere = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}]' }), [
+      { ...nearbyFindings[0], title: 'Caller never closes the handle', file: 'src/b.ts', line: 40, suggestedFix: fix, evidence: { checks: [], proof: ['src/b.ts:40', 'src/a.ts:40'] } },
+      { ...nearbyFindings[1], file: 'src/b.ts', line: 9, evidence: { checks: [], proof: ['src/b.ts:9', 'src/a.ts:42'] } },
+    ]);
+    expect(elsewhere.calls).toHaveLength(1);
+    expect(elsewhere.calls[0][1]).toBe('## Pairs:\n1.\n   A: "Close is skipped after an early return" (src/a.ts:40): "The handle stays open."\n   B: "Caller never closes the handle" (src/b.ts:40): "Leaks a socket."');
+    expect(elsewhere.result.findings.map(f => [f.title, f.description])).toEqual([
+      ['Buffer is never flushed', 'Loses data.'], ['Close is skipped after an early return', 'The handle stays open.\n\nAlso reported as: Caller never closes the handle (src/b.ts:40)'],
+    ]);
+    expect(elsewhere.result.findings[1]).not.toHaveProperty('suggestedFix');
+    // A finding on a whole file names only the file.
+    const wholeFile = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}]' }), [
+      { ...nearbyFindings[0], title: 'Caller never closes the handle', file: 'src/b.ts', line: 0, evidence: { checks: [], proof: ['src/a.ts:40'] } },
+    ]);
+    expect(wholeFile.result.findings.map(f => f.description)).toEqual(['The handle stays open.\n\nAlso reported as: Caller never closes the handle (src/b.ts)']);
 
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason closes the fold under the finding, after the fix and the checks.
@@ -4851,6 +4898,9 @@ describe('runReview', () => {
       // The dedup model decides a nearby pair the static check leaves apart.
       finding('note', 'Helper is misnamed', 'src/y.ts', 7),
       finding('warning', 'File handle leaks', 'src/x.ts', 14, { evidence: undefined }),
+      // So does a pair in two files when one cites the other's line. A line two off it is no shared line.
+      finding('note', 'Caller passes a vague name', 'src/x.ts', 60, { evidence: { checks: [], proof: ['src/x.ts:60', 'src/y.ts:5'] } }),
+      finding('note', 'Caller passes a long name', 'src/x.ts', 70, { evidence: { checks: [], proof: ['src/x.ts:70', 'src/y.ts:7'] } }),
       // A thread the judge finds addressed takes nothing, and a judge link to it is ignored.
       finding('warning', 'Cache never cleared', 'src/x.ts', 40, { variantOf: 'src/x.ts:40:40:cache-never-cleared' }),
       // A note on a file the PR did not change is recorded without being posted, before the fold.
@@ -4858,7 +4908,7 @@ describe('runReview', () => {
     ];
     const judged = { findings, summary: 'Findings.', threadEvaluations: [{ threadId: 'T2', status: 'addressed' as const, reason: 'Cleared now.' }] };
     mockedRunJudgeAgent.mockResolvedValue(judged);
-    const dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}, {"pair": 2, "sameDefect": false}]' }) } as unknown as LLMClient;
+    const dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}, {"pair": 2, "sameDefect": false}, {"pair": 3, "sameDefect": true}]' }) } as unknown as LLMClient;
     const options = {
       config: makeConfig(),
       diff: diffChanging('src/x.ts', 'src/y.ts'),
@@ -4879,10 +4929,12 @@ describe('runReview', () => {
       ['Retry never ends', 'T1', undefined, undefined],
       ['Name is vague', undefined, undefined, 1],
       ['Helper is misnamed', undefined, undefined, 1],
+      ['Caller passes a vague name', undefined, undefined, 1],
+      ['Caller passes a long name', undefined, undefined, undefined],
       ['Cache never cleared', undefined, 'src/x.ts:40:40:cache-never-cleared', undefined],
     ]);
     // A restatement of a review body finding names it, whichever check made the link.
-    expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
+    expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
     // Three warnings cite no proving line. Only the one no earlier finding is linked to is left out for it.
     expect(result.unposted?.map(f => [f.title, f.unpostedReason])).toEqual([['File handle leaks', 'no_proof']]);
     expect(result.unpostedPreExisting?.map(f => f.title)).toEqual(['Old helper is unused']);
@@ -4890,7 +4942,7 @@ describe('runReview', () => {
     expect(result.verdictTrace?.unresolvedPriors).toEqual([]);
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
     expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"');
+    expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"\n3.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Caller passes a vague name" (src/x.ts:60): "d"');
     // A judge that leaves less than 30 seconds starts no dedup call on the nearby pairs, and the round ends incomplete.
     jest.mocked(dedup.sendMessage).mockClear();
     const unfolded = await lateRound((deadline, leave) => {

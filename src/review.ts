@@ -24,7 +24,7 @@ import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal
 import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
-import { citedBy, runSweeps, startsSweep } from './sweep';
+import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -1564,8 +1564,8 @@ export async function runReview(
       if (cited) core.info(`Sweep place ${s.file}:${s.line} is already cited by "${cited.title}", so it is not judged again`);
       return !cited;
     });
-    // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
-    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
+    // A sweep finding near one the round judged, or sharing a line it cites in any file, can say the same in other words, so the dedup model checks those pairs.
+    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => mayRestate(f, s) ? [{ i, f }] : []));
     const dedupClient = clients.dedup && lateFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup', 'sweep');
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
@@ -2951,18 +2951,18 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 
 /**
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
- * thread. A pair `sameProblem` does not settle but that sits near each other is folded when `dedup` says both describe
+ * thread. A pair `sameProblem` does not settle but that `mayRestate` pairs is folded when `dedup` says both describe
  * the same defect, asked in one call for the whole round. The blocker keeps its grade and takes what `foldInto` merges.
- * It takes the finding's code fix only when it has none and both sit on one line, since a one-line fix replaces the line
- * its comment sits on. A title the blocker's does not contain is added to its description, so a second defect folded
- * in by mistake still shows.
+ * It takes the finding's code fix only when it has none and both sit on one line of one file, since a one-line fix
+ * replaces the line its comment sits on. A title the blocker's does not contain is added to its description, with its
+ * file and line when it sits in another file, so a second defect folded in by mistake still shows.
  */
 async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined): Promise<{ findings: Finding[]; blockers: Finding[] }> {
   const merged = blockers.map(b => ({ ...b }));
   // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
   const matched = findings.map(f => blockers.findIndex(b => sameProblem(b, f)));
-  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => nearEachOther(b, f) ? [{ i, j }] : []) : []);
-  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} nearby finding pairs stay apart unchecked, since the round has no dedup model`);
+  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => mayRestate(b, f) ? [{ i, j }] : []) : []);
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} finding pairs that may restate each other stay apart unchecked, since the round has no dedup model`);
   const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [blockers[j], findings[i]]), dedup) : [];
   pairs.forEach(({ i, j }, k) => {
     if (answers[k] && matched[i] === -1) matched[i] = j;
@@ -2972,9 +2972,9 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     if (index === -1) return true;
     const blocker = merged[index];
     const overlap = titleOverlapType(blocker.title, f.title);
-    if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
+    if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}${f.file === blocker.file ? '' : ` (${f.file}${f.line > 0 ? `:${f.line}` : ''})`}`;
     foldInto(blocker, f);
-    if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
+    if (!blocker.suggestedFix && f.suggestedFix && f.file === blocker.file && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
     return false;
   });
@@ -3051,7 +3051,7 @@ export function restatesEarlier(earlier: EarlierFinding[], f: Finding): boolean 
  * Points each finding that restates one of the `earlier` findings at it, so the review posts no second copy. A finding
  * restating an open thread or a finding recorded under one takes its `threadId`, and one restating a finding listed in
  * an earlier review body takes `raisedIn`. The judge's `sameAs` counts first. A finding the judge left unlinked is
- * matched by `sameProblem`, then by the `dedup` model for nearby pairs, asked in one call for the whole round. A finding
+ * matched by `sameProblem`, then by the `dedup` model for the pairs `mayRestate` makes, asked in one call for the whole round. A finding
  * the judge calls a variant of an open thread's finding goes to that thread too, and keeps `variantOf` so it is posted
  * there as a reply, unless the same checks find it restates a finding recorded under that thread. A security finding
  * joins only a security thread, and one no thread carries is marked `ownThread`.
@@ -3078,8 +3078,8 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
     const same = candidates(f, links[i]).find(e => sameProblem(e.finding, f));
     if (same) links[i] = { earlier: same, variant: false };
   });
-  const pairs = findings.flatMap((f, i) => candidates(f, links[i]).flatMap(e => nearEachOther(e.finding, f) ? [{ i, e }] : []));
-  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} findings near an earlier finding stay apart unchecked, since the round has no dedup model`);
+  const pairs = findings.flatMap((f, i) => candidates(f, links[i]).flatMap(e => mayRestate(e.finding, f) ? [{ i, e }] : []));
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} findings that may restate an earlier finding stay apart unchecked, since the round has no dedup model`);
   const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, e }) => [e.finding, findings[i]]), dedup) : [];
   pairs.forEach(({ i, e }, k) => {
     if (answers[k] && (!links[i] || links[i]?.variant)) links[i] = { earlier: e, variant: false };
@@ -3206,6 +3206,12 @@ export function sameProblem(a: Located, b: Located): boolean {
   if (overlap === null) return false;
   if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
   return citesLineOf(a, b) || citesLineOf(b, a) || near;
+}
+
+/** Whether `a` and `b` may name one defect in other words, so the dedup model is asked: they sit near each other in one file, or share a cited line in any file. */
+function mayRestate(a: Located, b: Located): boolean {
+  // A finding tied to no file, such as a scope warning, is matched only by its title, as in `sameProblem`.
+  return !!a.file && !!b.file && (nearEachOther(a, b) || sharesCitedLine(a, b));
 }
 
 /** Whether `a` and `b` sit in one file, and their lines or the narrow proof lines they cite there are at most `DISMISSED_LINE_TOLERANCE` apart. */

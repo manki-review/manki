@@ -104,15 +104,28 @@ function parseSweep(text: string, reviewer: string): { general: boolean; defectC
   return { general, defectClass, findings };
 }
 
+/** What `citedSpans` reads of a finding. */
+type Cites = Pick<Finding, 'file' | 'line' | 'evidence'>;
+
 /**
  * Whether `f` sits on `cited`'s own line or a line `cited` names in its proof or evidence, in any file, or within
  * `tolerance` lines of one. A cited span wider than a few lines proves no one line, so it hides no other instance inside it.
  * An evidence line is read with `parseProof`, so one that cites a related repo as `owner/name:path:line` names no line of the PR.
  */
 export function citedBy(cited: Finding, f: Finding, tolerance = OWN_LINE_TOLERANCE): boolean {
-  const spans = [`${cited.file}:${cited.line}`, ...(cited.evidence?.proof ?? []), ...parseProof(cited.evidence?.checks)]
+  return citedSpans(cited).some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
+}
+
+/** Whether `a` and `b` share a line in the spans `citedSpans` returns for each, in any file. */
+export function sharesCitedLine(a: Cites, b: Cites): boolean {
+  const other = citedSpans(b);
+  return citedSpans(a).some(x => other.some(y => x.file === y.file && x.start <= y.end && y.start <= x.end));
+}
+
+/** Returns `f`'s own line and the lines it cites in its proof or evidence, in spans no wider than `citedBy` reads. */
+function citedSpans(f: Cites): Array<{ file: string; start: number; end: number }> {
+  return [`${f.file}:${f.line}`, ...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)]
     .flatMap(location => parseLocation(location) ?? []).filter(span => span.end - span.start <= OWN_LINE_TOLERANCE * 2);
-  return spans.some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
 }
 
 export interface SweepOptions {
