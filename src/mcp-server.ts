@@ -105,8 +105,8 @@ export function readFileInRoot(root: string, path: string): FileText | 'too larg
 export interface ListOptions {
   /** Names of folders not entered at any depth. */
   skipFolders?: ReadonlySet<string>;
-  /** Keeps only the files whose name passes. */
-  keep?: (name: string) => boolean;
+  /** Keeps only the files whose name, or path relative to `root`, passes. */
+  keep?: (name: string, path: string) => boolean;
   maxFiles?: number;
   maxWalked?: number;
 }
@@ -132,7 +132,10 @@ export function listFiles(root: string, dir: RepoPath, { skipFolders, keep, maxF
       if (stat.isSymbolicLink() || (name === '.git' && absolute === root)) continue;
       if (stat.isDirectory()) {
         if (!skipFolders?.has(name)) walk(child);
-      } else if (stat.isFile() && (!keep || keep(name))) files.push(relative(root, child).split(sep).join('/'));
+      } else if (stat.isFile()) {
+        const path = relative(root, child).split(sep).join('/');
+        if (!keep || keep(name, path)) files.push(path);
+      }
     }
   };
   walk(dir.absolute);

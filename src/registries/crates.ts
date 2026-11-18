@@ -1,6 +1,7 @@
 import { validRange } from 'semver';
 
-import { PublishedVersion, Registry } from './types';
+import { parseTomlSubset, tableOf, TomlTable } from './toml';
+import { ManifestFacts, PublishedVersion, Registry, Requirement } from './types';
 
 /** The hosts of crates.io: its sparse index, and the host its archives are served from. */
 const CRATES_IO = { index: 'https://index.crates.io', download: 'https://static.crates.io' };
@@ -11,10 +12,10 @@ const CRATES_IO_SOURCES = ['registry+https://github.com/rust-lang/crates.io-inde
 /** The most bytes of a crate's index file. The largest list thousands of versions in a few MB. */
 const MAX_INDEX_BYTES = 20 * 1024 * 1024;
 
-/** The tables of a `Cargo.toml` that list dependencies, such as `[dependencies]` or `[target.'cfg(unix)'.dev-dependencies]`. */
-const DEPENDENCY_TABLE = /^(?:target\.(?:'[^']*'|"[^"]*"|[^.]+)\.|workspace\.)?(?:dev-|build-)?dependencies$/;
-
 const normalize = (name: string): string => name.toLowerCase().replace(/-/g, '_');
+
+/** The tables of a manifest that list dependencies, each under one of these names. */
+const DEPENDENCY_TABLES = ['dependencies', 'dev-dependencies', 'build-dependencies'];
 
 /** Returns the path of a crate's file in the crates.io index, which files a crate by the length and start of its name. */
 function indexPath(name: string): string {
@@ -24,65 +25,36 @@ function indexPath(name: string): string {
   return `${lower.slice(0, 2)}/${lower.slice(2, 4)}/${lower}`;
 }
 
-/** Reads a TOML key, bare or quoted. */
-function tomlKey(raw: string): string {
-  const key = raw.trim();
-  return /^".*"$|^'.*'$/.test(key) ? key.slice(1, -1) : key;
+/** Returns each dependency table of a parsed `Cargo.toml`: the plain ones, those of each target, and the workspace's. */
+function dependencyTables(manifest: TomlTable): TomlTable[] {
+  const of = (table: TomlTable) => DEPENDENCY_TABLES.map(name => tableOf(table[name]));
+  return [...of(manifest), ...Object.values(tableOf(manifest.target)).flatMap(target => of(tableOf(target))), tableOf(tableOf(manifest.workspace).dependencies)];
 }
 
-/** Reads the string value of `key` in an inline table such as `{ version = "1", features = ["x"] }`. */
-function inlineString(table: string, key: string): string | undefined {
-  return new RegExp(`(?:^|[{,\\s])${key}\\s*=\\s*"([^"]*)"`).exec(table)?.[1];
+/** The crate an entry of a dependency or `[patch]` table names: its `package` when it renames one, else its key. */
+function crateOf(key: string, entry: unknown): string {
+  const renamed = tableOf(entry as TomlTable).package;
+  return typeof renamed === 'string' ? renamed : key;
 }
 
 /**
- * Returns each dependency a `Cargo.toml` states with a version requirement, as the crate's name and the requirement.
- * A dependency from a path, a git repository or another registry has none from crates.io, and one that inherits its
- * entry from `[workspace.dependencies]` is stated there. Reads the forms Cargo writes: `name = "1.0"`, an inline table,
- * and a `[dependencies.name]` table. Anything else is left out, so a dependency it cannot read has no requirement.
+ * Returns what a `Cargo.toml` says of the crate `name`: each requirement it states from crates.io, and whether
+ * `[patch]` or `[replace]` swaps the crate. A dependency from a path, a git repository or another registry has no
+ * requirement from crates.io, and one that inherits its entry from `[workspace.dependencies]` is stated there.
  */
-function cargoRequirements(text: string): Array<{ name: string; requirement: string }> {
-  const found: Array<{ name: string; requirement: string }> = [];
-  let table = '';
-  let single: { key: string; fields: string[] } | undefined;
-  const add = (key: string, fields: string) => {
-    if (/(?:^|[{,\s])(?:path|git|registry|workspace)\s*=/.test(fields)) return;
-    const requirement = inlineString(fields, 'version');
-    if (requirement !== undefined) found.push({ name: inlineString(fields, 'package') ?? key, requirement });
-  };
-  const endSingle = () => {
-    if (single) add(single.key, ` ${single.fields.join(', ')}`);
-    single = undefined;
-  };
-  for (const raw of text.split('\n')) {
-    const line = raw.replace(/\s+#[^"']*$/, '').trim();
-    if (!line || line.startsWith('#')) continue;
-    const header = /^\[([^[\]]+)\]$/.exec(line);
-    if (header) {
-      endSingle();
-      table = header[1].replace(/\s+/g, '');
-      const dotted = /^(.*dependencies)\.("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)$/.exec(table);
-      if (dotted && DEPENDENCY_TABLE.test(dotted[1])) single = { key: tomlKey(dotted[2]), fields: [] };
-      continue;
-    }
-    if (line.startsWith('[')) {
-      endSingle();
-      table = '';
-      continue;
-    }
-    if (single) {
-      single.fields.push(line);
-      continue;
-    }
-    if (!DEPENDENCY_TABLE.test(table)) continue;
-    const pair = /^("[^"]+"|'[^']+'|[A-Za-z0-9_.-]+)\s*=\s*(.+)$/.exec(line);
-    if (!pair) continue;
-    const value = pair[2].trim();
-    if (/^"[^"]*"$/.test(value)) found.push({ name: tomlKey(pair[1]), requirement: value.slice(1, -1) });
-    else if (value.startsWith('{')) add(tomlKey(pair[1]), value);
-  }
-  endSingle();
-  return found;
+function cargoManifest(text: string, name: string): ManifestFacts {
+  const manifest = parseTomlSubset(text);
+  const requirements = dependencyTables(manifest).flatMap(table => Object.entries(table).flatMap(([key, entry]): Requirement[] => {
+    if (normalize(crateOf(key, entry)) !== normalize(name)) return [];
+    if (typeof entry === 'string') return [{ name: key, requirement: entry }];
+    const fields = tableOf(entry);
+    if (['path', 'git', 'registry', 'workspace'].some(field => Object.hasOwn(fields, field)) || typeof fields.version !== 'string') return [];
+    return [{ name: crateOf(key, entry), requirement: fields.version }];
+  }));
+  const patched = Object.values(tableOf(manifest.patch)).some(source => Object.entries(tableOf(source)).some(([key, entry]) => normalize(crateOf(key, entry)) === normalize(name)));
+  // A `[replace]` key names a crate and its version, as `name:1.0.0`.
+  const replaced = Object.keys(tableOf(manifest.replace)).some(key => normalize(key.split(':')[0]) === normalize(name));
+  return { requirements, ...((patched || replaced) && { overridden: `its \`[${patched ? 'patch' : 'replace'}]\` swaps the crate` }) };
 }
 
 /**
@@ -96,11 +68,10 @@ function cargoRange(requirement: string): string | undefined {
   return validRange(range) ? range : undefined;
 }
 
-/**
- * crates.io, the registry of Rust crates. A `.cargo/config.toml` can replace its source with a mirror or a vendored
- * copy, but those hold the same crates, and `Cargo.lock` binds each to its crates.io checksum. A crate of another
- * registry names it in `Cargo.toml` and is left out by `cargoRequirements`.
- */
+/** The Cargo config files of a checkout, which can patch a crate or replace the source of every crate. */
+const CARGO_CONFIGS = /(?:^|\/)\.cargo\/config(?:\.toml)?$/;
+
+/** crates.io, the registry of Rust crates. A crate of another registry names it in `Cargo.toml`, so it states no requirement from crates.io. */
 export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.download, maxIndexBytes = MAX_INDEX_BYTES } = {}): Registry {
   return {
     id: 'crates.io',
@@ -111,9 +82,18 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     sameName: (a, b) => normalize(a) === normalize(b),
     isRegistrySource: source => source !== undefined && CRATES_IO_SOURCES.includes(source),
     namesHost: () => true,
-    configFiles: [],
+    isConfigFile: path => CARGO_CONFIGS.test(path),
     otherRegistry: () => undefined,
-    requirements: (text, name) => cargoRequirements(text).filter(d => normalize(d.name) === normalize(name)),
+    overriddenBy(name, configs) {
+      for (const { file, text } of configs) {
+        const config = parseTomlSubset(text);
+        // A replaced source serves every crate from elsewhere, such as a vendored folder whose files can differ.
+        if (Object.values(tableOf(config.source)).some(source => Object.hasOwn(tableOf(source), 'replace-with'))) return `${file} replaces the source of crates`;
+        if (cargoManifest(text, name).overridden) return `${file} patches the crate`;
+      }
+      return undefined;
+    },
+    manifest: cargoManifest,
     range: cargoRange,
     async published(name, fetch) {
       const lines = (await fetch(`${index}/${indexPath(name)}`, maxIndexBytes)).toString('utf8').split('\n').filter(Boolean);

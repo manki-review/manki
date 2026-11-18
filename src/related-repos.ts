@@ -237,10 +237,12 @@ export async function sharedCheckout(
   }
 }
 
-/** Writes `text` to `path` through a rename, so a waiting process never reads it half written. Only the holder of the lock that guards `path` writes it. */
+/** Writes `text` to `path` through a rename, so a waiting process never reads it half written. */
 export function writeMarker(path: string, text: string): void {
-  writeFileSync(`${path}.tmp`, text);
-  renameSync(`${path}.tmp`, path);
+  // A name of its own per process, so two processes that write the same file never rename each other's.
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, text);
+  renameSync(temp, path);
 }
 
 /**

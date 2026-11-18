@@ -13,6 +13,13 @@ export interface Requirement {
   requirement: string;
 }
 
+/** What a manifest says of one package. */
+export interface ManifestFacts {
+  requirements: Requirement[];
+  /** Set, to how, when the manifest changes the package's code for an install, such as through `overrides` or `[patch]`. */
+  overridden?: string;
+}
+
 /** One published version of a package, with the checksum the registry states for its archive. */
 export interface PublishedVersion {
   version: string;
@@ -47,12 +54,23 @@ export interface Registry {
    * registry the project is set up with, so it counts only when `otherRegistry` finds no other one set.
    */
   namesHost(source: string | undefined): boolean;
-  /** The file names of the checkout's files that can set another registry, such as `.npmrc`. */
-  configFiles: readonly string[];
+  /**
+   * Whether the file at `path`, relative to the repository root, can set where packages come from or change their code
+   * for an install, such as an `.npmrc` or a `.cargo/config.toml`.
+   */
+  isConfigFile(path: string): boolean;
   /** Returns which of `configs` sets another registry than this one for the package `name`, and to what, or `undefined`. */
   otherRegistry(name: string, configs: readonly RegistryConfig[]): string | undefined;
-  /** Returns the requirements a manifest's `text` states for the package `name`, in the manifest's own syntax. */
-  requirements(text: string, name: string): Requirement[];
+  /**
+   * Returns how one of `configs` changes the code of the package `name` for an install, or `undefined`. Throws when
+   * Manki cannot read one of them with certainty.
+   */
+  overriddenBy(name: string, configs: readonly RegistryConfig[]): string | undefined;
+  /**
+   * Returns what a manifest's `text` says of the package `name`: its requirements, in the manifest's own syntax, and
+   * whether it overrides the package. Throws when Manki cannot read the manifest with certainty.
+   */
+  manifest(text: string, name: string): ManifestFacts;
   /** Returns the semver range of a requirement, or `undefined` for one that names no registry version, such as a path or a git source. */
   range(requirement: string): string | undefined;
   /**

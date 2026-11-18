@@ -587,9 +587,9 @@ export interface RoundDependencySource {
   name: string;
   version?: string;
   /** Where the version comes from: a lockfile that locks it, or a manifest's requirement it was resolved from. */
-  source: 'lockfile' | 'requirement';
-  /** That lockfile or manifest, as a path in the PR's repository. */
-  file: string;
+  source?: 'lockfile' | 'requirement';
+  /** That lockfile or manifest, or the file that made Manki refuse the package, as a path in the PR's repository. */
+  file?: string;
   /** The manifest's requirement, when the version was resolved from one. */
   requirement?: string;
   /**

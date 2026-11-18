@@ -23,6 +23,23 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** The settings files of a checkout that can set another registry. */
+const REGISTRY_SETTINGS = ['.npmrc', '.yarnrc', '.yarnrc.yml'];
+
+/** pnpm's hook files, whose code can change any package for an install. */
+const PNPM_HOOKS = ['.pnpmfile.cjs', '.pnpmfile.mjs'];
+
+/** A patch `patch-package` applies after an install, filed under `patches/` as `<name>+<version>.patch`, with `+` for a scope's `/`. */
+const PATCH_PACKAGE = /(?:^|\/)patches\/[^/]+\.patch$/;
+
+/** Whether a key of `overrides`, `resolutions` or a pnpm setting, at any depth of `table`, names the package `name`. */
+function namesPackage(table: unknown, name: string): boolean {
+  if (!isObject(table)) return false;
+  // A key names a package alone or after its parents, as `parent/name`, `**/name` or `parent>name`, with an optional `@range`.
+  const pattern = new RegExp(`(?:^|[/>])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:@|$)`);
+  return Object.entries(table).some(([key, value]) => pattern.test(key) || namesPackage(value, name));
+}
+
 /** Whether `url` is the public npm registry, under npm's host or Yarn's. */
 function isPublicRegistry(url: string): boolean {
   try {
@@ -86,23 +103,39 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
       }
     },
     namesHost: source => source !== 'npm' && source !== 'registry',
-    configFiles: ['.npmrc', '.yarnrc', '.yarnrc.yml'],
+    isConfigFile: path => [...REGISTRY_SETTINGS, ...PNPM_HOOKS, 'pnpm-workspace.yaml'].includes(posix.basename(path)) || PATCH_PACKAGE.test(path),
     otherRegistry(name, configs) {
       const scope = name.startsWith('@') ? name.slice(0, name.indexOf('/')) : undefined;
-      const settings = configs.flatMap(config => registrySettings(config).map(setting => ({ ...setting, file: config.file })));
+      const settings = configs.filter(c => REGISTRY_SETTINGS.includes(posix.basename(c.file))).flatMap(config => registrySettings(config).map(setting => ({ ...setting, file: config.file })));
       // A scope's own registry decides for its packages. Without one, the default registry does.
       const scoped = settings.filter(s => scope !== undefined && s.scope === scope);
       const other = (scoped.length > 0 ? scoped : settings.filter(s => s.scope === '')).find(s => !isPublicRegistry(s.url));
       return other && `${other.file} sets the registry ${other.url.slice(0, 100)}${scoped.length > 0 ? ` for ${scope}` : ''}`;
     },
-    requirements(text, name) {
+    overriddenBy(name, configs) {
+      for (const { file, text } of configs) {
+        const base = posix.basename(file);
+        if (PNPM_HOOKS.includes(base)) return `${file} is a pnpm hook, which can change any package`;
+        if (PATCH_PACKAGE.test(file) && base.startsWith(`${name.replace('/', '+')}+`)) return `${file} patches it after an install`;
+        if (base === 'pnpm-workspace.yaml') {
+          const workspace: unknown = parse(text);
+          if (isObject(workspace) && (namesPackage(workspace.overrides, name) || namesPackage(workspace.patchedDependencies, name))) return `${file} overrides or patches it`;
+        }
+      }
+      return undefined;
+    },
+    manifest(text, name) {
       const manifest: unknown = JSON.parse(text);
-      if (!isObject(manifest)) return [];
-      return DEPENDENCY_FIELDS.flatMap(field => {
+      if (!isObject(manifest)) throw new Error('the manifest is not an object');
+      const requirements = DEPENDENCY_FIELDS.flatMap(field => {
         const deps = manifest[field];
         const requirement = isObject(deps) && Object.hasOwn(deps, name) ? deps[name] : undefined;
         return typeof requirement === 'string' ? [{ name, requirement }] : [];
       });
+      const pnpm = isObject(manifest.pnpm) ? manifest.pnpm : {};
+      const overridden = [['overrides', manifest.overrides], ['resolutions', manifest.resolutions], ['pnpm.overrides', pnpm.overrides], ['pnpm.patchedDependencies', pnpm.patchedDependencies]]
+        .find(([, table]) => namesPackage(table, name))?.[0] as string | undefined;
+      return { requirements, ...(overridden && { overridden: `its \`${String(overridden)}\` names it` }) };
     },
     range(requirement) {
       const range = requirement.trim() || '*';
@@ -120,7 +153,8 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
           const dist = isObject(entry) && isObject(entry.dist) ? entry.dist : {};
           const checksum = typeof dist.integrity === 'string' ? dist.integrity : typeof dist.shasum === 'string' ? dist.shasum : undefined;
           if (!checksum) return [];
-          return [{ version, checksum, ...(isObject(entry) && typeof entry.deprecated === 'string' && { deprecated: true as const }) }];
+          // npm itself takes an empty message as no deprecation, which `npm deprecate` leaves when it lifts one.
+          return [{ version, checksum, ...(isObject(entry) && typeof entry.deprecated === 'string' && entry.deprecated !== '' && { deprecated: true as const }) }];
         }),
       };
     },
