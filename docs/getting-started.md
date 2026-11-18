@@ -171,13 +171,19 @@ Manki stops the run with a message that names the problem when the file is not o
 - The file or its folder belongs to another user, or another user can read or write it.
 - The file or its folder is a symbolic link.
 - The file is inside the workspace (`GITHUB_WORKSPACE`), the runner's temp folder (`RUNNER_TEMP`), the working folder, or the runner user's own Codex home (`~/.codex`, or `CODEX_HOME` when the runner sets it). A Codex the user runs there would renew the login while a review uses it.
-- The file is not a Codex login with `tokens.access_token` and `tokens.refresh_token`.
+- The file is not a Codex login with `tokens.access_token` and `tokens.refresh_token`, or its access token has no expiry Manki can read.
 - `openai_oauth_token` or `openai_base_url` is set too.
 - The runner runs Windows, where Manki cannot check who can read the file.
 
-Manki checks the file again each time it copies it. A file that changed during a review, for example because you ran `codex login` again, is never written over.
+Manki checks the file again each time it copies it. A renewal is never written over a file that changed since the review read it, for example because you ran `codex login` again.
 
-Codex renews the login before a request once its access token expires within 5 minutes, and after any request the server refuses. A renewal makes the old tokens fail, so no two reviews may hold copies of the login at once. Manki keeps a lock next to the file (`auth.json.lock`), which a review holds while any of its Codex calls runs. A second review on the same runner waits for it, at most as long as the call's own time limit, and then fails with a message that names the lock. A lock whose process stopped is taken over. A lock that a process on another machine or in another container left cannot be checked: delete it when no review runs. Within a review, Codex calls run side by side as before. A call that starts when the access token expires within its time limit plus 10 minutes runs alone, since two calls that renew at once would send the same refresh token twice.
+Reviews on the same runner do not wait for each other. Codex renews the login before a request once its access token expires within 5 minutes, and after any request the server refuses. A renewal makes the old refresh token fail. Manki handles the two cases this way:
+
+- A call whose access token lasts longer than the call's time limit plus 10 minutes starts at once, beside every other call of every review.
+- Before a call that Codex could renew during, Manki has Codex renew the login once: it starts `codex app-server` in the review's Codex home and asks it to renew. It holds a lock next to the file (`auth.json.lock`) while it does, and writes the renewed login back. Another review that needs a renewal at the same time waits for this one only, about a second, and then reads the renewed file.
+- A renewal after a refused request takes no lock. Manki writes it back while the call runs, and copies a login that another review wrote back into the review's own copy. When two calls renew the same login at once, one renewal wins and is written back. The other call fails with "refresh token was already used" and moves to its [fallback model](how-reviews-work.md#review-pipeline). The file never goes back to a refresh token that was used.
+
+When Codex cannot renew the login before a call, the calls that Codex could renew during run one at a time with the lock held, and a call of another review that needs the lock then waits at most its own time limit. It fails with a message that names the lock. A lock whose process stopped is taken over. A lock that a process on another machine or in another container left cannot be checked: delete it when no review runs.
 
 Use the login in the file only for Manki. A Codex you run yourself with the same login renews it outside the lock and makes the file fail. When it fails, run step 2 again.
 

@@ -642,7 +642,7 @@ export class OpenAIClient implements LLMClient {
     });
     const loginFile = this.auth.kind === 'oauthFile' ? this.auth.path : undefined;
     const { code, signal, stderr, lastStdoutChunk, events, relatedReads } = await (loginFile
-      ? withLoginFile(loginFile, join(home, 'auth.json'), { limitMs, signal: options?.signal }, call)
+      ? withLoginFile(loginFile, join(home, 'auth.json'), { limitMs, signal: options?.signal, runner: { cliPath, env } }, call)
       : call()
     ).catch((error: unknown) => {
       warnReplyTail('Codex CLI', readCodexEvents(output).reply ?? '');
