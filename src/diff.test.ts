@@ -736,14 +736,17 @@ describe('codeChanges', () => {
     return { added: [...added], removed: [...removed] };
   };
 
-  it('counts a re-indented or moved line as no change unless its code changed too, and keeps indentation where it is code', () => {
+  it('counts a re-indented line as no change unless its code changed too or it moved past another line, and keeps indentation where it is code', () => {
     const wrapped = fileOf('src/main.rs', [
       ' fn main() {', '-    let x = load();', '-    use_it(x);', '+    if ready {', '+        let x = load();', '+        use_it(x + 1);', '+    }', ' }',
     ]);
     // Line 3 only moves into the new block. Line 4 also changes its code, so it and the old line it replaces count.
     expect(changes(wrapped)).toEqual({ added: [2, 4, 5], removed: [2] });
-    expect(changes(fileOf('src/a.ts', ['-a();', ' b();', '+a();', '+a();']))).toEqual({ added: [3], removed: [] });
-    expect(changes(fileOf('src/a.ts', ['-  run();  ', '+run();']))).toEqual({ added: [], removed: [] });
+    expect(changes(fileOf('src/a.ts', ['-  run();  ', '+run();', '+run();']))).toEqual({ added: [2], removed: [] });
+    // A `free` moved above the use, or two lines that swap, change the order of the code, so the moved lines count.
+    expect(changes(fileOf('src/a.c', [' p = get();', '-use(p);', ' free(p);', '+use(p);']))).toEqual({ added: [3], removed: [2] });
+    expect(changes(fileOf('src/a.c', ['+    free(p);', ' use(p);', '-free(p);']))).toEqual({ added: [1], removed: [3] });
+    expect(changes(fileOf('src/a.ts', ['-a();', '-b();', '+b();', '+a();']))).toEqual({ added: [2], removed: [1] });
     // Indentation is code in Python, and in a file of a kind not known, so a re-indent there changes it.
     expect(changes(fileOf('src/a.py', ['-run()', '+    run()']))).toEqual({ added: [1], removed: [1] });
     expect(changes(fileOf('docs/a.md', ['-- item', '+  - item']))).toEqual({ added: [1], removed: [1] });

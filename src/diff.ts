@@ -414,22 +414,58 @@ function codeFreeLines(lines: readonly string[], syntax: LineSyntax): boolean[] 
   });
 }
 
+// Past this many cells a run of changed lines is not paired, and each of its lines counts as a change.
+const MAX_PAIRING_CELLS = 4_000_000;
+
+/** Returns which of `removed` and `added` pair up in a longest common subsequence, so every pair keeps its order. */
+function pairedInOrder(removed: readonly string[], added: readonly string[]): { removed: Set<number>; added: Set<number> } {
+  const pairs = { removed: new Set<number>(), added: new Set<number>() };
+  const width = added.length + 1;
+  if ((removed.length + 1) * width > MAX_PAIRING_CELLS) return pairs;
+  // `longest[i * width + j]` is the length of the longest common subsequence of `removed` from `i` and `added` from `j`.
+  const longest = new Uint32Array((removed.length + 1) * width);
+  for (let i = removed.length - 1; i >= 0; i--) {
+    for (let j = added.length - 1; j >= 0; j--) {
+      longest[i * width + j] = removed[i] === added[j] ? longest[(i + 1) * width + j + 1] + 1 : Math.max(longest[(i + 1) * width + j], longest[i * width + j + 1]);
+    }
+  }
+  for (let i = 0, j = 0; i < removed.length && j < added.length;) {
+    if (removed[i] === added[j]) {
+      pairs.removed.add(i++);
+      pairs.added.add(j++);
+    } else if (longest[(i + 1) * width + j] >= longest[i * width + j + 1]) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return pairs;
+}
+
 /**
  * Returns the lines of the new file where `file`'s diff changes code: each added line, and the line where each removed
- * line sat. An added and a removed line of one hunk with the same text change no code, so a move or a re-indent does
- * not count. Nor does a blank or comment line, in a language `LINE_SYNTAX` knows.
+ * line sat. A removed and an added line between the same unchanged lines change no code when they hold the same text and
+ * pair up in order, as in a re-indent. A line that moves past another stays a change. A blank or comment line, in a
+ * language `LINE_SYNTAX` knows, is no change either.
  */
 export function codeChanges(file: DiffFile): { added: Set<number>; removed: Set<number> } {
   const syntax = LINE_SYNTAX.get(file.path.slice(file.path.lastIndexOf('.') + 1).toLowerCase());
   const textOf = (line: string) => (!syntax ? line : syntax.indented ? line.trimEnd() : line.trim());
   const added = new Set<number>();
   const removed = new Set<number>();
+  let adds: Array<[number, string]> = [];
+  let removes: Array<[number, string]> = [];
+  const endRun = () => {
+    const paired = pairedInOrder(removes.map(([, text]) => text), adds.map(([, text]) => text));
+    adds.filter((_, i) => !paired.added.has(i)).forEach(([at]) => added.add(at));
+    removes.filter((_, i) => !paired.removed.has(i)).forEach(([at]) => removed.add(at));
+    adds = [];
+    removes = [];
+  };
   for (const hunk of file.hunks) {
     const lines = hunk.content.split('\n').filter(l => !l.startsWith('\\'));
     const freeNew = syntax ? codeFreeLines(lines.filter(l => !l.startsWith('-')).map(l => l.slice(1)), syntax) : [];
     const freeOld = syntax ? codeFreeLines(lines.filter(l => !l.startsWith('+')).map(l => l.slice(1)), syntax) : [];
-    const adds: Array<[number, string]> = [];
-    const removes: Array<[number, string]> = [];
     let line = hunk.newStart;
     let newIndex = 0;
     let oldIndex = 0;
@@ -442,15 +478,13 @@ export function codeChanges(file: DiffFile): { added: Set<number>; removed: Set<
       if (content.startsWith('+')) {
         if (!freeNew[newIndex]) adds.push([line, textOf(content.slice(1))]);
       } else {
+        endRun();
         oldIndex++;
       }
       newIndex++;
       line++;
     }
-    const removedTexts = countTexts(removes.map(([, text]) => text));
-    const addedTexts = countTexts(adds.map(([, text]) => text));
-    for (const [at, text] of adds) if (!takeText(removedTexts, text)) added.add(at);
-    for (const [at, text] of removes) if (!takeText(addedTexts, text)) removed.add(at);
+    endRun();
   }
   return { added, removed };
 }
