@@ -8,11 +8,15 @@ import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
 import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
 import { isClaimCheck } from './pr-claims';
-import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
+import { cutLegacyCommands, estimateCostUsd, hasAnyProviderCredentials, parseModelSpec, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, gradedAbove, isGradeCell, isSecurityFinding, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, VERDICT_READER_NAME, VerdictReason } from './types';
+import {
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecurityFinding, leftOutUnproven,
+  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
+  UnprovenReason, VERDICT_READER_NAME, VerdictReason,
+} from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -296,8 +300,14 @@ export interface MatchDecision {
 /** What the matcher reads of a finding. */
 type MatchedFinding = Pick<Finding, 'severity' | 'title' | 'file' | 'line' | 'description' | 'howToFix' | 'suggestedFix'>;
 
-/** Decides whether one of `findings` reports the defect `item` describes. */
-export type Matcher = (item: KeyItem, findings: MatchedFinding[]) => Promise<MatchDecision>;
+/** What the matcher's model calls cost: the sum of the priced calls, and how many calls have no known cost. */
+export interface MatcherSpend {
+  costUsd: number;
+  unpriced: number;
+}
+
+/** Decides whether one of `findings` reports the defect `item` describes. Each model call it makes is added to `spend`. */
+export type Matcher = (item: KeyItem, findings: MatchedFinding[], spend?: MatcherSpend) => Promise<MatchDecision>;
 
 /** Returns the indexes of the findings in a file `item` names or naming one of its symbols. An item without locations keeps every finding. */
 export function candidateFindings(item: KeyItem, findings: MatchedFinding[]): number[] {
@@ -339,11 +349,22 @@ function matcherKey(model: string, item: KeyItem, findings: MatchedFinding[]): s
 
 /** Returns a matcher that asks `client`, and keeps each decision in `cache` by the prompt, the item and the findings it saw. */
 export function llmMatcher(client: LLMClient, model: string, cache: Map<string, MatchDecision>): Matcher {
-  return async (item, findings) => {
+  return async (item, findings, spend) => {
     const key = matcherKey(model, item, findings);
     const cached = cache.get(key);
     if (cached) return cached;
-    const response = await client.sendMessage(MATCHER_SYSTEM_PROMPT, matcherMessage(item, findings), { effort: 'high', timeoutMs: MATCHER_TIMEOUT_MS });
+    const response = await client.sendMessage(MATCHER_SYSTEM_PROMPT, matcherMessage(item, findings), { effort: 'high', timeoutMs: MATCHER_TIMEOUT_MS }).catch((error: unknown) => {
+      // A call that failed may still have been billed, so its cost is not known.
+      if (spend) spend.unpriced++;
+      throw error;
+    });
+    if (spend) {
+      const { usage } = response;
+      // A path that reports no token counts reports zeros, and no real call uses no tokens.
+      const costUsd = usage && (usage.inputTokens > 0 || usage.outputTokens > 0) ? estimateCostUsd(response.model ?? parseModelSpec(model).model, usage) : null;
+      if (costUsd === null) spend.unpriced++;
+      else spend.costUsd += costUsd;
+    }
     // The reply can quote a finding or the key, and an error is printed, so neither error holds any of the reply.
     let parsed: { verdict?: unknown; findings?: unknown; reason?: unknown };
     try {
@@ -429,6 +450,60 @@ interface GradeRoute {
   byClaimCheck?: true;
 }
 
+/** Where a finding a finder reported left the review, by the round record. */
+type RawExit = 'posted' | 'open_lead' | 'dedup' | 'merged' | 'judge' | 'refuter' | 'earlier_round' | 'unproven' | Exclude<UnpostedReason, UnprovenReason> | 'unknown';
+
+const RAW_EXITS: Record<RawExit, string> = {
+  posted: "posted, but matched only among the finders' findings",
+  open_lead: 'left an open lead',
+  dedup: 'dropped as a finding an earlier round resolved',
+  merged: 'merged by the judge into another finding',
+  judge: 'dropped by the judge',
+  refuter: 'disproved by a tool check',
+  earlier_round: 'suppressed by an earlier round',
+  unproven: 'left out as an unproven warning',
+  pre_existing: UNPOSTED_REASONS.pre_existing,
+  memory_suppression: UNPOSTED_REASONS.memory_suppression,
+  static_signal_match: UNPOSTED_REASONS.static_signal_match,
+  reviewed_code: UNPOSTED_REASONS.reviewed_code,
+  listed_earlier: UNPOSTED_REASONS.listed_earlier,
+  note_cap: UNPOSTED_REASONS.note_cap,
+  unknown: 'not recorded with certainty',
+};
+
+/** The exit of a finding the judge stage graded `ignore`, by the step that did. */
+const IGNORED_BY: Partial<Record<GradeChange, RawExit>> = {
+  judge: 'judge', refutation: 'refuter', in_pr_suppression: 'earlier_round', own_proposal: 'earlier_round', ratchet: 'earlier_round', resolved_thread: 'earlier_round',
+};
+
+/** A finding as a finder reported it, with the text the matcher reads, the reviewers that reported it and where it left the review. */
+type RawFinding = MatchedFinding & { reviewers: string[]; exit: RawExit };
+
+/** A must-catch item a raw finding matched. */
+interface RawCatch {
+  item: string;
+  /** The reviewers of the raw findings that match it. */
+  finders: string[];
+  /** Whether a posted finding matched it too. */
+  posted: boolean;
+  /** When none did, the exit of each raw finding that names the item, closest first. */
+  exits?: RawExit[];
+}
+
+/** The findings the finders reported, scored against the must-catch items with the matcher the posted findings were scored with. */
+interface RawScore {
+  findings: RawFinding[];
+  /** One per must-catch item, with indexes into `findings`. */
+  matches: ItemMatch[];
+  caught: RawCatch[];
+  /** Set when the matcher failed twice on these findings. `matches` and `caught` are then empty, and the run's posted score stands. */
+  unscored?: true;
+  /** Why the matcher failed, when it did. Like a run's `error`, it is printed only for a case outside the hold-out set. */
+  error?: string;
+  /** What every matcher call of this scoring cost, a failed attempt's included, or `null` when a call has no known cost. A cached decision costs nothing. */
+  matcherCostUsd: number | null;
+}
+
 /** How a round left one earlier open thread, without any text of the thread or of the review. */
 interface ThreadOutcome {
   id: string;
@@ -490,6 +565,8 @@ interface RunScore {
   duplicates: number;
   /** Set on a complete run of a follow-up case. A report from a ref without follow-up cases has none. */
   followUp?: FollowUpScore;
+  /** Set on a complete run. A report from a ref that does not score the finders' findings has none. */
+  raw?: RawScore;
   finders: FinderSteps[];
   /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
   relatedRepos?: Array<Pick<RoundRelatedRepo, 'repo' | 'ref' | 'status' | 'commit' | 'asOf'>>;
@@ -566,21 +643,24 @@ interface ScoredReview {
 
 type KeyScore = Pick<RunScore, 'matches' | 'mustCatchRecall' | 'weightedRecall' | 'verdictCorrect' | 'falseBlockers' | 'unexpectedWarnings' | 'extraFindings' | 'duplicates' | 'followUp'>;
 
+/**
+ * Matches `item` to `findings`, and adds each matcher call to `spend`. The matcher reads only the findings
+ * `candidateFindings` keeps, and is not asked when there is none.
+ */
+async function matchItem(benchCase: BenchCase, item: KeyItem, findings: MatchedFinding[], matcher: Matcher, spend?: MatcherSpend): Promise<ItemMatch> {
+  const candidates = candidateFindings(item, findings);
+  if (candidates.length === 0) return { item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' };
+  const decision = await quietly(benchCase, () => matcher(item, candidates.map(i => findings[i]), spend));
+  const named = decision.findings.map(i => candidates[i]);
+  const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
+  return { item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason };
+}
+
 /** Matches the findings of one review to the case's key and returns the part of its score that the key decides. */
 async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved, threads, foldsStored }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
   const matches: ItemMatch[] = [];
   const repeats = repeatItems(benchCase);
-  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) {
-    const candidates = candidateFindings(item, findings);
-    if (candidates.length === 0) {
-      matches.push({ item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' });
-      continue;
-    }
-    const decision = await quietly(benchCase, () => matcher(item, candidates.map(i => findings[i])));
-    const named = decision.findings.map(i => candidates[i]);
-    const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
-    matches.push({ item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason });
-  }
+  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) matches.push(await matchItem(benchCase, item, findings, matcher));
   const isRepeat = (id: string) => repeats.some(item => item.id === id);
   const keyMatches = matches.filter(m => !isRepeat(m.item));
   const restated = restatedFindings(matches.filter(m => isRepeat(m.item)), n => findings[n].foldedInto);
@@ -630,16 +710,112 @@ function foldedThread(earlier: EarlierRound | undefined, f: Finding): string | u
   return thread && !gradedAbove(f.severity, thread) ? thread.id : undefined;
 }
 
-/** Matches the findings of one review to the case's key and scores it. */
+type RecordedPlace = Pick<Finding, 'title' | 'file' | 'line'>;
+
+/** The record keeps this much of the title of a posted, left out or suppressed finding. */
+const RECORDED_TITLE_CHARS = 200;
+
+function samePlace(a: RecordedPlace, b: RecordedPlace): boolean {
+  return a.file === b.file && a.line === b.line && a.title.slice(0, RECORDED_TITLE_CHARS) === b.title.slice(0, RECORDED_TITLE_CHARS);
+}
+
+function entryPlace(entry: FindingFingerprintEntry): RecordedPlace {
+  return { title: entry.title ?? '', file: entry.fingerprint.file, line: entry.fingerprint.lineStart };
+}
+
+/** Returns the exit of the finding at `f` that a stage after the dedup recorded in `context`, or none when no such stage lists it. */
+function laterExit(f: RecordedPlace, context: RoundContext): RawExit | undefined {
+  const { findings, judge, memory, dedup, leads } = context;
+  if (findings.entries.some(e => !e.relisted && samePlace(entryPlace(e), f))) return 'posted';
+  const left = findings.unposted?.find(e => samePlace(entryPlace(e), f));
+  if (left?.unpostedReason) return leftOutUnproven(left) ? 'unproven' : left.unpostedReason as Exclude<UnpostedReason, UnprovenReason>;
+  if (left) return left.tags?.includes(PRE_EXISTING_TAG) ? 'pre_existing' : 'unknown';
+  const dropped = judge.dropped?.find(d => samePlace(d, f));
+  if (dropped) {
+    const step = dropped.gradePath?.filter(s => s.to === 'ignore').at(-1);
+    return (step && IGNORED_BY[step.by]) ?? 'unknown';
+  }
+  if (memory.suppressed?.some(s => samePlace(s, f))) return 'memory_suppression';
+  if (dedup.staticSignalMatches?.some(m => samePlace({ title: m.droppedTitle, file: m.file, line: m.line }, f))) return 'static_signal_match';
+  if (leads?.some(l => samePlace(l, f) && !l.posted && (l.outcome === 'not_checked' || l.outcome === 'unsettled'))) return 'open_lead';
+  return undefined;
+}
+
+/**
+ * Returns where each finding of `context.reviewers.rawFindings` left the review, by the round record, and `unknown`
+ * wherever the record does not say for certain. The dedup records only titles, and the judge's merges and a few other
+ * drops record no finding at all, so `dedup` and `merged` are given only when the counts leave no other reading.
+ */
+function rawExits(context: RoundContext): RawExit[] {
+  const raw = context.reviewers.rawFindings ?? [];
+  if (raw.length === 0) return [];
+  const text = (f: RoundRawFinding) => JSON.stringify([f.severity, f.description, f.howToFix, f.suggestedFix]);
+  const later = raw.map(f => laterExit(f, context));
+  const dropped = (title: string) => (context.dedup.duplicateMatches ?? []).filter(m => m.droppedTitle === title).length;
+  const unnamedWith = (title: string) => raw.filter((f, i) => f.title === title && !later[i]).length;
+  const exits = raw.map((f, i): RawExit | undefined => {
+    // Findings at one place with one title and other text are one finding to the record, so it cannot tell them apart.
+    if (raw.some((other, j) => j !== i && samePlace(other, f) && text(other) !== text(f))) return 'unknown';
+    if (later[i] || dropped(f.title) === 0) return later[i];
+    return dropped(f.title) >= unnamedWith(f.title) ? 'dedup' : 'unknown';
+  });
+  // A place a later stage names stands for one finding, and a dedup drop for one finding of its title. Each other finding left unnamed.
+  const named = raw.filter((f, i) => later[i] && raw.findIndex(other => samePlace(other, f)) === i).length;
+  const deduped = [...new Set(raw.map(f => f.title))].reduce((sum, title) => sum + Math.min(dropped(title), unnamedWith(title)), 0);
+  const unnamed = raw.length - named - deduped;
+  // Besides the judge's merges, only the drop of test notes, the fold into a reader's blocker and an unsettled lead of the sweep's judge leave a finding unnamed.
+  const merged = !context.judge.skipped && unnamed <= (context.judge.mergedDuplicates ?? 0) && !context.dedup.testNitSuppressedCount
+    && !context.findings.entries.some(e => e.reviewers?.includes(VERDICT_READER_NAME));
+  return exits.map((exit, i) => exit ?? (merged && !raw[i].lead ? 'merged' : 'unknown'));
+}
+
+/** Returns the findings the finders reported in the round `context` records, each with where it left the review. */
+function rawFindings(context: RoundContext): RawFinding[] {
+  const exits = rawExits(context);
+  return (context.reviewers.rawFindings ?? []).map(({ severity, title, file, line, description, howToFix, suggestedFix, reviewers }, i) => ({
+    severity, title, file, line, description: description ?? '', ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), reviewers, exit: exits[i],
+  }));
+}
+
+/**
+ * Matches `findings`, the findings the finders reported, to the must-catch items. `posted` holds the matches of the
+ * posted findings. For each item a finder's finding matches and no posted finding does, it names the exit of each
+ * finder's finding that names the item. It never throws, so a matcher that fails on these findings costs the run
+ * nothing of its posted score: the result is then `unscored`.
+ */
+async function scoreRaw(benchCase: BenchCase, findings: RawFinding[], posted: ItemMatch[], matcher: Matcher): Promise<RawScore> {
+  const spend: MatcherSpend = { costUsd: 0, unpriced: 0 };
+  let error: string | undefined;
+  const matches = await twice(async () => {
+    const matches: ItemMatch[] = [];
+    for (const item of benchCase.mustCatch) matches.push(await matchItem(benchCase, item, findings, matcher, spend));
+    return matches;
+  }).catch((e: unknown) => {
+    error = e instanceof Error ? e.message : String(e);
+    return undefined;
+  });
+  const matcherCostUsd = spend.unpriced > 0 ? null : spend.costUsd;
+  if (!matches) return { findings, matches: [], caught: [], unscored: true, error, matcherCostUsd };
+  const caught = matches.filter(m => m.verdict === 'MATCH').map((m): RawCatch => {
+    const shown = posted.some(p => p.item === m.item && p.verdict === 'MATCH');
+    const named = m.findings.map(n => findings[n]);
+    return { item: m.item, finders: [...new Set(named.flatMap(f => f.reviewers))], posted: shown, ...(!shown && { exits: [...new Set(named.map(f => f.exit))] }) };
+  });
+  return { findings, matches, caught, matcherCostUsd };
+}
+
+/** Matches the findings of one review to the case's key and scores it. A complete run also scores the findings the finders reported. */
 export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
   const { outcome, reviewComplete: complete } = review.result;
   const findings = raisedFindings(review).map(f => ({ ...f, foldedInto: foldedThread(benchCase.priorRound, f) }));
   const followUp = benchCase.priorRound && complete ? { resolved: resolvedThreads(benchCase, review), threads: threadOutcomes(benchCase, review), foldsStored: true as const } : undefined;
+  const key = await scoreKey(benchCase, { findings, outcome, complete, ...followUp }, matcher);
   return {
     ...reviewFacts(review, benchCase.priorRound),
     complete,
     ...(!complete && { error: review.result.summary || 'The review did not complete.' }),
-    ...await scoreKey(benchCase, { findings, outcome, complete, ...followUp }, matcher),
+    ...key,
+    ...(complete && { raw: await scoreRaw(benchCase, rawFindings(review.context), key.matches, matcher) }),
   };
 }
 
@@ -771,11 +947,29 @@ interface VariantSummary {
   resolvedRight: number | null;
   resolvedWrong: number | null;
   repeats: number | null;
+  /** The finders' findings against the posted ones, `null` without a complete run that scored them. */
+  raw: RawSummary | null;
   costUsd: number;
   /** Mean cost of the runs that got a review. */
   costPerRunUsd: number | null;
   /** Mean wall time of the runs that got a review. */
   wallTimePerRunMs: number | null;
+}
+
+/** Sums over the complete runs that scored the findings the finders reported. */
+interface RawSummary {
+  /** Must-catch items, once per run. */
+  items: number;
+  /** Of those, the ones a finder's finding matched. */
+  found: number;
+  /** The ones a posted finding matched. */
+  posted: number;
+  /** The ones a finder's finding matched and no posted finding did, by the exit of the closest finding that names each. */
+  lost: Partial<Record<RawExit, number>>;
+  /** Runs whose findings the matcher failed on, which count in none of the figures above. */
+  unscored: number;
+  /** `null` when a call of a run has no known cost. */
+  matcherCostUsd: number | null;
 }
 
 /** One setup the bench scores: a name and the config it sets on top of each case's own config, or its base `.manki.yml`. */
@@ -875,9 +1069,30 @@ function summarize(cases: CaseReport[]): VariantSummary {
     resolvedRight: sum(f => f.resolvedRight),
     resolvedWrong: sum(f => f.resolvedWrong),
     repeats: sum(f => f.repeats),
+    raw: rawSummary(cases),
     costUsd: runs.reduce((total, r) => total + r.costUsd, 0),
     costPerRunUsd: mean(reviewed.map(r => r.costUsd)),
     wallTimePerRunMs: mean(reviewed.map(r => r.durationMs)),
+  };
+}
+
+function rawSummary(cases: CaseReport[]): RawSummary | null {
+  const stored = cases.flatMap(c => c.runs.flatMap(run => (run.complete && run.raw ? [{ items: c.items.filter(item => item.tier === 'must_catch'), run, raw: run.raw }] : [])));
+  if (stored.length === 0) return null;
+  const scored = stored.filter(({ raw }) => !raw.unscored);
+  const costs = stored.map(({ raw }) => raw.matcherCostUsd);
+  const lost: RawSummary['lost'] = {};
+  for (const missed of scored.flatMap(({ raw }) => raw.caught.filter(c => !c.posted))) {
+    const exit = missed.exits?.[0] ?? 'unknown';
+    lost[exit] = (lost[exit] ?? 0) + 1;
+  }
+  return {
+    items: scored.reduce((sum, { items }) => sum + items.length, 0),
+    found: scored.reduce((sum, { raw }) => sum + raw.caught.length, 0),
+    posted: scored.reduce((sum, { items, run }) => sum + items.filter(item => run.matches.some(m => m.item === item.id && m.verdict === 'MATCH')).length, 0),
+    lost,
+    unscored: stored.length - scored.length,
+    matcherCostUsd: costs.some(cost => cost === null) ? null : costs.reduce<number>((sum, cost) => sum + cost!, 0),
   };
 }
 
@@ -1007,7 +1222,11 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
         for (const run of c.runs) {
           const { followUp } = run;
           const review = { findings: run.findings as ScoredReview['findings'], outcome: run.outcome, complete: true, ...(followUp && { resolved: followUp.resolved, ...(followUp.threads && { threads: followUp.threads }), ...(followUp.foldsStored && { foldsStored: followUp.foldsStored }) }) };
-          runs.push(run.complete ? { ...run, ...await twice(() => scoreKey(benchCase, review, matcher)) } : run);
+          const score = async () => {
+            const key = await scoreKey(benchCase, review, matcher);
+            return { ...key, ...(run.raw && { raw: await scoreRaw(benchCase, run.raw.findings, key.matches, matcher) }) };
+          };
+          runs.push(run.complete ? { ...run, ...await twice(score) } : run);
         }
         return runs;
       };
@@ -1462,6 +1681,14 @@ export function formatBlockerRoutes(variants: VariantReport[]): string {
   return ['| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
 }
 
+/** Returns one line of counts: the must-catch items the finders found, the ones the review found, the ones it missed by exit, and what matching the finders' findings cost. */
+function formatRawSummary(raw: RawSummary): string {
+  const lost = (Object.keys(RAW_EXITS) as RawExit[]).flatMap(exit => (raw.lost[exit] ? [`${RAW_EXITS[exit]} ${raw.lost[exit]}`] : []));
+  const unscored = raw.unscored > 0 ? ` The matcher failed on the finders' findings of ${raw.unscored} ${raw.unscored === 1 ? 'run' : 'runs'}, which count in none of these.` : '';
+  const cost = raw.matcherCostUsd === null ? 'unknown, since a call has no known price' : `$${raw.matcherCostUsd.toFixed(2)}`;
+  return `Finders' findings: ${raw.found} of ${raw.items} must-catch items found by a finder, ${raw.posted} found by the review. Missed by the review after a finder found it: ${lost.join(', ') || 'none'}.${unscored} Matcher cost of this scoring ${cost}.`;
+}
+
 /**
  * Returns the report as plain text: per variant and case, each key item's catch rate and the run totals, then the
  * summary of each set, and last a Markdown table that sets the variants and sets side by side.
@@ -1482,6 +1709,9 @@ export function formatBenchSummary(report: BenchReport): string {
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}`
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
+        const lost = run.complete ? run.raw?.caught.filter(caught => !caught.posted) ?? [] : [];
+        if (run.complete && run.raw?.unscored) lines.push(`    the matcher failed on the finders' findings: ${shown ? oneLine(run.raw.error ?? 'no reason given') : 'the reason is in the report'}`);
+        if (lost.length > 0) lines.push(`    found by a finder and missed by the review: ${lost.map(l => `${l.item} (${(l.exits ?? ['unknown']).map(exit => RAW_EXITS[exit]).join(', ')})`).join(', ')}`);
       }
     }
     for (const { label, summary: s } of setSummaries(variant)) {
@@ -1489,6 +1719,7 @@ export function formatBenchSummary(report: BenchReport): string {
       lines.push(`${label ? `${label}: ` : ''}${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, at grade ${percent(s.atGradeRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
       lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, unexpected warnings ${s.unexpectedWarnings}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
       if (s.repeats !== null) lines.push(`Follow-up rounds: resolved ${s.resolvedRight} right and ${s.resolvedWrong} wrong, ${s.repeats} repeats.`);
+      if (s.raw) lines.push(formatRawSummary(s.raw));
     }
     lines.push('');
   }
