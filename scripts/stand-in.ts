@@ -1,11 +1,16 @@
 /**
  * The stand-in endpoint the CLI checks run a CLI against, on localhost. It records every request the CLI sends it,
  * and acts as the CLI's proxy for every other host, which it records and refuses, so no request leaves the machine. A
- * connection that ignores the proxy settings is not seen.
+ * connection that ignores the proxy settings is not seen. A host the stand-in serves itself gets a certificate made
+ * for the run, which the CLI trusts through `NODE_EXTRA_CA_CERTS`.
  */
 
+import { execFileSync } from 'child_process';
+import { readFileSync, writeFileSync } from 'fs';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { AddressInfo } from 'net';
+import { join } from 'path';
+import { TLSSocket, createSecureContext } from 'tls';
 
 export type Json = Record<string, unknown>;
 
@@ -15,7 +20,7 @@ export interface StandInRun {
   bodies: Json[];
   /** The other hosts the CLI asked it to reach as a proxy. */
   hosts: string[];
-  /** The paths of every request the CLI sent the stand-in itself. */
+  /** The paths of every request the CLI sent the stand-in itself, as `https://host/path` for a host it serves. */
   paths: string[];
   /** The `Authorization` headers of those requests. */
   keys: string[];
@@ -64,8 +69,32 @@ export function sse(type: string, data: Json): string {
 /** Answers one request the CLI sent the stand-in itself, whose body is `raw`. */
 export type Answer = (req: IncomingMessage, raw: string, res: ServerResponse) => void;
 
-/** Starts the stand-in, which records what it sees in `run` and answers the CLI's own requests with `answer`. */
-export function startStandIn(run: StandInRun, answer: Answer): Promise<{ url: string; close: () => void }> {
+/** The hosts the stand-in serves itself, with the certificate it shows them under. */
+export interface ServedHosts {
+  hosts: string[];
+  key: string;
+  cert: string;
+}
+
+/**
+ * Makes a certificate authority in `dir` and a certificate it signs for `hosts`. Returns the hosts with the key and
+ * certificate, and the path of the authority's certificate for `NODE_EXTRA_CA_CERTS`. Needs `openssl`.
+ */
+export function makeCertificate(dir: string, hosts: string[]): { served: ServedHosts; ca: string } {
+  const file = (name: string): string => join(dir, name);
+  const openssl = (...args: string[]): void => { execFileSync('openssl', args, { stdio: 'ignore' }); };
+  openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', file('ca.key'), '-out', file('ca.crt'), '-days', '1', '-subj', '/CN=stand-in CA');
+  openssl('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', file('host.key'), '-out', file('host.csr'), '-subj', '/CN=stand-in');
+  writeFileSync(file('host.ext'), `subjectAltName=${hosts.map(host => `DNS:${host}`).join(',')}\n`);
+  openssl('x509', '-req', '-in', file('host.csr'), '-CA', file('ca.crt'), '-CAkey', file('ca.key'), '-CAcreateserial', '-out', file('host.crt'), '-days', '1', '-extfile', file('host.ext'));
+  return { served: { hosts, key: readFileSync(file('host.key'), 'utf8'), cert: readFileSync(file('host.crt'), 'utf8') }, ca: file('ca.crt') };
+}
+
+/**
+ * Starts the stand-in, which records what it sees in `run` and answers the CLI's own requests with `answer`. It also
+ * answers the requests to each host of `served`, on port 443, instead of refusing them.
+ */
+export function startStandIn(run: StandInRun, answer: Answer, served?: ServedHosts): Promise<{ url: string; close: () => void }> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     let raw = '';
     req.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
@@ -76,14 +105,21 @@ export function startStandIn(run: StandInRun, answer: Answer): Promise<{ url: st
         res.writeHead(404).end();
         return;
       }
-      run.paths.push(req.url ?? '');
+      run.paths.push(`${req.socket instanceof TLSSocket ? `https://${req.headers.host}` : ''}${req.url ?? ''}`);
       run.keys.push(req.headers.authorization ?? '');
       answer(req, raw, res);
     });
   });
-  // The CLI sends every other host through this server as its proxy, and the tunnel is refused.
+  // The CLI sends every other host through this server as its proxy. The tunnel to a served host ends here, any other is refused.
+  const context = served && createSecureContext({ key: served.key, cert: served.cert });
   server.on('connect', (req: IncomingMessage, socket) => {
-    run.hosts.push(String(req.url));
+    const host = String(req.url);
+    if (context && served.hosts.some(name => host === `${name}:443`)) {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      server.emit('connection', new TLSSocket(socket, { isServer: true, secureContext: context }));
+      return;
+    }
+    run.hosts.push(host);
     socket.destroy();
   });
   return new Promise(done => server.listen(0, '127.0.0.1', () => done({ url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() })));
