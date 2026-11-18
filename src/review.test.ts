@@ -4539,7 +4539,7 @@ describe('runReview', () => {
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
     const thread = (status: PreviousFinding['status'], reopen = false): PreviousFinding => (
       { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1', ...(reopen && { reopen }) });
-    const runOn = (clients: ReviewClients, headSha: string, openThreads: OpenThread[] | null = [openThread], previousFindings = [thread('open')], priorRounds = [prior]) => runReview(
+    const runOn = (clients: ReviewClients, headSha: string, openThreads: OpenThread[] | null = [openThread], previousFindings = [thread('open')], priorRounds = [prior], interRoundDiff?: string) => runReview(
       clients, {
         config: makeConfig(),
         diff,
@@ -4550,6 +4550,7 @@ describe('runReview', () => {
         previousFindings,
         priorRounds,
         headSha,
+        interRoundDiff,
       },
     );
 
@@ -4612,6 +4613,36 @@ describe('runReview', () => {
     const samePush = await runOn(makeClients(RAISED), 'sha1', [], [thread('resolved')]);
     expect(samePush.outcome).toBe('ADDRESS_FIRST');
     expect(samePush.needsHuman).toBeUndefined();
+
+    // A fix was tried only when a push may have changed the code the blocker cites. A thread its author dismissed, or
+    // answered as fixed in another PR, with no push to that code since, was settled by a decision: no pause, also when
+    // a finder raises the blocker again from another file.
+    const push = (file: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -10 +10 @@\n-old\n+new\n`;
+    const elsewhere = { ...thread('resolved'), authorReplyText: 'Fixed in #12, which is stacked on this PR.', authorReplyLogin: 'maintainer' };
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, file: 'src/other.ts' }], summary: 'Still broken.' });
+    for (const [previous, interRoundDiff] of [[thread('resolved'), ''], [elsewhere, push('src/other.ts')]] as const) {
+      const decided = await runOn(makeClients(RAISED), 'sha2', [], [previous], [prior], interRoundDiff);
+      expect([decided.outcome, decided.needsHuman, decided.fixClaimedThreadIds]).toEqual(['ADDRESS_FIRST', undefined, ['T1']]);
+      expect(decided.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', file: 'src/other.ts' })]);
+    }
+    // A real fix that came back still pauses: a push to the blocker's file, to a file its finding cited or its thread
+    // links, or a push in a round whose record shows no empty diff or is missing.
+    const citing: RoundContext = { ...prior, findings: { ...prior.findings, entries: [{ ...prior.findings.entries[0], evidence: { checks: [], proof: ['src/caller.ts:4'] } }] } };
+    const quietRound = (round: number, interRoundDiffState: 'empty' | 'changed'): RoundContext => ({ ...buildPriorRound(round, []), judge: { summary: '', interRoundDiffState } });
+    const cameBackAfter: Array<[string, PreviousFinding, RoundContext[], string | undefined]> = [
+      ['own file', thread('resolved'), [prior], push('src/x.ts')],
+      ['cited file', thread('resolved'), [citing], push('src/caller.ts')],
+      ['linked file', { ...thread('resolved'), evidenceFiles: ['src/caller.ts'] }, [prior], push('src/caller.ts')],
+      ['unknown diff', thread('resolved'), [prior], undefined],
+      ['changed round', thread('resolved'), [prior, quietRound(2, 'changed')], ''],
+      ['missing round', thread('resolved'), [prior, quietRound(3, 'empty')], ''],
+    ];
+    for (const [why, previous, priorRounds, interRoundDiff] of cameBackAfter) {
+      const fixed = await runOn(makeClients(RAISED), 'sha4', [], [previous], priorRounds, interRoundDiff);
+      expect([why, fixed.outcome, fixed.needsHuman?.cause]).toEqual([why, 'NOT_CONVERGING', 'repeated']);
+    }
+    const quiet = await runOn(makeClients(RAISED), 'sha3', [], [thread('resolved')], [prior, quietRound(2, 'empty')], '');
+    expect([quiet.outcome, quiet.needsHuman]).toEqual(['ADDRESS_FIRST', undefined]);
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, sameAs: undefined }], summary: 'New bug.' });
     const unrelated = await runOn(makeClients(RAISED), 'sha2', [], [thread('resolved')]);
@@ -5796,6 +5827,25 @@ describe('runReview', () => {
     expect(result.llmDedupCount).toBe(2);
     const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
     expect(judgeInput.findings).toEqual([]);
+
+    // A model match in another file counts only when the finding cites a line of the thread's finding or a line that
+    // finding cited in the round record. One that shares no line stays, whatever the model says. Each finder reports all three.
+    const cited = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' } })]);
+    cited.findings.entries[0].evidence = { checks: [], proof: ['src/lib.ts:7'] };
+    const elsewhere = (title: string, file: string, proof: string[]) => ({ severity: 'blocker', title, file, line: 30, description: 'Bug.', proof });
+    jest.mocked(clients.reviewer.sendMessage).mockResolvedValue({ content: JSON.stringify([
+      elsewhere('Unchecked locks reach the wallet', 'src/b.ts', ['src/b.ts:30', 'src/a.ts:10']),
+      elsewhere('Unchecked locks reach the cache', 'src/c.ts', ['src/c.ts:30', 'src/lib.ts:7']),
+      elsewhere('Unchecked locks reach the log', 'src/d.ts', ['src/d.ts:30', 'src/a.ts:40']),
+    ]) });
+    jest.mocked(clients.dedup!.sendMessage).mockResolvedValue({ content: JSON.stringify([1, 2, 3, 4, 5, 6].map(index => ({ index, matchedResolved: 1 }))) });
+    mockedRunJudgeAgent.mockClear();
+    const crossFile = await runReview(clients, {
+      config, diff, rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, priorRounds: [cited], openThreads: [],
+      previousFindings: [{ ...previousFindings[0], threadId: 'T1' }],
+    });
+    expect([...new Set(crossFile.duplicateMatches?.map(m => m.droppedTitle))]).toEqual(['Unchecked locks reach the wallet', 'Unchecked locks reach the cache']);
+    expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['Unchecked locks reach the log', 'Unchecked locks reach the log']);
 
     // Finders that leave less than 30 seconds start no dedup call, and the round ends incomplete before the judge. Its
     // record keeps what the static dedup dropped before that call.

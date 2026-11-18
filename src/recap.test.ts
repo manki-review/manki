@@ -2457,6 +2457,9 @@ describe('llmDeduplicateFindings', () => {
     // The same problem in another file is another place, so a model match there changes nothing.
     const elsewhere = { ...second, file: 'src/index.ts' };
     expect(await llmDeduplicateFindings([elsewhere], [waived], match)).toEqual({ unique: [elsewhere], duplicates: [] });
+    // Unless the round pairs the two, as by a line both cite.
+    const paired = (prev: PreviousFinding, f: Finding) => prev.title === waived.title && f.file === elsewhere.file;
+    expect(await llmDeduplicateFindings([elsewhere], [waived], match, paired)).toEqual({ unique: [], duplicates: [{ finding: elsewhere, matchedTitle: waived.title, matchType: 'llm' }] });
 
     // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.
     const suggestion = { ...waived, severity: 'note' as const };

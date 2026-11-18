@@ -1320,19 +1320,20 @@ function describeForDedup(f: DedupItem): string {
 }
 
 /**
- * Asks `client` which findings repeat an earlier resolved one in the same file, in any wording. A repeat of a waived
- * finding is dropped, and a repeat of a fixed one goes to the judge with a note. A failed call, or one the round did
- * not start or stopped, keeps every finding.
+ * Asks `client` which findings repeat an earlier resolved one, in any wording. A match counts in the same file, or in
+ * another file when `acrossFiles` pairs the two. A repeat of a waived finding is dropped, and a repeat of a fixed one
+ * goes to the judge with a note. A failed call, or one the round did not start or stopped, keeps every finding.
  */
 async function llmDeduplicateFindings(
   findings: Finding[],
   previousFindings: PreviousFinding[],
   client: LLMClient,
+  acrossFiles: (prev: PreviousFinding, finding: Finding) => boolean = () => false,
 ): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
   // A lockfile alert names its package and change, so only the exact static match may drop it.
   const alerts = findings.filter(f => isLockfileAlert(f.title));
   if (alerts.length > 0) {
-    const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client);
+    const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client, acrossFiles);
     return { unique: [...alerts, ...rest.unique], duplicates: rest.duplicates };
   }
   const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved');
@@ -1358,8 +1359,9 @@ async function llmDeduplicateFindings(
     const unique: Finding[] = [];
     const duplicates: DuplicateMatch[] = [];
     for (let i = 0; i < findings.length; i++) {
-      // A finding in another file is another place, which the static matcher never matches either.
-      const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedResolved - 1]).filter(p => p?.file === findings[i].file);
+      // A finding in another file is another place, which the static matcher never matches either, unless `acrossFiles` pairs them.
+      const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedResolved - 1])
+        .filter(p => !!p && (p.file === findings[i].file || acrossFiles(p, findings[i])));
       const waived = priors.find(p => mayWaive(p, findings[i]));
       const fixed = priors.find(p => p.fixed);
       if (waived) {

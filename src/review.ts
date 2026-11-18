@@ -16,7 +16,7 @@ import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoO
 import { classifyRelatedWork } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
-import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
+import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -1386,7 +1386,7 @@ export async function runReview(
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
       const dedupWrap = lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
-      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
+      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client, restatesThreadAcrossFiles(priorRounds ?? []));
       if (stopped) return incomplete(stopped, { ...(openLeads.length > 0 && { openLeads }) });
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
@@ -1575,7 +1575,7 @@ export async function runReview(
       const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
       const statics = deduplicateFindings(fresh, previousFindings, changed);
       const llm = dedupClient && statics.unique.length > 0
-        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient)
+        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient, restatesThreadAcrossFiles(priorRounds ?? []))
         : { unique: statics.unique, duplicates: [] };
       for (const d of [...statics.duplicates, ...llm.duplicates]) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
       staticDedupCount += statics.duplicates.length;
@@ -1822,7 +1822,7 @@ export async function runReview(
 
   let needsHuman: NeedsHuman | undefined;
   const fixClaimed = fixClaimedThreadIds(previousFindings, openThreads, sortedPriorRounds);
-  const repeated = findRepeatedBlockers(finalFindings, priorBlockers, options.headSha, fixClaimed);
+  const repeated = findRepeatedBlockers(finalFindings, priorBlockers, options.headSha, fixClaimed, p => citedPlaceMayHaveChanged(p, sortedPriorRounds, interRoundDiff, previousFindings));
   if (repeated.length > 0) {
     outcome = 'NOT_CONVERGING';
     needsHuman = { cause: 'repeated', blockers: repeated.map(p => priorToTraceEntry(p.entry, priorRoundLookup, openThreadIndex)) };
@@ -2810,15 +2810,39 @@ function readyReason(findings: Finding[]): VerdictReason {
 }
 
 /**
- * Returns the prior blockers that a blocker in `findings` names again after a fix was claimed.
- * A claim is a thread ID in `fixClaimed`. A prior blocker last raised on `headSha` saw no push since, so it is left out.
+ * Returns the prior blockers that a blocker in `findings` names again after a fix was claimed and tried.
+ * A claim is a thread ID in `fixClaimed`. A try is a push that `mayHaveChanged` says may have changed the code the
+ * blocker cites. Without one, the thread was settled by a decision, such as a dismissal or "fixed in another PR".
+ * A prior blocker last raised on `headSha` saw no push since, so it is left out.
  * A blocker named again while its thread is still open is still open, not repeated.
  */
-function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorFinding[], headSha: string | undefined, fixClaimed: Set<string>): PriorFinding[] {
+function findRepeatedBlockers(
+  findings: Finding[], priorBlockers: PriorFinding[], headSha: string | undefined, fixClaimed: Set<string>, mayHaveChanged: (p: PriorFinding) => boolean,
+): PriorFinding[] {
   if (!headSha) return [];
   const named = new Set(findings.filter(f => f.severity === 'blocker' && f.sameAs).map(f => f.sameAs));
-  return priorBlockers.filter(p => p.commitSha !== headSha && !!p.entry.threadId && fixClaimed.has(p.entry.threadId)
-    && named.has(stringifyFindingFingerprint(p.entry.fingerprint)));
+  return priorBlockers.filter(p => {
+    if (p.commitSha === headSha || !p.entry.threadId || !fixClaimed.has(p.entry.threadId) || !named.has(stringifyFindingFingerprint(p.entry.fingerprint))) return false;
+    if (mayHaveChanged(p)) return true;
+    core.info(`The blocker "${p.entry.title}" is raised again, but no push since round ${p.round} changed the code it cites, so no fix came back`);
+    return false;
+  });
+}
+
+/**
+ * Whether a push since `p` was last raised may have changed its file or a file it cites. Only the inter-round diffs prove a
+ * file unchanged: this round's, and an empty one in the record of every round since. A missing record, an unknown diff or a
+ * finding tied to no file counts as a change.
+ */
+function citedPlaceMayHaveChanged(p: PriorFinding, sortedPriorRounds: RoundContext[], interRoundDiff: string | undefined, previousFindings: PreviousFinding[] | undefined): boolean {
+  const { fingerprint, evidence, threadId } = p.entry;
+  if (interRoundDiff === undefined || !fingerprint.file) return true;
+  const later = sortedPriorRounds.filter(r => r.meta.round > p.round);
+  if (!later.every((r, i) => r.meta.round === p.round + i + 1 && r.judge.interRoundDiffState === 'empty')) return true;
+  const changed = filesChangedByPush(interRoundDiff);
+  const cited = [fingerprint.file, ...[...(evidence?.proof ?? []), ...parseProof(evidence?.checks)].flatMap(at => parseLocation(at)?.file ?? [])];
+  const thread = previousFindings?.find(t => t.threadId === threadId);
+  return cited.some(file => changed.has(file)) || (!!thread && pushTouchesThread(thread, changed));
 }
 
 /**
@@ -3206,6 +3230,18 @@ export function sameProblem(a: Located, b: Located): boolean {
   if (overlap === null) return false;
   if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
   return citesLineOf(a, b) || citesLineOf(b, a) || near;
+}
+
+/**
+ * Returns a test of whether a finding may restate the earlier thread `prev` from another file, by `mayRestate` against the thread's
+ * own line or a finding `priorRounds` recorded under the thread, with the lines it cited.
+ */
+function restatesThreadAcrossFiles(priorRounds: RoundContext[]): (prev: PreviousFinding, f: Finding) => boolean {
+  const entries = priorRounds.flatMap(r => r.findings.entries);
+  return (prev, f) => [
+    { title: prev.title, file: prev.file, line: currentFindingLine(prev) },
+    ...entries.filter(e => !!prev.threadId && e.threadId === prev.threadId).map(e => ({ title: e.title ?? '', file: e.fingerprint.file, line: e.fingerprint.lineStart, evidence: e.evidence })),
+  ].some(earlier => mayRestate(earlier, f));
 }
 
 /** Whether `a` and `b` may name one defect in other words, so the dedup model is asked: they sit near each other in one file, or share a cited line in any file. */
