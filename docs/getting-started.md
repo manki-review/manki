@@ -196,6 +196,8 @@ Runs reviews through the Gemini CLI binary, signed in with Google. Effort tiers 
    The secret must be the base64-encoded contents of `~/.gemini/oauth_creds.json`, which contains `access_token` and `refresh_token`. Re-run when the refresh token expires.
 4. Manki installs the pinned Gemini CLI when the runner has none. An install step in the workflow keeps that out of the review's time (see [Step 3](#step-3-add-the-workflow))
 
+Manki gives the Gemini CLI a home folder of its own for each run, writes `oauth_creds.json` there from the secret, and deletes the folder when the run ends. A login the runner's own user keeps in `~/.gemini` is never used or changed, see [Gemini on a self-hosted runner](security.md#gemini-on-a-self-hosted-runner).
+
 > **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your Gemini Code Assist license. If this secret is ever compromised, revoke the OAuth session immediately at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). For production use, prefer the API key path (`GEMINI_API_KEY`), which can be rotated without affecting your account session.
 
 ## Step 3: Add the Workflow

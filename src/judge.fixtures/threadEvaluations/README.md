@@ -14,8 +14,8 @@ The corpus is consumed by `judge.test.ts` to assert three things:
 A live-replay harness (gated on `RUN_JUDGE_LIVE_FIXTURES=1`) builds the judge
 prompt for each fixture, sends it to a real LLM with `client.sendMessage`, and
 asserts the returned status matches `expectedStatus`. It does not go through
-`runJudgeAgent`. This runs locally through the logged-in `claude` CLI, with no
-API key. CI does not exercise it.
+`runJudgeAgent`. This runs locally on the Claude CLI, signed in with
+`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. CI does not exercise it.
 
 ## Coverage
 

@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, pause, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cliHome, cutLegacyCommands, extractCliErrorSnippet, lastLine, matchQuotaText, pause, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 import { TimeoutError } from './types';
@@ -79,6 +79,40 @@ describe('sanitizeLogOutput', () => {
 });
 
 describe('cliEnv', () => {
+  // The private home every call gets, which the first test checks. The others look at what else passes.
+  const folders = (home: string): NodeJS.ProcessEnv => ({
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, 'AppData', 'Roaming'),
+    LOCALAPPDATA: join(home, 'AppData', 'Local'),
+    XDG_CONFIG_HOME: join(home, '.config'),
+    XDG_DATA_HOME: join(home, '.local', 'share'),
+    XDG_STATE_HOME: join(home, '.local', 'state'),
+    XDG_CACHE_HOME: join(home, '.cache'),
+  });
+  const HOME_NAMES = [...Object.keys(folders('')), 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME'];
+  const passed = (...args: Parameters<typeof cliEnv>): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(cliEnv(...args)).filter(([name]) => !HOME_NAMES.includes(name)));
+
+  it('points every user folder variable and the CLI\'s own folder at a private folder of the run, whatever the runner or the call sets', () => {
+    const own = { CLAUDE_CONFIG_DIR: '/runner-home/.claude', CODEX_HOME: '/runner-home/.codex', GEMINI_CLI_HOME: '/runner-home' };
+    const windows = { UserProfile: 'C:\\Users\\runner', AppData: 'C:\\Users\\runner\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\runner\\AppData\\Local', HOMEDRIVE: 'C:', HOMEPATH: '\\Users\\runner' };
+    const xdg = { XDG_CONFIG_HOME: '/runner-home/.config', XDG_DATA_HOME: '/runner-home/.local/share', XDG_STATE_HOME: '/runner-home/.local/state', XDG_CACHE_HOME: '/runner-home/.cache' };
+    const env = { PATH: '/usr/bin', HOME: '/runner-home', ...own, ...windows, ...xdg };
+    const claude = cliHome('claude');
+    const codex = cliHome('codex');
+    const gemini = cliHome('gemini');
+    expect(cliEnv('claude', { HOME: '/call-home', USERPROFILE: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', ...folders(claude), CLAUDE_CONFIG_DIR: join(claude, '.claude') });
+    expect(cliEnv('codex', { HOME: '/call-home', CODEX_HOME: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', ...folders(codex), CODEX_HOME: codex });
+    expect(cliEnv('gemini', { HOME: '/call-home', xdg_config_home: '/call-home' }, undefined, env)).toEqual({ PATH: '/usr/bin', ...folders(gemini), GEMINI_CLI_HOME: gemini });
+    // Each CLI has its own, so none sees what another wrote, and the calls of a run share it.
+    expect(new Set([claude, codex, gemini]).size).toBe(3);
+    for (const home of [claude, codex, gemini]) {
+      expect(home).not.toMatch(/^\/(?:runner|call)-home/);
+      expect(statSync(home).mode & 0o777).toBe(0o700);
+    }
+    expect(cliHome('claude')).toBe(claude);
+  });
+
   it('keeps only the variables a CLI needs, so a secret under any name stays out', () => {
     const env = {
       PATH: '/usr/bin',
@@ -87,7 +121,7 @@ describe('cliEnv', () => {
       LOGNAME: 'runner',
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
-      XDG_CONFIG_HOME: '/home/runner/.config',
+      XDG_RUNTIME_DIR: '/run/user/1001',
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
       all_proxy: 'socks5://proxy:1080',
@@ -111,18 +145,17 @@ describe('cliEnv', () => {
     };
     const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     for (const provider of ['claude', 'claude', 'gemini'] as const) {
-      expect(Object.keys(cliEnv(provider, {}, undefined, env))).toEqual(Object.keys(cliEnv('codex', {}, undefined, env)));
+      expect(Object.keys(passed(provider, {}, undefined, env))).toEqual(Object.keys(passed('codex', {}, undefined, env)));
     }
     expect(warning.mock.calls).toEqual([[expect.stringMatching(/^ANTHROPIC_CUSTOM_HEADERS is not passed to the Claude CLI/)]]);
     warning.mockRestore();
-    expect(cliEnv('codex', {}, undefined, env)).toEqual({
+    expect(passed('codex', {}, undefined, env)).toEqual({
       PATH: '/usr/bin',
-      HOME: '/home/runner',
       USER: 'runner',
       LOGNAME: 'runner',
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
-      XDG_CONFIG_HOME: '/home/runner/.config',
+      XDG_RUNTIME_DIR: '/run/user/1001',
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
       all_proxy: 'socks5://proxy:1080',
@@ -132,8 +165,8 @@ describe('cliEnv', () => {
   });
 
   it('keeps the Windows variables a CLI needs whatever their case', () => {
-    const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe', DEPLOY_PEM: 'pem' };
-    expect(cliEnv('codex', {}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe' });
+    const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', PATHEXT: '.COM;.EXE', ComSpec: 'cmd.exe', DEPLOY_PEM: 'pem' };
+    expect(passed('codex', {}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', PATHEXT: '.COM;.EXE', ComSpec: 'cmd.exe' });
   });
 
   it('gives each provider only its own configuration, and none of its keys or tokens', () => {
@@ -148,6 +181,7 @@ describe('cliEnv', () => {
       AWS_ROLE_ARN: 'arn:aws:iam::1:role/bedrock',
       AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/token',
       AWS_SHARED_CREDENTIALS_FILE: '/home/runner/.aws/credentials',
+      AWS_LOGIN_CACHE_DIRECTORY: '/home/runner/.aws/login/cache',
       AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials',
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       DISABLE_TELEMETRY: '1',
@@ -166,7 +200,7 @@ describe('cliEnv', () => {
       GOOGLE_CLOUD_PROJECT: 'manki-project',
       GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp.json',
     };
-    expect(cliEnv('claude', {}, undefined, env)).toEqual({
+    expect(passed('claude', {}, undefined, env)).toEqual({
       ANTHROPIC_BASE_URL: 'https://gateway.example',
       ANTHROPIC_AUTH_TOKEN: 'gateway-token',
       CLAUDE_CODE_USE_BEDROCK: '1',
@@ -177,16 +211,16 @@ describe('cliEnv', () => {
       AWS_ROLE_ARN: 'arn:aws:iam::1:role/bedrock',
       AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/token',
       AWS_SHARED_CREDENTIALS_FILE: '/home/runner/.aws/credentials',
+      AWS_LOGIN_CACHE_DIRECTORY: '/home/runner/.aws/login/cache',
       AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials',
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       DISABLE_TELEMETRY: '1',
-      CLAUDE_CONFIG_DIR: '/home/runner/.claude',
       API_TIMEOUT_MS: '600000',
       CLOUD_ML_REGION: 'us-east5',
       VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1',
     });
-    expect(cliEnv('codex', {}, undefined, env)).toEqual({ OPENAI_BASE_URL: 'https://openai.example', CODEX_CA_CERTIFICATE: '/etc/ssl/codex.pem' });
-    expect(cliEnv('gemini', {}, undefined, env)).toEqual({ GEMINI_MODEL: 'gemini-3', GOOGLE_CLOUD_PROJECT: 'manki-project', VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1' });
+    expect(passed('codex', {}, undefined, env)).toEqual({ OPENAI_BASE_URL: 'https://openai.example', CODEX_CA_CERTIFICATE: '/etc/ssl/codex.pem' });
+    expect(passed('gemini', {}, undefined, env)).toEqual({ GEMINI_MODEL: 'gemini-3', GOOGLE_CLOUD_PROJECT: 'manki-project', VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1' });
   });
 
   it('gives Claude the credentials of a Bedrock, Vertex or gateway setup only while it is on, and redacts them', () => {
@@ -199,15 +233,15 @@ describe('cliEnv', () => {
       ANTHROPIC_AUTH_TOKEN: 'gateway-auth-token',
       ANTHROPIC_CUSTOM_HEADERS: 'X-Gateway-Key: gateway-header-key\nAuthorization: Bearer bare-gateway-bearer',
     };
-    expect(cliEnv('claude', {}, undefined, credentials)).toEqual({});
+    expect(passed('claude', {}, undefined, credentials)).toEqual({});
 
     const on = { ...credentials, CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: 'true', ANTHROPIC_BASE_URL: 'https://gateway.example' };
-    expect(cliEnv('claude', {}, undefined, on)).toEqual(on);
-    expect(cliEnv('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
+    expect(passed('claude', {}, undefined, on)).toEqual(on);
+    expect(passed('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
     expect(redactSecrets('aws-secret-access-key gateway-auth-token gateway-header-key bare-gateway-bearer')).toBe('[REDACTED] [REDACTED] [REDACTED] [REDACTED]');
     // A Bedrock or Vertex gateway gets the headers too, but not the Anthropic gateway token.
     for (const url of ['ANTHROPIC_BEDROCK_BASE_URL', 'ANTHROPIC_VERTEX_BASE_URL']) {
-      expect(cliEnv('claude', {}, undefined, { ...credentials, [url]: 'https://gateway.example' }))
+      expect(passed('claude', {}, undefined, { ...credentials, [url]: 'https://gateway.example' }))
         .toEqual({ [url]: 'https://gateway.example', ANTHROPIC_CUSTOM_HEADERS: credentials.ANTHROPIC_CUSTOM_HEADERS });
     }
     const keyFile = join(mkdtempSync(join(tmpdir(), 'manki-gcp-')), 'key.json');
@@ -223,16 +257,105 @@ describe('cliEnv', () => {
     cliEnv('claude', {}, undefined, { CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: keyFile });
     expect(redactSecrets('Bearer oidc-request-token-xyz https://pipelines.actions.example/oidc')).toBe('[REDACTED] https://pipelines.actions.example/oidc');
     for (const provider of ['codex', 'gemini'] as const) {
-      expect(Object.keys(cliEnv(provider, {}, undefined, on))).not.toEqual(expect.arrayContaining(['AWS_SECRET_ACCESS_KEY']));
-      expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
-      expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('AWS_ACCESS_KEY_ID');
+      expect(Object.keys(passed(provider, {}, undefined, on))).not.toEqual(expect.arrayContaining(['AWS_SECRET_ACCESS_KEY']));
+      expect(passed(provider, {}, undefined, on)).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+      expect(passed(provider, {}, undefined, on)).not.toHaveProperty('AWS_ACCESS_KEY_ID');
     }
-    expect(cliEnv('gemini', {}, undefined, on)).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
+    expect(passed('gemini', {}, undefined, on)).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
+  });
+
+  it('points a Bedrock or Vertex setup at the credential files in the runner\'s home, unless the step names its own', () => {
+    const home = mkdtempSync(join(tmpdir(), 'manki-runner-home-'));
+    const files = {
+      AWS_CONFIG_FILE: join(home, '.aws', 'config'),
+      AWS_SHARED_CREDENTIALS_FILE: join(home, '.aws', 'credentials'),
+      AWS_LOGIN_CACHE_DIRECTORY: join(home, '.aws', 'login', 'cache'),
+      GOOGLE_APPLICATION_CREDENTIALS: join(home, '.config', 'gcloud', 'application_default_credentials.json'),
+    };
+    const { GOOGLE_APPLICATION_CREDENTIALS: adc, ...aws } = files;
+    const bedrock = { HOME: home, CLAUDE_CODE_USE_BEDROCK: '1' };
+    const vertex = { HOME: home, CLAUDE_CODE_USE_VERTEX: '1' };
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    try {
+      // A file the runner does not have stays unnamed, so Vertex can still fall back to the metadata server.
+      expect(passed('claude', {}, undefined, bedrock)).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1' });
+      expect(passed('claude', {}, undefined, vertex)).toEqual({ CLAUDE_CODE_USE_VERTEX: '1' });
+      mkdirSync(aws.AWS_LOGIN_CACHE_DIRECTORY, { recursive: true });
+      mkdirSync(dirname(adc), { recursive: true });
+      for (const file of [aws.AWS_CONFIG_FILE, aws.AWS_SHARED_CREDENTIALS_FILE, adc]) writeFileSync(file, '{}');
+
+      expect(passed('claude', {}, undefined, bedrock)).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', ...aws });
+      expect(passed('claude', {}, undefined, vertex)).toEqual({ CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: adc });
+      const named = { AWS_CONFIG_FILE: '/step/aws-config', GOOGLE_APPLICATION_CREDENTIALS: '/step/key.json' };
+      expect(passed('claude', {}, undefined, { ...bedrock, ...vertex, ...named }))
+        .toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', ...aws, ...named });
+      expect(passed('claude', {}, undefined, { HOME: home })).toEqual({});
+      for (const provider of ['codex', 'gemini'] as const) expect(passed(provider, {}, undefined, { ...bedrock, ...vertex })).toEqual({});
+      // On Windows Google's auth library reads the login from `%APPDATA%`, which no longer reaches the CLI.
+      const appData = join(home, 'AppData', 'Roaming');
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+      try {
+        expect(passed('claude', {}, undefined, { ...vertex, APPDATA: appData })).toEqual({ CLAUDE_CODE_USE_VERTEX: '1' });
+        mkdirSync(join(appData, 'gcloud'), { recursive: true });
+        writeFileSync(join(appData, 'gcloud', 'application_default_credentials.json'), '{}');
+        expect(passed('claude', {}, undefined, { ...vertex, APPDATA: appData }))
+          .toEqual({ CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: join(appData, 'gcloud', 'application_default_credentials.json') });
+      } finally {
+        Object.defineProperty(process, 'platform', platform);
+      }
+
+      // A `credential_process` helper runs with the CLI's own home, so Manki warns once, and only when Bedrock reads AWS credentials.
+      warning.mockClear();
+      writeFileSync(aws.AWS_CONFIG_FILE, '[profile helper]\ncredential_process = /opt/bin/creds --profile helper\n');
+      cliEnv('claude', {}, undefined, { ...bedrock, CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1' });
+      cliEnv('claude', {}, undefined, { ...bedrock, AWS_CONFIG_FILE: join(home, 'missing') });
+      expect(warning).not.toHaveBeenCalled();
+      cliEnv('claude', {}, undefined, bedrock);
+      cliEnv('claude', {}, undefined, bedrock);
+      expect(warning.mock.calls).toEqual([[expect.stringContaining(`${aws.AWS_CONFIG_FILE} use credential_process.`)]]);
+      expect(warning.mock.calls[0][0]).toContain("or set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN in the Manki step's env.");
+      warning.mockClear();
+
+      // The token of `aws sso login` has no variable, so only its folder is linked, and only when Bedrock reads AWS credentials.
+      const cache = join(home, '.aws', 'sso', 'cache');
+      const link = join(cliHome('claude'), '.aws', 'sso', 'cache');
+      mkdirSync(cache, { recursive: true });
+      for (const off of [{ CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1' }, { AWS_BEARER_TOKEN_BEDROCK: 'bedrock-key' }, { CLAUDE_CODE_USE_BEDROCK: '0' }]) {
+        cliEnv('claude', {}, undefined, { ...bedrock, ...off });
+        expect(existsSync(link)).toBe(false);
+      }
+      cliEnv('codex', {}, undefined, bedrock);
+      expect(existsSync(link)).toBe(false);
+      cliEnv('claude', {}, undefined, { ...bedrock, AWS_PROFILE: 'sso', AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE', AWS_SECRET_ACCESS_KEY: 'secret' });
+      expect(realpathSync(link)).toBe(realpathSync(cache));
+      expect(readdirSync(join(cliHome('claude'), '.aws'), { recursive: true })).toEqual(['sso', join('sso', 'cache')]);
+
+      // A link whose target is gone is replaced.
+      rmSync(home, { recursive: true });
+      const moved = join(mkdtempSync(join(tmpdir(), 'manki-runner-home-')), '.aws', 'sso', 'cache');
+      mkdirSync(moved, { recursive: true });
+      cliEnv('claude', {}, undefined, { ...bedrock, HOME: dirname(dirname(dirname(moved))) });
+      expect(realpathSync(link)).toBe(realpathSync(moved));
+
+      // A link that cannot be made warns once, and the call still gets its environment.
+      rmSync(join(cliHome('claude'), '.aws'), { recursive: true });
+      writeFileSync(join(cliHome('claude'), '.aws'), '');
+      const runner = { ...bedrock, HOME: dirname(dirname(dirname(moved))), AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE' };
+      expect(cliEnv('claude', {}, undefined, runner)).toMatchObject({ AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE' });
+      cliEnv('claude', {}, undefined, runner);
+      expect(warning.mock.calls).toEqual([[expect.stringContaining(`Could not link the runner's AWS SSO cache ${moved} into the Claude CLI's home`)]]);
+      rmSync(dirname(dirname(dirname(moved))), { recursive: true });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(join(cliHome('claude'), '.aws'), { recursive: true, force: true });
+      warning.mockRestore();
+    }
   });
 
   it('adds the provider variables, and of those named like a secret only the credential', () => {
     const vars = { CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768', GITHUB_TOKEN: 'ghs_workflow' };
-    expect(cliEnv('claude', vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
+    expect(passed('claude', vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
       PATH: '/usr/bin',
       CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',

@@ -3,7 +3,8 @@ name: Codex tools
 # Runs the Codex CLI version Manki pins against a stand-in endpoint on localhost, and fails when a model is offered a
 # tool that `scripts/fixtures/codex-tools.json` does not list, or no longer one it lists, when a request carries Codex's
 # skill text, when a part of the Codex setup planted in the runner's home reaches Codex, or when Codex tries to reach
-# another host. Needs no secret.
+# another host. The `homes` job does the same for the runner's Claude and Gemini setup with the versions Manki pins.
+# Needs no secret.
 on:
   push:
     branches: [main]
@@ -34,3 +35,27 @@ jobs:
           npm install -g --ignore-scripts "@openai/codex@$version"
       - name: Compare the tools Codex offers with the list
         run: npx tsx scripts/codex-tools-check.ts
+
+  homes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7  # first-party GitHub action
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7  # first-party GitHub action
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Install the Claude and Gemini CLI versions Manki pins
+        run: |
+          claude=$(sed -n "s/^export const CLAUDE_CLI_VERSION = '\(.*\)';$/\1/p" src/providers/anthropic.ts)
+          if [ -z "$claude" ]; then echo "::error file=src/providers/anthropic.ts::CLAUDE_CLI_VERSION not found"; exit 1; fi
+          gemini=$(sed -n "s/^export const GEMINI_CLI_VERSION = '\(.*\)';$/\1/p" src/providers/gemini.ts)
+          if [ -z "$gemini" ]; then echo "::error file=src/providers/gemini.ts::GEMINI_CLI_VERSION not found"; exit 1; fi
+          npm install -g "@anthropic-ai/claude-code@$claude"
+          npm install -g --ignore-scripts "@google/gemini-cli@$gemini"
+      - name: Check that the runner's own setup stays out
+        run: npx tsx scripts/cli-homes-check.ts

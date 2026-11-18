@@ -6,11 +6,11 @@ import { join } from 'path';
 import { GoogleGenAI } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildGeminiAuth, GEMINI_CLI_VERSION, GeminiClient, geminiThinkingConfig, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
+import { buildGeminiAuth, GEMINI_CLI_VERSION, GeminiClient, geminiThinkingConfig, resetGeminiCLIInstallPromise } from './gemini';
 import { parseModelSpec } from './model-registry';
 import { QuotaError, RefusalError } from './types';
 
-// Seeding `~/.gemini/oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
+// Seeding `oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
 // Stub it out here so the provider tests don't touch the filesystem.
 jest.mock('./cli-utils', () => ({
   ...jest.requireActual('./cli-utils'),
@@ -345,22 +345,13 @@ function setupOAuthSpawnMock(opts: {
 }
 
 describe('GeminiClient OAuth path', () => {
-  let savedHome: string | undefined;
-
   beforeEach(() => {
-    savedHome = process.env.HOME;
-    process.env.HOME = '/tmp/manki-gemini-test-home';
     mockSpawn.mockReset();
     mockExecFileAsync.mockReset();
     mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/gemini' });
     resetGeminiCLIInstallPromise();
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     seedAuthFile.mockReset();
-  });
-
-  afterEach(() => {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
   });
 
   it('returns trimmed stdout content on success', async () => {
@@ -439,43 +430,34 @@ describe('GeminiClient OAuth path', () => {
     }
   });
 
-  it('seeds `$HOME/.gemini/oauth_creds.json` from the OAuth secret before invoking the CLI, and registers its tokens again after', async () => {
+  it('seeds `oauth_creds.json` in Manki\'s own Gemini home, whatever `HOME` and `GEMINI_CLI_HOME` say, and registers its tokens again after', async () => {
     const { seedAuthFile, registerAuthFileSecrets } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock; registerAuthFileSecrets: jest.Mock };
     seedAuthFile.mockClear();
     setupOAuthSpawnMock({ stdout: 'ok' });
-    const savedHome = process.env.HOME;
-    process.env.HOME = '/tmp/manki-gemini-home-fixture';
+    const savedEnv = process.env;
+    process.env = { ...savedEnv, HOME: '/runner-home', GEMINI_CLI_HOME: '/runner-home' };
 
     try {
       const client = new GeminiClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gemini-3.1-flash-lite' });
       await client.sendMessage('sys', 'user');
-
-      expect(seedAuthFile).toHaveBeenCalledWith({
-        secret: 'b64-blob',
-        inputName: 'gemini_oauth_token',
-        targetPath: '/tmp/manki-gemini-home-fixture/.gemini/oauth_creds.json',
-        requiredFields: ['access_token', 'refresh_token'],
-        bootstrapHint: expect.stringContaining('gemini'),
-      });
-      expect(registerAuthFileSecrets).toHaveBeenCalledWith('/tmp/manki-gemini-home-fixture/.gemini/oauth_creds.json');
+      await client.sendMessage('sys', 'user');
     } finally {
-      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      process.env = savedEnv;
     }
-  });
-
-  it('throws a clear error when $HOME is not set', async () => {
-    setupOAuthSpawnMock({ stdout: 'ok' });
-    const savedHome = process.env.HOME;
-    delete process.env.HOME;
-
-    try {
-      const client = new GeminiClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gemini-3.1-flash-lite' });
-      await expect(client.sendMessage('sys', 'user')).rejects.toThrow(
-        /Cannot seed Gemini OAuth credentials.*\$HOME is not set/,
-      );
-    } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-    }
+    const envs = mockSpawn.mock.calls.map(call => (call[2] as { env: NodeJS.ProcessEnv }).env);
+    const home = envs[0].GEMINI_CLI_HOME!;
+    expect(home).not.toMatch(/^\/runner-home/);
+    // The calls of a run share the home, so a later call reads the token an earlier one refreshed.
+    expect(envs.map(env => [env.HOME, env.GEMINI_CLI_HOME])).toEqual([[home, home], [home, home]]);
+    const credsPath = join(home, '.gemini', 'oauth_creds.json');
+    expect(seedAuthFile).toHaveBeenCalledWith({
+      secret: 'b64-blob',
+      inputName: 'gemini_oauth_token',
+      targetPath: credsPath,
+      requiredFields: ['access_token', 'refresh_token'],
+      bootstrapHint: expect.stringContaining('gemini'),
+    });
+    expect(registerAuthFileSecrets).toHaveBeenCalledWith(credsPath);
   });
 
   it('propagates seedAuthFile errors (e.g. legacy single-token shape) to the caller', async () => {
@@ -491,7 +473,7 @@ describe('GeminiClient OAuth path', () => {
     );
   });
 
-  it('runs the CLI with the model and a policy that denies every tool, in an empty, trusted temp directory', async () => {
+  it('runs the CLI with the model and a policy that denies every tool, in a trusted temp directory with only empty `.env` files', async () => {
     const proc = setupOAuthSpawnMock({ stdout: 'ok' });
     let policy = '';
     mockSpawn.mockImplementationOnce((_command, spawnArgs) => {
@@ -508,7 +490,8 @@ describe('GeminiClient OAuth path', () => {
     expect(existsSync(args[3])).toBe(false);
     const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
     expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
-    expect(readdirSync(cwd)).toEqual([]);
+    expect(readdirSync(cwd, { recursive: true }).sort()).toEqual(['.env', '.gemini', join('.gemini', '.env')]);
+    expect([readFileSync(join(cwd, '.env'), 'utf8'), readFileSync(join(cwd, '.gemini', '.env'), 'utf8')]).toEqual(['', '']);
   });
 
   it('uses untrusted-content delimiter when concatenating prompts on stdin', async () => {
@@ -902,25 +885,3 @@ describe('GeminiClient OAuth path', () => {
   });
 });
 
-describe('resolveGeminiCredsDir', () => {
-  let savedHome: string | undefined;
-
-  beforeEach(() => {
-    savedHome = process.env.HOME;
-  });
-
-  afterEach(() => {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-  });
-
-  it('returns $HOME/.gemini when HOME is set', () => {
-    process.env.HOME = '/h';
-    expect(resolveGeminiCredsDir()).toBe('/h/.gemini');
-  });
-
-  it('throws when HOME is not set', () => {
-    delete process.env.HOME;
-    expect(() => resolveGeminiCredsDir()).toThrow(/\$HOME is not set/);
-  });
-});

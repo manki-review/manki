@@ -44,10 +44,10 @@ A change to how findings are graded can shift grades on real PRs in ways no unit
 
 A change to the judge's prompt (`buildJudgeSystemPrompt` in `src/judge.ts`, with `SEVERITY_TABLE` and `GRADE_DEFINITIONS` in `src/writing-rules.ts`) or to the grade of a table cell (`CELL_GRADES` in `src/types.ts`) changes what the judge answers. It needs two checks.
 
-First, the live replay of the grading fixtures in [`src/judge.fixtures/grading`](src/judge.fixtures/grading). It sends each fixture through `runJudgeAgent` and checks that the grade is one the fixture allows. It runs on the Claude CLI's own login, and `JUDGE_LIVE_MODEL` picks another model than the default judge:
+First, the live replay of the grading fixtures in [`src/judge.fixtures/grading`](src/judge.fixtures/grading). It sends each fixture through `runJudgeAgent` and checks that the grade is one the fixture allows. It signs in with the token `claude setup-token` prints, in `CLAUDE_CODE_OAUTH_TOKEN`, and skips with a message when that is unset. Manki runs the Claude CLI with a home of its own, so the CLI cannot use your own login. `JUDGE_LIVE_MODEL` picks another model than the default judge:
 
 ```sh
-RUN_JUDGE_LIVE_FIXTURES=1 npx jest src/judge.test.ts -t 'live judge grades'
+CLAUDE_CODE_OAUTH_TOKEN=<token from claude setup-token> RUN_JUDGE_LIVE_FIXTURES=1 npx jest src/judge.test.ts -t 'live judge grades'
 ```
 
 Second, a judge replay over a labelled set of real findings, per repository:

@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { compareTools, controlProblems, heldTools, heldToolsCall, offeredTools, plantRunnerSetup, runProblems, searchSources, StandInRun } from './codex-tools-check';
+import { compareTools, controlProblems, heldTools, heldToolsCall, offeredTools, plantRunnerSetup, runProblems, searchSources } from './codex-tools-check';
+import { StandInRun } from './stand-in';
 
 describe('offeredTools', () => {
   it('names the tools of the request and of an `additional_tools` item, a namespace\'s as `namespace.name`', () => {
@@ -77,7 +78,7 @@ describe('compareTools', () => {
 
 describe('runProblems and controlProblems', () => {
   const message = (role: string, ...texts: string[]) => ({ type: 'message', role, content: texts.map(text => ({ type: 'input_text', text })) });
-  const run = (over: Partial<StandInRun> = {}): StandInRun => ({ bodies: [], hosts: [], paths: ['/v1/responses'], keys: ['Bearer stand-in'], hookRan: false, ...over });
+  const run = (over: Partial<StandInRun> = {}): StandInRun => ({ bodies: [], hosts: [], paths: ['/v1/responses'], keys: ['Bearer stand-in'], ran: [], ...over });
 
   it('passes a run whose requests carry no skill text and that tried no other host', () => {
     const body = { input: [message('developer', 'Review the diff.', '<permissions instructions>\nRead-only.'), message('user', 'Mentions <skill> and $imagegen in passing.')] };
@@ -106,7 +107,7 @@ describe('runProblems and controlProblems', () => {
         tools: [{ type: 'namespace', name: 'mcp__runner_mcp_server', tools: [] }],
         input: [message('developer', codexSkill, agentsSkill), message('user', agentsMd)],
       };
-      const reached = run({ bodies: [{}, body], keys: ['Bearer runner-dotenv-key'], hosts: ['runner-otel.invalid:4318'], hookRan: true });
+      const reached = run({ bodies: [{}, body], keys: ['Bearer runner-dotenv-key'], hosts: ['runner-otel.invalid:4318'], ran: ['hook'] });
       expect(runProblems('gpt-a', reached)).toEqual([
         'gpt-a: the runner\'s skill in ~/.codex/skills reached Codex',
         'gpt-a: the runner\'s skill in ~/.agents/skills reached Codex',
@@ -119,16 +120,16 @@ describe('runProblems and controlProblems', () => {
       ]);
       expect(controlProblems('control', reached, false)).toEqual([]);
       expect(controlProblems('control', run({ bodies: [body] }), false)).toEqual([
-        'control: the runner\'s OPENAI_API_KEY in ~/.codex/.env no longer reaches Codex from the runner\'s own home, so the check cannot see it',
-        'control: the runner\'s otel exporter in ~/.codex/config.toml no longer reaches Codex from the runner\'s own home, so the check cannot see it',
-        'control: the runner\'s trusted hook in ~/.codex/hooks.json no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+        'control: the runner\'s OPENAI_API_KEY in ~/.codex/.env no longer reaches Codex in this control run, so the check cannot see it',
+        'control: the runner\'s otel exporter in ~/.codex/config.toml no longer reaches Codex in this control run, so the check cannot see it',
+        'control: the runner\'s trusted hook in ~/.codex/hooks.json no longer reaches Codex in this control run, so the check cannot see it',
       ]);
 
       const redirected = run({ paths: ['/runner-chatgpt/api/codex/accounts/check', '/runner-provider/v1/responses'], hosts: ['chatgpt.com:443'] });
       expect(runProblems('login', redirected, ['chatgpt.com:443'])).toEqual(['login: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml reached Codex']);
       expect(controlProblems('login control', redirected, true)).toEqual([]);
       expect(controlProblems('login control', run(), true)).toEqual([
-        'login control: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml no longer reaches Codex from the runner\'s own home, so the check cannot see it',
+        'login control: the runner\'s model_provider and chatgpt_base_url in ~/.codex/config.toml no longer reaches Codex in this control run, so the check cannot see it',
       ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
