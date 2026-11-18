@@ -392,7 +392,10 @@ interface PreviousFinding extends FindingMetadata {
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
   fixed?: boolean;
-  /** Settled without a fix, as `decidedWithoutFix` reads Manki's replies, and never found fixed by a round's judge. */
+  /**
+   * Settled without a fix: Manki accepted an answer that accepted no fix, as its reply record says, or someone with write
+   * access posted a dismiss command. No reply of Manki's accepted or confirmed a fix, and no round's judge found it fixed.
+   */
   decidedWithoutFix?: boolean;
   threadId?: string;
   threadUrl?: string;
@@ -647,6 +650,7 @@ async function fetchRecapState(
     id: t.threadId,
     ...(authorCannotClear(t) && !t.commentsIncomplete && t.authorReplyLogin && { latestReplyLogin: t.authorReplyLogin }),
     ...(authorCannotClear(t) && t.resolvedByHuman && t.resolvedByLogin && { resolverLogin: t.resolvedByLogin }),
+    ...(t.isResolved && !t.resolvedByHuman && t.settlement?.dismissLogins.length && { dismissLogins: t.settlement.dismissLogins }),
   })));
 
   const everAddressed = judgeAddressedThreadIds(priorRounds);
@@ -667,7 +671,7 @@ async function fetchRecapState(
       ...(t.gradeUnknown && { gradeUnknown: true }),
       status,
       ...(facts.addressed && status !== 'open' && status !== 'replied' && { fixed: true }),
-      ...(t.decidedWithoutFix && !everAddressed.has(t.threadId) && { decidedWithoutFix: true }),
+      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && (t.settlement.decidedByAnswer || facts.writerDismissed) && { decidedWithoutFix: true }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -741,16 +745,28 @@ interface ThreadFacts extends OverrideCandidate {
   writerReplyLogin?: string;
   /** Who resolved the thread, when `hasWriteAccess` confirms a person with write access. GraphQL types every resolver as `User`, a bot included. */
   writerResolverLogin?: string;
+  /** Whether `hasWriteAccess` confirms someone who posted a dismiss command in the thread, as the dismiss handler requires. */
+  writerDismissed?: boolean;
 }
 
-/**
- * Whether Manki's own replies show that the thread was settled without a fix: the reply record of an accepted "Agreed."
- * or "Withdrawn." answer that settled it, and no reply that accepted or confirmed a fix. A person's text never counts.
- */
-function decidedWithoutFix(bot: BotIdentity, comments: ThreadCommentNode[]): boolean {
+/** How the comments of a thread settled it, which `decidedWithoutFix` of `PreviousFinding` is made of. */
+interface Settlement {
+  /** A reply of Manki's accepted or confirmed a fix. */
+  fixAnswered: boolean;
+  /** Manki's own reply record says it accepted an answer that accepted no fix and settled the thread. */
+  decidedByAnswer: boolean;
+  /** Who posted a dismiss command in the thread. Only one with write access counts, which `resolveBacking` checks. */
+  dismissLogins: string[];
+}
+
+/** Returns how the comments of a thread settled it. Of a person's text only the dismiss command counts, with its sender. */
+function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement {
   const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
-  if (own.some(body => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined)) return false;
-  return own.some(body => !!settlingDecision(body));
+  return {
+    fixAnswered: own.some(body => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined),
+    decidedByAnswer: own.some(body => !!settlingDecision(body)),
+    dismissLogins: personReplies(bot, comments).flatMap(c => c.author?.login && DISMISS_COMMAND_RE.test(c.body ?? '') ? [c.author.login] : []),
+  };
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
@@ -764,19 +780,22 @@ function latestPersonReply<T extends { author?: { login: string; __typename?: st
 }
 
 /**
- * Returns `addressed`, `writerReplyLogin` and `writerResolverLogin` of `ThreadFacts` for each thread. A caller leaves
- * out `latestReplyLogin` when it did not read every comment of the thread, since a later reply may be hidden.
+ * Returns `addressed`, `writerReplyLogin`, `writerResolverLogin` and `writerDismissed` of `ThreadFacts` for each thread.
+ * A caller leaves out `latestReplyLogin` when it did not read every comment of the thread, since a later reply may be
+ * hidden. A login whose access cannot be read counts as without write access.
  */
 async function resolveBacking(
-  octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[], threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string }>,
-): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin'>>> {
+  octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[],
+  threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string; dismissLogins?: string[] }>,
+): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin' | 'writerDismissed'>>> {
   const addressed = judgeAddressedThreadIds(priorRounds, true);
-  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? []].flat()))];
+  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? [], t.dismissLogins ?? []].flat()))];
   const writers = new Set((await Promise.all(logins.map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
   return new Map(threads.map(t => [t.id, {
     ...(addressed.has(t.id) && { addressed: true }),
     ...(t.latestReplyLogin && writers.has(t.latestReplyLogin) && { writerReplyLogin: t.latestReplyLogin }),
     ...(t.resolverLogin && writers.has(t.resolverLogin) && { writerResolverLogin: t.resolverLogin }),
+    ...(t.dismissLogins?.some(login => writers.has(login)) && { writerDismissed: true }),
   }]));
 }
 
@@ -956,8 +975,8 @@ interface ReviewThread extends FindingMetadata {
   /** Set when the thread's later comments could not be read, so its latest reply is unknown. */
   commentsIncomplete?: boolean;
   answer?: string;
-  /** Set when Manki's replies show the thread was settled without a fix, by `decidedWithoutFix`. */
-  decidedWithoutFix?: boolean;
+  /** How Manki's replies and the dismiss commands settled the thread, by `settlement`. Unset when not every comment was read. */
+  settlement?: Settlement;
 }
 
 /** Earlier wordings of `MISSED_EARLIER_NOTE` that threads posted before still carry. */
@@ -1140,7 +1159,7 @@ async function fetchReviewThreads(
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
-      const decided = isBotThread && !incomplete.has(thread.id) && decidedWithoutFix(bot, thread.comments.nodes);
+      const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes) : undefined;
 
       return {
         threadId: thread.id,
@@ -1172,7 +1191,7 @@ async function fetchReviewThreads(
         ...(authorReplyAssociation && { authorReplyAssociation }),
         ...(incomplete.has(thread.id) && { commentsIncomplete: true }),
         ...(answer && { answer }),
-        ...(decided && { decidedWithoutFix: true }),
+        ...(settled && { settlement: settled }),
       };
     });
     return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };

@@ -1426,7 +1426,11 @@ describe('fetchRecapState', () => {
       // A later comment by another bot is no reply by a person, so alice's reply stays the latest one.
       settled.comments.nodes.push({ body: 'The caller checks this.', author: { login: 'alice' } }, { body: 'Coverage is unchanged.', author: { login: 'ci-app', __typename: 'Bot' } });
       const withWriter = (octokit: ReturnType<typeof mockOctokit>) => {
-        Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => ({ data: { permission: username === 'alice' ? 'write' : 'none', user: { type: 'User' } } })) } });
+        // carol's access cannot be read, which counts as none.
+        Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => {
+          if (username === 'carol') throw new Error('API rate limit exceeded');
+          return { data: { permission: username === 'alice' ? 'write' : 'none', user: { type: 'User' } } };
+        }) } });
         return octokit;
       };
       const octokit = withWriter(mockOctokit([
@@ -1458,22 +1462,24 @@ describe('fetchRecapState', () => {
         kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome, thread: 'resolves' },
       })}`;
       const confirmed = `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`;
-      const answeredWith = (id: string, path: string, replies: string[], people = ['The caller checks this.']) => {
+      const answeredWith = (id: string, path: string, replies: string[], people: Array<[string, string]> = [['alice', 'The caller checks this.']]) => {
         const answered = thread(id, path, BOT_LOGIN);
         // alice, who has write access, replies last, so Manki's resolve is backed and the thread is `auto-resolved`.
-        const persons = people.map((body, i) => ({ body, author: { login: i === people.length - 1 ? 'alice' : 'mallory' } }));
-        answered.comments.nodes.push(...persons, ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
+        answered.comments.nodes.push(...people.map(([login, body]) => ({ body, author: { login } })), ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
         return answered;
       };
-      // Only Manki's own reply record counts, never a person's text. A dismissal counts in no form: neither a dismiss
-      // command from someone without write access, nor one Manki accepted, whose reply carries no record of it.
+      // Of a person's text, only a dismiss command counts, and only from someone with write access, as the dismiss
+      // handler requires. A reply record a person typed never counts.
       const typedRecord = answer('Agreed').replace('**Agreed.**', 'Agreed, see below.');
-      const decided: Array<[string, string[], string[] | undefined, boolean]> = [
+      const dismissed: Array<[string, string]> = [['alice', '@manki dismiss']];
+      const decided: Array<[string, string[], Array<[string, string]> | undefined, boolean]> = [
         ['waived', [answer('Withdrawn')], undefined, true], ['agreed', [answer('Agreed')], undefined, true], ['fixed', [answer('Fixed')], undefined, false],
         ['fix confirmed later', [answer('Agreed'), confirmed], undefined, false], ['no record', ['**Withdrawn.** The caller checks it.\n\n<!-- manki -->'], undefined, false],
-        ['dismiss without write access', [], ['@manki dismiss', 'The caller checks this.'], false],
-        ['record typed by a person', [], [typedRecord], false],
-        ['accepted dismiss', ['Dismissed: the null check.\n\n<!-- manki -->'], ['@manki dismiss'], false],
+        ['dismiss without write access', [], [['mallory', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
+        ['dismiss whose access cannot be read', [], [['carol', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
+        ['record typed by a person', [], [['alice', typedRecord]], false],
+        ['verified dismiss', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, true],
+        ['dismiss then confirmed fix', [confirmed], dismissed, false],
       ];
       for (const [why, replies, people, without] of decided) {
         const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
