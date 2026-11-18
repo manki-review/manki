@@ -1,10 +1,10 @@
-/** Starts the line that holds a finding's issue box, or what replaced it, so readers of the finding can skip it. */
-export const ISSUE_BOX_ANCHOR = '<!-- manki-issue-box -->';
+/** Starts the line that holds one of Manki's boxes in a message, or what replaced it, so readers of a finding can skip it. */
+export const BOX_ANCHOR = '<!-- manki-issue-box -->';
 
 export const ISSUE_BOX_LABEL = 'Create an issue for this';
 
-// A box is a task list line that ends with the finding's id. GitHub turns `[ ]` into `[x]` on a tick.
-const ISSUE_BOX_LINE = /^[ \t]*[-*] \[([ xX])\] .*<!-- manki-box:issue:(.+?) -->[ \t]*\r?$/;
+// A box is a task list line that ends with its kind and, for some kinds, an id. GitHub turns `[ ]` into `[x]` on a tick.
+const BOX_LINE = /^[ \t]*[-*] \[([ xX])\] .*<!-- manki-box:([a-z]+)(?::(.+?))? -->[ \t]*\r?$/;
 
 const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
 
@@ -15,19 +15,24 @@ export function issueBoxLine(id: string): string {
 
 /** Returns the box that offers to file the finding `id` as an issue, after its anchor. */
 export function issueBox(id: string): string {
-  return `${ISSUE_BOX_ANCHOR}\n${issueBoxLine(id)}`;
+  return `${BOX_ANCHOR}\n${issueBoxLine(id)}`;
 }
 
 /**
  * Returns the boxes Manki posted in `body`, with their line numbers. A box counts only right under its anchor and
  * outside a code fence, so a box line a model wrote into a fix, which Manki posts fenced and uncleaned, is never one.
  */
-function issueBoxes(lines: string[]): Array<{ line: number; id: string; ticked: boolean }> {
+function anchoredBoxes(lines: string[]): Array<{ line: number; kind: string; id?: string; ticked: boolean }> {
   const fenced = fencedLines(lines);
   return lines.flatMap((text, i) => {
-    const match = fenced[i] ? null : text.match(ISSUE_BOX_LINE);
-    return match && lines[i - 1]?.trim() === ISSUE_BOX_ANCHOR ? [{ line: i, id: match[2], ticked: match[1] !== ' ' }] : [];
+    const match = fenced[i] ? null : text.match(BOX_LINE);
+    return match && lines[i - 1]?.trim() === BOX_ANCHOR ? [{ line: i, kind: match[2], ...(match[3] !== undefined && { id: match[3] }), ticked: match[1] !== ' ' }] : [];
   });
+}
+
+/** Returns the issue boxes Manki posted in `lines`, each with the id of its finding. */
+function issueBoxes(lines: string[]): Array<{ line: number; id: string; ticked: boolean }> {
+  return anchoredBoxes(lines).flatMap(box => (box.kind === 'issue' && box.id !== undefined ? [{ line: box.line, id: box.id, ticked: box.ticked }] : []));
 }
 
 /** Returns, for each of `lines`, whether it is a code fence or inside one. */

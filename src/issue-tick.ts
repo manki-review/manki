@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, buildLineLink, findingLocation, inline, linked, reviewedCommit, sanitizeMarkdown } from './github';
-import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
+import { BOX_ANCHOR, FILED_ISSUE_OPENER, filedIssueMarker, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutPlaceNote } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread, TRACKED_MARKER } from './state';
 import { ownMarker, withMarkers } from './utils';
@@ -57,7 +57,7 @@ async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string,
 function postedText(posted: string, id: string): string {
   const text = withoutPlaceNote(posted);
   const box = issueBoxOffset(text, id);
-  const anchor = box >= 0 ? text.lastIndexOf(ISSUE_BOX_ANCHOR, box) : -1;
+  const anchor = box >= 0 ? text.lastIndexOf(BOX_ANCHOR, box) : -1;
   return (anchor >= 0 ? text.slice(0, anchor) : text).replace(/^<!-- manki[^\n]*-->\r?\n?/gm, '').trim();
 }
 
@@ -175,7 +175,7 @@ function decodeHtml(text: string): string {
 function bodyFinding(body: string, id: string): { title: string; text: string } | undefined {
   const box = issueBoxOffset(body, id);
   if (box < 0) return undefined;
-  const anchor = body.lastIndexOf(ISSUE_BOX_ANCHOR, box);
+  const anchor = body.lastIndexOf(BOX_ANCHOR, box);
   // Tags and headers inside a fenced fix are a model's text, never Manki's structure.
   const plain = withoutFences(body);
   const open = foldOpenBefore(plain, anchor);
