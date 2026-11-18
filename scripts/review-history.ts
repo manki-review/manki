@@ -1,8 +1,10 @@
 /**
  * Prints every Manki record of a pull request, or of every pull request in a repository, as one
  * JSON line per record: the round record of each review and the usage record of each reply.
- * Compressed records are decoded. With `--calls`, prints one line per LLM call instead, so usage
- * and cost can be summed per agent, stage, model, PR or repo.
+ * Compressed records are decoded. A round record that does not decode prints an `undecoded` line
+ * in its place, so a reader knows the rounds of that pull request are not all there. With `--calls`,
+ * prints one line per LLM call instead, so usage and cost can be summed per agent, stage, model,
+ * PR or repo.
  *
  * Usage:
  *   npm run review-history -- <owner/repo> [<pr number>] [--calls] > history.jsonl
@@ -36,6 +38,13 @@ export interface HistoryLine {
   commitId?: string;
   postedAt?: string;
   record: unknown;
+}
+
+/** Stands in for a round record that did not decode, which may hold any round. */
+export interface UndecodedLine {
+  kind: 'undecoded';
+  repo: string;
+  pr: number;
 }
 
 /** Parses each record text, reporting the ones that are not JSON on stderr and to `onSkip`. */
@@ -87,9 +96,14 @@ export function historyLines(
   return lines;
 }
 
-/** Returns one line per LLM call in `lines`, with where the call was recorded. Records older than per-call usage have none. */
-export function callLines(lines: HistoryLine[]): Array<Omit<HistoryLine, 'record'> & { round?: number } & LLMCall> {
-  return lines.flatMap(({ record, ...source }) => {
+/**
+ * Returns one line per LLM call in `lines`, with where the call was recorded. Records older than per-call usage have
+ * none, and an undecoded record has none that can be read.
+ */
+export function callLines(lines: Array<HistoryLine | UndecodedLine>): Array<Omit<HistoryLine, 'record'> & { round?: number } & LLMCall> {
+  return lines.flatMap(line => {
+    if (line.kind === 'undecoded') return [];
+    const { record, ...source } = line;
     const r = record as { meta?: { round?: number }; usage?: { llmCalls?: LLMCall[] } };
     const round = r.meta?.round;
     return (r.usage?.llmCalls ?? []).map(call => ({ ...source, ...(round !== undefined && { round }), ...call }));
@@ -120,7 +134,11 @@ async function main(args: string[]): Promise<number> {
       octokit.paginate(octokit.rest.pulls.listReviewComments, { owner, repo, pull_number: pr, per_page: 100 }),
       octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: pr, per_page: 100 }),
     ]);
-    const lines = historyLines(fullName, pr, { reviews, comments: [...threadComments, ...issueComments] });
+    const undecoded: UndecodedLine[] = [];
+    const decoded = historyLines(fullName, pr, { reviews, comments: [...threadComments, ...issueComments] }, kind => {
+      if (kind === 'round') undecoded.push({ kind: 'undecoded', repo: fullName, pr });
+    });
+    const lines = [...decoded, ...undecoded];
     for (const line of calls ? callLines(lines) : lines) {
       process.stdout.write(`${JSON.stringify(line)}\n`);
     }

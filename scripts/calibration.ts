@@ -19,7 +19,7 @@ import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
 import { classifyAuthorReply, findingFile, judgeAddressedThreadIds, threadMarkerSlug } from '../src/recap';
 import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
-import { githubToken, HistoryLine as RecordLine } from './review-history';
+import { githubToken, HistoryLine as RecordLine, UndecodedLine } from './review-history';
 import { roundNumbering } from './review-stats';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -31,7 +31,7 @@ export type LabelSource =
   | 'reply-agreed' | 'reply-unverified' | 'reply-kept' | 'untouched';
 
 /** One line of `npm run review-history`. Only a `round` line holds a round context. */
-export type HistoryLine = Pick<RecordLine, 'repo' | 'pr'> & { kind?: RecordLine['kind']; record: Partial<RoundContext> };
+export type HistoryLine = (Pick<RecordLine, 'repo' | 'pr'> & { kind?: RecordLine['kind']; record: Partial<RoundContext> }) | UndecodedLine;
 
 export interface ThreadComment {
   body: string;
@@ -128,18 +128,24 @@ export function labelFinding({ thread, lineChanged, judgeAddressed }: Evidence):
  * Returns the completed rounds of each pull request in the history, in the order the history lists them, which is the
  * order they were posted in, keyed by `owner/repo#number`. An incomplete round posted no finding and resolved no thread,
  * so it is left out. A pull request whose rounds `roundNumbering` cannot read as rounds 1, 2, 3 is left out and logged,
- * since the latest posting of a finding is not known. The history holds no record that did not decode.
+ * since the latest posting of a finding is not known. So is one with an `undecoded` line, which may hold any round.
  */
 export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundContext[]> {
   const rounds = new Map<string, RoundContext[]>();
-  for (const { kind, repo, pr, record } of lines) {
+  const undecoded = new Map<string, number>();
+  for (const line of lines) {
+    const key = `${line.repo}#${line.pr}`;
+    if (line.kind === 'undecoded') {
+      undecoded.set(key, (undecoded.get(key) ?? 0) + 1);
+      continue;
+    }
+    const { kind, record } = line;
     if (kind === 'reply' || !record.meta?.commitSha || record.meta.incomplete) continue;
     const round = { ...record, judge: record.judge ?? {}, findings: { ...record.findings, entries: record.findings?.entries ?? [] } } as RoundContext;
-    const key = `${repo}#${pr}`;
     rounds.set(key, [...(rounds.get(key) ?? []), round]);
   }
   for (const [key, list] of rounds) {
-    const numbering = roundNumbering({ rounds: list, undecodedRounds: 0 });
+    const numbering = roundNumbering({ rounds: list, undecodedRounds: undecoded.get(key) ?? 0 });
     if (!numbering) continue;
     console.error(`Skipping ${key}: ${numbering}`);
     rounds.delete(key);
