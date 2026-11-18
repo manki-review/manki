@@ -4,10 +4,9 @@
  * request. The first answer asks Codex's script host for every tool it holds, or `tool_search` for the tools it
  * holds back. The check fails when a model is offered a tool that `scripts/fixtures/codex-tools.json` does not list, or
  * no longer offered one it lists. It also fails when a request carries Codex's skill text, or Codex tries to reach any
- * host but the stand-in. Every other address goes to a proxy that records and refuses it, so no request leaves the
- * machine. A connection that ignores the proxy settings is not seen. Each run starts from a runner home that holds its
- * own Codex setup (`plantRunnerSetup`), and the check fails when any part of it reaches Codex, also on the ChatGPT
- * login. Runs on the runner's own home show that each part still would.
+ * host but the stand-in (`scripts/stand-in.ts`), which refuses every other host. Each run starts from a runner home
+ * that holds its own Codex setup (`plantRunnerSetup`), and the check fails when any part of it reaches Codex, also on
+ * the ChatGPT login. Runs on the runner's own home show that each part still would.
  *
  * On the `tool_search` path the list is not complete. No request names the held-back tools, and `tool_search` returns
  * only tools whose description shares a word with `SEARCH_QUERY`. An empty, `*` or stop-word query returns none. So a
@@ -26,14 +25,13 @@
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, STEPS_FLAG } from '../src/mcp-server';
 import { cliEnv } from '../src/providers/cli-utils';
 import { CODEX_CLI_VERSION, codexExecArgs, codexToolServerArgs } from '../src/providers/openai';
+import { Answer, controlProblems as controlProblemsOf, hostProblems, Json, newRun, PlantedItem, plantedProblems, sent, sse, StandInRun, startStandIn } from './stand-in';
 
 /** What Codex offers one model. */
 export interface OfferedTools {
@@ -44,8 +42,6 @@ export interface OfferedTools {
   /** The sources of held-back tools that the `tool_search` description names. */
   sources: string[];
 }
-
-type Json = Record<string, unknown>;
 
 // `tool_search` returns only the tools whose description shares a word with the query.
 const SEARCH_QUERY = 'agent spawn send wait close resume input goal file read write edit grep glob history repo search web image shell command exec patch resource mcp time clock sleep plugin app install user message list task skill memory';
@@ -113,37 +109,22 @@ function carriesSkillText(body: Json): boolean {
   return texts.some(text => SKILL_TAGS.some(tag => text.startsWith(tag)));
 }
 
-/** What the stand-in saw of one Codex run. */
-export interface StandInRun {
-  /** The Responses API requests Codex sent it. */
-  bodies: Json[];
-  /** The other hosts Codex asked it to reach as a proxy. */
-  hosts: string[];
-  /** The paths of every request Codex sent the stand-in itself. */
-  paths: string[];
-  /** The `Authorization` headers of those requests. */
-  keys: string[];
-  /** Whether the hook planted in the runner's home ran. */
-  hookRan: boolean;
-}
-
 const OTEL_HOST = 'runner-otel.invalid:4318';
 const DOTENV_KEY = 'runner-dotenv-key';
 const REDIRECT_PATH = '/runner-';
 const HOOK_TEXT = 'runner-hook-context';
-
-const sent = (run: StandInRun, text: string): boolean => JSON.stringify(run.bodies).includes(text);
+const HOOK_FLAG = 'hook';
 
 // Each part of the runner's setup that `plantRunnerSetup` plants, and how a run shows it reached Codex. Only a run on
 // the ChatGPT login can show the provider redirect.
-const RUNNER_SETUP: { what: string; login?: true; found: (run: StandInRun) => boolean }[] = [
+const RUNNER_SETUP: PlantedItem[] = [
   { what: 'skill in ~/.codex/skills', found: run => sent(run, 'runner-codex-skill') },
   { what: 'skill in ~/.agents/skills', found: run => sent(run, 'runner-agents-skill') },
   { what: 'MCP server in ~/.codex/config.toml', found: run => sent(run, 'runner_mcp_server') },
   { what: 'AGENTS.md in ~/.codex', found: run => sent(run, 'runner-agents-md') },
   { what: 'OPENAI_API_KEY in ~/.codex/.env', found: run => run.keys.includes(`Bearer ${DOTENV_KEY}`) },
   { what: 'otel exporter in ~/.codex/config.toml', found: run => run.hosts.includes(OTEL_HOST) },
-  { what: 'trusted hook in ~/.codex/hooks.json', found: run => run.hookRan || sent(run, HOOK_TEXT) },
+  { what: 'trusted hook in ~/.codex/hooks.json', found: run => run.ran.includes(HOOK_FLAG) || sent(run, HOOK_TEXT) },
   { what: 'model_provider and chatgpt_base_url in ~/.codex/config.toml', login: true, found: run => run.paths.some(path => path.startsWith(REDIRECT_PATH)) },
 ];
 
@@ -194,9 +175,7 @@ export function plantRunnerSetup(home: string, server: { command: string; args: 
  */
 export function runProblems(label: string, run: StandInRun, allowedHosts: string[] = []): string[] {
   const skills = run.bodies.some(carriesSkillText) ? [`${label}: a request carries Codex's skill text`] : [];
-  const setup = RUNNER_SETUP.filter(item => item.found(run)).map(item => `${label}: the runner's ${item.what} reached Codex`);
-  const hosts = [...new Set(run.hosts)].filter(host => !allowedHosts.includes(host)).map(host => `${label}: tried to reach ${host}`);
-  return [...skills, ...setup, ...hosts];
+  return [...skills, ...plantedProblems(label, 'Codex', RUNNER_SETUP, run), ...hostProblems(label, run, allowedHosts)];
 }
 
 /**
@@ -204,8 +183,7 @@ export function runProblems(label: string, run: StandInRun, allowedHosts: string
  * not. Such a part could no longer fail the check, as when a new Codex version reads it from elsewhere.
  */
 export function controlProblems(label: string, run: StandInRun, login: boolean): string[] {
-  return RUNNER_SETUP.filter(item => !!item.login === login && !item.found(run))
-    .map(item => `${label}: the runner's ${item.what} no longer reaches Codex from the runner's own home, so the check cannot see it`);
+  return controlProblemsOf(label, 'Codex', RUNNER_SETUP, run, login);
 }
 
 /** Returns each difference between the tools `expected` lists per model and the tools `actual` found. */
@@ -225,47 +203,22 @@ export function compareTools(expected: Record<string, OfferedTools>, actual: Rec
   return problems;
 }
 
-function sse(type: string, data: Json): string {
-  return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
-}
-
-/**
- * Starts the stand-in endpoint, which records what it sees in `run`. It answers the first Responses API request with
- * `heldToolsCall` and every later one with `OK`.
- */
-function startStandIn(run: StandInRun): Promise<{ url: string; close: () => void }> {
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    let raw = '';
-    req.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
-    req.on('end', () => {
-      // A plain HTTP request through a proxy names the whole URL, a request to the stand-in only the path.
-      if (req.url && !req.url.startsWith('/')) {
-        run.hosts.push(new URL(req.url).host);
-        res.writeHead(404).end();
-        return;
-      }
-      run.paths.push(req.url ?? '');
-      run.keys.push(req.headers.authorization ?? '');
-      if (req.method !== 'POST' || !req.url?.endsWith('/responses')) {
-        res.writeHead(404).end();
-        return;
-      }
-      const body = JSON.parse(raw) as Json;
-      run.bodies.push(body);
-      const call = run.bodies.length === 1 ? heldToolsCall(offeredTools(body)) : undefined;
-      const item = call ?? { type: 'message', role: 'assistant', id: 'msg_ok', content: [{ type: 'output_text', text: 'OK' }] };
-      const id = `resp_${run.bodies.length}`;
-      const usage = { input_tokens: 1, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 2 };
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end(sse('response.created', { response: { id } }) + sse('response.output_item.done', { item }) + sse('response.completed', { response: { id, usage } }));
-    });
-  });
-  // Codex sends every other host through this server as its proxy, and the tunnel is refused.
-  server.on('connect', (req: IncomingMessage, socket) => {
-    run.hosts.push(String(req.url));
-    socket.destroy();
-  });
-  return new Promise(done => server.listen(0, '127.0.0.1', () => done({ url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() })));
+/** Answers a Responses API request: the first with `heldToolsCall`, every later one with `OK`. */
+function answerCodex(run: StandInRun): Answer {
+  return (req, raw, res) => {
+    if (req.method !== 'POST' || !req.url?.endsWith('/responses')) {
+      res.writeHead(404).end();
+      return;
+    }
+    const body = JSON.parse(raw) as Json;
+    run.bodies.push(body);
+    const call = run.bodies.length === 1 ? heldToolsCall(offeredTools(body)) : undefined;
+    const item = call ?? { type: 'message', role: 'assistant', id: 'msg_ok', content: [{ type: 'output_text', text: 'OK' }] };
+    const id = `resp_${run.bodies.length}`;
+    const usage = { input_tokens: 1, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 2 };
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(sse('response.created', { response: { id } }) + sse('response.output_item.done', { item }) + sse('response.completed', { response: { id, usage } }));
+  };
 }
 
 function runCodex(args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; stderr: string }> {
@@ -304,8 +257,8 @@ interface CodexRun {
  * whose home holds its own Codex setup. Returns what the stand-in saw, and Codex's exit code and stderr.
  */
 async function checkRun({ model, login, runnerHome }: CodexRun, repo: string, scratch: string): Promise<{ run: StandInRun; code: number | null; stderr: string }> {
-  const run: StandInRun = { bodies: [], hosts: [], paths: [], keys: [], hookRan: false };
-  const standIn = await startStandIn(run);
+  const run = newRun();
+  const standIn = await startStandIn(run, answerCodex(run));
   try {
     const home = mkdtempSync(join(scratch, 'home-'));
     const cwd = mkdtempSync(join(scratch, 'cwd-'));
@@ -328,7 +281,7 @@ async function checkRun({ model, login, runnerHome }: CodexRun, repo: string, sc
     ];
     try {
       const { code, stderr } = await runCodex(args, env, cwd);
-      run.hookRan = existsSync(hookFlag);
+      if (existsSync(hookFlag)) run.ran.push(HOOK_FLAG);
       return { run, code, stderr };
     } finally {
       rmSync(authFile, { force: true });
