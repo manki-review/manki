@@ -521,7 +521,7 @@ describe('listUsesOutsideDiff', () => {
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the change adds more than 20 pieces of structure, so the 3 smallest are not listed');
   });
 
-  it('lists the units of the change: each changed function, and each run of changed lines that adds, changes or removes a condition, outside tests, docs and excluded files', async () => {
+  it('lists the units of the change: each changed function, and each run of changed lines that adds, changes or removes a condition, also in a deleted file, outside tests, docs and excluded files', async () => {
     const admit = (guard: string, test: string) => `pub fn admit(n: usize) -> bool {\n${guard}    n < 10\n}\n\npub fn untouched() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn admits() {\n        assert!(super::admit(1));\n${test}    }\n}\n`;
     const workflow = 'jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n';
     const gate = 'export class Gate {\n  open(user: User): boolean {\n    return user.admin;\n  }\n}\n';
@@ -565,6 +565,21 @@ describe('listUsesOutsideDiff', () => {
       condition('src/rules.ts', 2, 9, `${Array.from({ length: 6 }, (_, i) => `+  a > ${i + 1} &&`).join('\n')}\n... 2 more lines`),
     ]);
     expect(units?.map(unit => unit.id)).toEqual(Array.from({ length: 10 }, (_, i) => `U${i + 1}`));
+
+    // A deleted file adds each stretch of condition lines it removes, at its base lines.
+    const kept = gitWorkspace({ 'run.sh': 'echo\n' }, { 'run.sh': 'echo\n' });
+    try {
+      const gone = '#!/bin/sh\nif [ -f a ]; then\n  rm a\nfi\n[ -n "$x" ] || exit 1\n[ -z "$y" ] && exit 2\n';
+      const deleted = parsePRDiff(`diff --git a/scripts/old.sh b/scripts/old.sh\ndeleted file mode 100644\n--- a/scripts/old.sh\n+++ /dev/null\n@@ -1,6 +0,0 @@\n${gone.trimEnd().split('\n').map(line => `-${line}`).join('\n')}\n`);
+      expect(deleted.files[0].changeType).toBe('deleted');
+      const { units: removed } = await listUsesOutsideDiff(kept.root, deleted, { loadApi });
+      expect(removed).toEqual([
+        { id: 'U1', kind: 'condition', file: 'scripts/old.sh', start: 2, end: 2, deleted: true, code: '-if [ -f a ]; then' },
+        { id: 'U2', kind: 'condition', file: 'scripts/old.sh', start: 5, end: 6, deleted: true, code: '-[ -n "$x" ] || exit 1\n-[ -z "$y" ] && exit 2' },
+      ]);
+    } finally {
+      rmSync(kept.root, { recursive: true, force: true });
+    }
 
     // At most 100 units are listed, the first in diff order, and the rest are counted.
     const many = await usesFor({ 'run.sh': 'echo\n' }, { 'run.sh': `echo\n${Array.from({ length: 101 }, (_, i) => `if [ -f a${i} ]; then\n  rm a${i}\nfi\n`).join('')}` });

@@ -2435,10 +2435,12 @@ export interface RoundUnit {
   id: string;
   /** A function the change touches, or a condition it adds, changes or removes. */
   kind: 'function' | 'condition';
-  /** `file:line` or `file:start-end` in the head commit. */
+  /** `file:line` or `file:start-end` in the head commit, or with `deleted` in the base. */
   at: string;
   /** The function's name. */
   name?: string;
+  /** Set on a condition of a file the PR deletes. */
+  deleted?: true;
   /** Set when the cap per finder call left it off every finder's list. */
   cut?: true;
 }

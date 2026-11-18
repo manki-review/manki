@@ -134,6 +134,14 @@ describe('dealUnits', () => {
     const perSlice = dealUnits(spread, ['A'], sliced);
     expect([ids(perSlice.byFinder.get('A')), ids(perSlice.cut)]).toEqual([[...ids(spread.slice(0, 15))!, 'U26', ...ids(spread.slice(15, 25))!], ['U27']]);
 
+    // A file split between slices: a unit goes to the slice whose hunks hold its lines, and a deleted file's unit to the first slice of its file.
+    const split = [{ paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', [[1, 900]] as Array<[number, number]>]]) }, { paths: new Set(['src/big.ts']), lines: new Map([['src/big.ts', [[901, 2000]] as Array<[number, number]>]]) }];
+    const late = { id: 'U1', kind: 'condition' as const, file: 'src/big.ts', start: 1500, end: 1500, code: '+if (a) {' };
+    const across = { id: 'U2', kind: 'function' as const, file: 'src/big.ts', start: 880, end: 950, name: 'f' };
+    const gone = { id: 'U3', kind: 'condition' as const, file: 'gone.sh', start: 1500, end: 1500, deleted: true as const, code: '-if a' };
+    const bySlice = dealUnits([late, across, gone], ['A'], split);
+    expect(ids(bySlice.byFinder.get('A'))).toEqual(['U2', 'U3', 'U1']);
+
     // Without a finder no unit is asked about.
     expect([dealUnits(twenty, [], one).byFinder.size, dealUnits(twenty, [], one).cut]).toEqual([0, twenty]);
   });
@@ -294,6 +302,9 @@ describe('parseFindings', () => {
       ]);
       expect(parseFindings(JSON.stringify(lines), 'Reviewer')).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();
+      // Findings that are all unusable fail the reply as they do without unit lines, so the finder's retry asks again.
+      expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer'))
+        .toThrow(/^no element has a title or a description \(1 element\(s\), keys: severity, file, line\)$/);
       // A reply that does not parse holds no line.
       expect(parseUnitLines('I checked U1.', units)).toEqual([]);
     } finally {
@@ -2590,6 +2601,10 @@ describe('runReview', () => {
   it('asks every finder for a line per unit of the change, once more for the units still without one, keeps both answers and records the lines', async () => {
     const gate = (check: string) => `export function allow(user: User): boolean {\n${check}  return true;\n}\n`;
     const { root, diff } = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n') });
+    // A new file over the character budget of a slice, split between two, whose function and condition sit in the second.
+    const big = gitWorkspace({ 'src/gate.ts': gate('') }, {
+      'src/big.ts': `${Array.from({ length: 2500 }, (_, i) => `export const v${i} = '${'x'.repeat(90)}';\n`).join('')}export function late(n: number): number {\n  if (n > 1) return 1;\n  return 0;\n}\n`,
+    });
     // The same change with a file long enough that the diff is read in slices.
     const sliced = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n'), 'assets/rates.txt': 'rate\n'.repeat(1600) });
     const ASKED = 'without a line for';
@@ -2647,8 +2662,30 @@ describe('runReview', () => {
       }
       expect(slices.result.rawFindings?.map(f => f.title)).toEqual(['First', 'First', 'Second', 'First', 'First', 'Second']);
       expect([...slices.result.agentUnitLines!]).toEqual(slices.result.agentNames.map(name => [name, recorded]));
+
+      // A file split between slices: its units go to the call whose slice holds their lines.
+      const split = await run([checkedU1, checkedU2], [], big);
+      const withUnits = split.first.filter(message => message.includes('## Units of the Change'));
+      expect(split.first.length).toBe(2 * split.result.agentNames.length);
+      expect(withUnits).toHaveLength(split.result.agentNames.length);
+      for (const message of withUnits) {
+        expect(message).toContain('U1 function `late` at src/big.ts:2501-2504\nU2 condition at src/big.ts:2502');
+        // The call's own diff holds the function, not only the units section.
+        expect(message).toContain('\n+export function late(n: number): number {\n');
+      }
+
+      // Findings that are all unusable fail the reply also next to unit lines, so the finder is run again with the note on its reply.
+      const clients = makeClients();
+      const replies = [[checkedU1, checkedU2, { severity: 'warning', file: 'src/gate.ts', line: 2 }], [checkedU1, checkedU2, finding('Retried')]];
+      const RETRY_NOTE = 'no element has a title or a description';
+      const sendMessage = jest.fn(async (_system: string, message: string) => ({ content: JSON.stringify(replies[message.includes(RETRY_NOTE) ? 1 : 0]) }));
+      Object.assign(clients.reviewer, { sendMessage });
+      const retried = await runReview(clients, { config: makeConfig(), diff, rawDiff: rebuildRawDiff(diff), repoContext: '', workspace: root });
+      expect([...retried.agentRetryCount!.values()]).toEqual(retried.agentNames.map(() => 1));
+      expect(sendMessage.mock.calls.filter(([, message]) => message.includes(RETRY_NOTE))).toHaveLength(retried.agentNames.length);
+      expect(retried.rawFindings?.map(f => f.title)).toEqual(['Retried', 'Retried']);
     } finally {
-      for (const dir of [root, sliced.root]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [root, sliced.root, big.root]) rmSync(dir, { recursive: true, force: true });
     }
   }, GIT_TEST_TIMEOUT_MS);
 

@@ -231,9 +231,16 @@ function askAgainNote(files: string[], units: string[], slices: boolean): string
 /** Changed functions and conditions one finder call answers for. */
 const MAX_UNITS_PER_CALL = 20;
 
-/** Returns the index of the slice whose call answers for `unit`: the first that holds its file, or -1 when none does. */
-function unitSlice(unit: ChangeUnit, slices: ReadonlyArray<{ paths?: Set<string> }>): number {
-  return slices.findIndex(s => !s.paths || s.paths.has(unit.file));
+/** A slice of the diff as `dealUnits` reads it: its paths and the head lines of each file's hunks, for several slices. */
+type UnitSlices = ReadonlyArray<{ paths?: Set<string>; lines?: ReadonlyMap<string, ReadonlyArray<[number, number]>> }>;
+
+/**
+ * Returns the index of the slice whose call answers for `unit`: the first whose hunks hold one of its head lines, since
+ * a large file can be split between slices. Failing that, the first that holds its file, or -1 when none does.
+ */
+function unitSlice(unit: ChangeUnit, slices: UnitSlices): number {
+  const holding = unit.deleted ? -1 : slices.findIndex(s => s.lines?.get(unit.file)?.some(([from, to]) => from <= unit.end && unit.start <= to));
+  return holding >= 0 ? holding : slices.findIndex(s => !s.paths || s.paths.has(unit.file));
 }
 
 /**
@@ -241,7 +248,7 @@ function unitSlice(unit: ChangeUnit, slices: ReadonlyArray<{ paths?: Set<string>
  * `MAX_UNITS_PER_CALL` units of its slice. When a slice has no more, every finder answers for all of them. Otherwise
  * they are dealt out in turns, so each goes to one finder, and those past every finder's cap are cut.
  */
-export function dealUnits(units: readonly ChangeUnit[], finders: readonly string[], slices: ReadonlyArray<{ paths?: Set<string> }>): { byFinder: Map<string, ChangeUnit[]>; cut: ChangeUnit[] } {
+export function dealUnits(units: readonly ChangeUnit[], finders: readonly string[], slices: UnitSlices): { byFinder: Map<string, ChangeUnit[]>; cut: ChangeUnit[] } {
   const byFinder = new Map(finders.map(name => [name, [] as ChangeUnit[]]));
   const cut = units.filter(unit => finders.length === 0 || unitSlice(unit, slices) < 0);
   for (const index of slices.keys()) {
@@ -264,7 +271,7 @@ function unitsSection(units: readonly ChangeUnit[]): string {
   const lines = units.map(unit => {
     const at = `${unit.file}:${unit.start}${unit.end > unit.start ? `-${unit.end}` : ''}`;
     if (unit.kind === 'function') return `${unit.id} function \`${unit.name}\` at ${at}`;
-    return `${unit.id} condition at ${at}\n${unit.code!.split('\n').map(line => `    ${line}`).join('\n')}`;
+    return `${unit.id} condition at ${at}${unit.deleted ? ' of the base, in a file the PR deletes' : ''}\n${unit.code!.split('\n').map(line => `    ${line}`).join('\n')}`;
   });
   return `## Units of the Change\n\n`
     + 'Manki split the change into the units below: each function it changes, and each condition it adds, changes or removes, such as a branch, a loop, a guard, an assertion or checks joined with `&&` or `||`. '
@@ -1277,8 +1284,8 @@ export async function runReview(
   if (dealt) {
     const cut = new Set(dealt.cut.map(unit => unit.id));
     recorded.units = {
-      listed: uses.units!.map(({ id, kind, file, start, end, name }) => ({
-        id, kind, at: `${file}:${start}${end > start ? `-${end}` : ''}`, ...(name && { name }), ...(cut.has(id) && { cut: true as const }),
+      listed: uses.units!.map(({ id, kind, file, start, end, name, deleted }) => ({
+        id, kind, at: `${file}:${start}${end > start ? `-${end}` : ''}`, ...(name && { name }), ...(deleted && { deleted }), ...(cut.has(id) && { cut: true as const }),
       })),
       ...(uses.unitsOverLimit && { overLimit: uses.unitsOverLimit }),
     };
@@ -2311,12 +2318,19 @@ const MAX_PARALLEL_SLICES = 4;
 
 /**
  * Returns the slices `sliceDiff` splits `rawDiff` into, each as the text a prompt shows and, when there are several, the
- * paths it holds. A diff that fits one slice keeps its own text, unless it is too long to show uncut.
+ * paths it holds and the head lines each file's hunks span there. A diff that fits one slice keeps its own text, unless
+ * it is too long to show uncut.
  */
-function diffSlices(rawDiff: string): Array<{ raw: string; paths?: Set<string> }> {
+function diffSlices(rawDiff: string): Array<{ raw: string; paths?: Set<string>; lines?: Map<string, Array<[number, number]>> }> {
   const slices = sliceDiff(parsePRDiff(rawDiff), SLICE_LINES);
   if (slices.length === 1) return [{ raw: rawDiff.length <= MAX_SLICE_CHARS ? rawDiff : rebuildRawDiff(slices[0]) }];
-  return slices.map(slice => ({ raw: rebuildRawDiff(slice), paths: new Set(slice.files.map(f => f.path)) }));
+  return slices.map(slice => {
+    const lines = new Map<string, Array<[number, number]>>();
+    for (const file of slice.files) {
+      lines.set(file.path, [...lines.get(file.path) ?? [], ...file.hunks.map(h => [h.newStart, h.newStart + Math.max(h.newLines, 1) - 1] as [number, number])]);
+    }
+    return { raw: rebuildRawDiff(slice), paths: new Set(slice.files.map(f => f.path)), lines };
+  });
 }
 
 const MAX_NOTED_PATHS = 50;
@@ -2708,7 +2722,7 @@ export function parseFindings(responseText: string, reviewerName: string, instru
   if (unusable.length > 0) {
     const shapes = elementShapes(unusable);
     // One stray element next to real findings is dropped. A reply with nothing else is no reply, so the caller's retry asks again.
-    if (unusable.length === parsed.length) throw new Error(`no element has a title or a description (${parsed.length} element(s), ${shapes})`);
+    if (unusable.length === elements.length) throw new Error(`no element has a title or a description (${elements.length} element(s), ${shapes})`);
     core.warning(`${reviewerName}: dropped ${unusable.length} of ${elements.length} element(s) without a title or a description (${shapes})`);
   }
 

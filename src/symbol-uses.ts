@@ -547,9 +547,11 @@ export interface ChangeUnit {
   id: string;
   kind: 'function' | 'condition';
   file: string;
-  /** The first head line. For a removed condition, the head line where it was. */
+  /** The first head line. For a removed condition, the head line where it was, and in a deleted file its base line. */
   start: number;
   end: number;
+  /** Set on a condition of a file the PR deletes, whose lines are base lines. */
+  deleted?: true;
   /** The function's name. */
   name?: string;
   /** The condition's changed lines, each as the diff shows it with `+` or `-` in front. */
@@ -1027,7 +1029,7 @@ async function buildUsesSection(
   const reviewed = new Set(diff.files.map(f => f.path));
   // A file left out of `diff` adds no pieces, but a piece can move out of it, so its removed lines are read by keyword.
   const pieces = addedPieces(diff, declared, movedNames(fullDiff, parser, file => addsNoPieces(file) || !reviewed.has(file)), addsNoPieces);
-  const allUnits = changeUnits(files, declared, addsNoPieces);
+  const allUnits = changeUnits(diff.files, declared, addsNoPieces);
   const units = allUnits.slice(0, MAX_UNITS);
   if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
@@ -1412,7 +1414,8 @@ function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], removed: Reado
  * Returns the units of the change a finder answers for, in diff order: each function the diff touches, and each run of
  * changed lines that adds, changes or removes a condition. A condition is a line whose code opens a branch, loop, guard
  * or assertion, or joins checks with `&&` or `||`. Removed condition lines go with the added ones of the same run, and a
- * run that only removes them is a unit at the head line where they were. Files `skip` names and test code add none.
+ * run that only removes them is a unit at the head line where they were. In a deleted file, each stretch of consecutive
+ * condition lines is a unit at its base lines. Files `skip` names and test code add none.
  */
 function changeUnits(files: DiffFile[], declared: ChangedSymbol[], skip: (file: string) => boolean): ChangeUnit[] {
   const units: Array<Omit<ChangeUnit, 'id'>> = [];
@@ -1443,6 +1446,7 @@ function isCondition(text: string): boolean {
 
 /** Returns the conditions of `file`'s changed lines, one unit per stretch of consecutive head lines in a run of changed lines. */
 function changedConditions(file: DiffFile): Array<Omit<ChangeUnit, 'id'>> {
+  if (file.changeType === 'deleted') return deletedConditions(file);
   const units: Array<Omit<ChangeUnit, 'id'>> = [];
   const addRun = (removed: string[], added: Array<[number, string]>, at: number) => {
     const gone = removed.filter(isCondition).map(text => `-${text}`);
@@ -1486,6 +1490,27 @@ function changedConditions(file: DiffFile): Array<Omit<ChangeUnit, 'id'>> {
       line++;
     }
     flush();
+  }
+  return units;
+}
+
+/** Returns the conditions a deleted `file` removes, one unit per stretch of consecutive base lines. */
+function deletedConditions(file: DiffFile): Array<Omit<ChangeUnit, 'id'>> {
+  const removed: Array<[number, string]> = [];
+  for (const hunk of file.hunks) {
+    let line = hunk.oldStart;
+    for (const content of hunk.content.split('\n')) {
+      if (!content.startsWith('-')) continue;
+      if (isCondition(content.slice(1))) removed.push([line, content.slice(1)]);
+      line++;
+    }
+  }
+  const units: Array<Omit<ChangeUnit, 'id'>> = [];
+  for (let i = 0; i < removed.length;) {
+    let j = i;
+    while (j + 1 < removed.length && removed[j + 1][0] === removed[j][0] + 1) j++;
+    units.push({ kind: 'condition', file: file.path, start: removed[i][0], end: removed[j][0], deleted: true, code: unitCode(removed.slice(i, j + 1).map(([, text]) => `-${text}`)) });
+    i = j + 1;
   }
   return units;
 }
