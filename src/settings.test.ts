@@ -19,8 +19,14 @@ describe('settings block', () => {
       '- [ ] Cancel this review <!-- manki-box:cancel -->',
       SETTINGS_MARKER,
     ].join('\n'));
-    expect(renderSettingsBlock({ head: 'def5678', status: 'up to date', boxes: new Set(['draft']), ticked: new Set() }))
-      .toBe(`---\nNot reviewed yet · head \`def5678\` · up to date\n- [ ] Review this draft <!-- manki-box:draft -->\n${SETTINGS_MARKER}`);
+    // Before any review the `again` box reads Review now, with the same marker.
+    expect(renderSettingsBlock({ head: 'def5678', status: 'up to date', boxes: new Set(['again', 'draft']), ticked: new Set() })).toBe([
+      '---',
+      'Not reviewed yet · head `def5678` · up to date',
+      '- [ ] Review now <!-- manki-box:again -->',
+      '- [ ] Review this draft <!-- manki-box:draft -->',
+      SETTINGS_MARKER,
+    ].join('\n'));
   });
 
   it('reads back what it renders at the end of a body, with any hidden marker appended after it', () => {
@@ -43,6 +49,8 @@ describe('settings block', () => {
     expect(parsed?.ticked).toEqual(new Set(['pause', 'again']));
     expect(parsed?.boxes.has('again')).toBe(true);
     expect([...(parsed?.boxes ?? [])]).toEqual(['pause', 'again', 'deeper', 'cancel']);
+    // The marker names the box, so a tick of Review now reads as the same box.
+    expect(parseSettingsBlock(body.replace('Review again', 'Review now'))?.ticked).toEqual(new Set(['pause', 'again']));
   });
 
   it('finds no block in a body without one, or with the marker quoted in the middle', () => {

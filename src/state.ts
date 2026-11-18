@@ -596,15 +596,15 @@ async function autoReviewHalt(
     return undefined;
   });
   if (boxTicked) {
-    return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Tick **Review again** there, or comment `/manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.' };
+    return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Tick the review box there, or comment `/manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.' };
   }
   const pause = pauseState(rounds ?? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
   const { reason, restart } = pause;
   if (reason) {
-    return { cause: 'automatic_pause', pause, text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`/manki review\`, to review it. ${restart}` };
+    return { cause: 'automatic_pause', pause, text: `${reason} Automatic review is paused. Tick the review box in the settings block, or comment \`/manki review\`, to review it. ${restart}` };
   }
   return boxTicked === undefined
-    ? { cause: 'pause_unknown', text: 'Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `/manki review`.' }
+    ? { cause: 'pause_unknown', text: 'Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick the review box in the settings block, or comment `/manki review`.' }
     : undefined;
 }
 
@@ -636,7 +636,7 @@ function restatesApproval(review: ReviewEntry): boolean {
 }
 
 /** How a PR with a block that resolving threads cannot lift gets its next verdict. */
-const NEXT_ROUND_LINE = `The next review round decides. To start one, tick **Review again** in the settings block, or push a commit. ${AFTER_PUSH_LINE}`;
+const NEXT_ROUND_LINE = `The next review round decides. To start one, tick the review box in the settings block, or push a commit. ${AFTER_PUSH_LINE}`;
 
 /**
  * Returns what resolving threads can do about the newest round Manki posted on `commitSha`: `held` says why it cannot
