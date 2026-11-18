@@ -652,7 +652,7 @@ const NEXT_ROUND_LINE = `The next review round decides. To start one, tick **Rev
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
-): { held?: string; named: Set<string>; report?: RoundContext['readyReport']; hold?: 'unread' | 'config' | 'warnings' } {
+): { held?: string; named: Set<string>; report?: RoundContext['readyReport']; hold?: 'unread' | 'config' | 'warnings'; approval?: RoundContext['approval'] } {
   const sha = `\`${commitSha.slice(0, 7)}\``;
   // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
   const review = reviews.filter(r => isBotReview(bot, r) && reviewedCommit(r) === commitSha && givesVerdict(r) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
@@ -705,7 +705,7 @@ function blockOf(
   const held = [...told('names no thread', loose.filter(b => !claimed(b))), ...told('names a thread that does not exist', loose.filter(claimed)), ...warned].join('\n\n');
   const person = round.approval?.held === 'unread' || round.approval?.held === 'config' ? round.approval.held : undefined;
   const hold = round.verdict === 'APPROVE' && blockers.length === 0 ? person ?? (warned.length > 0 ? 'warnings' as const : undefined) : undefined;
-  return { ...(held && { held }), named, ...(round.readyReport && { report: round.readyReport }), ...(hold && { hold }) };
+  return { ...(held && { held }), named, ...(round.readyReport && { report: round.readyReport }), ...(hold && { hold }), ...(round.approval && { approval: round.approval }) };
 }
 
 /**
@@ -815,22 +815,41 @@ const REFUSED_LINE = 'All blocking threads are resolved, but repository settings
 type HeldApproval = { reason: Exclude<ApprovalHeld, false>; line: string; posted: boolean };
 
 /**
+ * The holds the approval check tests, in the order it tests them, each with the sentence that says it no longer holds.
+ * A hold the check stops at proves that every hold before it in this list has cleared.
+ */
+const CLEARED_HOLDS: ReadonlyArray<[Exclude<ApprovalHeld, false>, string]> = [
+  ['warnings', 'Every warning that held the approval is handled.'],
+  ['draft', 'This PR is no longer a draft.'],
+  ['conflict', 'The conflict with the base branch is resolved.'],
+  ['refused', ''],
+];
+
+/** Returns `line` for the hold `reason`, led by what cleared since the holds `before`, or as it is when none of them cleared. */
+function stillHeldLine(line: string, reason: Exclude<ApprovalHeld, false>, before: readonly ApprovalHeld[]): string {
+  const cleared = CLEARED_HOLDS.slice(0, CLEARED_HOLDS.findIndex(([r]) => r === reason)).filter(([r]) => before.includes(r)).map(([, text]) => text);
+  return cleared.length > 0 ? `${cleared.join(' ')} ${line.replace(/^\*\*Approval held:\*\*/, '**Approval is still held:**')}` : line;
+}
+
+/**
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
  * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  * `autoApprove` is the `auto_approve` setting, which the notice for a draft depends on.
  * With `refused`, it holds because GitHub refused the approval, and does not read the PR. Its `summary` follows the
  * notice's line, since that notice stands in for the approval that would have shown it.
+ * `before` are the holds of the review that covers the head, which the notice says have cleared when they come earlier
+ * in `CLEARED_HOLDS`. Pass them only once no warning holds the approval.
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
-  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused'; summary?: string },
+  autoApprove = true, recordFor?: (reason: string) => string, refused?: { reason: 'refused'; summary?: string }, before: readonly ApprovalHeld[] = [],
 ): Promise<HeldApproval | false> {
   const hold = refused ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
   const why = hold.reason === 'refused' ? 'GitHub refused the approval' : hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft';
   core.info(`${why}, so it is not approved`);
   assertWritesAllowed();
-  const line = hold.reason === 'refused' ? REFUSED_LINE : approvalHoldLine(hold, autoApprove);
+  const line = stillHeldLine(hold.reason === 'refused' ? REFUSED_LINE : approvalHoldLine(hold, autoApprove), hold.reason, before);
   // A refusal has its own marker, so a draft or conflict notice of the head does not stand in for it.
   const marker = `${APPROVAL_HELD_MARKER_PREFIX}${headSha}${hold.reason === 'refused' ? ':refused' : ''} -->`;
   let posted = false;
@@ -1063,7 +1082,9 @@ async function approveOrSayWhy(
     if (held.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', held.line, held.reason));
     return { ...withheld(held.line, held.reason), ...(held.posted && { answered: true as const }) };
   };
-  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor);
+  // The holds of the covering review, which a notice names as cleared. No warning holds by now.
+  const before: ApprovalHeld[] = block.approval ? [block.approval.held, ...(block.approval.warningsHeld ? ['warnings' as const] : [])] : [];
+  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, undefined, before);
   if (hold) return heldBy(hold);
 
   const comments = await fetchPRComments(octokit, owner, repo, prNumber).catch((error: unknown) => {
@@ -1115,7 +1136,7 @@ async function approveOrSayWhy(
         'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.',
       );
       const summary = [report?.whatThisDoes, report?.whatToTest].filter(Boolean).join('\n\n');
-      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused', ...(summary && { summary }) });
+      refusal = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, config?.auto_approve, recordFor, { reason: 'refused', ...(summary && { summary }) }, before);
     }
   } catch (error) {
     // A cancelled run leaves its progress comment to the post step.

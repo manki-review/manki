@@ -1409,16 +1409,40 @@ describe('checkAndAutoApprove', () => {
       const result = await refuse();
       const notice = createCommentFn.mock.calls[0][0].body as string;
       expect(notice.split('\n\n<!-- manki-approval-record: ')[0]).toBe([
-        'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.',
+        'Every warning that held the approval is handled. All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.',
         '**What this does:** Adds a cache. It halves requests.',
         '<details>\n<summary>What to test</summary>\n\n_The review model wrote these steps. Check what a step runs before you follow it._\n\n1. Load the page twice.\n\n</details>',
       ].join('\n\n'));
       // The notice still ends with its record, and a person who asks gets the short line.
       expect(extractApprovalRecords(notice).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'refused' })]);
-      expect(result.approved ? undefined : await result.why()).toBe('All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.');
+      expect(result.approved ? undefined : await result.why()).toBe('Every warning that held the approval is handled. All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.');
       // A repeat on the same head posts nothing new.
       await refuse([{ body: notice, user: { login: 'manki-review[bot]' } }]);
       expect(createCommentFn).toHaveBeenCalledTimes(1);
+    });
+
+    it.each<[string, RoundContext['approval'], boolean, string]>([
+      ['warnings to a conflict', { held: 'warnings', warningsHeld: true }, false, 'Every warning that held the approval is handled. **Approval is still held:** this PR conflicts'],
+      ['a draft to a conflict', { held: 'draft' }, false, 'This PR is no longer a draft. **Approval is still held:** this PR conflicts'],
+      ['a draft with warnings to a conflict', { held: 'draft', warningsHeld: true }, false, 'Every warning that held the approval is handled. This PR is no longer a draft. **Approval is still held:** this PR conflicts'],
+      ['a conflict with warnings to the same conflict', { held: 'conflict', warningsHeld: true }, false, 'Every warning that held the approval is handled. **Approval is still held:** this PR conflicts'],
+      ['a conflict to a refusal', { held: 'conflict' }, true, 'The conflict with the base branch is resolved. All blocking threads are resolved, but repository settings'],
+      // The same hold, or none before, keeps the notice as it is.
+      ['a conflict to the same conflict', { held: 'conflict' }, false, '**Approval held:** this PR conflicts'],
+      ['no hold to a conflict', undefined, false, '**Approval held:** this PR conflicts'],
+      ['a refusal to a conflict', { held: 'refused' }, false, '**Approval held:** this PR conflicts'],
+    ])('says what cleared since the covering review held the approval, from %s', async (_label, approval, refused, start) => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const round = { ...roundThatPosted(HEAD, []), ...(approval && { approval }) };
+      const createCommentFn = jest.fn().mockResolvedValue({});
+      const result = await approveOrSayWhy(makeMockOctokit({
+        threads: [warning('t1', { replies: [reply('author'), accepted()] })], prHeadSha: HEAD, mergeable: refused, createCommentFn,
+        existingReviews: [{ id: 7, body: roundBody(round), state: 'COMMENTED', commit_id: HEAD, user }],
+        ...(refused && { createReviewFn: jest.fn().mockRejectedValue(new Error(SETTING_REFUSAL)) }),
+      }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      expect(result.approved).toBe(false);
+      expect(createCommentFn.mock.calls[0][0].body).toMatch(new RegExp(`^${start.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
     });
 
     it('counts only an accepted answer made after the review that lowered a blocker thread to a warning was posted', async () => {
