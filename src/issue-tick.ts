@@ -2,8 +2,9 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, buildLineLink, findingLocation, inline, linked, reviewedCommit, sanitizeMarkdown } from './github';
-import { BOX_ANCHOR, FILED_ISSUE_OPENER, filedIssueMarker, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
+import { BOX_ANCHOR, FILED_ISSUE_OPENER, filedIssueMarker, issueBoxLine, issueBoxOffset, messageBoxLine, replaceIssueBox, replaceMessageBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutPlaceNote } from './recap';
+import { boxLabel, MessageBox } from './settings';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread, TRACKED_MARKER } from './state';
 import { ownMarker, withMarkers } from './utils';
 
@@ -228,5 +229,38 @@ export async function handleReviewBoxTick(
     // Each box is saved as soon as it is handled, on the review as it is now, so a tick made meanwhile stays.
     const { data: current } = await octokit.rest.pulls.getReview({ owner, repo, pull_number: prNumber, review_id: review.id });
     await octokit.rest.pulls.updateReview({ owner, repo, pull_number: prNumber, review_id: review.id, body: replaceIssueBox(current.body, id, filedLine(id, filed, editor)) });
+  }
+}
+
+/** The Manki message a box was ticked in: a PR comment, a review or a review comment. */
+export interface TickedMessage {
+  kind: 'comment' | 'review' | 'review_comment';
+  id: number;
+}
+
+/**
+ * Saves `message` as it is now, so a tick made meanwhile stays, with the ticked `box` of `id` replaced: by a line that
+ * names who asked for it once `editor` started its action, or else by the unticked box again. A failure is logged.
+ */
+export async function settleTickedBox(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, message: TickedMessage, box: MessageBox, id: string | undefined, editor: string | undefined,
+): Promise<void> {
+  const text = editor ? `${boxLabel(box)} requested by \`@${editor}\`` : messageBoxLine(box, id);
+  try {
+    if (message.kind === 'comment') {
+      const { data } = await octokit.rest.issues.getComment({ owner, repo, comment_id: message.id });
+      const body = replaceMessageBox(data.body ?? '', box, id, text);
+      if (body !== data.body) await octokit.rest.issues.updateComment({ owner, repo, comment_id: message.id, body });
+    } else if (message.kind === 'review') {
+      const { data } = await octokit.rest.pulls.getReview({ owner, repo, pull_number: prNumber, review_id: message.id });
+      const body = replaceMessageBox(data.body, box, id, text);
+      if (body !== data.body) await octokit.rest.pulls.updateReview({ owner, repo, pull_number: prNumber, review_id: message.id, body });
+    } else {
+      const { data } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: message.id });
+      const body = replaceMessageBox(data.body, box, id, text);
+      if (body !== data.body) await octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: message.id, body });
+    }
+  } catch (error) {
+    core.warning(`Failed to update the ${boxLabel(box)} box of ${message.kind} ${message.id}: ${error instanceof Error ? error.message : error}`);
   }
 }

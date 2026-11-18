@@ -3,16 +3,27 @@ export const SETTINGS_MARKER = '<!-- manki-settings -->';
 
 export type SettingsBox = 'pause' | 'again' | 'deeper' | 'cancel' | 'draft';
 
-/** The label of each box. */
-const BOX_LABELS: Record<SettingsBox, string> = {
+/** A box a message carries for the next step it names, which also has a command. */
+export type MessageBox = 'again' | 'check' | 'forget' | 'dismiss';
+
+/** The label of each box. The settings boxes come first, in the order the block lists them. */
+const BOX_LABELS: Record<SettingsBox | MessageBox, string> = {
   pause: 'Pause automatic reviews',
   again: 'Review again',
   deeper: 'Deeper review',
   cancel: 'Cancel this review',
   draft: 'Review this draft',
+  check: 'Check approval',
+  forget: 'Forget this learning',
+  dismiss: 'Dismiss this finding',
 };
 
 const SETTINGS_BOXES: readonly SettingsBox[] = ['pause', 'again', 'deeper', 'cancel', 'draft'];
+
+/** Returns the label of `box`. */
+export function boxLabel(box: SettingsBox | MessageBox): string {
+  return BOX_LABELS[box];
+}
 
 /** What the settings block shows. */
 export interface SettingsView {

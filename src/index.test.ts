@@ -133,6 +133,7 @@ jest.mock('./diff', () => {
 });
 
 jest.mock('./interaction', () => ({
+  handleBoxCommand: jest.fn().mockResolvedValue(undefined),
   handleReviewCommentReply: jest.fn().mockResolvedValue(undefined),
   handleReviewCommentCommand: jest.fn().mockResolvedValue(undefined),
   handlePRComment: jest.fn().mockResolvedValue(undefined),
@@ -147,6 +148,7 @@ jest.mock('./interaction', () => ({
 jest.mock('./issue-tick', () => ({
   handleIssueBoxTick: jest.fn().mockResolvedValue(undefined),
   handleReviewBoxTick: jest.fn().mockResolvedValue(undefined),
+  settleTickedBox: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('./memory', () => ({
@@ -1431,8 +1433,11 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       return createComment.mock.calls;
     };
     const noRound = '`def4567` already has a review, so this command started no new round. The command starts one after a push, and ticking the review box in the settings block reviews this commit again.';
-    // Each command gets a new comment with the marker of Manki's other command answers.
-    const answer = (...parts: string[]) => [[{ owner: 'test-owner', repo: 'test-repo', issue_number: 1, body: `${[noRound, ...parts].join('\n\n')}\n\n<!-- manki -->` }]];
+    // Each command gets a new comment with the marker of Manki's other command answers, and the box that reviews the commit again.
+    const answer = (...parts: string[]) => [[{
+      owner: 'test-owner', repo: 'test-repo', issue_number: 1,
+      body: `${[noRound, ...parts].join('\n\n')}\n\n<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->\n\n<!-- manki -->`,
+    }]];
 
     expect(await command()).toEqual(answer());
     expect(ghUtils.showSettings).toHaveBeenCalledWith(...upToDate('def4567890123'));
@@ -8489,6 +8494,72 @@ describe('settings box tick', () => {
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
     expect(mockListComments).not.toHaveBeenCalled();
     jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
+  });
+
+  const againBox = (tick: string) => `<!-- manki-issue-box -->\n- ${tick} Review again <!-- manki-box:again -->`;
+
+  it.each([
+    ['a comment', 'issue_comment', { issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } } }, 'comment'],
+    ['a review', 'pull_request_review', { pull_request: { number: 1, base: { ref: 'main' } } }, 'review'],
+  ] as const)('reviews on a writer\'s tick of Review again in %s only with a mode the coordinator queued, and settles the box once', async (_where, eventName, target, kind) => {
+    const body = `\`def4567\` already has a review, so this command started no new round.\n\n${againBox('[x]')}\n\n<!-- manki -->`;
+    const object = { id: 42, body, user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } };
+    const tick = async (sender: string, modes: RunMode[], tickedBody = body) => {
+      jest.clearAllMocks();
+      _resetOctokitCache();
+      jest.mocked(ghUtils.hasWriteAccess).mockImplementation(async (_o, _owner, _repo, login) => login !== 'reader');
+      jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(false, modes));
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
+      const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 10, totalDeletions: 5 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
+      const objects = eventName === 'pull_request_review' ? { review: { ...object, body: tickedBody } } : { comment: { ...object, body: tickedBody } };
+      setContext({ eventName, payload: { action: 'edited', sender: { login: sender, type: 'User' }, ...target, ...objects } });
+      await run();
+      return { reviewed: jest.mocked(ghUtils.postProgressComment).mock.calls.length > 0, settled: jest.mocked(issueTick.settleTickedBox).mock.calls };
+    };
+
+    // A writer's tick with the mode reviews, and the box names who asked for the review.
+    expect(await tick('alice', ['again'])).toEqual({ reviewed: true, settled: [[mockOctokitInstance, 'test-owner', 'test-repo', 1, { kind, id: 42 }, 'again', undefined, 'alice']] });
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[7]?.meta.trigger).toEqual({ event: `${eventName}:edited:box:again`, sender: 'alice' });
+    // A tick the coordinator queued no review for starts none, and the box is put back.
+    expect(await tick('alice', [])).toEqual({ reviewed: false, settled: [[mockOctokitInstance, 'test-owner', 'test-repo', 1, { kind, id: 42 }, 'again', undefined, undefined]] });
+    // An editor without write access starts nothing and changes nothing, before the coordinator is even asked.
+    expect(await tick('reader', ['again'])).toEqual({ reviewed: false, settled: [] });
+    expect(authModule.fetchPrState).not.toHaveBeenCalled();
+    // Once settled the message has no ticked box, so a second run of the same edit does nothing.
+    expect(await tick('alice', ['again'], body.replace(againBox('[x]'), '<!-- manki-issue-box -->\nReview again requested by `@alice`'))).toEqual({ reviewed: false, settled: [] });
+    expect(authModule.fetchPrState).not.toHaveBeenCalled();
+    jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
+    jest.mocked(core.getInput).mockReturnValue('');
+  });
+
+  it.each([
+    ['Check approval in a review', 'pull_request_review', 'check', undefined, 'review'],
+    ['Forget this learning in a thread reply', 'pull_request_review_comment', 'forget', 'learn-1700000000000', 'review_comment'],
+    ['Dismiss this finding in a thread', 'pull_request_review_comment', 'dismiss', undefined, 'review_comment'],
+  ] as const)('runs the command of %s for a writer\'s tick only, then settles the box', async (_case, eventName, box, id, kind) => {
+    const object = { id: 77, body: `Text.\n\n<!-- manki-issue-box -->\n- [x] Label <!-- manki-box:${box}${id ? `:${id}` : ''} -->\n\n<!-- manki -->`, user: { login: ghUtils.BOT_LOGIN, type: 'Bot' } };
+    const pullRequest = { number: 5, base: { ref: 'main' } };
+    const tick = async (sender: string, fails = false) => {
+      jest.clearAllMocks();
+      _resetOctokitCache();
+      jest.mocked(ghUtils.hasWriteAccess).mockImplementation(async (_o, _owner, _repo, login) => login !== 'reader');
+      jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, auto_approve: true, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } } as never);
+      if (fails) jest.mocked(interaction.handleBoxCommand).mockRejectedValueOnce(new Error('GitHub is down'));
+      setContext({ eventName, payload: { action: 'edited', sender: { login: sender, type: 'User' }, pull_request: pullRequest, [eventName === 'pull_request_review' ? 'review' : 'comment']: object } });
+      await run().catch(() => undefined);
+      return { ran: jest.mocked(interaction.handleBoxCommand).mock.calls, settled: jest.mocked(issueTick.settleTickedBox).mock.calls };
+    };
+
+    const ran = [[mockOctokitInstance, TEST_BOT, 'test-owner', 'test-repo', 5, box, id, expect.objectContaining({ configHeld: false, ...(kind === 'review_comment' && { commentId: 77 }) })]];
+    expect(await tick('alice')).toEqual({ ran, settled: [[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, 'alice']] });
+    // Only a dismiss can resolve the last thread that blocks, so only it runs the approval check after.
+    expect(jest.mocked(stateModule.checkAndAutoApprove).mock.calls).toHaveLength(box === 'dismiss' ? 1 : 0);
+    // A command that fails puts the box back, so it can be ticked again.
+    expect((await tick('alice', true)).settled).toEqual([[mockOctokitInstance, 'test-owner', 'test-repo', 5, { kind, id: 77 }, box, id, undefined]]);
+    expect(await tick('reader')).toEqual({ ran: [], settled: [] });
+    jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: true, max_diff_lines: 5000, exclude_paths: [], instructions: '', memory: { enabled: false, repo: '' } } as never);
   });
 });
 

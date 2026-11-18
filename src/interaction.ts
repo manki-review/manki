@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
+import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
@@ -17,6 +18,7 @@ import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repo
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, checkReply, statementList, statementRecords, statementSummary } from './reply-check';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage, withReads } from './round-context';
+import { MessageBox } from './settings';
 import { relatedCitations } from './static-signals';
 import { COMMENT_MARKER as BOT_MARKER, redactSecrets, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
@@ -359,7 +361,7 @@ function fixReviewNote(reply: string, file: string, evidenceFiles: string[] = []
 
 /**
  * Saves the learning a withdrawn finding leaves: on `path`, findings like `title` do not apply, for the reason the
- * developer gave. Returns the sentence that tells the developer what was saved and how to remove it.
+ * developer gave. Returns the sentence that tells the developer what was saved and how to remove it, with the box that removes it.
  */
 async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: string, prNumber: number, path: string, title: string, developerReply: string): Promise<string> {
   const id = `learn-${Date.now()}`;
@@ -370,7 +372,7 @@ async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: s
     id, content, scope: 'repo', path, source: `${owner}/${repo}#${prNumber}`, created_at: new Date().toISOString().split('T')[0],
   });
   core.info(`Saved learning ${id} for ${path}`);
-  return `Saved a learning for \`${findingLocation({ file: path, line: 0 })}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.`;
+  return `Saved a learning for \`${findingLocation({ file: path, line: 0 })}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.\n\n${messageBox('forget', id)}`;
 }
 
 const MAX_UNANSWERED_REASON_CHARS = 200;
@@ -1260,6 +1262,33 @@ export async function handleReviewCommentCommand(
       await reactToReviewComment(octokit, owner, repo, commentId, '+1');
       await handleHelp(octokit, owner, repo, prNumber);
       break;
+  }
+}
+
+/**
+ * Runs the command that the ticked `box` stands for, as the event's sender, who ticked it. Each command checks the
+ * sender as it does for a comment, and answers as it does there. The Dismiss box sits in the review comment
+ * `commentId`, which starts the thread it dismisses, and a note goes into that thread. `configHeld` says that the base
+ * branch's config could not be read or loaded.
+ */
+export async function handleBoxCommand(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, box: Exclude<MessageBox, 'again'>, id: string | undefined,
+  { memory, config, configHeld, commentId }: { memory?: MemoryStore; config: ReviewConfig; configHeld: boolean; commentId?: number },
+): Promise<void> {
+  switch (box) {
+    case 'check':
+      await answerOrSayWhy(octokit, owner, repo, prNumber, () => handleCheck(octokit, bot, owner, repo, prNumber, config, configHeld));
+      break;
+    case 'forget':
+      await handleForget(octokit, owner, repo, prNumber, id ?? '', memory);
+      break;
+    case 'dismiss': {
+      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, config.author_clear_role, commentId);
+      if (thread?.note && commentId) {
+        await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(thread.note, BOT_MARKER) });
+      }
+      break;
+    }
   }
 }
 

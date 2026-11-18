@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
+import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview, handleBoxCommand, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
 import { Finding, ReplyRecord, ReviewConfig } from './types';
 import { extractReplyRecords, formatReviewRecord } from './review-record';
 import { RELATED_REPO_TRUST_RULE, WRITING_RULES } from './writing-rules';
@@ -1525,7 +1525,8 @@ describe('handleReviewCommentReply', () => {
       content: 'Findings like "Token leaks into logs" do not apply on `src/fi\'le.ts`: The caller always validates this upstream, so the check is not needed here.',
     });
     // The posted answer is edited to name the learning, above the markers it already had.
-    const note = `Saved a learning for \`src/fi'le.ts\`, so findings like this one are not raised there again. \`/manki forget ${learning.id}\` removes it.`;
+    // The answer carries the box that removes the learning again.
+    const note = `Saved a learning for \`src/fi'le.ts\`, so findings like this one are not raised there again. \`/manki forget ${learning.id}\` removes it.\n\n<!-- manki-issue-box -->\n- [ ] Forget this learning <!-- manki-box:forget:${learning.id} -->`;
     expect(octokit.rest.pulls.updateReviewComment.mock.calls).toEqual([[{ owner: 'test-owner', repo: 'test-repo', comment_id: 501, body: body.replace('\n\n<!-- manki -->', `\n\n${note}\n\n<!-- manki -->`) }]]);
     expect(jest.mocked(core.warning).mock.calls).toEqual(threadCase === 'note-fails' ? [['Saved the learning, but failed to say so in the answer: Error: GitHub is down']] : []);
   });
@@ -2175,6 +2176,44 @@ describe('handleReviewCommentCommand', () => {
     const command = parseCommand('/manki dismiss test');
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 61, command);
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleBoxCommand', () => {
+  const config = { ...DEFAULT_CONFIG, auto_approve: true, author_clear_role: 'maintain' } as ReviewConfig;
+  const comments = (octokit: ReturnType<typeof createMockOctokit>) => jest.mocked(octokit.rest.issues.createComment).mock.calls.map((call: unknown[]) => (call[0] as { body: string }).body);
+
+  it.each([
+    ['a writer', 'writer', true],
+    ['an editor without write access', 'reader', false],
+  ])('runs the command of a ticked box for %s only, as the command does', async (_who, sender, writer) => {
+    setContext({ comment: { id: 99, body: 'Manki\'s message', user: MANKI_USER }, pull_request: { number: 1, user: { login: 'pr-author' } }, sender: { login: sender } });
+
+    // Check approval runs the approval check of `/manki check` and answers as it does.
+    const checked = createMockOctokit();
+    jest.mocked(state.approveOrSayWhy).mockClear().mockResolvedValueOnce({ approved: false, why: async () => 'A thread blocks.' });
+    await handleBoxCommand(checked, TEST_BOT, 'test-owner', 'test-repo', 1, 'check', undefined, { config, configHeld: false });
+    expect(jest.mocked(state.approveOrSayWhy).mock.calls).toEqual(writer ? [[checked, TEST_BOT, 'test-owner', 'test-repo', 1, config]] : []);
+    expect(comments(checked)).toEqual([writer ? 'A thread blocks.\n\n<!-- manki -->' : 'Only repo collaborators can trigger auto-approve.\n\n<!-- manki -->']);
+
+    // Forget this learning removes the learning its box names, as `/manki forget <id>` does.
+    const forgot = createMockOctokit();
+    (memory.removeLearning as jest.Mock).mockClear().mockResolvedValueOnce({ removed: { content: 'old learning' }, remaining: 2 });
+    await handleBoxCommand(forgot, TEST_BOT, 'test-owner', 'test-repo', 1, 'forget', 'learn-1700000000000', { memory: MEMORY, config, configHeld: false });
+    expect((memory.removeLearning as jest.Mock).mock.calls).toEqual(writer ? [[MEMORY, 'learn-1700000000000']] : []);
+    expect(comments(forgot)).toEqual([writer ? 'Removed learning: `old learning` (2 remaining)\n\n<!-- manki -->' : 'Only repo collaborators can change review memory.\n\n<!-- manki -->']);
+
+    // Dismiss this finding resolves the thread its comment starts, as a dismiss reply in that thread does.
+    const dismissed = createMockOctokit();
+    dismissed.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'Token' }]);
+    jest.mocked(state.resolveReviewThread).mockClear();
+    await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 });
+    expect(jest.mocked(dismissed.rest.pulls.getReviewComment).mock.calls[0]?.[0]).toEqual({ owner: 'test-owner', repo: 'test-repo', comment_id: 99 });
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(writer ? [[dismissed, 'PRRT_this', 'WONT_FIX']] : []);
+    expect(jest.mocked(dismissed.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
+      writer ? [] : [[expect.objectContaining({ comment_id: 99, body: expect.stringContaining('Only the PR author or someone with write access can dismiss this finding') })]],
+    );
   });
 });
 

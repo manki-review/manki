@@ -1,3 +1,5 @@
+import { boxLabel, MessageBox } from './settings';
+
 /** Starts the line that holds one of Manki's boxes in a message, or what replaced it, so readers of a finding can skip it. */
 export const BOX_ANCHOR = '<!-- manki-issue-box -->';
 
@@ -74,6 +76,39 @@ export function replaceIssueBox(body: string, id: string, text: string): string 
   const lines = body.split('\n');
   // A body someone saved in the web editor ends its lines with CRLF, which the replaced line keeps.
   for (const box of issueBoxes(lines)) if (box.id === id && box.ticked) lines[box.line] = `${text}${lines[box.line].endsWith('\r') ? '\r' : ''}`;
+  return lines.join('\n');
+}
+
+const MESSAGE_BOXES: readonly string[] = ['again', 'check', 'forget', 'dismiss'] satisfies MessageBox[];
+
+/** Returns the unticked line of `box`. `id` names what the box acts on, such as a learning. */
+export function messageBoxLine(box: MessageBox, id?: string): string {
+  return `- [ ] ${boxLabel(box)} <!-- manki-box:${box}${id ? `:${id}` : ''} -->`;
+}
+
+/** Returns the unticked `box` for a message, after its anchor. */
+export function messageBox(box: MessageBox, id?: string): string {
+  return `${BOX_ANCHOR}\n${messageBoxLine(box, id)}`;
+}
+
+/** Returns `text` followed by each distinct box of `boxes`, in their order. */
+export function withMessageBoxes(text: string, boxes: ReadonlyArray<MessageBox | false | undefined>): string {
+  const kept = [...new Set(boxes.filter((box): box is MessageBox => !!box))];
+  return [text, ...kept.map(box => messageBox(box))].join('\n\n');
+}
+
+/** Returns the message boxes ticked in `body`, each with its id when it has one. */
+export function tickedMessageBoxes(body: string): Array<{ box: MessageBox; id?: string }> {
+  return anchoredBoxes(body.split('\n')).flatMap(({ kind, id, ticked }) =>
+    (ticked && MESSAGE_BOXES.includes(kind) ? [{ box: kind as MessageBox, ...(id !== undefined && { id }) }] : []));
+}
+
+/** Returns `body` with the ticked line of `box` with `id` replaced by `text`, and every other line as it was. */
+export function replaceMessageBox(body: string, box: MessageBox, id: string | undefined, text: string): string {
+  const lines = body.split('\n');
+  for (const found of anchoredBoxes(lines)) {
+    if (found.kind === box && found.id === id && found.ticked) lines[found.line] = `${text}${lines[found.line].endsWith('\r') ? '\r' : ''}`;
+  }
   return lines.join('\n');
 }
 

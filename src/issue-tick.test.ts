@@ -1,5 +1,7 @@
 import { formatFindingBlock, formatFindingComment } from './github';
-import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
+import * as core from '@actions/core';
+import { messageBox, tickedMessageBoxes, withMessageBoxes } from './issue-box';
+import { handleIssueBoxTick, handleReviewBoxTick, settleTickedBox } from './issue-tick';
 import * as state from './state';
 import { Finding } from './types';
 import { reviewedLine, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
@@ -385,5 +387,51 @@ describe('handleReviewBoxTick', () => {
     await tickReview(octokit, { ...review, body });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain(`[\`src/a--%3Eb.ts:3\`](https://github.com/o/r/blob/${testSha('abc123')}/src/a--%3Eb.ts#L3)`);
+  });
+});
+
+describe('settleTickedBox', () => {
+  const tickedBox = (box: Parameters<typeof messageBox>[0], id?: string) => messageBox(box, id).replace('- [ ]', '- [x]');
+
+  it('replaces only the ticked box of the kind and id, in a comment, a review or a review comment, and keeps everything else', async () => {
+    // A box a model wrote into a fenced fix is no box, ticked or not.
+    const fenced = `\`\`\`\n${tickedBox('again')}\n\`\`\``;
+    const body = `Retry with /manki review.\r\n\n${tickedBox('again')}\r\n\n${tickedBox('forget', 'learn-1')}\n\n${tickedBox('forget', 'learn-2')}\n\n${fenced}`;
+    expect(tickedMessageBoxes(body)).toEqual([{ box: 'again' }, { box: 'forget', id: 'learn-1' }, { box: 'forget', id: 'learn-2' }]);
+    // A box counts only right under its anchor, so a ticked line someone pasted elsewhere is no box.
+    expect(tickedMessageBoxes('- [x] Review again <!-- manki-box:again -->')).toEqual([]);
+    // Each box a message names is added once, and a step it does not name adds nothing.
+    expect(withMessageBoxes('Text.', ['again', false, undefined, 'again', 'check'])).toBe(`Text.\n\n${messageBox('again')}\n\n${messageBox('check')}`);
+    expect(withMessageBoxes('Text.', [false])).toBe('Text.');
+    const octokit = makeOctokit();
+    const comment = { getComment: jest.fn(async () => ({ data: { body } })), updateComment: jest.fn().mockResolvedValue({}) };
+    Object.assign(octokit.rest.issues, comment);
+
+    await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'comment', id: 3 }, 'again', undefined, 'bob');
+    const settled = comment.updateComment.mock.calls[0][0] as { comment_id: number; body: string };
+    expect(settled.comment_id).toBe(3);
+    expect(settled.body).toBe(body.replace(`${tickedBox('again')}\r`, '<!-- manki-issue-box -->\nReview again requested by `@bob`\r'));
+    expect(tickedMessageBoxes(settled.body)).toEqual([{ box: 'forget', id: 'learn-1' }, { box: 'forget', id: 'learn-2' }]);
+
+    // Without an editor the action did not run, so the box is put back unticked for another try.
+    octokit.seed(body);
+    await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'review', id: 4 }, 'forget', 'learn-2', undefined);
+    expect(octokit.rest.pulls.updateReview).toHaveBeenCalledWith({ owner: 'o', repo: 'r', pull_number: 5, review_id: 4, body: body.replace(tickedBox('forget', 'learn-2'), messageBox('forget', 'learn-2')) });
+    octokit.seed(body);
+    await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'review_comment', id: 6 }, 'forget', 'learn-1', 'bob');
+    expect(octokit.rest.pulls.updateReviewComment).toHaveBeenLastCalledWith({ owner: 'o', repo: 'r', comment_id: 6, body: body.replace(tickedBox('forget', 'learn-1'), '<!-- manki-issue-box -->\nForget this learning requested by `@bob`') });
+
+    // A box no longer ticked, as once another run settled it, leaves the message as it is.
+    octokit.rest.pulls.updateReviewComment.mockClear();
+    octokit.seed(withMessageBoxes('Text.', ['dismiss']));
+    await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'review_comment', id: 6 }, 'dismiss', undefined, 'bob');
+    expect(octokit.rest.pulls.updateReviewComment).not.toHaveBeenCalled();
+  });
+
+  it('logs a failed update and does not throw', async () => {
+    const octokit = makeOctokit();
+    octokit.rest.pulls.getReview.mockRejectedValueOnce(new Error('GitHub is down'));
+    await settleTickedBox(octokit as never, 'o', 'r', 5, { kind: 'review', id: 4 }, 'check', undefined, 'bob');
+    expect(core.warning).toHaveBeenCalledWith('Failed to update the Check approval box of review 4: GitHub is down');
   });
 });

@@ -4,9 +4,9 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { newestCheckPassed, outcomeReport, reportCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
-import { ISSUE_BOX_LABEL } from './issue-box';
-import { SETTINGS_MARKER } from './settings';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldBox, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, autoApproveHeadMarker, failedAutoApproveId, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatReadyReport, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, reviewedCommit, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
+import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
@@ -780,11 +780,11 @@ async function postStaleApproveSkippedComment(
 ): Promise<void> {
   const shortHead = headSha.slice(0, 7);
   const shortLatest = latestReviewSha.slice(0, 7);
-  const text = [
+  const text = withMessageBoxes([
     `**Auto-approve withheld** for \`${shortHead}\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`${shortLatest}\`.`,
     '',
     halt,
-  ].join('\n');
+  ].join('\n'), ['again']);
   try {
     await postNoticeOnce(octokit, bot, owner, repo, prNumber, staleApproveMarker(headSha), record ? `${text}\n\n${record}` : text);
   } catch (error) {
@@ -795,8 +795,8 @@ async function postStaleApproveSkippedComment(
 /** The notice of an approval GitHub refused because of the repository setting. */
 const REFUSED_LINE = 'All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.';
 
-/** A held approval: the first reason, the notice's text, and whether this call posted the notice. */
-type HeldApproval = { reason: Exclude<ApprovalHeld, false>; line: string; posted: boolean };
+/** A held approval: the first reason, the notice's line, the box of the step it names, and whether this call posted the notice. */
+type HeldApproval = { reason: Exclude<ApprovalHeld, false>; line: string; box?: MessageBox; posted: boolean };
 
 /**
  * The holds the approval check tests, in the order it tests them, each with the sentence that says it no longer holds.
@@ -836,16 +836,17 @@ async function holdApproval(
   core.info(`${why}, so it is not approved`);
   assertWritesAllowed();
   const line = stillHeldLine(hold.reason === 'refused' ? REFUSED_LINE : approvalHoldLine(hold, autoApprove), hold.reason, before);
+  const box = hold.reason === 'refused' ? undefined : approvalHoldBox(hold, autoApprove);
   // A refusal has its own marker, so a draft or conflict notice of the head does not stand in for it.
   const marker = `${APPROVAL_HELD_MARKER_PREFIX}${headSha}${hold.reason === 'refused' ? ':refused' : ''} -->`;
   let posted = false;
   try {
-    const text = [line, refused?.summary, recordFor?.(hold.reason)].filter(Boolean).join('\n\n');
+    const text = [withMessageBoxes(line, [box]), refused?.summary, recordFor?.(hold.reason)].filter(Boolean).join('\n\n');
     posted = await postNoticeOnce(octokit, bot, owner, repo, prNumber, marker, text);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
-  return { reason: hold.reason, line, posted };
+  return { reason: hold.reason, line, ...(box && { box }), posted };
 }
 
 /**
@@ -976,12 +977,14 @@ async function approveOrSayWhy(
     const open = unclearedThreads(threads, bot, prAuthorLogin, role, block?.named);
     const warnings = await heldWarnings(octokit, owner, repo, threads, bot, prAuthorLogin, role, clearRole);
     const hold = pr.draft ? { reason: 'draft' as const } : await fetchApprovalHold(octokit, owner, repo, prNumber);
-    return [
+    const text = [
       open.length > 0 ? blockingThreadsLine(open, block?.named ?? new Set(), bot, clearRole, instead || undefined) : instead,
       warnings.length > 0 && warningThreadsLine(warnings, bot, clearRole),
       covered && heldForPerson(bot, reviews, pr.head.sha) && HELD_FOR_PERSON_LINE,
       hold && approvalHoldLine(hold, config?.auto_approve),
     ].filter((line): line is string => !!line).join('\n\n');
+    // `instead` names the review box or the review command as the next step.
+    return withMessageBoxes(text, [!!instead && 'again', hold && approvalHoldBox(hold, config?.auto_approve)]);
   };
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');
@@ -1067,7 +1070,7 @@ async function approveOrSayWhy(
   const heldBy = async (held: HeldApproval): Promise<ApprovalCheck> => {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
     if (held.posted) await reportCheck(octokit, owner, repo, pr.head.sha, outcomeReport('READY', held.line, held.reason));
-    return { ...withheld(held.line, held.reason), ...(held.posted && { answered: true as const }) };
+    return { ...withheld(withMessageBoxes(held.line, [held.box]), held.reason), ...(held.posted && { answered: true as const }) };
   };
   // The holds of the covering review, which a notice names as cleared. No warning holds by now.
   const before: ApprovalHeld[] = block.approval ? [block.approval.held, ...(block.approval.warningsHeld ? ['warnings' as const] : [])] : [];

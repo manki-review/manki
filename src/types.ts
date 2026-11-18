@@ -2226,7 +2226,8 @@ export interface RoundTrigger {
    * `github.context.eventName` plus the action and (when applicable) the
    * marker comment that fired. Examples: `pull_request:synchronize`,
    * `issue_comment:created:/manki review`,
-   * `issue_comment:edited:settings:again`.
+   * `issue_comment:edited:settings:again`,
+   * `pull_request_review:edited:box:again`.
    */
   event: string;
   /** `github.context.payload.sender.login`, or `'unknown'` when absent. */

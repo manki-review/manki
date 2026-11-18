@@ -10,7 +10,7 @@ import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config
 import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff } from './diff';
-import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
+import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -23,7 +23,7 @@ import { RELATED_REPO_HOST } from './related-repos';
 import { distinctModels } from './routing';
 import { latestLimits } from './providers/instrumentation';
 import type { LimitUsage } from './providers/types';
-import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
+import { MessageBox, parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -144,6 +144,8 @@ const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
 const REVIEW_FAILED_LINE = '🔴 **Review failed**';
 /** Says that the token service's catch-up started the run, in its progress comment and its review. */
 const CATCH_UP_LINE = 'Started automatically, since no review of this commit had finished.';
+/** Matches the sentence of an incomplete round's summary that names the review command as the way to retry it. */
+const RETRY_COMMAND_RE = /\bretry with \/manki review\b/i;
 const REVIEW_INCOMPLETE_LINE = '⏸️ **Review incomplete:**';
 
 const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
@@ -312,29 +314,43 @@ export const AFTER_PUSH_LINE = 'If the push starts no review, as while automatic
  * approval for marking the PR ready or for an accepted answer in a thread.
  */
 export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string {
+  return holdLine(hold, autoApprove).line;
+}
+
+/** Returns the box for the next step the line of `hold` names, which a message that shows the line carries. */
+export function approvalHoldBox(hold: ApprovalHold, autoApprove = true): MessageBox | undefined {
+  return holdLine(hold, autoApprove).box;
+}
+
+/** Returns the line of `approvalHoldLine` with the box that stands for its next step, when the step has one. */
+function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box?: MessageBox } {
   if (hold.reason === 'draft') {
-    if (!autoApprove) return `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. ${ROUND_APPROVES_LINE}`;
+    if (!autoApprove) return { line: `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. ${ROUND_APPROVES_LINE}`, box: 'again' };
     // "Nothing else" covers only what the PR shows, such as an open thread or a conflict. For every other case, in which
     // nothing follows, the check command names the reason.
-    return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.';
+    return { line: '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.', box: 'check' };
   }
   if (hold.reason === 'config') {
-    return hold.file === 'base'
-      ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'
-      : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`;
+    return {
+      line: hold.file === 'base'
+        ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'
+        : `**Approval held:** this PR's copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit. ${AFTER_PUSH_LINE}`,
+    };
   }
-  if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
+  if (hold.reason === 'unread') return { line: `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}` };
   if (hold.reason === 'warnings') {
     if (hold.count === undefined) {
       const line = '**Approval waits on the warning threads.** Manki could not read them, so it does not approve yet.';
-      return autoApprove ? `${line} Comment \`/manki check\`, and Manki approves or says what holds the approval.` : `${line} Tick the review box in the settings block. ${ROUND_APPROVES_LINE}`;
+      return autoApprove
+        ? { line: `${line} Comment \`/manki check\`, and Manki approves or says what holds the approval.`, box: 'check' }
+        : { line: `${line} Tick the review box in the settings block. ${ROUND_APPROVES_LINE}`, box: 'again' };
     }
     const lead = `**${countOf(hold.count, 'warning')} to address.** ${hold.count === 1 ? 'Fix it' : 'Fix each one'}`;
     // A warning without a thread can only be fixed, and holds until a later round no longer finds it.
     const unthreaded = hold.unthreaded ?? 0;
     const threaded = hold.count - unthreaded;
     const noThread = (n: number) => `${n === 1 ? 'has no thread and holds' : 'have no thread and hold'} until a later review round no longer finds ${n === 1 ? 'it' : 'them'}.`;
-    if (threaded === 0) return `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}`;
+    if (threaded === 0) return { line: `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}` };
     // Neither a reply nor the issue box clears a security warning, which needs a fix or a resolve by someone allowed to
     // clear it. The box is named only when every holding warning has a thread to tick it in. A reply lifts a hold only
     // when Manki accepts it, so the line promises nothing for an explanation alone.
@@ -344,9 +360,9 @@ export function approvalHoldLine(hold: ApprovalHold, autoApprove = true): string
       : unthreaded > 0 ? `or ${explain}` : `${explain}, or tick \`${ISSUE_BOX_LABEL}\` to track it for later`;
     const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve its thread.' : '';
     const line = `${lead}, ${ways}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
-    return autoApprove ? line : `${line} Once every warning is handled, tick the review box in the settings block. ${ROUND_APPROVES_LINE}`;
+    return autoApprove ? { line } : { line: `${line} Once every warning is handled, tick the review box in the settings block. ${ROUND_APPROVES_LINE}`, box: 'again' };
   }
-  return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}`;
+  return { line: `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result. ${AFTER_PUSH_LINE}` };
 }
 
 const MAX_UNREVIEWED_LINES = 50;
@@ -2158,10 +2174,9 @@ export async function postReview(
   // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
   const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files or for warnings says so in its verdict line, so only the other holds get a line of their own.
-  const heldLines = [
-    lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && approvalHoldLine(lineHold, autoApprove),
-    standingHold && prHold && approvalHoldLine(prHold, autoApprove),
-  ].filter(Boolean).join('\n\n');
+  const ownLines = [lineHold && lineHold.reason !== 'unread' && lineHold.reason !== 'warnings' && lineHold, standingHold && prHold]
+    .filter((h): h is ApprovalHold => !!h);
+  const heldLines = ownLines.map(h => approvalHoldLine(h, autoApprove)).join('\n\n');
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
   const unthreadedWarnings = unthreaded.filter(f => !isBlockingFinding(f));
@@ -2182,6 +2197,12 @@ export async function postReview(
     if (context?.meta.trigger?.catchUp) head += `\n\n${CATCH_UP_LINE}`;
     const kept = context && reusedLine(context);
     if (kept) head += `\n\n${kept}`;
+    const verdictLine = !unreadRecords && result.outcome;
+    head = withMessageBoxes(head, [
+      verdictLine === 'INCOMPLETE' && RETRY_COMMAND_RE.test(result.summary) && 'again',
+      ...(approvalRefusal ? [] : ownLines.map(h => approvalHoldBox(h, autoApprove))),
+      verdictLine === 'READY' && warningHold && hold && approvalHoldBox(warningHold, autoApprove),
+    ]);
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
@@ -2756,7 +2777,8 @@ function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' |
 
 function formatNeedsHuman(result: ReviewResult, restart?: string): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
-  return `Automatic review is paused. To get the next round, tick the review box in the settings block, or push and then comment \`/manki review\`.${restart ? ` ${restart}` : ''}\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
+  const next = `Automatic review is paused. To get the next round, tick the review box in the settings block, or push and then comment \`/manki review\`.${restart ? ` ${restart}` : ''}`;
+  return `${withMessageBoxes(next, ['again'])}\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
 }
 
 /** Returns `text` for a link label on one line, with the backslashes and brackets that would end the label escaped. */
@@ -3614,6 +3636,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const fold = formatFold(fix, folds ? rest : '', checks);
   if (fold) comment += `\n\n${fold}`;
   comment += `\n\n${issueBoxFor(finding)}`;
+  // Manki's resolve after a dismiss clears only a thread that neither blocks nor holds the approval.
+  if (finding.severity === 'note' && !isSecurityFinding(finding.tags, finding.reviewers)) comment += `\n${messageBox('dismiss')}`;
 
   const cited = evidenceFiles(finding, links);
   const data: Record<string, unknown> = {
