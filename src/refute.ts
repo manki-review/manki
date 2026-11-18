@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -483,7 +483,7 @@ function alwaysChecked(finding: Finding): boolean {
 const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => d.decides === 'defect');
 
 /** Whether the judge dropped `finding` on a premise about code outside the diff that the refuter checks. */
-const dropsOnPremise = (finding: Finding): boolean => finding.severity === 'ignore' && !!finding.doubts?.some(d => d.decides === 'drop');
+const dropsOnPremise = (finding: Finding): boolean => finding.severity === 'ignore' && restsOnDrop(finding);
 
 const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
 

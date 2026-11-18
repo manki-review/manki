@@ -850,6 +850,11 @@ export interface Doubt {
   consequence?: true;
 }
 
+/** Whether the judge dropped `f` on a `drop` premise the refuter checks. */
+export function restsOnDrop(f: Pick<Finding, 'doubts'>): boolean {
+  return !!f.doubts?.some(d => d.decides === 'drop');
+}
+
 /**
  * The claim the `rare` column makes on a row where `columnDecidesBlock`, as a premise for the refuter. Manki adds it to
  * every finding in such a cell. The refuter's answer is recorded and never moves the finding to the `normal` column.

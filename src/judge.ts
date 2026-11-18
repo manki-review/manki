@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1879,13 +1879,16 @@ export function mapJudgedToFindings(
   const roots = duplicateRoots(aligned);
   // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
   const groups = roots.map(root => mergeKey(original[root - 1]));
-  const filedBlocker = (i: number): boolean => original.every((f, j) => groups[j] !== groups[i] || finderGrade(f, 'lowest') === 'blocker');
+  const copies = (i: number): Finding[] => original.filter((_, j) => groups[j] === groups[i]);
+  const filedBlocker = (i: number): boolean => copies(i).every(f => finderGrade(f, 'lowest') === 'blocker');
+  // A drop is checked when any finder filed a copy as a blocker, whichever copy the merge keeps.
+  const anyFiledBlocker = (i: number): boolean => copies(i).some(f => finderGrade(f) === 'blocker');
   const graded = original.map((o, i) => {
     const finding = { ...o };
     const match = aligned[i];
     if (!match) throw new Error(`Finding ${i + 1} "${safeTruncate(o.title, 80)}" has no judge entry`);
     if (!match.preExisting) delete finding.preExisting;
-    Object.assign(finding, gradeByCell(o, match, filedBlocker(i)));
+    Object.assign(finding, gradeByCell(o, match, filedBlocker(i), anyFiledBlocker(i)));
     if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
     finding.judgeNotes = match.reasoning;
     if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
@@ -1921,9 +1924,9 @@ export function mapJudgedToFindings(
  * has no `pendingGrade`: no answer raises it. A tool
  * alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security, gradeIfConfirmed: judgeGrade, dropRestsOn }: JudgedFinding, filedBlocker: boolean, anyFiledBlocker: boolean): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'judgeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter checks it only for its `dropCheck`.
-  if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, security) ?? (named.length > 0 && { doubts: named }))) };
+  if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(!o.toolSource && (dropCheck(o, named, dropRestsOn, anyFiledBlocker, security) ?? (named.length > 0 && { doubts: named }))) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
   if (security && row !== 'severe') core.warning(`The judge marked "${o.title}" a security finding on the \`${row}\` row, not \`severe\``);
   // An attacker chooses the input, so how rarely the state occurs is no discount on a security finding.
@@ -1949,11 +1952,12 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
 /**
  * Returns the fields that let the refuter check a drop the judge rests on code outside the diff: its `dropRestsOn`
  * premise as a `drop` doubt after the doubts it `named`, and the cell it stated for when that premise is false, whose
- * grade becomes the `gradeIfConfirmed`. Only a finding a finder filed as a blocker gets them, and only when that grade
- * is one a check can give: a `warning` or a `blocker`. A security finding takes the `normal` column, as in `gradeByCell`.
+ * grade becomes the `gradeIfConfirmed`. Only a finding a finder filed as a blocker, in this copy or one merged with it
+ * (`anyFiledBlocker`), gets them, and only when that grade is one a check can give: a `warning` or a `blocker`. A
+ * security finding takes the `normal` column, as in `gradeByCell`.
  */
-function dropCheck(o: Finding, named: Doubt[], dropRestsOn: JudgedFinding['dropRestsOn'], security?: boolean): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
-  if (!dropRestsOn || finderGrade(o) !== 'blocker') return undefined;
+function dropCheck(o: Finding, named: Doubt[], dropRestsOn: JudgedFinding['dropRestsOn'], anyFiledBlocker: boolean, security?: boolean): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
+  if (!dropRestsOn || !anyFiledBlocker) return undefined;
   const { premise, row, column: judgeColumn } = dropRestsOn;
   const column = security || o.tags?.includes(SECURITY_TAG) ? 'normal' : judgeColumn;
   const cell = { row, column, ...(column !== judgeColumn && { judgeColumn }) };
@@ -2185,13 +2189,23 @@ function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 're
 }
 
 /**
+ * Returns the drop check of `copy` for a `survivor` the judge dropped without one, so the check `dropCheck` set on any
+ * merged copy survives the merge. The survivor keeps the doubts it named before the copy's. Returns nothing otherwise.
+ */
+function mergedDropCheck(survivor: Finding, copy: Finding): Pick<Finding, 'cell' | 'gradeIfConfirmed' | 'doubts'> | undefined {
+  if (survivor.severity !== 'ignore' || restsOnDrop(survivor) || !restsOnDrop(copy)) return undefined;
+  const doubts = [...(survivor.doubts ?? []).filter(d => !copy.doubts!.some(c => c.premise === d.premise)), ...copy.doubts!];
+  return { cell: copy.cell, gradeIfConfirmed: copy.gradeIfConfirmed, doubts };
+}
+
+/**
  * Merges the duplicate `copy` into `survivor`: its reviewers, its finder grades, its prior-round match and open thread, its
- * fix in words and what it cites. The survivor is a security finding when either one is.
+ * fix in words, what it cites and its `mergedDropCheck`. The survivor is a security finding when either one is.
  */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
   survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
   if (copy.tags?.includes(SECURITY_TAG)) Object.assign(survivor, asSecurity(survivor));
-  Object.assign(survivor, mergedFinderGrades(survivor, copy));
+  Object.assign(survivor, mergedFinderGrades(survivor, copy), mergedDropCheck(survivor, copy));
   survivor.sameAs ??= copy.sameAs;
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
@@ -2406,8 +2420,8 @@ function hasReversalWord(finding: Finding): boolean {
 const mergeKey = (f: Pick<Finding, 'title' | 'file'>): string => `${f.title}::${f.file}`;
 
 /**
- * Keeps the first finding per title and file, with the finder grades `mergedFinderGrades` gives and the first rule a
- * copy quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
+ * Keeps the first finding per title and file, with the finder grades `mergedFinderGrades` gives, the `mergedDropCheck`
+ * and the first rule a copy quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
  * marked so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
@@ -2421,7 +2435,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     }
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...mergedFinderGrades(first, f), ...(f.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, f) });
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...mergedFinderGrades(first, f), ...mergedDropCheck(first, f), ...(f.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, f) });
   }
   return [...kept.values()];
 }

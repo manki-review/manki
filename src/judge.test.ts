@@ -33,7 +33,7 @@ import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -2312,6 +2312,39 @@ describe('runJudgeAgent', () => {
         { row: 'severe', column: 'normal' }, 'blocker', [{ premise, decides: 'drop' }], [['drop', 'confirmed']],
       ]);
       expect(result.findings.slice(3).map(f => f.doubts)).toEqual(Array(5).fill(undefined));
+
+      // Copies of one defect merge, by the judge's `duplicateOf` or by title and file. The drop is checked when any finder
+      // filed a copy as a blocker, whichever copy is kept and whichever copy's entry states the premise, and the check
+      // brings the merged finding back.
+      replies['Merged drop'] = premiseAnswer('disproved', ['src/index.ts:12']);
+      const mergedDrop = async (merge: 'duplicateOf' | 'title', order: readonly Finding['severity'][], premiseOn: 1 | 2) => {
+        const copies = order.map((severity, i) => makeFinding({
+          title: merge === 'title' || i === 0 ? 'Merged drop' : 'The same defect', line: 3, severity, reviewers: [`R${i + 1}`], evidence: { checks: [], proof: ['src/index.ts:3'] },
+        }));
+        mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({
+          summary: 's',
+          findings: copies.map((f, i) => ({
+            id: i + 1, title: f.title, row: 'ignore', reasoning: 'ignore. The caller takes the lock.',
+            ...(merge === 'duplicateOf' && i === 1 && { duplicateOf: 1 }), ...(premiseOn === i + 1 && { dropRestsOn: restsOn('severe') }),
+          })),
+        }) });
+        const merged = await runJudgeAgent(mockClient, makeConfig(), { findings: copies, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace } });
+        return merged.findings.map(f => [f.severity, finderGrade(f), f.refutation?.premises?.map(p => [p.decides, p.outcome])]);
+      };
+      for (const merge of ['duplicateOf', 'title'] as const) {
+        for (const order of [['blocker', 'warning'], ['warning', 'blocker']] as const) {
+          for (const premiseOn of [1, 2] as const) {
+            expect([merge, order, premiseOn, await mergedDrop(merge, order, premiseOn)]).toEqual([merge, order, premiseOn, [['warning', 'blocker', [['drop', 'disproved']]]]]);
+          }
+        }
+      }
+      // The finders split on the grade, so like any split blocker the finding is a blocker only once a check confirms the
+      // consequence the judge names. Copies every finder filed as blockers come back as a blocker.
+      expect(await mergedDrop('title', ['blocker', 'blocker'], 2)).toEqual([['blocker', 'blocker', [['drop', 'disproved']]]]);
+      // Copies no finder filed as a blocker are never checked.
+      const asking = asked.length;
+      expect(await mergedDrop('duplicateOf', ['warning', 'warning'], 1)).toEqual([['ignore', 'warning', undefined]]);
+      expect(asked.length).toBe(asking);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
