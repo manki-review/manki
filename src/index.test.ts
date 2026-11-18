@@ -3103,9 +3103,20 @@ describe('runFullReview orchestration', () => {
     jest.mocked(createLLMClient).mockImplementation(() => ({
       sendMessage: jest.fn(), warmupCLI,
     }));
+    // The failed run of the same head keeps its report, since this round posts no verdict.
+    const failed = { id: 31, body: '🔴 **Review failed** boom\n\n<!-- manki -->\n\n---\nNot reviewed yet · head `abc123` · review failed\n- [ ] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-18T09:00:00Z' };
+    jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([failed]);
 
-    await callRunFullReview();
+    try {
+      await callRunFullReview();
+    } finally {
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
+    }
 
+    expect(ghUtils.markProgressCommentSuperseded).not.toHaveBeenCalled();
+    expect(ghUtils.markFailedProgressSuperseded).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 31 }));
+    expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 31 }));
     const posted = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(posted.verdict).toBe('COMMENT');
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual({ noVerdict: true });

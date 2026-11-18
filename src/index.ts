@@ -1115,7 +1115,7 @@ async function postUnreviewedRound(
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
   await replacePreviousReviews(target, progress, reviewId, 'APPROVED');
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: metadata.timing.totalMs }, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
-  await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
+  await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, { noVerdict: true });
   return { conclusion: 'action_required', title: 'Not reviewed', summary };
 }
 

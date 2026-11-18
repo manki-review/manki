@@ -869,13 +869,14 @@ async function holdApproval(
  * note. Call it once a review posts its verdict on `headSha`.
  * Marks every older failed or incomplete review progress comment as superseded by that verdict, whatever commit it was for.
  * With `pauseLifted`, when that round lifted the pause, each pause notice that lost its settings block is marked as resumed.
+ * With `noVerdict`, for a round no model read, it leaves the failed and incomplete progress comments as they are.
  * With `approvalOnly`, for an auto-approval, it deletes only the withheld and approval-held notices and leaves every other
  * comment as it is, the conflict note included. An auto-approval posts no review round, and it can approve while GitHub
  * has not said whether the PR conflicts.
  */
 async function retireStaleNotices(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
-  { pauseLifted = false, approvalOnly = false } = {},
+  { pauseLifted = false, approvalOnly = false, noVerdict = false } = {},
 ): Promise<void> {
   let comments: Awaited<ReturnType<typeof fetchPRComments>>;
   try {
@@ -892,7 +893,7 @@ async function retireStaleNotices(
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
       } else if (approvalOnly) {
         continue;
-      } else if (isFailedProgress(c.body)) {
+      } else if (!noVerdict && isFailedProgress(c.body)) {
         await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
       } else if (pauseLifted && c.body.includes(PAUSE_NOTICE_MARKER) && !c.body.includes(SETTINGS_MARKER)) {
         const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER);
