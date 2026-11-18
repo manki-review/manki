@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse } from '../utils';
-import { buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -383,13 +383,6 @@ function reachedNoModel(stdout: string): boolean {
   return started?.type === 'thread.started' && turn?.type === 'turn.started' && notes.length > 0 && notes.every(isNoNetwork);
 }
 const RESUME_PROMPT = 'The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
-const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
-
-/** Reads a wait worded as a duration, such as `in 3s`, `in 320ms` or `in 1m30s`, in milliseconds. Any other text has none. */
-function advisedWaitMs(resetsAt = ''): number | undefined {
-  if (!/^in (?:\d+(?:\.\d+)?(?:ms|[hms]))+$/.test(resetsAt)) return undefined;
-  return Math.ceil([...resetsAt.matchAll(/(\d+(?:\.\d+)?)(ms|[hms])/g)].reduce((sum, [, n, unit]) => sum + Number(n) * UNIT_MS[unit], 0));
-}
 
 /**
  * Returns why the stream of a Codex run failed and how long to pause before resume number `resume` of the call, or

@@ -95,6 +95,14 @@ export interface QuotaMatch {
   resetsAt?: string;
 }
 
+const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
+
+/** Reads a wait worded as a duration, such as `in 3s`, `in 320ms` or `in 1m30s`, in milliseconds. Any other text has none. */
+export function advisedWaitMs(resetsAt = ''): number | undefined {
+  if (!/^in (?:\d+(?:\.\d+)?(?:ms|[hms]))+$/.test(resetsAt)) return undefined;
+  return Math.ceil([...resetsAt.matchAll(/(\d+(?:\.\d+)?)(ms|[hms])/g)].reduce((sum, [, n, unit]) => sum + Number(n) * UNIT_MS[unit], 0));
+}
+
 /** Returns the used-up limit or overload that `text` reports, or `undefined` when it reports none. */
 export function matchQuotaText(text: string): QuotaMatch | undefined {
   const tail = text.slice(-QUOTA_TAIL_CHARS);
