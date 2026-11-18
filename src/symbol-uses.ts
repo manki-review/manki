@@ -90,6 +90,10 @@ const MAX_COMPARED_CHARS = 2 * 1024 * 1024;
 const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
+/** Units of the change listed a round, in diff order. */
+const MAX_UNITS = 100;
+/** Changed lines a condition unit shows. */
+const MAX_UNIT_LINES = 6;
 const MAX_ITEM_CHARS = 60;
 const MAX_BASES = 8;
 /** The types followed to tell whether a type derives from another. A type with a longer line of bases may. */
@@ -537,6 +541,21 @@ export interface AddedPiece {
   code: string;
 }
 
+/** A part of the change a finder answers for in a line of its own: a changed function, or a condition the change adds, changes or removes. */
+export interface ChangeUnit {
+  /** `U1`, `U2` and on, in the order of the list. */
+  id: string;
+  kind: 'function' | 'condition';
+  file: string;
+  /** The first head line. For a removed condition, the head line where it was. */
+  start: number;
+  end: number;
+  /** The function's name. */
+  name?: string;
+  /** The condition's changed lines, each as the diff shows it with `+` or `-` in front. */
+  code?: string;
+}
+
 interface Lookup {
   field: string;
   item: string;
@@ -571,6 +590,10 @@ export interface UsesOutsideDiff {
   siblings: SiblingQuestions;
   /** The structure the change adds, the largest pieces first. */
   pieces?: AddedPiece[];
+  /** The functions and conditions the change touches outside tests, in diff order, from `changeUnits`. */
+  units?: ChangeUnit[];
+  /** How many units `MAX_UNITS` left out. */
+  unitsOverLimit?: number;
 }
 
 export interface UsesOptions {
@@ -590,9 +613,9 @@ const NO_SECTION = { section: '', finderSection: '', readingSection: '' };
  * Returns a prompt section that lists, for each type, field, variant, function, constant and config key the diff changes,
  * where the head commit in `workspace` uses it outside the changed lines, other packages first, then other files, then
  * the same file. It also lists the types whose fields the diff reads or changes, with all their fields. The record holds
- * the same list without the quoted code. From the same parse it returns the sibling comparisons worth asking about and
- * the structure the change adds. The section is empty, with no record, when there is nothing to list, and on any
- * failure, which it logs and which also returns no comparisons and no pieces.
+ * the same list without the quoted code. From the same parse it returns the sibling comparisons worth asking about, the
+ * structure the change adds and the units of the change. The section is empty, with no record, when there is nothing
+ * to list, and on any failure, which it logs and which also returns no comparisons, no pieces and no units.
  */
 export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], dependencyNames: forDependency = false, loadApi = loadAstGrep, fullDiff = diff }: UsesOptions = {}): Promise<UsesOutsideDiff> {
   if (!workspace || !existsSync(join(workspace, '.git'))) {
@@ -603,7 +626,7 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
     const started = Date.now();
     const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff);
     const { fields, implementations } = uses.siblings;
-    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons and ${uses.pieces?.length ?? 0} added pieces`);
+    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons, ${uses.pieces?.length ?? 0} added pieces and ${uses.units?.length ?? 0} units`);
     return uses;
   } catch (error) {
     const failed = (error instanceof Error ? error.message : String(error)).slice(0, MAX_FAILURE_CHARS);
@@ -1004,6 +1027,9 @@ async function buildUsesSection(
   const reviewed = new Set(diff.files.map(f => f.path));
   // A file left out of `diff` adds no pieces, but a piece can move out of it, so its removed lines are read by keyword.
   const pieces = addedPieces(diff, declared, movedNames(fullDiff, parser, file => addsNoPieces(file) || !reviewed.has(file)), addsNoPieces);
+  const allUnits = changeUnits(files, declared, addsNoPieces);
+  const units = allUnits.slice(0, MAX_UNITS);
+  if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -1030,6 +1056,7 @@ async function buildUsesSection(
   ])].filter(name => isSearchable(name) && isCodeLike(name)).slice(0, MAX_SYMBOLS) : [];
   const nothing = {
     ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }), ...(pieces.length > 0 && { pieces }),
+    ...(units.length > 0 && { units }), ...(allUnits.length > units.length && { unitsOverLimit: allUnits.length - units.length }),
   };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
@@ -1379,6 +1406,95 @@ function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], removed: Reado
     if (p.size > lines.length) lines.push(`... ${p.size - lines.length} more lines`);
     return { ...p, code: lines.join('\n') };
   });
+}
+
+/**
+ * Returns the units of the change a finder answers for, in diff order: each function the diff touches, and each run of
+ * changed lines that adds, changes or removes a condition. A condition is a line whose code opens a branch, loop, guard
+ * or assertion, or joins checks with `&&` or `||`. Removed condition lines go with the added ones of the same run, and a
+ * run that only removes them is a unit at the head line where they were. Files `skip` names and test code add none.
+ */
+function changeUnits(files: DiffFile[], declared: ChangedSymbol[], skip: (file: string) => boolean): ChangeUnit[] {
+  const units: Array<Omit<ChangeUnit, 'id'>> = [];
+  for (const file of files) {
+    if (skip(file.path)) continue;
+    const own = declared.filter(s => s.file === file.path);
+    const tests = own.filter(s => s.test).map(s => [s.start ?? s.line, s.end ?? s.line]);
+    for (const s of own) {
+      if (s.kind === 'function' && !s.test && IDENTIFIER.test(s.name)) units.push({ kind: 'function', file: file.path, start: s.start ?? s.line, end: s.end ?? s.line, name: s.name });
+    }
+    for (const unit of changedConditions(file)) {
+      if (!tests.some(([from, to]) => from <= unit.start && unit.end <= to)) units.push(unit);
+    }
+  }
+  const order = new Map(files.map((f, i) => [f.path, i]));
+  return units
+    .sort((a, b) => order.get(a.file)! - order.get(b.file)! || a.start - b.start || a.end - b.end)
+    .map((unit, i) => ({ id: `U${i + 1}`, ...unit }));
+}
+
+// A line of code that opens a branch, loop, guard or assertion, such as `if`, `elif`, `} else if`, `- if:` or `assert`, or joins checks with `&&` or `||`.
+const CONDITION = /^\s*(?:[-}]\s*)?(?:else\s+if|elif|elsif|if|unless|while|until|guard|when)\b|^\s*(?:debug_)?assert(?:\w*!?\s*\(|\s)|&&|\|\|/;
+
+/** Whether the code of `text`, without a trailing comment, holds a condition. */
+function isCondition(text: string): boolean {
+  return CONDITION.test(text.replace(COMMENT, ''));
+}
+
+/** Returns the conditions of `file`'s changed lines, one unit per stretch of consecutive head lines in a run of changed lines. */
+function changedConditions(file: DiffFile): Array<Omit<ChangeUnit, 'id'>> {
+  const units: Array<Omit<ChangeUnit, 'id'>> = [];
+  const addRun = (removed: string[], added: Array<[number, string]>, at: number) => {
+    const gone = removed.filter(isCondition).map(text => `-${text}`);
+    const kept = added.filter(([, text]) => isCondition(text));
+    if (kept.length === 0) {
+      if (gone.length > 0) units.push({ kind: 'condition', file: file.path, start: at, end: at, code: unitCode(gone) });
+      return;
+    }
+    let first = true;
+    for (let i = 0; i < kept.length;) {
+      let j = i;
+      while (j + 1 < kept.length && kept[j + 1][0] === kept[j][0] + 1) j++;
+      const lines = kept.slice(i, j + 1).map(([, text]) => `+${text}`);
+      units.push({ kind: 'condition', file: file.path, start: kept[i][0], end: kept[j][0], code: unitCode(first ? [...gone, ...lines] : lines) });
+      first = false;
+      i = j + 1;
+    }
+  };
+  for (const hunk of file.hunks) {
+    let line = hunk.newStart;
+    let removed: string[] = [];
+    let added: Array<[number, string]> = [];
+    let at = line;
+    const flush = () => {
+      if (removed.length + added.length > 0) addRun(removed, added, at);
+      removed = [];
+      added = [];
+    };
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-')) {
+        if (added.length > 0) flush();
+        if (removed.length === 0) at = line;
+        removed.push(content.slice(1));
+        continue;
+      }
+      if (content.startsWith('+')) {
+        if (removed.length + added.length === 0) at = line;
+        added.push([line, content.slice(1)]);
+      } else flush();
+      line++;
+    }
+    flush();
+  }
+  return units;
+}
+
+/** Returns `lines` as a unit shows them, each cut to `MAX_EXCERPT_LINE_CHARS`, at most `MAX_UNIT_LINES` of them. */
+function unitCode(lines: string[]): string {
+  const shown = lines.slice(0, MAX_UNIT_LINES).map(shortLine);
+  if (lines.length > shown.length) shown.push(`... ${lines.length - shown.length} more lines`);
+  return shown.join('\n');
 }
 
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
