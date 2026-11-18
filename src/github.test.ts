@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 
 import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
+import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -554,6 +554,18 @@ describe('formatFindingComment', () => {
     expect(render(baseFinding)).not.toContain('How this was checked');
     expect(render({ ...baseFinding, toolSource: 'CodeQL' })).not.toContain(unchecked);
     expect(render({ ...baseFinding, reviewers: [] })).not.toContain(unchecked);
+
+    // A finding posted as pre-existing because the code before this PR fails the same way says so, with the lines the check read.
+    const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'] };
+    const confirmedBefore: Finding = {
+      ...baseFinding, severity: 'warning', tags: ['pre-existing'], evidence: { checks: [], proof: ['src/main.ts:42'] },
+      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', base: same },
+    };
+    expect(render(confirmedBefore)).toContain(`**Same before this PR**\nManki read the code before this PR and found it fails the same way, so this PR did not cause it. The queue had no cap before this PR. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
+    expect(render(confirmedBefore)).toContain('double-checked, same before this PR</summary>');
+    // Without the pre-existing mark, or with an answer left open, nothing says so.
+    expect(render({ ...confirmedBefore, tags: undefined })).not.toContain('Same before this PR');
+    expect(render({ ...confirmedBefore, refutation: { ...confirmedBefore.refutation!, base: { ...same, outcome: 'unsettled' } } })).not.toContain('Same before this PR');
 
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
     const disprovedFinding: Finding = {
@@ -5573,7 +5585,7 @@ describe('postReview non-blocking findings', () => {
     const link = (line: number, file = 'src/a.ts'): string => `[\`${file}:${line}\`](https://github.com/owner/repo/blob/abc1234/${file}#L${line})`;
     const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
     const capped = nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' });
-    // Of the findings on code the PR did not change, the fold lists the warnings, which no check confirmed.
+    // A pre-existing finding left out of the review is in the round record only, so the fold lists none of them.
     const unpostedPreExisting = [nonBlocking('warning', 'Old loop', 18), nonBlocking('note', 'Old name', 19)];
     const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
     const overflow = { title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.\nBoth inputs are bounded. A third sentence stays in the log.' };
@@ -5591,14 +5603,14 @@ describe('postReview non-blocking findings', () => {
       '---',
       '',
       '<details>',
-      '<summary>Checked and left out: 7 findings (1 disproved, 4 unproven, 2 not finished)</summary>',
+      '<summary>Checked and left out: 6 findings (1 disproved, 3 unproven, 2 not finished)</summary>',
       '',
       '#### Disproved by a tool check · 1 finding',
       '',
       `- **Overflow** · ${link(2, 'src/m.ts')}`,
       '  Checked at src/api.ts:3. Both inputs are bounded.',
       '',
-      '#### Not proven, so not listed · 4 warnings',
+      '#### Not proven, so not listed · 3 warnings',
       '',
       `- **Unsettled** · ${link(15)}`,
       '  A tool check could not confirm it.',
@@ -5606,8 +5618,6 @@ describe('postReview non-blocking findings', () => {
       '  Nothing proves it and no tool check ran on it.',
       `- **Uncited** · ${link(17)}`,
       '  It cites no lines that prove it.',
-      `- **Old loop** · ${link(18)}`,
-      '  On code this PR did not change, and no tool check confirmed it.',
       '',
       '#### Not finished checking · 2 leads',
       '',
@@ -5645,9 +5655,7 @@ describe('postReview non-blocking findings', () => {
 
     // An incomplete round's progress comment has no judge decisions, so its review has no fold. Neither has a round that left nothing out.
     expect(await bodyOf({ reviewComplete: false, unposted: unproven, openLeads: leads }, [overflow])).not.toContain('Checked and left out');
-    expect(await bodyOf({ unposted: [capped], unpostedPreExisting: unpostedPreExisting.slice(1) })).not.toContain('Checked and left out');
-    // A warning on unchanged code is the judge's decision too, so a fold of those alone names the log.
-    expect(await bodyOf({ unpostedPreExisting })).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not proven, so not listed · 1 warning\n\n- **Old loop** · ${link(18)}\n  On code this PR did not change, and no tool check confirmed it.\n\n${log}\n\n</details>`);
+    expect(await bodyOf({ unposted: [capped], unpostedPreExisting })).not.toContain('Checked and left out');
   });
 
   it('posts every warning on a changed line inline, at most five security findings below a warning besides, lists the rest, and posts every suggestion on a changed line', async () => {
@@ -5989,7 +5997,7 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).not.toContain('On old code</b>');
     // A note on reviewed code gets no thread, even on a changed line, and sits in the section of listed suggestions.
     expect(review.body).toMatch(/### Pre-existing[\s\S]*\n\n---\n\n<details>\n<summary><b>1 suggestion<\/b> · not blocking<\/summary>\n\n<details>\n<summary>\u2728 <b>Note on old code<\/b>/u);
-    expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nIt sits on code this PR did not change, so it doesn't block\. If it is a blocker, it is listed as a warning\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
+    expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nIt sits on code this PR did not change, or the code before this PR fails the same way, so it doesn't block\. If it is a blocker, it is listed as a warning\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
     expect(review.body.indexOf('Missed by an earlier review')).toBeLessThan(review.body.indexOf('### Pre-existing'));
     // One missed finding reads as singular, and several pre-existing ones as plural.
     const counting = makeOctokit();
@@ -6004,7 +6012,7 @@ describe('postReview non-blocking findings', () => {
     // Both late warnings have a thread, so both hold the approval. The pre-existing ones never do.
     expect(counted).toMatch(/^\u26A0\uFE0F \*\*2 warnings to address\.\*\* Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later\. Manki approves once every warning is handled\./u);
     expect(counted).toContain('### Missed by an earlier review · 1 suggestion\n\nIt sits on lines an earlier round already reviewed, so it doesn\'t block this PR.');
-    expect(counted).toContain('### Pre-existing · 2 warnings\n\nThese sit on code this PR did not change, so none of them block. A blocker among them is listed as a warning.');
+    expect(counted).toContain('### Pre-existing · 2 warnings\n\nThese sit on code this PR did not change, or the code before this PR fails the same way, so none of them block. A blocker among them is listed as a warning.');
     // With every late warning in a thread, the body has no section for them.
     const threaded = makeOctokit();
     const verdictReport = { verdict: 'READY' as const, blockers: [], summary: 'Nothing blocks.', whatThisDoes: 'Adds a retry.', whatToTest: { steps: ['Load the page twice.'] } };

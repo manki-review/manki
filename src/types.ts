@@ -219,7 +219,10 @@ export function canLeaveOut(f: Finding): boolean {
   return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
 }
 
-/** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */
+/**
+ * Marks a finding on lines outside every hunk of the PR's diff, which never blocks unless it is a security finding. It
+ * also marks a finding whose failure the checks found at the PR's base by `sameOnBase`, which never blocks.
+ */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
@@ -861,6 +864,12 @@ export function restsOnDrop(f: Pick<Finding, 'doubts'>): boolean {
  */
 export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' };
 
+/**
+ * The question each check of a blocker answers in its own `base` answer, apart from the finding's doubts. A disproof
+ * says the code at the PR's base fails the same way. It is never a doubt, so no grade waits on it.
+ */
+export const BASE_QUESTION = 'The failure is this PR\'s own: the code at the PR\'s base does not fail the same way for the same input through the same path, or this PR makes that path newly reachable or the failure worse';
+
 /** Returns `doubts` with `REACH_DOUBT` in place of any doubt that words the same premise. */
 export function withReachDoubt(doubts: readonly Doubt[] = []): Doubt[] {
   return [...doubts.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT];
@@ -897,6 +906,8 @@ export interface Refutation {
   relatedProof?: string[];
   /** The answer to each premise in the finding's `doubts`, in order. The `outcome` follows from them. */
   premises?: PremiseCheck[];
+  /** The answer to `BASE_QUESTION`. It never changes the `outcome`. */
+  base?: PremiseCheck;
   /** The finding's own file and the files the outcome cites. */
   files: string[];
   /** SHA-256 over `files` at the commit checked. A later round reuses the outcome while it still matches. */
@@ -924,7 +935,7 @@ export function towardFinding(p: Pick<PremiseCheck, 'outcome' | 'decides'>): Ref
  * Returns what `check` says about its finding. It is `disproved` when the refuter answered that the defect does not
  * exist, whatever its `premises` add up to. Otherwise it is the check's `outcome`.
  */
-export function outcomeOf(check: Refutation): RefutationOutcome {
+export function outcomeOf(check: Pick<Refutation, 'outcome' | 'defect'>): RefutationOutcome {
   return check.defect === 'disproved' ? 'disproved' : check.outcome;
 }
 
@@ -949,6 +960,19 @@ export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome 
 export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts'>): boolean {
   const decides = (p: PremiseCheck): Doubt['decides'] | undefined => p.decides ?? finding.doubts?.find(d => d.premise === p.premise)?.decides;
   return check.defect === 'confirmed' && !check.premises?.some(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade');
+}
+
+/**
+ * Returns the answer that shows the code at the PR's base fails the same way as `finding`, when every check of it
+ * disproved `BASE_QUESTION` with proof lines. A security finding needs two such checks on different models, since one
+ * model's answer, read from files the PR author controls, must not lower it. Any other outcome keeps the finding as it is.
+ */
+export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'tags' | 'reviewers'>): PremiseCheck | undefined {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  const answers = checks.map(r => r.base);
+  if (answers.length === 0 || !answers.every(a => a?.outcome === 'disproved' && !!a.proof?.length)) return undefined;
+  if (isSecurityFinding(finding.tags, finding.reviewers) && (checks.length < 2 || !checks[0].model || !checks[1].model || checks[0].model === checks[1].model)) return undefined;
+  return answers[0];
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */

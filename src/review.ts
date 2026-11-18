@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, CheckProgress, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -63,15 +63,16 @@ export function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: Re
   return touchesChangedCode(f, diff) ? 'touches_diff' : 'pre_existing';
 }
 
-/** Whether a finding on code the PR did not change is worth an author's time: a security finding, a blocker, or a warning a tool check confirmed. */
-function postedWhenPreExisting(f: Finding): boolean {
-  return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker' || (f.severity === 'warning' && checkStatus(f) === 'confirmed');
+/** Whether a pre-existing finding is worth an author's time: a security finding, or one that would block had this PR caused it. */
+export function postedWhenPreExisting(f: Finding): boolean {
+  return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker';
 }
 
 /**
- * Tags each finding that `checkOf` finds on code this PR did not change as pre-existing. A non-security blocker among
- * them becomes a warning, so no check that reads the severity, in this round or a later one, lets it block.
- * Only the findings `postedWhenPreExisting` accepts are `posted`. The rest are `unposted`, for the round record only.
+ * Tags each finding that `checkOf` finds on code this PR did not change, or that `sameOnBase` finds failing the same
+ * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
+ * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
+ * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker.
  */
 function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -79,17 +80,19 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
   for (const f of findings) {
     // A claim the diff or the files contradict is kept with why, so the record shows which condition failed.
     const check = checkOf(f);
-    if (check !== 'pre_existing') {
+    const base = f.severity === 'ignore' ? undefined : sameOnBase(f);
+    if (check !== 'pre_existing' && !base) {
       posted.push(check ? { ...f, preExistingCheck: check } : f);
       continue;
     }
-    const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], preExistingCheck: check };
+    const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], ...(check && { preExistingCheck: check }) };
     if (!postedWhenPreExisting(f)) {
       core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
       unposted.push(tagged);
-    } else if (f.severity === 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) {
-      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
-      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', f.preExisting), originalSeverity: f.originalSeverity ?? 'blocker' });
+    } else if (f.severity === 'blocker' && (base || !isSecurityFinding(f.tags, f.reviewers))) {
+      const why = base ? `the code before this PR fails the same way: ${base.reason}` : f.preExisting;
+      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: ${base ? 'the code before this PR fails the same way' : 'the PR did not change that line'}`);
+      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', why), originalSeverity: f.originalSeverity ?? 'blocker' });
     } else {
       posted.push(tagged);
     }
@@ -1624,17 +1627,18 @@ export async function runReview(
     const kept = finalFindings;
     const checked = await refuteBlockers(refutation.client, kept, {
       workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
-      outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding),
-      preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
+      outsideInput: config.review?.outside_input, restatesEarlier: finding => restatesEarlier(earlier, finding), excludedPaths: options.excludedPaths,
+      unpostedLater: finding => unchangedCheck(finding) === 'pre_existing' && !postedWhenPreExisting(finding), roundEnd: true, rules: config.review?.rules,
     });
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
     finalFindings = checked.filter(f => f.severity !== 'ignore');
     if (stopped) return incompleteAfterJudge(stopped);
   }
-  // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
-  const { posted, unposted: unpostedPreExisting } = markPreExisting(finalFindings, unchangedCheck);
-  finalFindings = posted;
+  // After the suppressions, so a blocker the PR did not cause keeps their blocker guard.
+  const preExisting = markPreExisting(finalFindings, unchangedCheck);
+  finalFindings = preExisting.posted;
+  let unpostedPreExisting = preExisting.unposted;
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
   // Notes on test scaffolding are the most common runaway-feedback driver in late
@@ -1788,10 +1792,13 @@ export async function runReview(
         return sameAs ? { ...checked, sameAs } : checked;
       });
       // A disproof never lowers a blocker of the reader's, so the outcome stands and the refutation only shows what it
-      // found. It drops a claimed build failure that was posted as a warning.
-      const refuted = (refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
-        : readerBlockers).filter(f => f.severity !== 'ignore');
+      // found. It drops a claimed build failure that was posted as a warning. A blocker the check finds failing the same
+      // way before this PR is pre-existing, as any other.
+      const attributed = markPreExisting((refutation
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input, excludedPaths: options.excludedPaths })
+        : readerBlockers).filter(f => f.severity !== 'ignore'), () => undefined);
+      const refuted = attributed.posted;
+      unpostedPreExisting = [...unpostedPreExisting, ...attributed.unposted];
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
       const foldWrap = clients.dedup && lateUsage({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
@@ -3109,8 +3116,8 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
  * it again. A warning leaves the list only for certain, and `result.carriedEnded` says why: a finding the judge graded
  * this round names its problem, kept or not, or the file at the head has fewer places reading like its `citedLine` than
  * when it was listed, or is gone, or the judge found it fixed (`result.carriedFixed`).
- * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a warning on
- * code the PR did not change that no check confirmed.
+ * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
+ * pre-existing warning the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
  * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
@@ -3120,7 +3127,7 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   if (!last) return;
   const warnings = bodyWarnings(priorRounds);
   const fixed = new Set(result.carriedFixed);
-  // A warning left out because nothing proves or confirms it withdraws nothing, so the warning an earlier round listed stays listed.
+  // A warning left out because nothing proves it or because it is pre-existing withdraws nothing, so the warning an earlier round listed stays listed.
   const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning');
   const unproven = new Set([...(result.unposted ?? []).filter(leftOutUnproven), ...unconfirmed].map(findingKey));
   const settled = (findings: Finding[]) => findings.filter(f => !unproven.has(findingKey(f)));

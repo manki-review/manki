@@ -7,7 +7,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { isLineInDiff, listedFilesDiff } from './diff';
 import { issueBox, ISSUE_BOX_LABEL } from './issue-box';
@@ -1714,8 +1714,8 @@ function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: b
       ? 'It sits on lines an earlier round already reviewed, so it doesn\'t block this PR.'
       : 'These sit on lines an earlier round already reviewed, so none of them block this PR.'],
     ['Pre-existing', preExisting, preExisting.length === 1
-      ? 'It sits on code this PR did not change, so it doesn\'t block. If it is a blocker, it is listed as a warning.'
-      : 'These sit on code this PR did not change, so none of them block. A blocker among them is listed as a warning.'],
+      ? 'It sits on code this PR did not change, or the code before this PR fails the same way, so it doesn\'t block. If it is a blocker, it is listed as a warning.'
+      : 'These sit on code this PR did not change, or the code before this PR fails the same way, so none of them block. A blocker among them is listed as a warning.'],
   ];
   return groups.flatMap(([title, listed, intro]) => {
     const bySeverity = [...listed].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
@@ -1858,16 +1858,12 @@ function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo:
 
 /**
  * Returns the fold that lists what the round checked and left out: each finding of `disproved`, each warning of
- * `result.unposted` that nothing proves, each warning of `result.unpostedPreExisting`, which no check confirmed, and
- * each lead of `result.openLeads`. Every kind shows its first `MAX_LISTED_FINDINGS`. Returns none when there is
- * nothing to list.
+ * `result.unposted` that nothing proves, and each lead of `result.openLeads`. Every kind shows its first
+ * `MAX_LISTED_FINDINGS`. Returns none when there is nothing to list.
  */
 function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], linkTo: LineLink): string | null {
   const because = (f: Finding, why: string): LeftOutEntry => ({ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` });
-  const unproven = [
-    ...(result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []),
-    ...(result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning').map(f => because(f, `${UNPOSTED_REASONS.pre_existing}, and no tool check confirmed it`)),
-  ];
+  const unproven = (result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []);
   const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: f.leadSince ? `Open since round ${f.leadSince}.` : undefined }));
   const kinds = [
     { heading: 'Disproved by a tool check', noun: 'finding', short: 'disproved', entries: disproved },
@@ -3013,6 +3009,8 @@ const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }
 const DISPROVED_RAISE_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
 const OVERRULED_DISPROOF_TEXT = 'The finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself.';
 const PAIR_REFUTATION_LABEL = 'Second check, on another model';
+const SAME_ON_BASE_LABEL = 'Same before this PR';
+const SAME_ON_BASE_TEXT = 'Manki read the code before this PR and found it fails the same way, so this PR did not cause it.';
 
 /** Opens the fold under a finding comment, so reading the comment back stops its description there. */
 const CHECKS_MARKER = '<!-- manki-checks -->';
@@ -3292,7 +3290,7 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
  * Returns the part for one refuter's `check`, with the lines it cites. The lines of a confirming check that became
  * proof of the finding, in `evidence`, show under "Checked in the code" and not here.
  */
-function refutationPart(label: string, lead: string, check: Refutation, evidence: Finding['evidence'], { linkTo, related }: CodeLinks, known: readonly string[]): FoldPart {
+function refutationPart(label: string, lead: string, check: Pick<Refutation, 'outcome' | 'defect' | 'reason' | 'proof' | 'relatedProof'>, evidence: Finding['evidence'], { linkTo, related }: CodeLinks, known: readonly string[]): FoldPart {
   const { reason, proof, relatedProof } = check;
   const confirmed = outcomeOf(check) === 'confirmed';
   const unlisted = (lines: readonly string[] = [], proven: readonly string[] = []): string[] => lines.filter(line => !(confirmed && proven.includes(line)));
@@ -3382,7 +3380,8 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const { linkTo, files, related } = links;
   const known = knownFiles(finding, links);
   const checks = findingChecks(finding, known);
-  const refutations = refutationParts(finding, links, known);
+  const base = isPreExisting(finding) ? sameOnBase(finding) : undefined;
+  const refutations = [...refutationParts(finding, links, known), ...(base ? [refutationPart(SAME_ON_BASE_LABEL, SAME_ON_BASE_TEXT, base, finding.evidence, links, known)] : [])];
   // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too. The
   // evidence of a blocker listed again is an earlier round's, and so is the commit its related lines were read at.
   const relatedLines = relatedLineLinks(finding.evidence?.relatedProof, related, finding.relisted);
@@ -3429,7 +3428,10 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   return {
     parts: [...(rule ? [rule] : []), ...checked, ...refutations],
     reads: [places && `${places} ${places === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
-    outcomes: [rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`].filter(o => typeof o === 'string'),
+    outcomes: [
+      rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`,
+      base && 'same before this PR',
+    ].filter(o => typeof o === 'string'),
     ...status,
   };
 }
