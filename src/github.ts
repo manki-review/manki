@@ -1736,9 +1736,9 @@ function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: b
 }
 
 /**
- * Posts each comment as a file-level review thread and returns the findings GitHub refused. These are the threads of a
- * review whose line comments GitHub refused. The create-review endpoint does not document `subject_type` on its
- * comments, so these go through the single-comment endpoint.
+ * Posts each comment as a file-level review thread and returns the findings GitHub refused. These are the threads on a
+ * file with no changed line, and those of a review whose line comments GitHub refused. The create-review endpoint does
+ * not document `subject_type` on its comments, so these go through the single-comment endpoint.
  */
 async function postFileLevelComments(
   octokit: Octokit,
@@ -1964,6 +1964,8 @@ export async function postReview(
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
   /** The threads off the finding's line, also posted as line comments on their file's first changed line. GitHub takes them as file-level threads when it refuses the review's lines. */
   const fileComments: Array<{ path: string; body: string; finding: Finding }> = [];
+  /** The threads on a changed file with no line a comment can go on, such as a deleted or renamed file, posted as file-level threads after the review. */
+  const fileOnly: typeof fileComments = [];
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
   const stillOpen: string[] = [];
@@ -1990,8 +1992,8 @@ export async function postReview(
   const carried = result.carried ?? [];
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
   const changed = diff?.files.map(f => f.path) ?? [];
-  // GitHub only takes comments on changed lines, so the first file with one carries the thread of a blocker that sits elsewhere.
-  const anchorFile = diff?.files.find(f => firstCommentableLine(f) !== undefined);
+  // GitHub only takes comments on changed files, so the first one with a changed line carries the thread of a blocker that sits elsewhere.
+  const anchorFile = diff?.files.find(f => firstCommentableLine(f) !== undefined) ?? diff?.files.at(0);
   const anchor = anchorFile?.path;
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
@@ -1999,36 +2001,40 @@ export async function postReview(
 
   /**
    * Posts a blocker or a holding warning as a thread of its own: a line comment on a changed line, or else a line comment
-   * on the first changed line of its file, or of `anchor` when its file is not changed. A finding with no such line is
-   * listed in the body. `matched` is its `openThreadFor`.
+   * on the first changed line of its file, or of `anchor` when its file is not changed. A changed file with no such line
+   * takes a file-level thread. `matched` is its `openThreadFor`, which keeps carrying it.
    */
   const postThread = (f: Finding, matched: string | undefined): void => {
     const blocking = isBlockingFinding(f);
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
     const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
+    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      lineThreads.push({ path: f.file, finding: f });
+      threadFindings.push(f);
+      return;
+    }
+    if (matched) {
+      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
+      leftTo.set(f, matched);
+      return;
+    }
     const onFile = elsewhere ? anchorFile : diffFile;
-    const fileLine = onFile && firstCommentableLine(onFile);
-    const onOwnLine = !elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)));
-    if (!onOwnLine && !fileLine) {
+    if (!onFile) {
       if (blocking) (f.file && f.line > 0 ? invalidComments : generalFindings).push(formatFindingBlock(f, links, true));
       unthreaded.push(f);
       return;
     }
-
-    if (onOwnLine) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
-      lineThreads.push({ path: f.file, finding: f });
-      threadFindings.push(f);
-    } else if (matched) {
-      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
-      leftTo.set(f, matched);
-    } else {
-      const comment = { path: onFile!.path, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f };
-      validComments.push({ path: comment.path, line: fileLine!, side: 'RIGHT', body: comment.body });
+    const comment = { path: onFile.path, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f };
+    const line = firstCommentableLine(onFile);
+    if (line) {
+      validComments.push({ path: comment.path, line, side: 'RIGHT', body: comment.body });
       fileComments.push(comment);
-      threadFindings.push(f);
-      if (elsewhere) (blocking ? detached : detachedWarnings).push(f);
+    } else {
+      fileOnly.push(comment);
     }
+    threadFindings.push(f);
+    if (elsewhere) (blocking ? detached : detachedWarnings).push(f);
   };
 
   for (const f of result.findings) {
@@ -2184,7 +2190,7 @@ export async function postReview(
   const codeTokens = diff ? codeTokensFromDiff(diff) : new Set<string>();
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
   const body = highlightCode(renderBody(), codeTokens);
-  const postedComments = validComments.map(highlight);
+  const postedComments = [...validComments, ...fileOnly].map(highlight);
   const inBody = new Set([...bodyFindings, ...listedNotes, ...unthreaded]);
   // The record with each finding's place. A finding in `refused` got no thread from GitHub, so the body carries it.
   const recordFor = (refused: ReadonlySet<Finding> = new Set(), approvalRefused = false): string => {
@@ -2226,7 +2232,7 @@ export async function postReview(
       : hold?.reason === 'warnings' ? 'Warnings wait for a fix or an accepted answer' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
-  core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments, ${fileComments.length} of them off their finding's line`);
+  core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments, ${fileComments.length} of them off their finding's line, and ${fileOnly.length} file-level comments`);
 
   const withoutLineThreads = (approvalRefusal?: EventRefusal): string => highlightCode(renderBody(true, approvalRefusal), codeTokens);
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, approvalRefusal => recordFor(inline, !!approvalRefusal), headlined.map(highlight));
@@ -2234,7 +2240,7 @@ export async function postReview(
   onPosted?.();
   // A blocker or a holding warning whose line comment GitHub refused gets a file-level thread on its file.
   const retried = review.lineComments ? [] : [...fileComments, ...lineThreads.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }))];
-  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, retried.map(highlight));
+  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, [...fileOnly, ...retried].map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
     const refusedBlockers = refused.filter(isBlockingFinding);

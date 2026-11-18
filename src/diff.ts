@@ -295,8 +295,9 @@ export function addedLines(file: DiffFile): Map<number, string> {
 
 /** Returns the first line the diff adds to the file, or else the first line its hunks show of the new file. A review can comment on either. */
 export function firstCommentableLine(file: DiffFile): number | undefined {
-  const added = [...addedLines(file).keys()];
-  return added.length > 0 ? Math.min(...added) : file.hunks.find(h => h.newLines > 0)?.newStart;
+  let first: number | undefined;
+  for (const line of addedLines(file).keys()) if (first === undefined || line < first) first = line;
+  return first ?? file.hunks.find(h => h.newLines > 0)?.newStart;
 }
 
 /**

@@ -5124,8 +5124,6 @@ describe('postReview fallback paths', () => {
         { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', suggestedFix: 'use(value);', reviewers: [] },
       ]), diff);
 
-      // One review holds every thread, so the PR shows no entry of its own for a file-level finding.
-      expect(createReviewComment).not.toHaveBeenCalled();
       const review = createReview.mock.calls[0][0];
       expect(review.comments.map((c: { path: string; line: number }) => [c.path, c.line])).toEqual([['src/a.ts', 1], ['src/a.ts', 1], ['src/a.ts', 2]]);
       const [offLine, wholeFile, onLine] = review.comments as Array<{ path: string; line: number; body: string }>;
@@ -5137,14 +5135,19 @@ describe('postReview fallback paths', () => {
       expect(onLine.body).toContain('```suggestion\nuse(value);\n```');
       expect(offLine.body).toContain('```ts\nuse(value);\n```');
       expect(offLine.body).not.toContain('```suggestion');
-      // A file with no changed line takes no comment, so the body lists its warning.
-      expect(review.body).toContain('**Rename only**\n[`src/renamed.ts`](https://github.com/owner/repo/blob/sha/src/renamed.ts)\n**What goes wrong:** Desc.');
+      // A file with no line a comment can go on takes a file-level thread of its own, and only that file does.
+      expect(createReviewComment).toHaveBeenCalledTimes(1);
+      const renamed = createReviewComment.mock.calls[0][0];
+      expect(renamed).toMatchObject({ path: 'src/renamed.ts', subject_type: 'file' });
+      expect(renamed.body).toContain('**Rename only**\n\nThis concerns the whole file, not one line of it.');
+      expect(review.body).not.toContain('Rename only');
 
       // A later round reads each thread at its finding's place, so it matches the finding again and carries it there.
-      for (const [thread, line, slug] of [[offLine, 40, 'Unchanged-line-bug'], [wholeFile, 0, 'Whole-file']] as const) {
+      const threads = [[offLine, 40, 'Unchanged-line-bug'], [wholeFile, 0, 'Whole-file'], [{ ...renamed, line: undefined }, 0, 'Rename-only']] as const;
+      for (const [thread, line, slug] of threads) {
         const place = findingPlace(thread.body, thread.path, thread.line, thread.line);
         expect(currentFindingLine(place)).toBe(line);
-        expect(findPriorThreadId({ file: 'src/a.ts', lineStart: line, lineEnd: line, slug }, [{ ...place, threadId: 'T', markerSlug: slug }])).toBe('T');
+        expect(findPriorThreadId({ file: thread.path, lineStart: line, lineEnd: line, slug }, [{ ...place, threadId: 'T', markerSlug: slug }])).toBe('T');
         expect(parseFindingFromComment(thread.body).description).toBe('Desc.');
       }
     });
@@ -5179,18 +5182,18 @@ describe('postReview fallback paths', () => {
           thread('Nearby line thread', 37, 'replied'),
           thread('Resolved thread', 0, 'resolved'),
           thread('Far line thread', 10, 'open'),
-          thread('Other file', 0, 'open'),
+          { ...thread('Other file', 0, 'open'), file: 'src/renamed.ts' },
         ],
       });
 
-      // The blocker in a file with no changed line takes no comment, so the body lists it.
+      // The blocker in a file with no changed line keeps its open thread, as every other finding does.
       const posted = createReview.mock.calls[0][0].comments.map((c: { body: string }) => c.body.match(/<!-- manki:blocker:(.+?) -->/)?.[1]);
       expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'File-thread']);
       expect(createReviewComment).not.toHaveBeenCalled();
       // The record names the open thread each skipped blocker was left to, so resolving that thread can lift the block.
       const record = JSON.parse(extractReviewRecords(createReview.mock.calls[0][0].body as string).records[0]) as RoundContext;
       expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([
-        ['earlier_thread', 'T-File thread'], ['earlier_thread', 'T-Nearby line thread'], ['thread', undefined], ['thread', undefined], ['body', undefined], ['thread', undefined],
+        ['earlier_thread', 'T-File thread'], ['earlier_thread', 'T-Nearby line thread'], ['thread', undefined], ['thread', undefined], ['earlier_thread', 'T-Other file'], ['thread', undefined],
       ]);
     });
 

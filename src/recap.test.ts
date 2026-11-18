@@ -2677,7 +2677,7 @@ describe('parseFindingFromComment', () => {
       }
     }
     // Without the word of the finding data, such a sentence is the description.
-    const lineSentence = 'This is on line 2. A comment on that line is not possible, so the thread is on the file.';
+    const lineSentence = 'This is on line 2. A comment on that line is not possible, so the thread is elsewhere in the file.';
     expect(parseFindingFromComment(formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 0, description: lineSentence, reviewers: [] }, TEST_LINKS, 'file')).description).toBe(lineSentence);
     // When the title line is not at the top, the layout is not Manki's own, and no line is dropped on the word of the finding data.
     const edited = `Edited by hand.\n\n${formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/**Warning**: x.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] }, TEST_LINKS, 'detached')}`;

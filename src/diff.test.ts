@@ -731,6 +731,9 @@ describe('isLineInDiff', () => {
     expect(firstCommentableLine(file)).toBe(5);
     expect(firstCommentableLine({ ...file, hunks: [{ oldStart: 1, oldLines: 2, newStart: 0, newLines: 0, content: '-a\n-b' }] })).toBeUndefined();
     expect(firstCommentableLine({ ...file, changeType: 'renamed', hunks: [] })).toBeUndefined();
+    // More added lines than a call can take as arguments.
+    const added = 500_000;
+    expect(firstCommentableLine({ ...file, hunks: [{ oldStart: 0, oldLines: 0, newStart: 3, newLines: added, content: '+x\n'.repeat(added) }] })).toBe(3);
   });
 });
 
