@@ -919,6 +919,11 @@ export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome 
   return outcome === 'confirmed' && checks.some(r => outcomeOf(r) === 'disproved' || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
 }
 
+/** Whether `check` asked whether the defect exists and confirmed it. A confirmed premise is no such answer. */
+export function confirmsDefect(check: Refutation): boolean {
+  return check.defect === 'confirmed';
+}
+
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
 export function confirmsAll(checks: readonly Refutation[]): boolean {
   return checks.length > 0 && checks.every(r => r.defect === 'confirmed' && r.outcome === 'confirmed');
