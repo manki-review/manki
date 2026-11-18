@@ -1,0 +1,49 @@
+id: platform-4309
+repo: xdustinface/platform
+source: platform upstream PR 4309, one commit of it
+base: 23bcc5fc84250f3dc466f4fc0312027f0b9372c8
+head: b6791d35bb57fb4d1a5706bc3ded6d508521055c
+title: "fix(platform-wallet): queue a spend observation the contended wallets map would have dropped"
+body: |
+  SpendObservationHandler runs synchronously inside SPV's event fan-out, so
+  it probes the wallets map with try_read — and a failed probe permanently
+  dropped the observation. That drop was labelled fail-safe, but its cost
+  was not a wait: TransactionDetected can be the ONLY spend-bearing event a
+  dispatch ever produces (InstantLock promotions carry no record here by
+  design, and an evicted or never-confirmed transaction inserts no
+  BlockProcessed record), and the pending-spend fence has no deadline
+  behind it. Brief contention with wallet registration/removal could
+  therefore fence an input for the manager's lifetime even though the
+  wallet HAD observed it spent.
+
+  The handler cannot await (sync callback) and must not block (the map's
+  writer path must never wait on the event fan-out), so a failed probe now
+  queues the observation — per-wallet outpoint sets under a private
+  std::sync::Mutex, deduplicated since observe_spent is an idempotent
+  set-union — and EVERY delivered event retries the queue first, including
+  the spend-free variants the handler otherwise ignores. Draining on a
+  bare SyncHeightAdvanced does not retire a fence by chain progress: it
+  applies evidence that already arrived and was queued. The queue is
+  bounded at 4096 outpoints (shed with a warning; unreachable outside a
+  stalled-writer pathology) and a wallet absent from a successfully read
+  map remains terminal — that is a resolution, not contention.
+
+  Lock ordering is acyclic by construction: pending mutex, then
+  wallets.try_read (a probe, never a wait — so the handler can never be
+  the blocked edge in a cycle with the registration/removal writers), then
+  the generation's in_broadcast mutex, whose critical sections take no
+  further lock. Nothing else in the crate takes the pending mutex.
+
+  The new broadcast test holds the wallets-map write lock across the
+  delivery of the wallet's own spend event, then delivers a spend-free
+  watermark event. Before the fix the observation vanishes and the rebuild
+  stays refused with InputMidBroadcast; with it the queued observation
+  applies and the fence clears.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The queue works around the cause, which is the `tokio::sync::RwLock` on the manager's `wallets` map (`manager/mod.rs` line 335). A synchronous event handler can only probe that lock with `try_read`. The sibling `BalanceUpdateHandler` in `wallet/core/balance_handler.rs` probes the same lock and still drops its balance snapshot when the probe fails, so the balance stays stale until another balance event arrives. In `spend_observer.rs` a queued observation is applied only when a later event is delivered, so the fence stays up until one comes, and `enqueue` sheds every outpoint past `MAX_QUEUED_SPEND_OBSERVATIONS`. A map that readers load without a lock, such as an `ArcSwap`, removes the drop for both handlers and the queue with it."
+    locations: ["packages/rs-platform-wallet/src/wallet/core/spend_observer.rs", "packages/rs-platform-wallet/src/wallet/core/balance_handler.rs", "packages/rs-platform-wallet/src/manager/mod.rs", "try_read", "MAX_QUEUED_SPEND_OBSERVATIONS", "BalanceUpdateHandler"]
+    fix: "fd2752e603aefa127eae0a701efbcd1384766b2c"
+nice_to_have: []

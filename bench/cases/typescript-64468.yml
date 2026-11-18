@@ -1,0 +1,86 @@
+id: typescript-64468
+repo: microsoft/TypeScript
+source: TypeScript upstream PR 64468, its first commit
+base: 4f5ddae224b9529a69b571f631fe3a2cb283162f
+head: 05cb8fb4ef592aff96a88f821c199f4caf84ad8e
+title: "Prevent getTypeAtLocation crash on type-only import clause"
+body: |
+  Fixes upstream issue 64467
+
+  ## Context
+
+  I'm building syscript, a compiler that compiles TypeScript syntax to C for systems
+  programming. It uses the TypeScript 7 API to type-check the program and then walks
+  every node, requesting its type in a batch with `getTypeAtLocation`. That walk crashed
+  the API server on the first file that used `import type`.
+
+  ## Problem
+
+  `checker.GetTypeAtLocation` panics with a nil pointer dereference when called on the
+  `ImportClause` of a type-only import without a default binding:
+
+  ```ts
+  // types.ts
+  export type U = number;
+  // main.ts
+  import type { U } from "./types";
+  import type * as types from "./types";
+  ```
+
+  ```
+  panic: runtime error: invalid memory address or nil pointer dereference
+  checker.(*Checker).tryGetDeclaredTypeOfSymbol
+  checker.(*Checker).getDeclaredTypeOfSymbol
+  checker.(*Checker).getTypeOfNode
+  checker.(*Checker).GetTypeAtLocation
+  ```
+
+  It reproduces with the latest nightly (`typescript@7.1.0-dev.20260926.1`).
+
+  ## Cause
+
+  `ast.IsTypeDeclaration` returns true for a type-only `ImportClause`, so `getTypeOfNode`
+  takes the type-declaration branch and passes the result of `getSymbolOfDeclaration`
+  straight to `getDeclaredTypeOfSymbol`. An import clause only has a symbol when it has
+  a default binding (`import type X from "..."`), so for `import type { U }` and
+  `import type * as ns` the symbol is nil.
+
+  The missing check looks historical rather than intentional. When this branch was
+  written, `isTypeDeclaration` only covered type parameters, classes, interfaces, type
+  aliases and enums, which always have a symbol. upstream PR 35200 (type-only imports and exports)
+  added `ImportClause`, `ImportSpecifier` and `ExportSpecifier`; the specifiers always
+  have a symbol, but a clause without a default binding does not. The same unguarded
+  branch is still in Strada's `getTypeOfNode`, and this code was ported from it.
+
+  ## Fix
+
+  Return `errorType` when the declaration has no symbol, matching the neighboring
+  `IsTypeDeclarationName` and `IsDeclaration` branches, which already guard against a nil
+  symbol.
+
+  This also makes type-only clauses consistent with regular ones: a regular
+  `import { U } from "./types"` clause is not a type declaration, so it already reaches
+  the `IsDeclaration` branch and gets `errorType` there.
+
+  ## Tests
+
+  Added `TestGetTypeAtLocationOfTypeOnlyImportClause` in `internal/checker`. It requests
+  the type of a named and a namespace type-only import clause and checks that both match
+  the type of an equivalent regular import clause. It panics without the fix and passes
+  with it.
+
+  Ran the pre-submission checklist from CONTRIBUTING.md. Everything passes except
+  `internal/vfs/osvfs` `TestOS/Realpath`, which also fails on `main` in my environment
+  because my home directory is a symlink (`/home` → `/var/home`, Fedora Atomic).
+
+  ---
+
+  I used Claude Code for this change; I've reviewed it and will handle the review.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: note
+    mechanism: "The nil check in `getTypeOfNode` hides the symptom. The symbol is nil because `ast.IsTypeDeclaration` (`tsc/internal/ast/utilities.go` line 3632) returns true for every type-only `ImportClause`, while the binder declares a symbol for an import clause only when it has a default binding. So `import type { U }` and `import type * as ns` are classified as type declarations that declare nothing, and every reader of `IsTypeDeclaration` has to guard against that. `IsTypeDeclaration` should return true for a type-only clause only when it has a default binding. The clause then takes the same path as a regular import clause, and the guard is not needed."
+    locations: ["tsc/internal/ast/utilities.go", "IsTypeDeclaration", "tsc/internal/checker/checker.go", "getTypeOfNode"]
+    fix: "ce16efd4a39cf20a90f618df93e057e85c1da924"
+nice_to_have: []

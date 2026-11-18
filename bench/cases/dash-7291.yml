@@ -1,0 +1,62 @@
+id: dash-7291
+repo: xdustinface/dash
+source: dash upstream PR 7291, closed unmerged
+base: cfad4141d60961e5d4f27e11a8d30deccf18250a
+head: 6587677f648dd87a240696bfe57bcdd585acc3d5
+title: "fix: reconstruct ISLOCK locally when recsig arrived first"
+body: |
+  ## Issue being fixed or feature implemented
+
+  upstream PR 6994 stopped sending ISDLOCK invs to peers requesting recsigs on the premise that they can reconstruct the islock from the recsig. That reconstruction has a pre-existing race that become critical now.
+  It causes intermittent failure in interface_zmq_dash.py - wait_for_instantlock timing out.
+
+
+  The previous reconstruction path checked HasRecoveredSigForId before
+  emplacing into creatingInstantSendLocks, which leaves a window:
+
+  thread A: ProcessRecoveredSig writes recsig to db, listener fires
+            HandleNewRecoveredSig, finds creating empty, no-ops
+  thread B: TrySignInstantSendLock saw HasRecoveredSigForId=false,
+            now emplaces and calls AsyncSignIfMember
+
+  It causes recsig to be in in db but no one ever builds the islock:
+   - db.HasRecoveredSigForHash blocks any subsequent listener firing for
+  that recsig
+   - TrySignInstantSendLock has already passed its check
+
+  Before upstream PR 6994 this was masked because the peer would still receive the ISDLOCK inv from another node,
+  but on develop the peer no longer receives an ISDLOCK inv from peers as a fallback.
+
+  ## What was done?
+  Reorder to emplace first, then check:
+
+  1. Emplace into creatingInstantSendLocks. Any listener that fires
+   after this point sees the entry and reconstructs via the existing
+   HandleNewInstantSendLockRecoveredSig path.
+  2. Then check HasRecoveredSigForId. If already in db, find+erase the
+   entry; if find misses, the listener already handled it.
+  3. Only call AsyncSignIfMember when no recsig exists yet.
+
+
+
+  ## How Has This Been Tested?
+  Performance improvements after this PR should be still relevant [not tested], but failure rate on my environment reduced from 50% to ~15% for interface_zmq_dash.py
+
+
+  ## Breaking Changes
+  N/A
+
+  ## Checklist:
+  - [x] I have performed a self-review of my own code
+  - [ ] I have commented my code, particularly in hard-to-understand areas
+  - [ ] I have added or updated relevant unit/integration/functional/e2e tests
+  - [ ] I have made corresponding changes to the documentation
+  - [x] I have assigned this pull request to a milestone
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The reorder in `TrySignInstantSendLock` works around the symptom. The flaky `wait_for_instantlock` in `interface_zmq_dash.py` fails on the node that runs `-watchquorums`, and that node has no `InstantSendSigner` (only the masternode context in `src/active/context.cpp` creates one), so the changed code never runs there. The cause is the inv filter in `src/net_processing.cpp`: `PushInv` (line 1209) and `SendMessages` (line 6353) skip every `MSG_ISDLOCK` inv to a peer with `m_wants_recsigs`. A `-watchquorums` node sends `QSENDRECSIGS` but cannot rebuild a lock from the recovered signature, so it never learns of the InstantSend lock. The skip has to apply only to a peer that is a verified masternode."
+    locations: ["src/net_processing.cpp", "PushInv", "SendMessages", "m_wants_recsigs", "src/instantsend/signing.cpp", "TrySignInstantSendLock"]
+    fix: "f6bb02d666b0d40b0a290b72d40b912bcee32e18"
+nice_to_have: []
