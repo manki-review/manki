@@ -2516,15 +2516,20 @@ export function formatBlockingPriorThreads(
   const priors = (result.verdictTrace?.unresolvedPriors ?? []).filter(p => !listed.has(p.fingerprint));
   if (priors.length === 0) return null;
 
-  return `${STILL_OPEN_HEADING}\n${priors.map(formatTraceEntry).join('\n')}`;
+  return formatStillOpen(priors);
 }
 
 const STILL_OPEN_HEADING = '**Still open from earlier reviews:**';
 
+/** Returns the earlier threads `entries` under the heading for threads still open, one linked line each. */
+function formatStillOpen(entries: ReadonlyArray<Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>>): string {
+  return `${STILL_OPEN_HEADING}\n${entries.map(formatTraceEntry).join('\n')}`;
+}
+
 /** Returns the blocking threads still open, by `threadBlocks`, one linked line each, or null when there are none. */
 export function formatOpenBlockers(threads: PreviousFinding[]): string | null {
   const open = threads.filter(t => (t.status === 'open' || t.status === 'replied' || t.reopen) && threadBlocks(t));
-  return open.length > 0 ? `${STILL_OPEN_HEADING}\n${open.map(formatTraceEntry).join('\n')}` : null;
+  return open.length > 0 ? formatStillOpen(open) : null;
 }
 
 function safeThreadUrl(url: string | undefined): string | null {
