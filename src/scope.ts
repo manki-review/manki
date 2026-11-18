@@ -6,7 +6,7 @@ import { LLMClient, SendMessageOptions } from './providers';
 import { isDiffLocation, restsOnSameCode, shownLines } from './refute';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
-import { confirmsAll, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic } from './types';
+import { agreedOutcome, confirmsAll, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic } from './types';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 
@@ -108,9 +108,20 @@ function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | u
   };
 }
 
-/** Returns the latest of `priorRounds` on which the scope reader ran and answered. */
+/** Returns the latest of `priorRounds` with a scope answer: one the reader gave, or one carried from it. */
 function lastScopeRound(priorRounds: readonly RoundContext[]): RoundContext | undefined {
-  return [...priorRounds].sort((a, b) => a.meta.round - b.meta.round).reverse().find(r => r.scope && !r.scope.skipped && !r.scope.failed);
+  return [...priorRounds].sort((a, b) => a.meta.round - b.meta.round).reverse().find(r => r.scope && r.scope.skipped !== 'trivial' && !r.scope.failed);
+}
+
+/**
+ * Returns the answer of `scope` for a round that carries it. Whether it is posted as warnings is the round's own
+ * setting, so `warned` is not carried. A doubt the refuter left unsettled goes back into the answer, so it is checked again.
+ */
+function carriedAnswer({ warned: _warned, skipped: _skipped, since: _since, ...scope }: RoundScope): RoundScope {
+  const unsettled = scope.dropped?.find(d => d.doubt && d.proof);
+  if (!unsettled) return scope;
+  const dropped = scope.dropped!.filter(d => d !== unsettled);
+  return { ...scope, doubt: unsettled.doubt, proof: unsettled.proof, dropped: dropped.length > 0 ? dropped : undefined };
 }
 
 export interface ScopeOptions {
@@ -137,9 +148,10 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
   if (trivial) return { skipped: 'trivial' };
   const last = lastScopeRound(priorRounds);
   if (changeDigest && last?.diff.changeDigest === changeDigest) {
-    core.info(`Scope reader: the diff did not change since round ${last.meta.round}, so it is not asked again`);
-    const { warned: _warned, ...answer } = last.scope!;
-    return { ...answer, skipped: 'unchanged', since: last.meta.round };
+    const since = last.scope!.since ?? last.meta.round;
+    core.info(`Scope reader: the diff did not change since round ${since}, so it is not asked again`);
+    const { dropped, ...answer } = carriedAnswer(last.scope!);
+    return { ...answer, ...(dropped && { dropped }), skipped: 'unchanged', since };
   }
   const tools = !!workspace && !!client.repoTools;
   const options: SendMessageOptions = { effort: 'medium', timeoutMs: SCOPE_TIMEOUT_MS, ...(tools && { repoTools: repoTools(workspace!, SCOPE_STEPS, undefined) }) };
@@ -216,15 +228,21 @@ function storedConfirmation(warning: Finding, { workspace, pair, changeDigest, p
   return confirmsAll(checks) && checks.every(c => restsOnSameCode(c, workspace)) ? checks : undefined;
 }
 
+/** Why a doubt is dropped. Only a disproof is `final`. Any other drop leaves the doubt for a later round to check again. */
+export interface DoubtDrop {
+  reason: string;
+  final: boolean;
+}
+
 /**
  * Returns the doubt `warning` with the checks that confirm it, or why it is dropped. The reader's input is text the PR
  * author wrote, so a cited line that exists is not enough to hold the approval. The refuter reads the doubt on its first
  * cited line, since the warning is tied to no file, and every check has to confirm it. A `storedConfirmation` is
  * reused without a call.
  */
-export async function confirmDoubt(warning: Finding, check: DoubtCheck | undefined): Promise<Finding | string> {
+export async function confirmDoubt(warning: Finding, check: DoubtCheck | undefined): Promise<Finding | DoubtDrop> {
   const at = warning.evidence?.proof[0] ? parseLocation(warning.evidence.proof[0]) : undefined;
-  if (!check || !at) return 'no check with repository tools could run';
+  if (!check || !at) return { reason: 'no check with repository tools could run', final: false };
   const doubted: Finding = { ...warning, doubts: [{ premise: warning.description, decides: 'defect' }] };
   const stored = storedConfirmation(warning, check);
   if (stored) {
@@ -234,5 +252,6 @@ export async function confirmDoubt(warning: Finding, check: DoubtCheck | undefin
   }
   const [checked] = await check.refute([{ ...doubted, file: at.file, line: at.start }]);
   const checks = [checked.refutation, checked.pairRefutation].filter((r): r is Refutation => !!r);
-  return confirmsAll(checks) ? { ...checked, file: '', line: 0 } : 'the refuter did not confirm it';
+  if (confirmsAll(checks)) return { ...checked, file: '', line: 0 };
+  return agreedOutcome(checks) === 'disproved' ? { reason: 'the refuter disproved it', final: true } : { reason: 'the refuter did not confirm it', final: false };
 }

@@ -2630,8 +2630,9 @@ describe('runReview', () => {
       const disproved = await runReview(disproving, { ...options, config: blocks, workspace: root });
       const unchecked = await runReview(makeClients(), { ...options, config: blocks });
       const { doubt: _doubt, proof: _proof, ...splitOnly } = scope;
-      expect(disproved.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'the refuter did not confirm it' }], warned: true });
-      expect(unchecked.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'no check with repository tools could run' }], warned: true });
+      // Only a disproof drops the doubt for good. One no check settled keeps its text and lines, so the next round checks it again.
+      expect(disproved.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'the refuter disproved it' }], warned: true });
+      expect(unchecked.scope).toEqual({ ...splitOnly, dropped: [{ part: 'doubt', reason: 'no check with repository tools could run', doubt: scope.doubt, proof: scope.proof }], warned: true });
       for (const result of [disproved, unchecked]) expect(fromScope(result).map(f => f.title)).toEqual([splitTitle]);
 
       // An answer with nothing to say, or one the checks left nothing of, adds no warning and leaves the record as it is.
@@ -2658,10 +2659,12 @@ describe('runReview', () => {
       const config = makeConfig({ review: { scope_blocks: true } });
       const prior = (status: 'open' | 'resolved') => [doubtTitle, splitTitle].map((title, i) => ({ title, file: '', line: 0, severity: 'warning' as const, status, threadId: `T${8 + i}` }));
 
+      // Another thread tied to no file, whose title the doubt's contains, never takes the doubt.
+      const other = { threadId: 'T7', title: 'This change may not be useful', file: '', line: 0, severity: 'warning' as const };
       const open = await runReview(refutingClients('confirmed'), {
         ...options, config, priorRounds, interRoundDiff: '', workspace: root,
-        openThreads: [doubtTitle, splitTitle].map((title, i) => ({ threadId: `T${8 + i}`, title, file: '', line: 0, severity: 'warning' as const })),
-        previousFindings: prior('open'),
+        openThreads: [other, ...[doubtTitle, splitTitle].map((title, i) => ({ threadId: `T${8 + i}`, title, file: '', line: 0, severity: 'warning' as const }))],
+        previousFindings: [{ ...other, status: 'open' }, ...prior('open')],
       });
       expect(fromScope(open)).toEqual([expect.objectContaining({ title: doubtTitle, threadId: 'T8' }), expect.objectContaining({ title: splitTitle, threadId: 'T9' })]);
 

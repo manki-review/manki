@@ -1610,13 +1610,13 @@ export async function runReview(
     const posted: Finding[] = [];
     for (const warning of suppression.kept) {
       const kept = warning.title === SCOPE_DOUBT_TITLE ? await confirmDoubt(warning, doubtCheck) : warning;
-      if (typeof kept !== 'string') {
+      if (!('reason' in kept)) {
         posted.push(kept);
         continue;
       }
-      core.info(`Scope reader: the doubt is dropped, since ${kept}`);
-      const { doubt: _doubt, proof: _proof, ...rest } = scope;
-      scope = { ...rest, dropped: [...(scope.dropped ?? []), { part: 'doubt', reason: kept }] };
+      core.info(`Scope reader: the doubt is dropped, since ${kept.reason}`);
+      const { doubt, proof, ...rest } = scope;
+      scope = { ...rest, dropped: [...(scope.dropped ?? []), { part: 'doubt', reason: kept.reason, ...(!kept.final && { doubt, proof }) }] };
     }
     finalFindings = [...finalFindings, ...posted];
     scope = { ...scope, warned: true };
@@ -3106,6 +3106,8 @@ type Located = Pick<Finding, 'title' | 'file' | 'line' | 'evidence'>;
  */
 export function sameProblem(a: Located, b: Located): boolean {
   if (a.file !== b.file) return false;
+  // Without a file, no line or proof line places a finding, so only the same title names the same problem.
+  if (!a.file) return titleToSlug(a.title) === titleToSlug(b.title);
   const near = Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
   if (near && sharesProofLine(a, b)) return true;
   const overlap = titleOverlapType(a.title, b.title);

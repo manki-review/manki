@@ -115,6 +115,12 @@ describe('runScopeReader', () => {
     const skipped = makeRoundContext(2, { scope: { ...answer, skipped: 'unchanged', since: 1 }, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } });
     // Whether the answer is posted as warnings is the round's own setting, so `warned` is not carried.
     expect(await runScopeReader(reader, { diff, rawDiff: RAW_DIFF, trivial: false, changeDigest: 'same', priorRounds: [skipped, ran] })).toEqual({ ...answer, skipped: 'unchanged', since: 1 });
+    // A doubt no check settled goes back into the answer to be checked again. A disproved one stays dropped.
+    const unsettled = { split: SPLIT, dropped: [{ part: 'doubt' as const, reason: 'the refuter did not confirm it', doubt: 'Unused.', proof: ['src/dates.ts:2'] }] };
+    const disproved = { split: SPLIT, dropped: [{ part: 'doubt' as const, reason: 'the refuter disproved it' }] };
+    const after = (scope: object) => makeRoundContext(3, { scope: { ...scope, warned: true, skipped: 'unchanged', since: 1 }, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } });
+    expect(await runScopeReader(reader, { diff, rawDiff: RAW_DIFF, trivial: false, changeDigest: 'same', priorRounds: [ran, after(unsettled)] })).toEqual({ split: SPLIT, doubt: 'Unused.', proof: ['src/dates.ts:2'], skipped: 'unchanged', since: 1 });
+    expect(await runScopeReader(reader, { diff, rawDiff: RAW_DIFF, trivial: false, changeDigest: 'same', priorRounds: [ran, after(disproved)] })).toEqual({ ...disproved, skipped: 'unchanged', since: 1 });
     expect(reader.sendMessage).not.toHaveBeenCalled();
 
     // A changed diff, or a last answer that failed, asks again.
@@ -156,10 +162,12 @@ describe('confirmDoubt', () => {
     expect(await confirmDoubt(doubt, checkWith(confirmed))).toEqual({ ...doubt, doubts: [{ premise: doubt.description, decides: 'defect' }], refutation: check('confirmed'), pairRefutation: check('confirmed') });
     expect(confirmed.mock.calls[0][0]).toEqual([{ ...doubt, file: 'src/dates.ts', line: 2, doubts: [{ premise: doubt.description, decides: 'defect' }] }]);
 
-    // A disproof, a check that settles nothing, a second check that does not agree, a failed call and a round without tools all drop it.
-    for (const refute of [refuter(check('disproved')), refuter(check('unsettled')), refuter(check('confirmed'), check('unsettled')), refuter(check('confirmed', 'unsettled')), refuter()]) {
-      expect(await confirmDoubt(doubt, checkWith(refute))).toBe('the refuter did not confirm it');
+    // A disproof drops it for good. A check that settles nothing, a second check that does not agree, a failed call and a
+    // round without tools drop it only until a later round checks it again.
+    expect(await confirmDoubt(doubt, checkWith(refuter(check('disproved'))))).toEqual({ reason: 'the refuter disproved it', final: true });
+    for (const refute of [refuter(check('unsettled')), refuter(check('confirmed'), check('unsettled')), refuter(check('confirmed'), check('disproved')), refuter(check('confirmed', 'unsettled')), refuter()]) {
+      expect(await confirmDoubt(doubt, checkWith(refute))).toEqual({ reason: 'the refuter did not confirm it', final: false });
     }
-    expect(await confirmDoubt(doubt, undefined)).toBe('no check with repository tools could run');
+    expect(await confirmDoubt(doubt, undefined)).toEqual({ reason: 'no check with repository tools could run', final: false });
   });
 });

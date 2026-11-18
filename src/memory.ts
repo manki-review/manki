@@ -310,10 +310,9 @@ export function matchesSuppression(finding: Finding, suppression: Suppression): 
     return false;
   }
 
-  if (suppression.file_glob && finding.file) {
-    if (!minimatch(finding.file, suppression.file_glob, { matchBase: true })) {
-      return false;
-    }
+  // A suppression for some files never hides a finding tied to no file, since it would hide it on every PR.
+  if (suppression.file_glob && !(finding.file && minimatch(finding.file, suppression.file_glob, { matchBase: true }))) {
+    return false;
   }
 
   return true;

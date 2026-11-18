@@ -752,8 +752,11 @@ export interface RoundScope {
   topics?: ScopeTopic[];
   /** The proposed PRs of a split, each with its files, kept only when every file of the diff is in exactly one of them. */
   split?: ScopeTopic[];
-  /** The parts of the answer the code check or the refuter left out, with why. Neither shows nor holds the approval. */
-  dropped?: Array<{ part: 'doubt' | 'split'; reason: string }>;
+  /**
+   * The parts of the answer the code check or the refuter left out, with why. Neither shows nor holds the approval. A
+   * doubt the refuter left unsettled keeps its text and lines here, so a later round on the same diff checks it again.
+   */
+  dropped?: Array<{ part: 'doubt' | 'split'; reason: string; doubt?: string; proof?: string[] }>;
   /** Set when `review.scope_blocks` posted the kept parts as warnings instead of listing them in the review body. */
   warned?: true;
 }

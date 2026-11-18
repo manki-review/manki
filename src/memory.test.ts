@@ -176,6 +176,10 @@ describe('matchesSuppression', () => {
     const suppression = makeSuppression({ pattern: 'unused variable', file_glob: 'src/utils/**' });
 
     expect(matchesSuppression(finding, suppression)).toBe(false);
+    // A finding tied to no file, such as a scope warning, matches only a suppression for every file.
+    const fileless = makeFinding({ title: 'Unused variable x', file: '', line: 0 });
+    expect(matchesSuppression(fileless, suppression)).toBe(false);
+    expect(matchesSuppression(fileless, makeSuppression({ pattern: 'unused variable' }))).toBe(true);
   });
 
   it('rejects when pattern does not match', () => {
