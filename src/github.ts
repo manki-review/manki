@@ -246,9 +246,14 @@ export type ConfigHold = 'base' | 'head';
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
  * model read some of its files, or `count` warnings wait for a fix or an accepted answer. Of those, `unthreaded` have no thread
- * and `security` are security warnings with a thread. Without `count` the warning threads could not be read.
+ * and `security` are security warnings with a thread. Without `count` the warning threads could not be read. `earlier`
+ * are the warning threads of earlier rounds among them, which the review body lists under the line.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles } | { reason: 'warnings'; count?: number; security?: number; unthreaded?: number };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles }
+  | { reason: 'warnings'; count?: number; security?: number; unthreaded?: number; earlier?: HeldWarningEntry[] };
+
+/** An earlier warning thread that holds the approval, as the review body lists it. */
+type HeldWarningEntry = Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>;
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -1817,7 +1822,7 @@ export async function postReview(
     /** The `review.rules` setting, which decides whether a confirmed rule keeps a finding a check disproved. */
     rules?: RulesMode;
     /** The earlier warning threads that still hold the approval, or `unread` when they could not be read, which holds it too. */
-    openWarnings?: ReadonlyArray<{ isSecurity?: boolean }> | 'unread';
+    openWarnings?: ReadonlyArray<{ isSecurity?: boolean; findingTitle: string; place?: { file: string; line: number; originalLine?: number; findingLine?: number }; threadUrl?: string }> | 'unread';
     /** The `auto_approve` setting, which decides what the lines for a held draft and for warnings tell the reader to do. */
     autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
@@ -1970,8 +1975,9 @@ export async function postReview(
   const holdingUnthreaded = unthreaded.filter(holdsApproval).length;
   const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length + holdingUnthreaded;
   const security = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity).length + holding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length;
+  const earlierWarnings = openWarnings === 'unread' ? [] : openWarnings.map(t => ({ file: t.place?.file ?? '', line: t.place ? currentFindingLine(t.place) || (t.place.findingLine ?? 0) : 0, title: t.findingTitle, threadUrl: t.threadUrl }));
   const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' }
-    : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }) } : undefined;
+    : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }), ...(earlierWarnings.length > 0 && { earlier: earlierWarnings }) } : undefined;
   // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
   // It is read beside a config or unread hold too, which comes first but gets a line of its own.
   const prHold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
@@ -2390,7 +2396,12 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
     // Another hold has a line of its own or is named here, and the warnings still hold once it lifts.
     // Handling the warnings brings the approval only when they are all that holds. Another hold's line says what it needs.
     const approves = hold?.reason === 'warnings' && hold.count !== undefined && autoApprove ? ' Manki approves once every warning is handled.' : '';
-    if (warningHold && hold) return `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${approves}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
+    if (warningHold && hold) {
+      const line = `⚠️ ${approvalHoldLine(warningHold, autoApprove)}${approves}${unread ? ` A person must also approve, since no model read ${unread} of the changed files.` : ''}`;
+      // This review shows the warnings it posts, so only those held by an earlier thread are listed here.
+      const earlier = warningHold.reason === 'warnings' && warningHold.earlier;
+      return earlier ? `${line}\n\n${formatStillOpen(earlier)}` : line;
+    }
     if (unread) return `✅ **Approved, but a person must approve:** no model read ${unread} of the changed files.`;
     const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
@@ -2516,15 +2527,20 @@ export function formatBlockingPriorThreads(
   const priors = (result.verdictTrace?.unresolvedPriors ?? []).filter(p => !listed.has(p.fingerprint));
   if (priors.length === 0) return null;
 
-  return `${STILL_OPEN_HEADING}\n${priors.map(formatTraceEntry).join('\n')}`;
+  return formatStillOpen(priors);
 }
 
 const STILL_OPEN_HEADING = '**Still open from earlier reviews:**';
 
+/** Returns the earlier threads `entries` under the heading for threads still open, one linked line each. */
+function formatStillOpen(entries: ReadonlyArray<Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>>): string {
+  return `${STILL_OPEN_HEADING}\n${entries.map(formatTraceEntry).join('\n')}`;
+}
+
 /** Returns the blocking threads still open, by `threadBlocks`, one linked line each, or null when there are none. */
 export function formatOpenBlockers(threads: PreviousFinding[]): string | null {
   const open = threads.filter(t => (t.status === 'open' || t.status === 'replied' || t.reopen) && threadBlocks(t));
-  return open.length > 0 ? `${STILL_OPEN_HEADING}\n${open.map(formatTraceEntry).join('\n')}` : null;
+  return open.length > 0 ? formatStillOpen(open) : null;
 }
 
 function safeThreadUrl(url: string | undefined): string | null {
