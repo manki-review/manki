@@ -105,6 +105,18 @@ export class QuotaError extends Error {
   }
 }
 
+/**
+ * Thrown when a CLI's output proves that no request of the call reached the model, because the provider could not be
+ * reached at all. The same provider fails the same way again soon, so it counts as a limit: it is not retried there,
+ * and a stage with a fallback model sends it there under the rules of a limit.
+ */
+export class UnreachableError extends QuotaError {
+  constructor(message: string, limit: string) {
+    super(message, limit);
+    this.name = 'UnreachableError';
+  }
+}
+
 /** Thrown when a model call ran past its time limit. */
 export class TimeoutError extends Error {
   constructor(message: string, options?: ErrorOptions) {

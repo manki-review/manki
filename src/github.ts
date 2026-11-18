@@ -2278,17 +2278,18 @@ function formatRoundUsage(usage: RoundUsage): string | undefined {
 
 /**
  * Returns one line per finder or judge model of the round that reached a limit and whose fallback model answered in
- * its place, such as "`gpt-5.5` reached its limit, so `claude-sonnet-5-5` read in its place". The fallback "judged" for
- * the judge and the verdict reader, and "checked" for the refuter.
+ * its place, such as "`gpt-5.5` reached its limit, so `claude-sonnet-5-5` read in its place". The model "could not be
+ * reached" when its endpoint could not be. The fallback "judged" for the judge and the verdict reader, and "checked" for
+ * the refuter.
  */
 export function limitFallbackLines({ models, routing }: Pick<RoundContext, 'models' | 'routing'>): string[] {
   const finderModels = new Map(routing?.reviewers.map(r => [r.name, r.model] as const));
-  const lines = (models.fallbacks ?? []).flatMap(({ stage, agent, fallbackModel, limit }) => {
+  const lines = (models.fallbacks ?? []).flatMap(({ stage, agent, fallbackModel, limit, unreachable }) => {
     const finder = stage === 'reviewer';
     const model = finder ? finderModels.get(agent ?? '') : stage === 'judge' || stage === 'verdict' ? models.judge : undefined;
     if (!limit || !model) return [];
     const did = finder ? 'read' : agent === 'refute' ? 'checked' : 'judged';
-    return [`${inlineCode(model)} reached its limit, so ${inlineCode(fallbackModel)} ${did} in its place`];
+    return [`${inlineCode(model)} ${unreachable ? 'could not be reached' : 'reached its limit'}, so ${inlineCode(fallbackModel)} ${did} in its place`];
   });
   return [...new Set(lines)];
 }

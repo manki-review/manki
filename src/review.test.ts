@@ -44,7 +44,7 @@ import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
+import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { repoToolsPrompt } from './providers/cli-utils';
 
@@ -2128,8 +2128,8 @@ describe('runReview', () => {
     const stageOf = (system: string): Stage => system.startsWith('You compare code') ? 'compare'
       : system.startsWith('A code review reported the finding') ? 'sweep'
         : system.startsWith('You check one statement') ? 'claim_check' : 'reviewer';
-    /** Runs a round whose first call of `stage` reaches a limit, with a fallback model for the finders' models that has tools or not. */
-    const run = async (stage: Stage, fallbackTools: boolean) => {
+    /** Runs a round whose first call of `stage` fails with `error`, with a fallback model for the finders' models that has tools or not. */
+    const run = async (stage: Stage, fallbackTools: boolean, error: QuotaError = limit) => {
       const clients = makeClients();
       let reported = false;
       const answer = async (system: string, _user: string, _options?: SendMessageOptions) => {
@@ -2144,7 +2144,7 @@ describe('runReview', () => {
       let limitLeft = 1;
       Object.assign(clients.reviewer, { repoTools: true });
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string, options?: SendMessageOptions) => {
-        if (stageOf(system) === stage && limitLeft-- > 0) throw limit;
+        if (stageOf(system) === stage && limitLeft-- > 0) throw error;
         return answer(system, user, options);
       });
       const fallback = { repoTools: fallbackTools, sendMessage: jest.fn(answer) };
@@ -2172,6 +2172,13 @@ describe('runReview', () => {
       expect(result.modelFallbacks).toEqual([{ stage: 'reviewer', agent: 'Claude Sonnet 5.5 · high', fallbackModel: 'gpt-5.5', reason: 'OpenAI endpoint limit reached', limit: true }]);
       expect(fallback.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([root]);
       expect(result.failedAgents).toBeUndefined();
+
+      // A finder whose endpoint could not be reached follows the same rule.
+      const unreachable = new UnreachableError('Codex CLI was waiting for the network for 120s, so the call ends as a failed connection.', 'OpenAI endpoint unreachable');
+      const kept = await run('reviewer', false, unreachable);
+      expect([kept.fallback.sendMessage.mock.calls.length, kept.result.modelFallbacks, kept.result.summary]).toEqual([0, undefined, 'OpenAI endpoint unreachable for Claude Sonnet 5.5 · high. Retry with /manki review later.']);
+      const equipped = await run('reviewer', true, unreachable);
+      expect([equipped.result.modelFallbacks, equipped.result.failedAgents]).toEqual([[{ stage: 'reviewer', agent: 'Claude Sonnet 5.5 · high', fallbackModel: 'gpt-5.5', reason: 'OpenAI endpoint unreachable', limit: true, unreachable: true }], undefined]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -6450,6 +6457,48 @@ describe('runReview', () => {
     } finally {
       clock.mockRestore();
     }
+
+    // A finder whose endpoint could not be reached moves the same way, and the record says why.
+    const waitedOut = 'Codex CLI was waiting for the network for 120s, so the call ends as a failed connection.';
+    const unreachable = new UnreachableError(waitedOut, 'OpenAI endpoint unreachable');
+    const lost = jest.fn().mockRejectedValue(unreachable);
+    const reached = answers();
+    const { result: rescued } = await run(lost, answers(), ['gpt-5.5', reached]);
+    expect([rescued.outcome, rescued.modelFallbacks]).toEqual(['READY', [{ ...moved, reason: 'OpenAI endpoint unreachable', unreachable: true }]]);
+    expect([lost.mock.calls.length, reached.mock.calls.length]).toEqual([1, 1]);
+
+    // When it cannot move, it fails with that error and is not retried, since a retry would wait for the same network.
+    const stillLost = jest.fn().mockRejectedValue(unreachable);
+    const { result: unmoved } = await run(stillLost, answers(), ['claude-opus-5-5', answers()]);
+    expect([unmoved.outcome, unmoved.summary, unmoved.modelFallbacks]).toEqual(['INCOMPLETE', `OpenAI endpoint unreachable for ${sonnet}. Retry with /manki review later.`, undefined]);
+    expect(unmoved.notStarted).toEqual([
+      { kind: 'fallback', stage: 'reviewer', agent: sonnet, reason: 'claude-opus-5-5 already reads for a finder of this round' },
+      { kind: 'retry', stage: 'reviewer', agent: sonnet, reason: 'OpenAI endpoint unreachable' },
+    ]);
+    expect(stillLost).toHaveBeenCalledTimes(1);
+
+    // Nor does it move when the failed call left no time.
+    now = Date.now();
+    const spentClock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const unused = answers();
+      const spentLost = jest.fn(async () => {
+        now += 900_000;
+        throw unreachable;
+      });
+      const { result: late } = await run(spentLost, answers(), ['gpt-5.5', unused]);
+      expect([late.failedAgents, late.modelFallbacks, unused.mock.calls.length]).toEqual([[sonnet], undefined, 0]);
+      expect(late.notStarted).toContainEqual({ kind: 'fallback', stage: 'reviewer', agent: sonnet, reason: 'the failed call left no time' });
+    } finally {
+      spentClock.mockRestore();
+    }
+
+    // A failed connection that may have reached the model keeps today's handling: no move, and one retry.
+    const dropped = jest.fn().mockRejectedValue(new Error(waitedOut));
+    const untouched = answers();
+    const { result: retried } = await run(dropped, answers(), ['gpt-5.5', untouched]);
+    expect([retried.outcome, retried.failedAgents, retried.modelFallbacks]).toEqual(['INCOMPLETE', [sonnet], undefined]);
+    expect([dropped.mock.calls.length, untouched.mock.calls.length]).toEqual([MAX_AGENT_RETRIES + 1, 0]);
   });
 
   it('threads a non-empty provenance map to the judge but not into reviewer prompts', async () => {
@@ -7186,6 +7235,8 @@ describe('runPlanner language', () => {
 describe('withModelFallback', () => {
   const refusal = new RefusalError('declined', 'content_filter');
   const limit = new QuotaError('429 Too Many Requests', 'OpenAI endpoint limit reached', undefined, 'key');
+  const waitedOut = 'Codex CLI was waiting for the network for 120s, so the call ends as a failed connection.';
+  const unreachable = new UnreachableError(waitedOut, 'OpenAI endpoint unreachable');
 
   it('moves to the fallback client after a refusal and stays there', async () => {
     const primary = { sendMessage: jest.fn().mockRejectedValue(refusal) } as unknown as LLMClient;
@@ -7230,13 +7281,22 @@ describe('withModelFallback', () => {
       // A call that reached a limit leaves its fallback the same time, and fails with the limit itself when none is left.
       onFallback.mockClear();
       onNoTime.mockClear();
-      const limitedAfter = (seconds: number) => ({ sendMessage: jest.fn(async () => { now += seconds * 1000; throw limit; }) }) as unknown as LLMClient;
+      const limitedAfter = (seconds: number, error: QuotaError = limit) => ({ sendMessage: jest.fn(async () => { now += seconds * 1000; throw error; }) }) as unknown as LLMClient;
       await withModelFallback(limitedAfter(300), fallback, onFallback, undefined, onNoTime).sendMessage('sys', 'limited', { timeoutMs: 900_000 });
       expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'limited', { timeoutMs: 600_000 }]]);
       await expect(withModelFallback(limitedAfter(900), fallback, onFallback, undefined, onNoTime).sendMessage('sys', 'user', { timeoutMs: 900_000 })).rejects.toBe(limit);
       expect(fallback.sendMessage).toHaveBeenCalledTimes(1);
       expect(onFallback.mock.calls).toEqual([[limit]]);
       expect(onNoTime).toHaveBeenCalledTimes(1);
+
+      // So does a call whose endpoint could not be reached.
+      jest.mocked(fallback.sendMessage).mockClear();
+      await withModelFallback(limitedAfter(300, unreachable), fallback, onFallback).sendMessage('sys', 'unreachable', { timeoutMs: 900_000 });
+      expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'unreachable', { timeoutMs: 600_000 }]]);
+      await expect(withModelFallback(limitedAfter(900, unreachable), fallback, onFallback, undefined, onNoTime).sendMessage('sys', 'user', { timeoutMs: 900_000 })).rejects.toBe(unreachable);
+      expect(fallback.sendMessage).toHaveBeenCalledTimes(1);
+      expect(onFallback.mock.calls).toEqual([[limit], [unreachable]]);
+      expect(onNoTime).toHaveBeenCalledTimes(2);
 
       // A deadline gives the call, and so its fallback, no more than the time left until it, and sends nothing once it passed.
       jest.mocked(fallback.sendMessage).mockClear();
@@ -7267,10 +7327,14 @@ describe('withModelFallback', () => {
 
   it('throws any other error, and a refusal or a limit without a fallback, unchanged', async () => {
     const timeout = new Error('timed out');
+    // A failed connection that may have reached the model is no limit.
+    const failedConnection = new Error(waitedOut);
     const fallback = { sendMessage: jest.fn() } as unknown as LLMClient;
     const onFallback = jest.fn();
 
     await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(timeout) }, fallback, onFallback).sendMessage('s', 'u')).rejects.toBe(timeout);
+    await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(failedConnection) }, fallback, onFallback).sendMessage('s', 'u')).rejects.toBe(failedConnection);
+    await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(unreachable) }, undefined, onFallback).sendMessage('s', 'u')).rejects.toBe(unreachable);
     await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(refusal) }, undefined, onFallback).sendMessage('s', 'u')).rejects.toBe(refusal);
     await expect(withModelFallback({ sendMessage: jest.fn().mockRejectedValue(limit) }, undefined, onFallback).sendMessage('s', 'u')).rejects.toBe(limit);
     expect(fallback.sendMessage).not.toHaveBeenCalled();
@@ -7303,7 +7367,7 @@ describe('withModelFallback', () => {
     const tools = { repoTools: { root: '/work', steps: 5, related: undefined } };
     const answers = (repoTools: boolean) => ({ repoTools, sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) }) as unknown as LLMClient;
     const onFallback = jest.fn();
-    for (const error of [limit, refusal]) {
+    for (const error of [limit, unreachable, refusal]) {
       const primary = { repoTools: true, sendMessage: jest.fn().mockRejectedValue(error) } as unknown as LLMClient;
       const toolless = answers(false);
       const client = withModelFallback(primary, toolless, onFallback);

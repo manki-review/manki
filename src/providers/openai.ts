@@ -279,6 +279,19 @@ const SESSION_ID = /^(?:(?!--------\r?\nuser\r?\n).*\n)*?session id: ([0-9a-f]{8
 const NO_NETWORK_LINE = /^ERROR: Reconnecting\.\.\. waiting for network\s*$/;
 // How long a run may print nothing but `NO_NETWORK_LINE` before it ends. Codex tries five times within it.
 const NO_NETWORK_LIMIT_MS = 120_000;
+
+/**
+ * Whether the stderr of a run sent `input` proves that no request reached the model. Codex echoes `input` below its
+ * header, and the proof is that only `NO_NETWORK_LINE` follows the echo. Any other line, such as the model's text or
+ * another error, can follow a request the model received.
+ */
+function reachedNoModel(stderr: string, input: string): boolean {
+  const header = SESSION_ID.exec(stderr.slice(0, HEADER_CHARS))?.[0];
+  const rest = header && stderr.slice(header.length);
+  if (!rest?.startsWith(`${input}\n`)) return false;
+  const lines = rest.slice(input.length + 1).split(/\r?\n/).filter(line => line !== '');
+  return lines.length > 0 && lines.every(line => NO_NETWORK_LINE.test(line));
+}
 const RESUME_PROMPT ='The connection to the model failed. Continue the task where it stopped, and give your answer in the format the task asked for.';
 const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
 
@@ -475,6 +488,7 @@ export class OpenAIClient implements LLMClient {
     }, endpoint && ENDPOINT_KEY_ENV);
 
     let output = '';
+    const unreachableLimit = endpoint ? 'OpenAI endpoint unreachable' : 'OpenAI unreachable';
     const { code, signal, stderr, lastStdoutChunk, relatedReads } = await withPromptDir(async (promptDir) => {
       // Manki's instructions replace Codex's own, so stdin carries only the untrusted content.
       const instructionsPath = join(promptDir, 'instructions.md');
@@ -497,7 +511,11 @@ export class OpenAIClient implements LLMClient {
         hardTimeoutMs: limitMs,
         usedMs,
         signal: options?.signal,
-        waiting: { line: NO_NETWORK_LINE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network' },
+        waiting: {
+          line: NO_NETWORK_LINE, limitMs: NO_NETWORK_LIMIT_MS, doing: 'waiting for the network',
+          // A resumed run follows a run that reached the model.
+          unreachable: (stderr) => usedMs === undefined && !output && reachedNoModel(stderr, input) ? unreachableLimit : undefined,
+        },
         onStdout: (chunk) => { output += chunk; },
       }).catch(carry);
       let exit = await run(['-'], userMessage);

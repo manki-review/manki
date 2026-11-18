@@ -44,7 +44,7 @@ export function wrapClientForUsage(client: LLMClient): {
  * A refused request with a `timeoutMs` gets only the time the refused call left of it on `fallback`,
  * and fails with a `TimeoutError` when none is left.
  *
- * A request that fails with a `QuotaError` is sent to `fallback` once too, with the time the failed call left.
+ * A request that fails with a `QuotaError`, an `UnreachableError` included, is sent to `fallback` once too, with the time the failed call left.
  * Later requests go to `fallback` only after it answered one. The `QuotaError` is thrown unchanged when `fallback`
  * fails as well, when no time is left, or when `movesOnLimit` returns undefined. `movesOnLimit` takes `fallback` for
  * the stage and returns the function that gives it back. That function runs once, when every fallback call the stage
