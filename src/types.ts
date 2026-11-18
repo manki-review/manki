@@ -1262,6 +1262,8 @@ export interface ReviewResult {
   agentsAskedAgain?: string[];
   /** The `inputDigest` of each finder whose read finished, run this round or kept from an earlier attempt. */
   agentInputDigests?: Map<string, string>;
+  /** The findings each finder of `agentInputDigests` gave, counted when its read finished. */
+  agentFindingsReturned?: Map<string, number>;
   /** Set when the round kept results of an earlier attempt: which attempt, and the finders whose findings it kept. */
   reused?: { from: RoundReusedFrom; finders: string[] };
   plannerDurationMs?: number;
@@ -2431,6 +2433,8 @@ export interface RoundAgentMetric {
   effort?: EffortLevel;
   /** A digest of everything the finder was sent, set once its read finished. A retry keeps the findings of a finder whose input digest is the same. */
   inputDigest?: string;
+  /** The findings the finder gave, counted when its read finished, apart from `findingsRaw`. A retry keeps nothing when they differ. */
+  findingsReturned?: number;
   /** Set when the round kept the finder's findings from `meta.reusedFrom` and did not run it. */
   reused?: true;
 }

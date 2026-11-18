@@ -406,7 +406,8 @@ function keptOf(attempt: EarlierAttempt, team: TeamRoster, { headSha, changeDige
     counted &&= findings.length === (count ?? 0);
     return moved.has(name) ? [] : [[name, { record: entry, findings }]];
   };
-  const finders = new Map((record.reviewers.agentMetrics ?? []).flatMap(m => (m.status === 'success' && !m.failureReason && m.inputDigest ? keep(m.name, m, m.findingsRaw) : [])));
+  // `findingsRaw` is counted from the same list the findings are read from, so only `findingsReturned` can show a lost one.
+  const finders = new Map((record.reviewers.agentMetrics ?? []).flatMap(m => (m.status === 'success' && !m.failureReason && m.inputDigest && m.findingsReturned !== undefined ? keep(m.name, m, m.findingsReturned) : [])));
   const comparisons = new Map((record.comparisons ?? []).flatMap(c => (c.status === 'answered' && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
   const claims = new Map((record.prClaims?.claims ?? []).flatMap(c => (!c.call && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
   if (!counted) {
@@ -1199,12 +1200,15 @@ export async function runReview(
   const agentWarnings = new Map<string, string[]>();
   const agentsAskedAgain: string[] = [];
   const agentInputDigests = new Map<string, string>();
+  const agentFindingsReturned = new Map<string, number>();
   // A finder whose second ask failed did not finish the read it was asked for, so it gets no digest and a retry runs it again.
   const secondAskFailed = new Set<string>();
-  const finishedRead = (name: string): void => {
-    if (!secondAskFailed.has(name)) agentInputDigests.set(name, finderDigests.get(name)!);
+  const finishedRead = (name: string, findings: number): void => {
+    if (secondAskFailed.has(name)) return;
+    agentInputDigests.set(name, finderDigests.get(name)!);
+    agentFindingsReturned.set(name, findings);
   };
-  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentsAskedAgain, agentInputDigests });
+  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentsAskedAgain, agentInputDigests, agentFindingsReturned });
   const quotaErrors = new Map<string, QuotaError>();
   // Why a failed finder is not run again: a used-up limit, or its own time limit, which a retry from the start would meet again.
   const noRetry = new Map<string, string>();
@@ -1285,7 +1289,7 @@ export async function runReview(
         agentResponseLengths.set(agent.name, agentResult.responseLength);
         accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
         accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
-        finishedRead(agent.name);
+        finishedRead(agent.name, agentResult.findings.length);
         progressFindingCount += agentResult.findings.length;
         const durationMs = Date.now() - startTime;
 
@@ -1341,7 +1345,7 @@ export async function runReview(
   for (const finder of reusedFinders) {
     const findings = kept!.finders.get(finder.name)!.findings;
     allFindings.push(...findings);
-    agentInputDigests.set(finder.name, finderDigests.get(finder.name)!);
+    finishedRead(finder.name, findings.length);
     completedCount++;
     progressFindingCount += findings.length;
     core.info(`${finder.name}: kept the ${findings.length} findings of the last attempt`);
@@ -1418,7 +1422,7 @@ export async function runReview(
         agentResponseLengths.set(agent.name, agentResult.responseLength);
         accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
         accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
-        finishedRead(agent.name);
+        finishedRead(agent.name, agentResult.findings.length);
         agentFailureReasons.delete(agent.name);
         progressFindingCount += agentResult.findings.length;
         completedCount++;
@@ -2057,6 +2061,7 @@ export async function runReview(
     agentWarnings,
     agentsAskedAgain,
     agentInputDigests,
+    agentFindingsReturned,
     ...(reused && { reused }),
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
     plannerDurationMs,

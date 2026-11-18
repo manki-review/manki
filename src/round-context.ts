@@ -123,6 +123,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         const model = agentModels.get(name);
         const effort = result.agentEffortMap?.get(name);
         const inputDigest = result.agentInputDigests?.get(name);
+        const findingsReturned = result.agentFindingsReturned?.get(name);
         return {
           name,
           findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
@@ -141,6 +142,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
           model,
           ...(effort && { effort }),
           ...(inputDigest && { inputDigest }),
+          ...(findingsReturned !== undefined && { findingsReturned }),
           ...(result.reused?.finders.includes(name) && { reused: true as const }),
         };
       })

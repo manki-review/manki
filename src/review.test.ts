@@ -8919,7 +8919,8 @@ describe('runReview triage', () => {
     // Its record says what it kept and from which attempt, and counts only the calls it made.
     const retried = postedRecord(retry);
     expect(retried.meta.reusedFrom).toEqual({ review: 7, timestamp: record.meta.timestamp });
-    expect(retried.reviewers.agentMetrics?.map(m => [m.name, m.reused, m.inputDigest])).toEqual(record.reviewers.agentMetrics?.map(m => [m.name, true, m.inputDigest]));
+    expect(retried.reviewers.agentMetrics?.map(m => [m.name, m.reused, m.inputDigest, m.findingsReturned])).toEqual(record.reviewers.agentMetrics?.map(m => [m.name, true, m.inputDigest, m.findingsRaw]));
+    expect(record.reviewers.agentMetrics?.map(m => m.findingsReturned)).toEqual([2, 0]);
     expect(retried.usage.llmCalls?.filter(c => c.stage === 'reviewer')).toEqual([]);
     expect(retried.reviewers.rawFindings).toEqual(record.reviewers.rawFindings);
 
@@ -8933,7 +8934,12 @@ describe('runReview triage', () => {
       ['a record cut to fit', {}, r => ({ ...r, meta: { ...r.meta, compacted: ['reviewers.rawFindings'] } }), 2],
       ['a round that did not end incomplete', {}, r => ({ ...r, meta: { ...r.meta, incomplete: undefined } }), 2],
       ['another group', {}, r => ({ ...r, routing: { ...r.routing!, group: 'solo' } }), 2],
-      ['a finding missing from the record', {}, r => ({ ...r, reviewers: { ...r.reviewers, rawFindings: r.reviewers.rawFindings!.slice(1) } }), 2],
+      // The record lost a finding of a finder, and the counts it derives from that list agree with what is left.
+      ['a finding missing from the record', {}, r => {
+        const rawFindings = r.reviewers.rawFindings!.slice(1);
+        const agentMetrics = r.reviewers.agentMetrics!.map(m => ({ ...m, findingsRaw: rawFindings.filter(f => f.reviewers.includes(m.name)).length }));
+        return { ...r, reviewers: { ...r.reviewers, rawFindings, agentMetrics } };
+      }, 2],
       ['a finder that failed', {}, r => ({ ...r, reviewers: { ...r.reviewers, agentMetrics: r.reviewers.agentMetrics!.map((m, i) => (i === 0 ? { ...m, status: 'failed' as const } : m)) } }), 1],
       ['a finder that moved to its fallback model', {}, r => ({ ...r, models: { ...r.models, fallbacks: [fallback] } }), 1],
     ];
