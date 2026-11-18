@@ -39,7 +39,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
-import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -134,13 +134,17 @@ describe('dealUnits', () => {
     const perSlice = dealUnits(spread, ['A'], sliced);
     expect([ids(perSlice.byFinder.get('A')), ids(perSlice.cut)]).toEqual([[...ids(spread.slice(0, 15))!, 'U26', ...ids(spread.slice(15, 25))!], ['U27']]);
 
-    // A file split between slices: a unit goes to the slice whose hunks hold its lines, and a deleted file's unit to the first slice of its file.
-    const split = [{ paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', [[1, 900]] as Array<[number, number]>]]) }, { paths: new Set(['src/big.ts']), lines: new Map([['src/big.ts', [[901, 2000]] as Array<[number, number]>]]) }];
+    // A file split between slices: a unit goes to the slice whose hunks hold its lines, which for a deleted file are base lines.
+    const spans = (from: number, to: number) => [[from, to]] as Array<[number, number]>;
+    const split = [
+      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(1, 900)], ['gone.sh', spans(1, 1000)]]) },
+      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(901, 2000)], ['gone.sh', spans(1001, 2000)]]) },
+    ];
     const late = { id: 'U1', kind: 'condition' as const, file: 'src/big.ts', start: 1500, end: 1500, code: '+if (a) {' };
     const across = { id: 'U2', kind: 'function' as const, file: 'src/big.ts', start: 880, end: 950, name: 'f' };
     const gone = { id: 'U3', kind: 'condition' as const, file: 'gone.sh', start: 1500, end: 1500, deleted: true as const, code: '-if a' };
     const bySlice = dealUnits([late, across, gone], ['A'], split);
-    expect(ids(bySlice.byFinder.get('A'))).toEqual(['U2', 'U3', 'U1']);
+    expect(ids(bySlice.byFinder.get('A'))).toEqual(['U2', 'U1', 'U3']);
 
     // Without a finder no unit is asked about.
     expect([dealUnits(twenty, [], one).byFinder.size, dealUnits(twenty, [], one).cut]).toEqual([0, twenty]);
@@ -2602,21 +2606,28 @@ describe('runReview', () => {
     const gate = (check: string) => `export function allow(user: User): boolean {\n${check}  return true;\n}\n`;
     const { root, diff } = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n') });
     // A new file over the character budget of a slice, split between two, whose function and condition sit in the second.
-    const big = gitWorkspace({ 'src/gate.ts': gate('') }, {
-      'src/big.ts': `${Array.from({ length: 2500 }, (_, i) => `export const v${i} = '${'x'.repeat(90)}';\n`).join('')}export function late(n: number): number {\n  if (n > 1) return 1;\n  return 0;\n}\n`,
-    });
+    const bigText = `${Array.from({ length: 2500 }, (_, i) => `export const v${i} = '${'x'.repeat(90)}';\n`).join('')}export function late(n: number): number {\n  if (n > 1) return 1;\n  return 0;\n}\n`;
+    const big = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/big.ts': bigText });
+    // The same file deleted, so its condition is a unit at a base line in the second slice.
+    const deleted = gitWorkspace({ 'src/gate.ts': gate(''), 'src/big.ts': bigText }, {}).root;
+    rmSync(join(deleted, 'src/big.ts'));
+    git(deleted, 'add', '-A');
+    const gone = { root: deleted, diff: parsePRDiff(git(deleted, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
     // The same change with a file long enough that the diff is read in slices.
     const sliced = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n'), 'assets/rates.txt': 'rate\n'.repeat(1600) });
     const ASKED = 'without a line for';
     const finding = (title: string) => ({ severity: 'note', title, file: 'src/gate.ts', line: 2, description: 'd' });
     const checkedU1 = { unit: 'U1', checked: 'Both returns.', defect: 'none' };
     const checkedU2 = { unit: 'U2', checked: 'A banned admin is refused.', defect: 'none' };
-    const run = async (first: object[], second: object[], change = { root, diff }) => {
+    const run = async (first: object[], second: object[], change = { root, diff }, attempt?: RoundContext) => {
       const clients = makeClients();
       const sendMessage = jest.fn(async (_system: string, message: string) => ({ content: JSON.stringify(message.includes(ASKED) ? second : first) }));
       Object.assign(clients.reviewer, { sendMessage });
       mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
-      const result = await runReview(clients, { config: makeConfig(), diff: change.diff, rawDiff: rebuildRawDiff(change.diff), repoContext: '', workspace: change.root });
+      const result = await runReview(clients, {
+        config: makeConfig(), diff: change.diff, rawDiff: rebuildRawDiff(change.diff), repoContext: '', workspace: change.root,
+        ...(attempt && { headSha: 'abc', changeDigest: 'digest', earlierAttempt: { record: { ...attempt, meta: { ...attempt.meta, incomplete: true } }, review: 7 } }),
+      });
       const messages = sendMessage.mock.calls.map(call => call[1]);
       return { result, first: messages.filter(m => !m.includes(ASKED)), again: messages.filter(m => m.includes(ASKED)) };
     };
@@ -2642,6 +2653,10 @@ describe('runReview', () => {
       // A line that names no defect is recorded without one.
       const recorded = [{ unit: 'U1', checked: checkedU1.checked }, { unit: 'U2', checked: checkedU2.checked }];
       expect([...asked.result.agentUnitLines!]).toEqual(asked.result.agentNames.map(name => [name, recorded]));
+      // A retry of the round keeps each finder whose input, units included, is the same, with its unit lines.
+      const kept = await run([], [], { root, diff }, postedRecord(asked.result));
+      expect([kept.first, kept.result.reused?.finders]).toEqual([[], kept.result.agentNames]);
+      expect([...kept.result.agentUnitLines!]).toEqual(kept.result.agentNames.map(name => [name, recorded]));
 
       // A unit still without a line after the second ask stays in the record without what was checked, and no third ask follows.
       const left = await run([checkedU1], []);
@@ -2673,6 +2688,13 @@ describe('runReview', () => {
         // The call's own diff holds the function, not only the units section.
         expect(message).toContain('\n+export function late(n: number): number {\n');
       }
+      const removed = await run([checkedU1], [], gone);
+      const removedUnits = removed.first.filter(message => message.includes('## Units of the Change'));
+      expect([removed.first.length, removedUnits.length]).toEqual([2 * removed.result.agentNames.length, removed.result.agentNames.length]);
+      for (const message of removedUnits) {
+        expect(message).toContain('U1 condition at src/big.ts:2502 of the base, in a file the PR deletes');
+        expect(message).toContain('\n-  if (n > 1) return 1;\n');
+      }
 
       // Findings that are all unusable fail the reply also next to unit lines, so the finder is run again with the note on its reply.
       const clients = makeClients();
@@ -2685,7 +2707,7 @@ describe('runReview', () => {
       expect(sendMessage.mock.calls.filter(([, message]) => message.includes(RETRY_NOTE))).toHaveLength(retried.agentNames.length);
       expect(retried.rawFindings?.map(f => f.title)).toEqual(['Retried', 'Retried']);
     } finally {
-      for (const dir of [root, sliced.root, big.root]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [root, sliced.root, big.root, deleted]) rmSync(dir, { recursive: true, force: true });
     }
   }, GIT_TEST_TIMEOUT_MS);
 
@@ -2754,17 +2776,17 @@ describe('runReview', () => {
       const opus = jest.fn().mockRejectedValue(new Error('endpoint limit'));
       const failing = makeClients();
       failing.reviewerByModel = new Map([['anthropic/claude-opus-5-5', { sendMessage: opus } as unknown as LLMClient]]);
-      jest.mocked(failing.reviewer.sendMessage).mockImplementation(async (system: string) => {
+      jest.mocked(failing.reviewer.sendMessage).mockImplementation(async (system: string, message: string) => {
         if (system.startsWith('You compare code')) throw new Error('comparison failed');
-        return { content: JSON.stringify([raised]) };
+        return { content: JSON.stringify([...unitLines(message), raised]) };
       });
       const attempt = await runReview(failing, options);
       expect(attempt.outcome).toBe('INCOMPLETE');
       expect(attempt.comparisons).toEqual([expect.objectContaining({ status: 'failed' })]);
 
       // The retry asks again only the finder and the comparison that failed, and keeps the findings of the finder on Sonnet.
-      opus.mockReset().mockResolvedValue({ content: '[]' });
-      jest.mocked(failing.reviewer.sendMessage).mockReset().mockImplementation(async (system: string) => ({ content: system.startsWith('You compare code') ? JSON.stringify([finding]) : '[]' }));
+      opus.mockReset().mockImplementation(async (_system: string, message: string) => ({ content: JSON.stringify(unitLines(message)) }));
+      jest.mocked(failing.reviewer.sendMessage).mockReset().mockImplementation(async (system: string, message: string) => ({ content: JSON.stringify(system.startsWith('You compare code') ? [finding] : unitLines(message)) }));
       mockedRunJudgeAgent.mockClear();
       const retried = await runReview(failing, { ...options, earlierAttempt: { record: postedRecord(attempt), review: 7 } });
       expect(jest.mocked(failing.reviewer.sendMessage).mock.calls.map(([system]) => system.startsWith('You compare code'))).toEqual([true]);

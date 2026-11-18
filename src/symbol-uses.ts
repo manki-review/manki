@@ -67,6 +67,8 @@ const MAX_REFERENCE_LINE_CHARS = 1000;
 const HEADER_BYTES = 2048;
 /** Files of one checkout whose start is read for `GENERATED_HEADER`. Past it only the path tells a generated file. */
 const MAX_HEADER_FILES = 2000;
+/** Changed files read for `GENERATED_HEADER` to leave generated code out of the units, apart from `MAX_HEADER_FILES`. */
+const MAX_UNIT_HEADER_FILES = 200;
 const GREP_TIMEOUT_MS = 30_000;
 /** The reason a failed search of the PR's head commit leaves in the log and the round record is cut to this length. */
 const MAX_FAILURE_CHARS = 300;
@@ -1029,7 +1031,8 @@ async function buildUsesSection(
   const reviewed = new Set(diff.files.map(f => f.path));
   // A file left out of `diff` adds no pieces, but a piece can move out of it, so its removed lines are read by keyword.
   const pieces = addedPieces(diff, declared, movedNames(fullDiff, parser, file => addsNoPieces(file) || !reviewed.has(file)), addsNoPieces);
-  const allUnits = changeUnits(diff.files, declared, addsNoPieces);
+  const generated = new LastRankedFiles(workspace, MAX_UNIT_HEADER_FILES);
+  const allUnits = changeUnits(diff.files, declared, file => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || generated.has(file));
   const units = allUnits.slice(0, MAX_UNITS);
   if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
@@ -2256,7 +2259,7 @@ class LastRankedFiles {
   private readonly known = new Map<string, boolean>();
   private headers = 0;
 
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string, private readonly limit = MAX_HEADER_FILES) {}
 
   has(file: string): boolean {
     let last = this.known.get(file);
@@ -2268,9 +2271,9 @@ class LastRankedFiles {
     return last;
   }
 
-  /** A file that cannot be read, or one past `MAX_HEADER_FILES`, counts as written by hand. */
+  /** A file that cannot be read, or one past `limit`, counts as written by hand. */
   private hasGeneratedHeader(file: string): boolean {
-    if (this.headers >= MAX_HEADER_FILES) return false;
+    if (this.headers >= this.limit) return false;
     this.headers++;
     try {
       const { absolute } = resolveInRoot(this.root, file);

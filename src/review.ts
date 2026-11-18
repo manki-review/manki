@@ -231,15 +231,15 @@ function askAgainNote(files: string[], units: string[], slices: boolean): string
 /** Changed functions and conditions one finder call answers for. */
 const MAX_UNITS_PER_CALL = 20;
 
-/** A slice of the diff as `dealUnits` reads it: its paths and the head lines of each file's hunks, for several slices. */
+/** A slice of the diff as `dealUnits` reads it: its paths and the lines of each file's hunks, for several slices. */
 type UnitSlices = ReadonlyArray<{ paths?: Set<string>; lines?: ReadonlyMap<string, ReadonlyArray<[number, number]>> }>;
 
 /**
- * Returns the index of the slice whose call answers for `unit`: the first whose hunks hold one of its head lines, since
- * a large file can be split between slices. Failing that, the first that holds its file, or -1 when none does.
+ * Returns the index of the slice whose call answers for `unit`: the first whose hunks hold one of its lines, since a
+ * large file can be split between slices. Failing that, the first that holds its file, or -1 when none does.
  */
 function unitSlice(unit: ChangeUnit, slices: UnitSlices): number {
-  const holding = unit.deleted ? -1 : slices.findIndex(s => s.lines?.get(unit.file)?.some(([from, to]) => from <= unit.end && unit.start <= to));
+  const holding = slices.findIndex(s => s.lines?.get(unit.file)?.some(([from, to]) => from <= unit.end && unit.start <= to));
   return holding >= 0 ? holding : slices.findIndex(s => !s.paths || s.paths.has(unit.file));
 }
 
@@ -1309,6 +1309,7 @@ export async function runReview(
       buildReviewerSystemPrompt(finder.prompt, config, plannerResult?.language, tools),
       buildReviewerUserMessage(rawDiff, repoContext, {
         fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, usesOutsideDiff: shown.usesOutsideDiff, lockfileChanges,
+        unitsSection: unitsSection(dealt?.byFinder.get(finder.name) ?? []),
       }),
     ]);
   };
@@ -1485,8 +1486,9 @@ export async function runReview(
     agentPromises.push(settled(finder));
   }
   for (const finder of reusedFinders) {
-    const findings = kept!.finders.get(finder.name)!.findings;
+    const { record, findings } = kept!.finders.get(finder.name)!;
     allFindings.push(...findings);
+    if (record.units) agentUnitLines.set(finder.name, record.units);
     finishedRead(finder.name, findings.length);
     completedCount++;
     progressFindingCount += findings.length;
@@ -2318,8 +2320,8 @@ const MAX_PARALLEL_SLICES = 4;
 
 /**
  * Returns the slices `sliceDiff` splits `rawDiff` into, each as the text a prompt shows and, when there are several, the
- * paths it holds and the head lines each file's hunks span there. A diff that fits one slice keeps its own text, unless
- * it is too long to show uncut.
+ * paths it holds and the lines each file's hunks span there: head lines, or base lines for a deleted file. A diff that
+ * fits one slice keeps its own text, unless it is too long to show uncut.
  */
 function diffSlices(rawDiff: string): Array<{ raw: string; paths?: Set<string>; lines?: Map<string, Array<[number, number]>> }> {
   const slices = sliceDiff(parsePRDiff(rawDiff), SLICE_LINES);
@@ -2327,7 +2329,8 @@ function diffSlices(rawDiff: string): Array<{ raw: string; paths?: Set<string>; 
   return slices.map(slice => {
     const lines = new Map<string, Array<[number, number]>>();
     for (const file of slice.files) {
-      lines.set(file.path, [...lines.get(file.path) ?? [], ...file.hunks.map(h => [h.newStart, h.newStart + Math.max(h.newLines, 1) - 1] as [number, number])]);
+      const spans = file.hunks.map(h => (file.changeType === 'deleted' ? [h.oldStart, h.oldLines] : [h.newStart, h.newLines]));
+      lines.set(file.path, [...lines.get(file.path) ?? [], ...spans.map(([start, count]) => [start, start + Math.max(count, 1) - 1] as [number, number])]);
     }
     return { raw: rebuildRawDiff(slice), paths: new Set(slice.files.map(f => f.path)), lines };
   });
