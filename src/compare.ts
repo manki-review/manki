@@ -81,7 +81,7 @@ Give one answer:
 
 Report findings only for \`differs\`, one per difference you can show:
 - Cite in \`proof\` at least two existing places that agree with each other, and the new line that does not. A line this PR adds is no existing place, so a change that moves the existing places over to a new pattern on purpose is no finding. Instead of the two places, a finding can rest on a rule of the repository's instruction files: set \`"rule"\` to the rule quoted word for word and \`"ruleFile"\` to the file it comes from.
-- Say in \`cost\` what the difference costs in practice, such as a caller that now has two ways to do one thing, a check the shared path has and the new one lacks, or a layer that now reaches into another. A difference with no cost is a note at most.
+- Say in \`cost\` what the difference costs in practice, such as a caller that now has two ways to do one thing, a check the shared path has and the new one lacks, or a layer that now reaches into another. A difference with no cost is filed as a note.
 - Put the finding on the new line that needs the change.
 Manki drops a finding that cites fewer than two existing places and quotes no rule, or that is not on a line the PR adds.
 
@@ -366,19 +366,21 @@ ${fenceExcerpt({ file: piece.file, line: piece.start, code: piece.code })}${rule
 }
 
 /**
- * Reads a pattern check's answer. Only a `differs` answer keeps findings, and only those on a line the PR adds whose
- * `proof` cites two existing places, lines there that the PR does not add, or that quote a rule of `instructionFiles`.
- * Places are compared by their path from the repository root, and places whose lines overlap count once. A kept
- * finding's file is that path, and its `proof` keeps only its existing places and its own line. A finding that names no
- * `cost` is a note at most. The record keeps the answer and the existing places it cites, also when no finding is usable.
+ * Reads a pattern check's answer. Only a `differs` answer keeps findings, and only those on a line `diff` adds whose
+ * `proof` cites two existing places, lines there that `fullDiff`, excluded files included, does not add, or that quote
+ * a rule of `instructionFiles`. Places are compared by their path from the repository root, and places whose lines
+ * overlap count once. A kept finding's file is that path, and its `proof` keeps only its existing places and its own
+ * line. A finding that names no `cost` goes to the judge as a note, and the judge sets its grade. The record keeps the
+ * answer and the existing places it cites, also when no finding is usable.
  */
 function parsePatternAnswer(
-  content: string, reviewer: string, workspace: string, diff: ParsedDiff, instructionFiles: readonly InstructionFile[],
+  content: string, reviewer: string, workspace: string, { diff, fullDiff }: { diff: ParsedDiff; fullDiff: ParsedDiff }, instructionFiles: readonly InstructionFile[],
 ): ReturnType<Asking['parse']> {
   const parsed = JSON.parse(extractJSON(content, 'object')) as Record<string, unknown>;
   const answer = PATTERN_ANSWERS.find(a => a === parsed.answer);
   if (!answer) throw new Error(`the answer is ${JSON.stringify(parsed.answer)}, not one of ${PATTERN_ANSWERS.join(', ')}`);
-  const added = new Map(diff.files.map(f => [f.path, [...addedLines(f).keys()]]));
+  const addedBy = (changed: ParsedDiff) => new Map(changed.files.map(f => [f.path, [...addedLines(f).keys()]]));
+  const [reviewed, added] = [addedBy(diff), addedBy(fullDiff)];
   const rootPath = (file: string) => {
     try {
       return resolveInRoot(workspace, file).relative;
@@ -386,12 +388,12 @@ function parsePatternAnswer(
       return file;
     }
   };
-  const addsTo = (file: string, start: number, end: number) => !!added.get(file)?.some(line => line >= start && line <= end);
+  const adds = (lines: Map<string, number[]>, file: string, start: number, end: number) => !!lines.get(file)?.some(line => line >= start && line <= end);
   const existing = (proof: unknown) => {
     const places: Array<{ file: string; start: number; end: number }> = [];
     for (const location of shownLines(proof, workspace).proof) {
       const [file, [start, end]] = [rootPath(locationFile(location)), locationLines(location)];
-      if (addsTo(file, start, end) || places.some(p => p.file === file && p.start <= end && start <= p.end)) continue;
+      if (adds(added, file, start, end) || places.some(p => p.file === file && p.start <= end && start <= p.end)) continue;
       places.push({ file, start, end });
     }
     return places.map(({ file, start, end }) => `${file}:${start}${end > start ? `-${end}` : ''}`);
@@ -406,7 +408,7 @@ function parsePatternAnswer(
     const { proof: cited, cost } = elements[i];
     const own = rootPath(finding.file);
     const proof = existing(cited);
-    if ((!finding.rule && proof.length < 2) || !addsTo(own, finding.line, finding.line)) return [];
+    if ((!finding.rule && proof.length < 2) || !adds(reviewed, own, finding.line, finding.line)) return [];
     const evidence = { ...(finding.evidence ?? { checks: [] }), proof: [...proof, `${own}:${finding.line}`] };
     const stated = typeof cost === 'string' ? cost.trim() : '';
     if (!stated) return [{ ...finding, file: own, evidence, severity: 'note' as const }];
@@ -422,9 +424,10 @@ function parsePatternAnswer(
  * cap as `cut`.
  */
 export async function runPatternChecks(
-  clientFor: (reviewer: string) => LLMClient, pieces: readonly AddedPiece[], options: ComparisonOptions & { diff: ParsedDiff; instructionFiles?: readonly InstructionFile[] },
+  clientFor: (reviewer: string) => LLMClient, pieces: readonly AddedPiece[],
+  options: ComparisonOptions & { diff: ParsedDiff; fullDiff?: ParsedDiff; instructionFiles?: readonly InstructionFile[] },
 ): Promise<Answers> {
-  const { workspace, diff, instructionFiles = [] } = options;
+  const { workspace, diff, fullDiff = diff, instructionFiles = [] } = options;
   // A file's path comes from the PR, so its name is used only when it is plain.
   const names = uniqueNames(pieces.map(p => {
     const base = p.name.slice(p.name.lastIndexOf('/') + 1);
@@ -433,6 +436,6 @@ export async function runPatternChecks(
   const all = pieces.map((piece, i): Question => ({ kind: 'pattern', reviewer: names[i], at: [`${piece.file}:${piece.start}`], message: () => patternMessage(piece, instructionFiles) }));
   return ask(clientFor, all.slice(0, MAX_PATTERN_QUESTIONS), all.slice(MAX_PATTERN_QUESTIONS), options, {
     what: 'pattern', system: () => PATTERN_SYSTEM_PROMPT, needsTools: true, shape: 'object',
-    parse: (content, reviewer) => parsePatternAnswer(content, reviewer, workspace!, diff, instructionFiles),
+    parse: (content, reviewer) => parsePatternAnswer(content, reviewer, workspace!, { diff, fullDiff }, instructionFiles),
   });
 }

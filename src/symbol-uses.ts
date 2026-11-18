@@ -579,6 +579,8 @@ export interface UsesOptions {
   /** Whether to collect `dependencyNames`. Without it the calls of the changed files are not queried. */
   dependencyNames?: boolean;
   loadApi?: () => Promise<AstGrepApi>;
+  /** The PR's whole diff, with the files `excludePaths` left out of `diff`, whose removed lines can hold a moved piece. */
+  fullDiff?: ParsedDiff;
 }
 
 const NO_SIBLINGS: SiblingQuestions = { fields: [], implementations: [] };
@@ -592,14 +594,14 @@ const NO_SECTION = { section: '', finderSection: '', readingSection: '' };
  * the structure the change adds. The section is empty, with no record, when there is nothing to list, and on any
  * failure, which it logs and which also returns no comparisons and no pieces.
  */
-export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], dependencyNames: forDependency = false, loadApi = loadAstGrep }: UsesOptions = {}): Promise<UsesOutsideDiff> {
+export async function listUsesOutsideDiff(workspace: string | undefined, diff: ParsedDiff, { excludePaths = [], dependencyNames: forDependency = false, loadApi = loadAstGrep, fullDiff = diff }: UsesOptions = {}): Promise<UsesOutsideDiff> {
   if (!workspace || !existsSync(join(workspace, '.git'))) {
     core.info('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     return { ...NO_SECTION, siblings: NO_SIBLINGS };
   }
   try {
     const started = Date.now();
-    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency);
+    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff);
     const { fields, implementations } = uses.siblings;
     core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons and ${uses.pieces?.length ?? 0} added pieces`);
     return uses;
@@ -934,7 +936,9 @@ function formatRelatedUses(
   return { section, readingSection, record, counterparts };
 }
 
-async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean): Promise<UsesOutsideDiff> {
+async function buildUsesSection(
+  workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean, fullDiff: ParsedDiff,
+): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
   const added = new Map(files.map(f => [f.path, new Set(addedLines(f).keys())]));
@@ -997,7 +1001,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   }
   const lastRanked = new LastRankedFiles(workspace);
   const addsNoPieces = (file: string) => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file);
-  const pieces = addedPieces(diff, declared, movedNames(diff, parser, addsNoPieces), addsNoPieces);
+  const reviewed = new Set(diff.files.map(f => f.path));
+  // A file left out of `diff` adds no pieces, but a piece can move out of it, so its removed lines are read by keyword.
+  const pieces = addedPieces(diff, declared, movedNames(fullDiff, parser, file => addsNoPieces(file) || !reviewed.has(file)), addsNoPieces);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);

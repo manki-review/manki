@@ -865,6 +865,8 @@ export interface ReviewOptions {
   deeper?: boolean;
   /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
   excludedPaths?: string[];
+  /** The PR's whole diff, with the files `exclude_paths` left out of `diff`, which add and remove lines all the same. */
+  fullDiff?: ParsedDiff;
   /** Open PRs and issues that may relate to the PR. The dedup model classifies them for a note in the review body. */
   relatedWork?: RelatedWork;
   /** The changed lockfiles Manki parsed into package lists. `exclude_paths` can leave their files out of `diff`. */
@@ -900,7 +902,7 @@ export async function runReview(
   // One answer for the whole round, so the judge, the refuter and `markPreExisting` cannot disagree on a finding.
   const unchangedCheck = (finding: Finding): PreExistingCheck | undefined => preExistingCheck(finding, diffWithLockfiles, excludedPaths);
   // Searched while the planner runs, since no model call depends on it before the finders.
-  const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths, dependencyNames: config.related_repos?.some(r => r.kind === 'dependency') });
+  const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths, dependencyNames: config.related_repos?.some(r => r.kind === 'dependency'), fullDiff: options.fullDiff });
   const modelFallbacks: RoundModelFallback[] = [];
   // How many finders of the round read on each model: on their own, on a fallback a refusal moved them to, or on one a
   // limit holds for them. A count, so giving back what a limit held never frees a model another finder still reads on.
@@ -1165,7 +1167,7 @@ export async function runReview(
   const patternChecksPromise = runPatternChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'pattern_check', reviewer),
     checkWorkspace ? uses.pieces ?? [] : [], {
       effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('pattern'),
-      earlier: earlierOf(kept?.comparisons), diff, instructionFiles: options.instructionFiles,
+      earlier: earlierOf(kept?.comparisons), diff, fullDiff: options.fullDiff, instructionFiles: options.instructionFiles,
     });
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;

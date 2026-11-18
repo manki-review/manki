@@ -269,8 +269,10 @@ describe('runPatternChecks', () => {
   it('asks one call per piece with its added lines, and keeps a finding of a difference only with two existing places or a rule, on a line the PR adds', async () => {
     const { root, diff } = gitWorkspace(
       { 'src/charge.ts': HANDLER('charge'), 'src/cancel.ts': HANDLER('cancel'), 'src/void.ts': HANDLER('voidOrder'), 'AGENTS.md': '# Rules\n' },
-      { 'src/void.ts': 'export function voidOrder(req: Request) {\n  return ok();\n}\n', 'src/refund.ts': 'export function refund(req: Request) {\n  return ok();\n}\n' },
+      { 'src/void.ts': 'export function voidOrder(req: Request) {\n  return ok();\n}\n', 'src/refund.ts': 'export function refund(req: Request) {\n  return ok();\n}\n', 'gen/handlers.ts': HANDLER('generated') },
     );
+    // `exclude_paths` leaves the generated file out of the reviewed diff, but the PR still adds its lines.
+    const reviewed = { ...diff, files: diff.files.filter(f => !f.path.startsWith('gen/')) };
     const instructionFiles = [{ path: 'AGENTS.md', text: '# Rules\n\nEvery handler must check the session with `withAuth`.' }];
     const client = fakeClient(user => {
       if (user.includes('`Refund`')) return { answer: 'follows', places: ['src/charge.ts:1'], findings: [finding('Ignored without a difference', ['src/charge.ts:2', 'src/cancel.ts:2'])] };
@@ -282,6 +284,7 @@ describe('runPatternChecks', () => {
         findings: [
           finding('Two places', ['src/charge.ts:2', './src/cancel.ts:2', 'src/cancel.ts:40', 'src/refund.ts:2']),
           finding('One place', ['src/charge.ts:2', 'src/refund.ts:2']),
+          finding('A line an excluded file adds', ['src/charge.ts:2', 'gen/handlers.ts:2', 'src/refund.ts:2']),
           finding('One place spelled three ways', ['src/charge.ts:2', 'src/charge.ts:2-3', './src/charge.ts:1-2']),
           finding('A line the PR adds, spelled another way', ['src/charge.ts:2', './src/refund.ts:2']),
           finding('A place the PR changes', ['src/charge.ts:2', 'src/void.ts:2', 'src/refund.ts:2']),
@@ -298,10 +301,10 @@ describe('runPatternChecks', () => {
     let retried: Awaited<ReturnType<typeof runPatternChecks>>;
     const again = fakeClient(() => ({ answer: 'follows' }));
     try {
-      result = await runPatternChecks(() => client, pieces, { effort: 'high', workspace: root, diff, instructionFiles });
+      result = await runPatternChecks(() => client, pieces, { effort: 'high', workspace: root, diff: reviewed, fullDiff: diff, instructionFiles });
       // A retry of the round keeps each answer whose question is unchanged, with its findings, and asks nothing again.
       const answers = new Map(result.comparisons.map(c => [c.reviewer, { record: c, findings: result.findings.filter(f => f.reviewers.includes(c.reviewer)) }]));
-      retried = await runPatternChecks(() => again, pieces, { effort: 'high', workspace: root, diff, instructionFiles, earlier: { answers, confirm: async () => true } });
+      retried = await runPatternChecks(() => again, pieces, { effort: 'high', workspace: root, diff: reviewed, fullDiff: diff, instructionFiles, earlier: { answers, confirm: async () => true } });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -328,7 +331,7 @@ describe('runPatternChecks', () => {
     // A place is compared by its path from the root and its lines, a made-up line is left out, and the finding's own line closes the proof.
     expect(result.findings[1]).toEqual(expect.objectContaining({ file: 'src/refund.ts', evidence: expect.objectContaining({ proof: ['src/refund.ts:2'] }) }));
     expect(result.comparisons).toEqual([
-      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 7, inputDigest: expect.any(String) },
+      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 8, inputDigest: expect.any(String) },
       { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0, inputDigest: expect.any(String) },
       { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0, inputDigest: expect.any(String) },
       // A difference whose findings are all unusable keeps its answer and places.

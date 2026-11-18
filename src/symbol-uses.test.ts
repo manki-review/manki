@@ -498,6 +498,20 @@ describe('listUsesOutsideDiff', () => {
     ]);
     expect(pieces?.find(p => p.name === 'refund')?.code).toBe('5:+ def refund(order):\n6:+     return order');
 
+    // A file `exclude_paths` leaves out of the reviewed diff adds no pieces, but a piece moved out of it is not new.
+    const exported = gitWorkspace(
+      { 'gen/api.ts': 'export function toCents(n: number) {\n  return n * 100;\n}\n', 'src/money.ts': 'export const RATE = 1;\n' },
+      { 'gen/api.ts': '// Generated.\n', 'src/money.ts': 'export const RATE = 1;\n\nexport function toCents(n: number) {\n  return n * 100;\n}\n' },
+    );
+    try {
+      const reviewed = { ...exported.diff, files: exported.diff.files.filter(f => !f.path.startsWith('gen/')) };
+      const listed = (fullDiff?: typeof reviewed) => listUsesOutsideDiff(exported.root, reviewed, { loadApi, excludePaths: ['gen/**'], ...(fullDiff && { fullDiff }) });
+      expect((await listed())?.pieces?.map(p => p.name)).toEqual(['toCents']);
+      expect((await listed(exported.diff)).pieces ?? []).toEqual([]);
+    } finally {
+      rmSync(exported.root, { recursive: true, force: true });
+    }
+
     // The methods of the class are part of it, so they are not counted among the pieces left out.
     const many = Array.from({ length: 22 }, (_, i) => `def handle_step_${i}(order):\n    return order\n`).join('\n');
     const runner = 'class Runner:\n    def start(self):\n        return 1\n\n    def stop(self):\n        return 2\n';
