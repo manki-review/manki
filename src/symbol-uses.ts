@@ -996,7 +996,8 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     }
   }
   const lastRanked = new LastRankedFiles(workspace);
-  const pieces = addedPieces(diff, declared, movedNames(diff, parser), file => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file));
+  const addsNoPieces = (file: string) => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file);
+  const pieces = addedPieces(diff, declared, movedNames(diff, parser, addsNoPieces), addsNoPieces);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -1309,14 +1310,15 @@ function pieceKind(symbol: ChangedSymbol, text: string): AddedPiece['kind'] | un
 
 /**
  * Returns the names declared on the lines the diff removes, found by the parser that finds the added ones: the grammar
- * on the base version of the file where there is one and its budget allows, and the keywords otherwise.
+ * on the base version of the file where there is one and its budget allows, and the keywords otherwise. A file `skip`
+ * names adds no pieces, so its base version is read by keyword and takes no budget.
  */
-function movedNames(diff: ParsedDiff, parser: Parser): Set<string> {
+function movedNames(diff: ParsedDiff, parser: Parser, skip: (file: string) => boolean): Set<string> {
   const names = new Set<string>();
   for (const file of diff.files) {
     const removed = removedOldLines(file);
     if (removed.size === 0) continue;
-    const parsed = languageOf(file.path) ? parser.parseBase(file) : undefined;
+    const parsed = languageOf(file.path) && !skip(file.path) ? parser.parseBase(file) : undefined;
     const declared = parsed
       ? parsed.declarations.filter(d => removed.has(lineOf(d.node))).map(d => d.name)
       : keywordDeclarations(file, removed).map(s => s.name);
@@ -1431,10 +1433,11 @@ class Parser {
     const language = languageOf(file.path);
     if (!language || !this.api) return undefined;
     try {
-      const source = file.changeType === 'deleted'
-        ? [...removedOldLines(file).values()].join('\n')
-        : replayDiff(readFileSync(resolveInRoot(this.workspace, file.path).absolute, 'utf-8'), file, 'undo');
-      const size = Buffer.byteLength(source);
+      // The base size is known from the head size and the diff, so a file past the budget is never read.
+      const removed = [...removedOldLines(file).values()];
+      const lineBytes = (lines: Iterable<string>) => [...lines].reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+      const absolute = file.changeType === 'deleted' ? undefined : resolveInRoot(this.workspace, file.path).absolute;
+      const size = (absolute ? statSync(absolute).size - lineBytes(addedLines(file).values()) : 0) + lineBytes(removed);
       if (size > MAX_FILE_BYTES) return undefined;
       if (this.baseFiles >= MAX_BASE_PARSED_FILES || this.baseBytes + size > MAX_BASE_PARSED_BYTES) {
         this.baseSkipped++;
@@ -1442,6 +1445,7 @@ class Parser {
       }
       this.baseFiles++;
       this.baseBytes += size;
+      const source = absolute ? replayDiff(readFileSync(absolute, 'utf-8'), file, 'undo') : removed.join('\n');
       return this.build(file.path, source, undefined, false);
     } catch {
       return undefined;

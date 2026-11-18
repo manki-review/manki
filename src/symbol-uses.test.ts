@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
@@ -13,6 +14,8 @@ import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDif
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
+// Passes every read through, so a test can count the files a step reads.
+jest.mock('fs', () => ({ ...jest.requireActual('fs'), readFileSync: jest.fn(jest.requireActual('fs').readFileSync) }));
 // Every test here builds a real git workspace or directory, which a loaded runner takes past the default 5 seconds.
 jest.setTimeout(30_000);
 
@@ -1030,7 +1033,9 @@ ${body}	return true
     // The base versions read for moved names have a budget of their own. With 191 of the 200 parses spent on changed
     // files, the lookups of `balance` still read the files they need, and 151 of the 191 base versions are read by keyword.
     jest.mocked(core.info).mockClear();
-    const handlers = (value: number) => Object.fromEntries(Array.from({ length: 190 }, (_, i) => [`gen/h${String(i).padStart(3, '0')}.go`, `package gen\n\n// Version ${value}.\n`]));
+    const handlers = (value: number) => Object.fromEntries(Array.from({ length: 190 }, (_, i) => [`svc/h${String(i).padStart(3, '0')}.go`, `package svc\n\n// Version ${value}.\n`]));
+    const reads = jest.mocked(fs.readFileSync);
+    reads.mockClear();
     const based = await usesFor({
       ...handlers(1), 'src/account.rs': account(false), 'src/use.rs': 'pub fn left(a: &Account) -> u64 {\n    a.balance\n}\n',
       'src/a_view.rs': 'pub struct AccountView {\n    pub balance: u64,\n}\n\nimpl AccountView {\n    pub fn shown(&self, _: &Account) -> u64 {\n        self.balance\n    }\n}\n',
@@ -1039,6 +1044,21 @@ ${body}	return true
     expect(based.section).not.toContain('left 1 more files unparsed');
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the parse limit left the base versions of 151 files unparsed, so their removed lines were read by keyword');
     expect(core.info).not.toHaveBeenCalledWith(expect.stringMatching(/^Uses outside the diff: the parse limit left \d+ files unparsed$/));
+    // A base version past the budget is never read: its file is read once, for the head, and one within it twice.
+    const readsOf = (path: string) => reads.mock.calls.filter(([file]) => String(file).endsWith(path)).length;
+    expect([readsOf('svc/h000.go'), readsOf('svc/h189.go')]).toEqual([2, 1]);
+
+    // Test files add no pieces, so their base versions take none of the budget, and the source file's base is still
+    // parsed: a method moved to another class without a keyword is not new.
+    const specs = (value: number) => Object.fromEntries(Array.from({ length: 45 }, (_, i) => [`src/a${String(i).padStart(2, '0')}.test.ts`, `test('t', () => {\n  expect(${value}).toBe(1);\n});\n`]));
+    const moved = await usesFor({
+      ...specs(1), 'src/cart.ts': 'export class Cart {\n  items = 0;\n  clear() {\n    this.items = 0;\n  }\n}\n\nexport class Till {\n  total = 0;\n}\n',
+      'src/fee.ts': 'export const FEE = 1;\n',
+    }, {
+      ...specs(2), 'src/cart.ts': 'export class Cart {\n  items = 0;\n}\n\nexport class Till {\n  total = 0;\n  clear() {\n    this.total = 0;\n  }\n}\n',
+      'src/fee.ts': 'export const FEE = 1;\n\nexport function fee() {\n  return FEE;\n}\n',
+    });
+    expect(moved.pieces?.map(p => p.name)).toEqual(['fee']);
   }, 30_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', finderSection: '', readingSection: '', siblings: { fields: [], implementations: [] } };
