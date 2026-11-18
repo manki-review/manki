@@ -60,7 +60,7 @@ Manki supports Anthropic, OpenAI, and Gemini. You only need credentials for the 
 | Provider | API key input | OAuth input |
 |----------|--------------|-------------|
 | Anthropic | `anthropic_api_key` | `claude_code_oauth_token` (Claude Code CLI) |
-| OpenAI | `openai_api_key` | `openai_oauth_token` (Codex CLI) |
+| OpenAI | `openai_api_key` | `openai_oauth_token` (Codex CLI), or `openai_oauth_file` on a self-hosted runner |
 | Gemini | `gemini_api_key` | `gemini_oauth_token` (Gemini CLI) |
 
 The table lists action input names (lowercase, passed in `with:`). The corresponding GitHub secret is the uppercase version: `anthropic_api_key` reads from `secrets.ANTHROPIC_API_KEY`, and so on, as shown in the workflow examples below.
@@ -122,7 +122,7 @@ Reasoning models (o-series and GPT-5 onwards, such as `gpt-5.6-terra` or `gpt-6.
 
 > **Where this login may be used:** this path signs the Codex CLI in with your ChatGPT account instead of an API key. [OpenAI's guide for this login in CI/CD](https://learn.chatgpt.com/docs/auth/ci-cd-auth) sets limits on it. Use it only on a private runner that you trust. Do not use it for a public or open-source repository. Prefer an API key: the guide recommends one for most CI/CD jobs, and describes this login as an advanced setup for work that has to run as your own Codex account. For a public repository, set `openai_api_key` instead.
 
-> **Status: experimental for CI.** The Codex CLI keeps subscription auth in `auth.json` in its home folder and refreshes it during a run once the tokens are about 8 days old. A refresh rotates the tokens and writes them back to `auth.json`. Manki gives Codex a home folder of its own for each run, writes `auth.json` there from the secret, and deletes the folder when the run ends, also on a persistent self-hosted runner. A login the runner's own user keeps in `~/.codex` is never used or changed. The secret still holds the old tokens, so later runs fail to authenticate until you bootstrap again and re-upload the secret. Concurrent jobs, or a local Codex that refreshes the same login, invalidate it the same way. An API key has none of these problems.
+> **Status: experimental for CI.** The Codex CLI keeps subscription auth in `auth.json` in its home folder and refreshes it during a run once the tokens are about 8 days old. A refresh rotates the tokens and writes them back to `auth.json`. Manki gives Codex a home folder of its own for each run, writes `auth.json` there from the secret, and deletes the folder when the run ends, also on a persistent self-hosted runner. A login the runner's own user keeps in `~/.codex` is never used or changed. The secret still holds the old tokens, so later runs fail to authenticate until you bootstrap again and re-upload the secret. Concurrent jobs, or a local Codex that refreshes the same login, invalidate it the same way. An API key has none of these problems. On a self-hosted runner, a [login file on the runner](#codex-login-file-on-a-self-hosted-runner) stays valid instead.
 
 If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
 
@@ -135,6 +135,58 @@ If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
 3. Manki installs the pinned Codex CLI when the runner has none. An install step in the workflow keeps that out of the review's time (see [Step 3](#step-3-add-the-workflow))
 
 > **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your ChatGPT Plus/Pro subscription. If this secret is ever compromised, revoke the OAuth session immediately at [platform.openai.com/account/sessions](https://platform.openai.com/account/sessions). For production use, prefer the API key path (`OPENAI_API_KEY`), which can be rotated without affecting your account session.
+
+#### Codex login file on a self-hosted runner
+
+On a self-hosted runner that you trust, the ChatGPT login can live in a file on the runner instead of in the secret. Set `openai_oauth_file` to the file's absolute path. Before a Codex call, Manki copies the file into the run's own Codex home. When Codex renews the tokens during the call, Manki writes them back to the file through a new file and a rename, so a crash never leaves half a login. The next run starts from the renewed tokens, so the login does not go stale as the secret does.
+
+Which to choose:
+
+- An API key (`openai_api_key`) for most setups, and always for a public or open-source repository.
+- The login file on a self-hosted runner that you trust and that runs only your own workflows.
+- The secret (`openai_oauth_token`) on any other private runner, knowing that you upload it again after each renewal.
+
+Set the file up on the runner, as the user the runner runs as:
+
+1. Make a folder for the login that only that user can open, outside the runner's work folder:
+   ```bash
+   mkdir -m 700 ~/.manki-codex
+   ```
+2. Sign Codex in with that folder as its home. On a runner without a browser, add `--device-auth`:
+   ```bash
+   CODEX_HOME=~/.manki-codex codex login
+   ```
+3. Check that only that user can read the file, and fix it if not:
+   ```bash
+   chmod 600 ~/.manki-codex/auth.json
+   ```
+4. Pass the absolute path in the workflow, since `~` is not expanded there:
+   ```yaml
+   with:
+     openai_oauth_file: /home/runner/.manki-codex/auth.json
+   ```
+
+Manki stops the run with a message that names the problem when the file is not one it may use:
+
+- The file or its folder belongs to another user, or another user can read or write it.
+- The file or its folder is a symbolic link.
+- The file is inside the workspace (`GITHUB_WORKSPACE`), the runner's temp folder (`RUNNER_TEMP`), the working folder, or the runner user's own Codex home (`~/.codex`, or `CODEX_HOME` when the runner sets it). A Codex the user runs there would renew the login while a review uses it.
+- The file is not a Codex login with `tokens.access_token` and `tokens.refresh_token`, or its access token has no expiry Manki can read.
+- `openai_oauth_token` or `openai_base_url` is set too.
+- The runner runs Windows, where Manki cannot check who can read the file.
+
+Manki checks the file again each time it copies it. A renewal is never written over a file that changed since the review read it, for example because you ran `codex login` again.
+
+Reviews on the same runner do not wait for each other. Codex renews the login before a request once its access token expires within 5 minutes, and after any request the server refuses. A renewal makes the old refresh token fail. Manki handles the two cases this way:
+
+- A call whose access token lasts longer than the call's time limit plus 10 minutes starts at once, beside every other call of every review.
+- Before a call that Codex could renew during, Manki has Codex renew the login once: it starts `codex app-server` in the review's Codex home and asks it to renew. It holds a lock next to the file (`auth.json.lock`) while it does, and writes the renewed login back. Another review that needs a renewal at the same time waits for this one only, about a second, and then reads the renewed file. The calls of one review share one renewal, and a call that runs out of time or is cancelled while it waits leaves that renewal running for the others.
+- A renewal after a refused request takes no lock. Manki writes it back while the call runs, and copies a login that another review wrote back into the review's own copy.
+- Every write-back works the same way, during a call, at its end, after a renewal and when the run ends. It takes a second lock (`auth.json.writing`) only for the moment it compares the file and writes it, so a review that holds `auth.json.lock` never keeps another review's renewal out of the file. At the end of a call and when the run ends, Manki tries for up to 5 seconds. When it still cannot write, it warns once and names the file, and the renewal stays in the review's Codex home, where the next call writes it. Only a renewal still unwritten when the run ends is lost, and then the warning says to run `codex login` again. When two calls renew the same login at once, one renewal wins and is written back. The other call fails with "refresh token was already used" and moves to its [fallback model](how-reviews-work.md#review-pipeline). The file never goes back to a refresh token that was used.
+
+When Codex cannot renew the login before a call, the calls that Codex could renew during run one at a time with the lock held, and a call of another review that needs the lock then waits for it. The wait counts against the call's own time limit, so the call's Codex run gets what is left, and a call whose limit ends while it waits fails with a message that names the lock. A lock whose process stopped is taken over. A lock that a process on another machine or in another container left cannot be checked: delete it when no review runs.
+
+Use the login in the file only for Manki. A Codex you run yourself with the same login renews it outside the lock and makes the file fail. When it fails, run step 2 again.
 
 #### OpenAI-compatible endpoint
 
@@ -150,7 +202,7 @@ The endpoint has to speak the OpenAI Responses API (`POST <base URL>/responses`)
 3. Name models the endpoint serves in `.manki.yml`. `gpt-*` and o-series IDs go to OpenAI by their name. Any other name needs the `openai/` prefix, such as `openai/my-deployment`.
 4. Manki installs the pinned Codex CLI when the runner has none. An install step in the workflow keeps that out of the review's time.
 
-`openai_base_url` needs `openai_api_key` and cannot be combined with `openai_oauth_token`, since a ChatGPT login works only on OpenAI's own servers. A run that uses an OpenAI model then fails with a message that names the problem. Manki writes no Codex config file and no login file for the endpoint. The key reaches the Codex CLI only (see [Security](security.md)).
+`openai_base_url` needs `openai_api_key` and cannot be combined with `openai_oauth_token` or `openai_oauth_file`, since a ChatGPT login works only on OpenAI's own servers. A run that uses an OpenAI model then fails with a message that names the problem. Manki writes no Codex config file and no login file for the endpoint. The key reaches the Codex CLI only (see [Security](security.md)).
 
 The effort tiers follow the model's name as described above, so a model that is not named like an OpenAI reasoning model gets no effort tier, and the Codex CLI applies its own default. When the endpoint answers with a rate limit or a used-up quota, the stage fails with "OpenAI endpoint limit reached" and moves to its [fallback model](how-reviews-work.md#review-pipeline). The review ends incomplete with that message only when the stage cannot move: it has no fallback model, that model fails too, or the call uses repository tools and the fallback model has none.
 
@@ -530,7 +582,9 @@ Provide credentials for the providers you actually use. The model ID in `.manki.
 
 When both are set for a provider, OAuth takes precedence (the action checks the OAuth input before the API key for each provider).
 
-`openai_base_url` is no secret. It sends the OpenAI models to an [endpoint of your own](#openai-compatible-endpoint), with `OPENAI_API_KEY` as that endpoint's key, and it cannot be combined with `OPENAI_OAUTH_TOKEN`.
+`openai_base_url` is no secret. It sends the OpenAI models to an [endpoint of your own](#openai-compatible-endpoint), with `OPENAI_API_KEY` as that endpoint's key, and it cannot be combined with `OPENAI_OAUTH_TOKEN` or `openai_oauth_file`.
+
+`openai_oauth_file` is no secret either. It names a Codex login file on a self-hosted runner and replaces `OPENAI_OAUTH_TOKEN` there, see [Codex login file on a self-hosted runner](#codex-login-file-on-a-self-hosted-runner).
 
 ### Other
 

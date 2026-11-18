@@ -25,7 +25,7 @@ Options:
   --help              Print this message.
 
 Credentials come from CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, OPENAI_OAUTH_TOKEN,
-OPENAI_API_KEY, GEMINI_OAUTH_TOKEN or GEMINI_API_KEY. With OPENAI_BASE_URL, OpenAI models
+OPENAI_OAUTH_FILE, OPENAI_API_KEY, GEMINI_OAUTH_TOKEN or GEMINI_API_KEY. With OPENAI_BASE_URL, OpenAI models
 run against that OpenAI-compatible endpoint with OPENAI_API_KEY as its key.
 
 Exit codes: 0 nothing blocks, 1 something blocks, the base config did not load or the change breaks it,

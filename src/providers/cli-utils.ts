@@ -253,17 +253,7 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
     );
   }
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${opts.inputName} must decode to a JSON object. ${opts.bootstrapHint}`);
-  }
-
-  for (const field of opts.requiredFields) {
-    if (!hasNestedString(parsed as Record<string, unknown>, field)) {
-      throw new Error(
-        `${opts.inputName} is missing required field \`${field}\`. ${opts.bootstrapHint}`,
-      );
-    }
-  }
+  checkAuthFields(parsed, opts);
 
   mkdirSync(dirname(opts.targetPath), { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') {
@@ -297,6 +287,18 @@ export function removeSeededAuthFiles(): void {
     }
   }
   seededAuthFiles.clear();
+}
+
+/** Throws unless `parsed` is a JSON object with a non-empty string at each of `requiredFields`. */
+export function checkAuthFields(parsed: unknown, opts: Pick<SeedAuthFileOptions, 'inputName' | 'requiredFields' | 'bootstrapHint'>): void {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${opts.inputName} must decode to a JSON object. ${opts.bootstrapHint}`);
+  }
+  for (const field of opts.requiredFields) {
+    if (!hasNestedString(parsed as Record<string, unknown>, field)) {
+      throw new Error(`${opts.inputName} is missing required field \`${field}\`. ${opts.bootstrapHint}`);
+    }
+  }
 }
 
 function hasNestedString(obj: Record<string, unknown>, dottedPath: string): boolean {
