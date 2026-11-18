@@ -49,7 +49,7 @@ const SESSION = '01a1e7b6-908c-7750-8dcd-e6fdb23319de';
 const started = (session = SESSION) => ({ type: 'thread.started', thread_id: session });
 const TURN = { type: 'turn.started' };
 const message = (text: string, id = 'item_0') => ({ type: 'item.completed', item: { id, type: 'agent_message', text } });
-const COMPLETED = { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0 } };
+const COMPLETED = { type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 100, cache_write_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 1 } };
 const error = (text: string) => ({ type: 'error', message: text });
 const failed = (text: string) => ({ type: 'turn.failed', error: { message: text } });
 const jsonl = (...events: object[]): string => events.map(event => `${JSON.stringify(event)}\n`).join('');
@@ -653,7 +653,9 @@ describe('sendViaCLI (Codex CLI path)', () => {
     const CAPACITY = 'Selected model is at capacity. Please try a different model.';
     const DROPPED = 'stream disconnected before completion: stream closed before response.completed';
     const RATE_LIMIT = 'rate limit exceeded: Rate limit reached for gpt-5.5 on tokens per min (TPM): Limit 30000, Used 29500, Requested 2000.';
-    const answer: CodexRun = { stdout: answered('[]') };
+    // Codex counts the whole session in `turn.completed`, so a resumed run reports the tokens of the runs before it too.
+    const SESSION_USAGE = { input_tokens: 4000, cached_input_tokens: 400, cache_write_input_tokens: 0, output_tokens: 40, reasoning_output_tokens: 4 };
+    const answer: CodexRun = { stdout: jsonl(started(), TURN, message('[]'), { type: 'turn.completed', usage: SESSION_USAGE }) };
     const tools = { repoTools: { root: '/work/repo', steps: 15, related: undefined } };
     let endpoint: OpenAIClient;
     let info: jest.SpyInstance;
@@ -693,6 +695,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       const { value, tookMs } = await settle(endpoint.sendMessage('Review the diff.', 'the diff', { effort: 'high', ...tools }));
 
       expect(value?.content).toBe('[]');
+      expect(value?.usage).toEqual({ inputTokens: 4000, outputTokens: 40, cacheReadTokens: 400, cacheWriteTokens: 0, reasoningTokens: 4 });
       const pauses = [5_000, 15_000, 0, 0, 0, 3_000, 60_500, 60_000];
       expect(starts.slice(1).map((start, i) => start - starts[i] - RUN_MS)).toEqual(pauses);
       expect(tookMs).toBe(143_500 + 9 * RUN_MS);
@@ -1026,7 +1029,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('hello world');
-    expect(result.usage).toBeUndefined();
+    expect(result.usage).toEqual({ inputTokens: 1000, outputTokens: 10, cacheReadTokens: 100, cacheWriteTokens: 0, reasoningTokens: 1 });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
 
     // Codex printed the last message of the turn on stdout before `--json`, so earlier messages, reasoning, a tool call
@@ -1046,6 +1049,10 @@ describe('sendViaCLI (Codex CLI path)', () => {
       setupSpawnMock(stdout);
       expect((await client.sendMessage('sys', 'user')).content).toBe(content);
     }
+
+    // A turn that reports no token counts leaves them unknown.
+    setupSpawnMock(jsonl(started(), TURN, message('[]'), { type: 'turn.completed' }));
+    expect((await client.sendMessage('sys', 'user')).usage).toBeUndefined();
   });
 
   it('rejects on non-zero exit code with rich diagnostics', async () => {
