@@ -5,12 +5,13 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
 import { shownLines } from './refute';
-import { repoTools } from './related-repos';
+import { offeredRepos, repoTools } from './related-repos';
+import type { EarlierAnswer } from './compare';
 import { fencePrText, parseFindings, unmarkedText } from './review';
 import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
 import { CheckProgress, EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
-import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
+import { digestOf, mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const EXTRACT_TIMEOUT_MS = 45_000;
@@ -238,6 +239,8 @@ interface ClaimCheckOptions {
   signal?: AbortSignal;
   /** Hears how many checks are asked and the findings of each. A check skipped for want of tools made no call. */
   progress?: CheckProgress<number>;
+  /** The answers of an earlier attempt by reviewer name. A check sent exactly what its answer's `inputDigest` says is not asked again. */
+  earlier?: ReadonlyMap<string, EarlierAnswer<RoundPrClaim>>;
 }
 
 /**
@@ -247,7 +250,7 @@ interface ClaimCheckOptions {
  * failed or was stopped by `signal` is `unchecked`, with why in `call`. It never throws.
  */
 export async function runClaimChecks(
-  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, relatedLines, signal, progress }: ClaimCheckOptions,
+  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, relatedLines, signal, progress, earlier }: ClaimCheckOptions,
 ): Promise<{ findings: Finding[]; claims: RoundPrClaim[] }> {
   // A name never carries text from the PR, so each check is numbered and its record holds the quote.
   const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}`, lines: relatedLines?.get(i) }));
@@ -256,14 +259,21 @@ export async function runClaimChecks(
     const unchecked = (call: NonNullable<RoundPrClaim['call']>) => ({ record: { ...claim, reviewer, status: 'unchecked' as const, call }, findings: [] });
     const client = clientFor(reviewer);
     if (!workspace || !client.repoTools) return unchecked('skipped');
+    const message = checkMessage(claim, rawDiff, lines);
+    const inputDigest = digestOf([CHECK_SYSTEM_PROMPT, message, effort ?? null, CHECK_STEPS, offeredRepos(related)]);
+    const kept = earlier?.get(reviewer);
+    if (kept && !kept.record.call && kept.record.inputDigest === inputDigest) {
+      core.info(`${reviewer}: kept the answer of the last attempt`);
+      return { record: { ...kept.record, reused: true as const }, findings: kept.findings };
+    }
     if (signal?.aborted) return unchecked('timed_out');
     const options: SendMessageOptions = {
       ...(effort && { effort }), ...(signal && { signal }), repoTools: repoTools(workspace, CHECK_STEPS, related), timeoutMs: CHECK_TIMEOUT_MS,
     };
     try {
       const { reported, ...answer } = await sendWithParseRetry(
-        checkMessage(claim, rawDiff, lines),
-        message => client.sendMessage(CHECK_SYSTEM_PROMPT, message, options),
+        message,
+        sent => client.sendMessage(CHECK_SYSTEM_PROMPT, sent, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);
           return parseCheck(reply.content, workspace, reviewer, related);
@@ -271,7 +281,7 @@ export async function runClaimChecks(
         error => core.warning(`${reviewer} reply could not be used (${error}), asking once more`),
       );
       core.info(`${reviewer}: ${answer.status}${reported.length > 0 ? `, ${reported.length} finding(s)` : ''}`);
-      return { record: { ...claim, reviewer, ...answer, ...(answer.status === 'disproven' && { findings: reported.length }) }, findings: reported };
+      return { record: { ...claim, reviewer, ...answer, ...(answer.status === 'disproven' && { findings: reported.length }), inputDigest }, findings: reported };
     } catch (error) {
       if (signal?.aborted) {
         core.warning(`${reviewer} was still running when the round stopped waiting, so its claim stays unchecked this round`);

@@ -3,12 +3,12 @@ import * as core from '@actions/core';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
-import { repoTools } from './related-repos';
+import { offeredRepos, repoTools } from './related-repos';
 import { shownLines } from './refute';
 import { isUsableElement, parseFindings } from './review';
 import { CodeExcerpt, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
 import { CheckProgress, EffortLevel, Finding, RelatedRepoKind, RelatedRepoTools, RoundComparison } from './types';
-import { mapWithConcurrency, sendWithParseRetry } from './utils';
+import { digestOf, mapWithConcurrency, sendWithParseRetry } from './utils';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_FIELD_QUESTIONS = 6;
@@ -183,6 +183,14 @@ export interface ComparisonOptions {
   signal?: AbortSignal;
   /** Hears how many questions are asked and the findings of each answer. A question skipped for want of tools made no call. */
   progress?: CheckProgress<number>;
+  /** The answers of an earlier attempt by reviewer name. A question sent exactly what its answer's `inputDigest` says is not asked again. */
+  earlier?: ReadonlyMap<string, EarlierAnswer<RoundComparison>>;
+}
+
+/** An answer of an earlier attempt: its record, which holds the digest of what the call was sent, and its findings. */
+export interface EarlierAnswer<R> {
+  record: R;
+  findings: Finding[];
 }
 
 /** How a step asks its questions: what its log calls them, its system prompt, how it reads a reply, and whether a call needs repository tools. */
@@ -201,7 +209,7 @@ type Answers = { findings: Finding[]; comparisons: RoundComparison[] };
  * as `timed_out`, and with `needsTools` one whose client has no repository tools as `skipped`. It never throws.
  */
 async function ask(
-  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal, progress }: ComparisonOptions, { what, system, parse, needsTools }: Asking,
+  clientFor: (reviewer: string) => LLMClient, asked: Question[], cut: Question[], { effort, workspace, related, signal, progress, earlier }: ComparisonOptions, { what, system, parse, needsTools }: Asking,
 ): Promise<Answers> {
   if (asked.length > 0) core.info(`Asking ${asked.length} ${what} question(s)${cut.length > 0 ? `, ${cut.length} cut by the cap` : ''}`);
   progress?.started(asked.length);
@@ -210,6 +218,12 @@ async function ask(
     const tools = !!workspace && !!client.repoTools;
     const record = { kind: q.kind, reviewer: q.reviewer, at: q.at };
     if (needsTools && !tools) return { record: { ...record, status: 'skipped' }, findings: [] };
+    const inputDigest = digestOf([system(tools), q.message(tools), effort ?? null, tools && COMPARE_STEPS, tools && offeredRepos(related)]);
+    const kept = earlier?.get(q.reviewer);
+    if (kept?.record.status === 'answered' && kept.record.inputDigest === inputDigest) {
+      core.info(`${q.reviewer}: kept the answer of the last attempt`);
+      return { record: { ...kept.record, reused: true }, findings: kept.findings };
+    }
     if (signal?.aborted) return { record: { ...record, status: 'timed_out' }, findings: [] };
     const options: SendMessageOptions = {
       ...(effort && { effort }),
@@ -229,7 +243,7 @@ async function ask(
         'array',
       );
       core.info(`${q.reviewer}: ${findings.length} finding(s)${dropped ? `, ${dropped} dropped without a cited line on both sides` : ''}`);
-      return { record: { ...record, status: 'answered', findings: findings.length, ...(dropped && { dropped }) }, findings };
+      return { record: { ...record, status: 'answered', findings: findings.length, ...(dropped && { dropped }), inputDigest }, findings };
     } catch (error) {
       if (signal?.aborted) {
         core.warning(`${q.reviewer} was still running when the round stopped waiting, so its question goes unanswered this round`);

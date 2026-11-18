@@ -42,7 +42,7 @@ import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
-import { buildRoundUsage } from './round-context';
+import { buildRoundContext, buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
@@ -96,6 +96,13 @@ const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   evidence: { checks: [], proof: ['src/a.ts:10'] },
   ...overrides,
 });
+
+/** The round record a round with `result` posts on commit `abc`, as a later run reads it back from the review. */
+const postedRecord = (result: ReviewResult): RoundContext => JSON.parse(JSON.stringify(buildRoundContext({
+  prNumber: 1, commitSha: 'abc', trigger: { event: 'pull_request:synchronize', sender: 'alice' }, options: {}, config: makeConfig(), reviewSource: 'base',
+  models: { planner: 'p', judge: 'j', dedup: 'd' }, recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 5,
+  diff: makeDiff(), changeDigest: 'digest', excludedFiles: [], openThreads: [], memoryLoadStatus: 'disabled',
+}, result, { judgeDurationMs: 0 }))) as RoundContext;
 
 describe('parseFindings', () => {
   it('parses valid JSON array', () => {
@@ -2270,8 +2277,8 @@ describe('runReview', () => {
     expect(checks.map(([, , sent]) => sent?.repoTools?.related?.guides)).toEqual([{ 'o/ref': 'AGENTS.md' }, { 'o/ref': 'AGENTS.md' }]);
     const reviewers = ['Reference check: ComputeFee', 'Consumer check: ComputeFee'];
     expect(result.comparisons).toEqual([
-      { kind: 'reference', reviewer: reviewers[0], at: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], status: 'answered', findings: 1 },
-      { kind: 'consumer', reviewer: reviewers[1], at: ['o/app:app.ts:1'], status: 'answered', findings: 0 },
+      { kind: 'reference', reviewer: reviewers[0], at: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], status: 'answered', findings: 1, inputDigest: expect.any(String) },
+      { kind: 'consumer', reviewer: reviewers[1], at: ['o/app:app.ts:1'], status: 'answered', findings: 0, inputDigest: expect.any(String) },
     ]);
     expect(result.llmCalls?.filter(c => c.stage === 'related_check').map(c => c.agent)).toEqual(reviewers);
     expect(result.agentNames).not.toContain(reviewers[0]);
@@ -2541,29 +2548,65 @@ describe('runReview', () => {
     }
   });
 
-  it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name', async () => {
+  it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name, and a retry asks only what failed', async () => {
     const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
     const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
     const finding = { severity: 'warning', title: 'A finished id starts again', file: 'src/queue.ts', line: 6, description: 'Only `pending` is checked.' };
     const clients = makeClients();
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: system.startsWith('You compare code') ? JSON.stringify([finding]) : '[]' }));
     mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
-    let result;
+    const options = { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, headSha: 'abc', changeDigest: 'digest' };
     try {
-      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+      const result = await runReview(clients, options);
+
+      const reviewer = 'Sibling field: pending vs done';
+      const compared = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => call[0].startsWith('You compare code'));
+      expect(compared).toHaveLength(1);
+      expect(compared[0][1]).toContain('The change looks up `id` in `pending` of `Queue`, on the first line below. Can `id` be held in `done` instead?');
+      expect(compared[0][1]).toContain('```\nsrc/queue.ts:6: if (this.pending.has(id)) return;\n```');
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ title: finding.title, reviewers: [reviewer] })]);
+      expect(result.comparisons).toEqual([{ kind: 'field', reviewer, at: ['src/queue.ts:6'], status: 'answered', findings: 1, inputDigest: expect.any(String) }]);
+      expect(result.llmCalls?.filter(c => c.stage === 'compare').map(c => c.agent)).toEqual([reviewer]);
+      expect(result.agentNames).not.toContain(reviewer);
+
+      // The pair finder on Opus and the comparison fail in an attempt, so it ends incomplete.
+      const raised = { severity: 'warning', title: 'Raised', file: 'src/queue.ts', line: 2, description: 'd' };
+      const opus = jest.fn().mockRejectedValue(new Error('endpoint limit'));
+      const failing = makeClients();
+      failing.reviewerByModel = new Map([['anthropic/claude-opus-5-5', { sendMessage: opus } as unknown as LLMClient]]);
+      jest.mocked(failing.reviewer.sendMessage).mockImplementation(async (system: string) => {
+        if (system.startsWith('You compare code')) throw new Error('comparison failed');
+        return { content: JSON.stringify([raised]) };
+      });
+      const attempt = await runReview(failing, options);
+      expect(attempt.outcome).toBe('INCOMPLETE');
+      expect(attempt.comparisons).toEqual([expect.objectContaining({ status: 'failed' })]);
+
+      // The retry asks again only the finder and the comparison that failed, and keeps the findings of the finder on Sonnet.
+      opus.mockReset().mockResolvedValue({ content: '[]' });
+      jest.mocked(failing.reviewer.sendMessage).mockReset().mockImplementation(async (system: string) => ({ content: system.startsWith('You compare code') ? JSON.stringify([finding]) : '[]' }));
+      mockedRunJudgeAgent.mockClear();
+      const retried = await runReview(failing, { ...options, earlierAttempt: { record: postedRecord(attempt), review: 7 } });
+      expect(jest.mocked(failing.reviewer.sendMessage).mock.calls.map(([system]) => system.startsWith('You compare code'))).toEqual([true]);
+      expect(opus).toHaveBeenCalledTimes(1);
+      expect(retried.reused).toEqual({ from: { review: 7, timestamp: expect.any(String) }, finders: ['Claude Sonnet 5.5 · high'] });
+      expect(retried.comparisons).toEqual([expect.not.objectContaining({ reused: true })]);
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => [f.title, f.reviewers])).toEqual([['Raised', ['Claude Sonnet 5.5 · high']], [finding.title, [reviewer]]]);
+
+      // An attempt that ended after every finder and check answered, such as one whose verdict reader failed, is retried without any of them.
+      const answered = postedRecord(retried);
+      jest.mocked(failing.reviewer.sendMessage).mockClear();
+      opus.mockClear();
+      mockedRunJudgeAgent.mockClear();
+      const again = await runReview(failing, { ...options, earlierAttempt: { record: { ...answered, meta: { ...answered.meta, incomplete: true } }, review: 8 } });
+      expect(failing.reviewer.sendMessage).not.toHaveBeenCalled();
+      expect(opus).not.toHaveBeenCalled();
+      expect(again.comparisons).toEqual([expect.objectContaining({ status: 'answered', reused: true })]);
+      expect(again.reused?.finders).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['Raised', finding.title]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-
-    const reviewer = 'Sibling field: pending vs done';
-    const compared = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => call[0].startsWith('You compare code'));
-    expect(compared).toHaveLength(1);
-    expect(compared[0][1]).toContain('The change looks up `id` in `pending` of `Queue`, on the first line below. Can `id` be held in `done` instead?');
-    expect(compared[0][1]).toContain('```\nsrc/queue.ts:6: if (this.pending.has(id)) return;\n```');
-    expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ title: finding.title, reviewers: [reviewer] })]);
-    expect(result.comparisons).toEqual([{ kind: 'field', reviewer, at: ['src/queue.ts:6'], status: 'answered', findings: 1 }]);
-    expect(result.llmCalls?.filter(c => c.stage === 'compare').map(c => c.agent)).toEqual([reviewer]);
-    expect(result.agentNames).not.toContain(reviewer);
   });
 
   describe('scope reader', () => {
@@ -2792,6 +2835,17 @@ describe('runReview', () => {
       let deeper;
       try {
         result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
+
+        // A retry of an attempt whose second check failed asks only that check again, and keeps the finders and the first check.
+        const answer = (user: string) => (user.includes('sorted list') ? checkAnswer('disproven', ['src/export.ts:3'], [defect]) : checkAnswer('proven', ['src/export.ts:1']));
+        const onCommit = { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext, headSha: 'abc', changeDigest: 'digest' };
+        const attempt = postedRecord(await runReview(claimClients(quotes, user => (user.includes('sorted list') ? new Error('limit') : answer(user))), onCommit));
+        expect(attempt.prClaims?.claims?.map(c => c.call)).toEqual([undefined, 'failed']);
+        const retrying = claimClients(quotes, answer);
+        const retried = await runReview(retrying, { ...onCommit, earlierAttempt: { record: { ...attempt, meta: { ...attempt.meta, incomplete: true } }, review: 7 } });
+        expect(reviewerCalls(retrying).map(([system, user]) => isCheck(system) && user.includes('sorted list'))).toEqual([true]);
+        expect(retried.prClaims?.claims?.map(c => [c.status, c.reused])).toEqual([['proven', true], ['disproven', undefined]]);
+        expect(retried.llmCalls?.filter(c => c.stage === 'claim_check').map(c => c.agent)).toEqual(['Claim check 2']);
         const docsReview = { config: makeConfig(), diff: docs.diff, rawDiff: 'raw diff', repoContext: '', workspace: docs.root, prContext: { title: 'Document the export', body: 'No behaviour change for existing configs.', baseBranch: 'main' } };
         quick = await runReview(trivial, docsReview);
         deeper = await runReview(moved, { ...docsReview, deeper: true });
@@ -2817,8 +2871,8 @@ describe('runReview', () => {
       expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ title: defect.title, reviewers: ['Claim check 2'] })]);
       expect(result.prClaims).toEqual({
         claims: [
-          { quote: quotes[0], source: 'description', reviewer: 'Claim check 1', status: 'proven', reason: 'The lines decide it.', proof: ['src/export.ts:1'] },
-          { quote: quotes[1], source: 'src/export.ts:2', reviewer: 'Claim check 2', status: 'disproven', reason: 'The lines decide it.', proof: ['src/export.ts:3'], findings: 1 },
+          { quote: quotes[0], source: 'description', reviewer: 'Claim check 1', status: 'proven', reason: 'The lines decide it.', proof: ['src/export.ts:1'], inputDigest: expect.any(String) },
+          { quote: quotes[1], source: 'src/export.ts:2', reviewer: 'Claim check 2', status: 'disproven', reason: 'The lines decide it.', proof: ['src/export.ts:3'], findings: 1, inputDigest: expect.any(String) },
         ],
       });
       expect(result.llmCalls?.filter(c => c.stage === 'claims')).toHaveLength(1);
@@ -2830,7 +2884,7 @@ describe('runReview', () => {
       expect(quick.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'skipped' }] });
       expect(deeper.routing).toMatchObject({ group: 'full', groupSource: 'deeper_review', escalatedFrom: 'trivial' });
       expect(reviewerCalls(moved).filter(([system]) => isCheck(system))).toHaveLength(1);
-      expect(deeper.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'proven', reason: 'The lines decide it.', proof: ['README.md:1'] }] });
+      expect(deeper.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'proven', reason: 'The lines decide it.', proof: ['README.md:1'], inputDigest: expect.any(String) }] });
     });
 
     it('gives every other call the same input and ends the round the same whatever the PR text claims and whatever the claim checks answer short of a disproof that stands', async () => {
@@ -8803,6 +8857,89 @@ describe('runReview triage', () => {
     expect(result.failedAgents).toEqual(['Claude Opus 5.5 · high']);
     expect(result.summary).toContain('Claude Opus 5.5 · high failed after retries');
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+  });
+
+  it('retries an attempt whose judge failed on the findings it recorded, and reads the change in full when the attempt may have read anything else', async () => {
+    const clients = makeClients();
+    const opus = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
+    clients.reviewerByModel = new Map([['anthropic/claude-opus-5-5', opus]]);
+    const rule = 'Every handler checks the token before it reads the body.';
+    jest.mocked(clients.reviewer.sendMessage).mockResolvedValue({ content: JSON.stringify([
+      { severity: 'blocker', title: 'Token unchecked', file: 'src/x.ts', line: 1, description: 'd', suggestedFix: 'f', howToFix: 'h', evidence: ['src/x.ts:1 reads the body'], proof: ['src/x.ts:1'], rule, ruleFile: 'AGENTS.md' },
+      { severity: 'warning', title: 'Old overflow', file: 'src/x.ts', line: 2, description: 'd', preExisting: true, preExistingReason: 'The base had it.' },
+    ]) });
+    const options = {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo', headSha: 'abc', changeDigest: 'digest',
+      instructionFiles: [{ path: 'AGENTS.md', text: rule }],
+    };
+    const finderCalls = () => jest.mocked(clients.reviewer.sendMessage).mock.calls.length + jest.mocked(opus.sendMessage).mock.calls.length;
+    mockedRunJudgeAgent.mockRejectedValueOnce(new Error('judge down'));
+    const attempt = await runReview(clients, options);
+    expect(attempt.summary).toContain('The judge failed');
+    const record = postedRecord(attempt);
+    const graded = mockedRunJudgeAgent.mock.calls[0][2].findings;
+    expect(graded.map(f => [f.title, f.rule, f.preExisting])).toEqual([['Token unchecked', { file: 'AGENTS.md', quote: rule }, undefined], ['Old overflow', undefined, 'The base had it.']]);
+
+    // No finder runs again, and the judge grades exactly what it was given the first time.
+    jest.mocked(clients.reviewer.sendMessage).mockClear();
+    jest.mocked(opus.sendMessage).mockClear();
+    const retry = await runReview(clients, { ...options, earlierAttempt: { record, review: 7 } });
+    expect(finderCalls()).toBe(0);
+    expect(mockedRunJudgeAgent.mock.calls[1][2].findings).toEqual(graded);
+    expect(retry.reused).toEqual({ from: { review: 7, timestamp: record.meta.timestamp }, finders: ['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high'] });
+    // Its record says what it kept and from which attempt, and counts only the calls it made.
+    const retried = postedRecord(retry);
+    expect(retried.meta.reusedFrom).toEqual({ review: 7, timestamp: record.meta.timestamp });
+    expect(retried.reviewers.agentMetrics?.map(m => [m.name, m.reused, m.inputDigest])).toEqual(record.reviewers.agentMetrics?.map(m => [m.name, true, m.inputDigest]));
+    expect(retried.usage.llmCalls?.filter(c => c.stage === 'reviewer')).toEqual([]);
+    expect(retried.reviewers.rawFindings).toEqual(record.reviewers.rawFindings);
+
+    const fallback = { stage: 'reviewer' as const, agent: 'Claude Sonnet 5.5 · high', fallbackModel: 'gpt-5.5', reason: 'limit', limit: true as const };
+    const full: Array<[string, Partial<typeof options> & { deeper?: boolean }, (r: RoundContext) => RoundContext, number]> = [
+      ['another commit', { headSha: 'def' }, r => r, 2],
+      ['another diff', { changeDigest: 'other' }, r => r, 2],
+      ['other instructions', { repoContext: 'other repo' }, r => r, 2],
+      ['a deeper review', { deeper: true }, r => r, 2],
+      ['another Manki release', {}, r => ({ ...r, meta: { ...r.meta, mankiVersion: '0.0.1' } }), 2],
+      ['a record cut to fit', {}, r => ({ ...r, meta: { ...r.meta, compacted: ['reviewers.rawFindings'] } }), 2],
+      ['a round that did not end incomplete', {}, r => ({ ...r, meta: { ...r.meta, incomplete: undefined } }), 2],
+      ['another group', {}, r => ({ ...r, routing: { ...r.routing!, group: 'solo' } }), 2],
+      ['a finding missing from the record', {}, r => ({ ...r, reviewers: { ...r.reviewers, rawFindings: r.reviewers.rawFindings!.slice(1) } }), 2],
+      ['a finder that failed', {}, r => ({ ...r, reviewers: { ...r.reviewers, agentMetrics: r.reviewers.agentMetrics!.map((m, i) => (i === 0 ? { ...m, status: 'failed' as const } : m)) } }), 1],
+      ['a finder that moved to its fallback model', {}, r => ({ ...r, models: { ...r.models, fallbacks: [fallback] } }), 1],
+    ];
+    for (const [label, changed, edit, runs] of full) {
+      jest.mocked(clients.reviewer.sendMessage).mockClear();
+      jest.mocked(opus.sendMessage).mockClear();
+      const result = await runReview(clients, { ...options, ...changed, earlierAttempt: { record: edit(record), review: 7 } });
+      expect([label, finderCalls(), result.reused?.finders.length ?? 0]).toEqual([label, runs, 2 - runs]);
+    }
+  });
+
+  it('reads the change in full when a related repo is not at the commit the attempt read it at', async () => {
+    const clients = makeClients();
+    Object.assign(clients.judge, { repoTools: true });
+    let commit = 'c1';
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([]);
+    const outcomeSpy = jest.spyOn(relatedRepos, 'relatedRepoOutcomes').mockImplementation(() => [{ repo: 'o/r', status: 'fetched', commit }]);
+    const options = {
+      config: makeConfig({ related_repos: [{ repo: 'o/r', kind: 'reference' }] }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo',
+      headSha: 'abc', changeDigest: 'digest', workspace: '/work/pr-head',
+    };
+    try {
+      mockedRunJudgeAgent.mockRejectedValueOnce(new Error('judge down'));
+      const record = postedRecord(await runReview(clients, options));
+      expect(record.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', commit: 'c1' }]);
+      for (const [now, runs] of [['c1', 0], ['c2', 2]] as const) {
+        commit = now;
+        jest.mocked(clients.reviewer.sendMessage).mockClear();
+        await runReview(clients, { ...options, earlierAttempt: { record, review: 7 } });
+        expect([now, jest.mocked(clients.reviewer.sendMessage).mock.calls.length]).toEqual([now, runs]);
+      }
+    } finally {
+      fetchSpy.mockRestore();
+      outcomeSpy.mockRestore();
+    }
   });
 
   it('captures `fallbackReason: "timeout"` when the planner times out', async () => {

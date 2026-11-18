@@ -203,6 +203,7 @@ jest.mock('./review', () => ({
 
 jest.mock('./github', () => ({
   fetchPRDiff: jest.fn().mockResolvedValue(''),
+  wasEdited: jest.fn().mockResolvedValue(false),
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
   githubRepoFiles: jest.fn(() => ({ read: jest.fn().mockResolvedValue(null), list: jest.fn().mockResolvedValue([]) })),
@@ -1191,6 +1192,37 @@ describe('handlePullRequest', () => {
         }
       } finally {
         catchUp.mockRestore();
+        jest.mocked(core.getInput).mockReturnValue('');
+        jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
+      }
+    });
+
+    it('hands the round the last attempt on its commit, except on Review again, Deeper review or a review someone edited', async () => {
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
+      const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 2, totalDeletions: 0 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
+      const attemptOn = (commitSha: string) => ({ record: makeRoundContext(1, { meta: { ...makeRoundContext(1).meta, commitSha, incomplete: true } }), review: 7, nodeId: 'R_7' });
+      try {
+        for (const [label, sha, modes, edited, handed] of [
+          ['a push', 'abc123', [], false, true],
+          ['an attempt on another commit', 'def456', [], false, false],
+          ['Review again', 'abc123', ['again'], false, false],
+          ['Deeper review', 'abc123', ['deeper'], false, false],
+          ['an edited review', 'abc123', [], true, false],
+        ] as const) {
+          jest.mocked(reviewModule.runReview).mockClear();
+          jest.mocked(ghUtils.wasEdited).mockClear().mockResolvedValue(edited);
+          jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(false, [...modes]));
+          const attempt = attemptOn(sha);
+          jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({ previousFindings: [], priorRounds: [], lastAttempt: attempt });
+          setContext({ eventName: 'pull_request', payload: prPayload(false) });
+          await handlePullRequest();
+          expect([label, jest.mocked(reviewModule.runReview).mock.calls[0][1].earlierAttempt]).toEqual([label, handed ? attempt : undefined]);
+          // Only an attempt that could be handed on is checked for edits.
+          expect([label, jest.mocked(ghUtils.wasEdited).mock.calls]).toEqual([label, sha === 'abc123' && modes.length === 0 ? [[expect.anything(), 'R_7']] : []]);
+        }
+      } finally {
         jest.mocked(core.getInput).mockReturnValue('');
         jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
       }

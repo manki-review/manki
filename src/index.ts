@@ -32,7 +32,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -96,6 +96,7 @@ import {
   setSettingsBlock,
   showSettings,
   skippedFiles,
+  wasEdited,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, approveOrSayWhy, authorClearLine, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
@@ -1071,6 +1072,20 @@ async function loadRecap(
   return recap;
 }
 
+/**
+ * Returns the PR's last attempt on `commitSha` when the round may keep results of it. Review again and Deeper review ask for
+ * a new read, so they keep nothing, and neither does a round whose last attempt's review someone edited.
+ */
+async function reusableAttempt(octokit: Octokit, recap: RecapState, commitSha: string, { fullReview, deeper }: FullReviewOptions): Promise<EarlierAttempt | undefined> {
+  const attempt = recap.lastAttempt;
+  if (!attempt?.nodeId || attempt.record.meta.commitSha !== commitSha || fullReview || deeper) return undefined;
+  if (await wasEdited(octokit, attempt.nodeId)) {
+    core.info('The last attempt is not reused, since its review was edited');
+    return undefined;
+  }
+  return attempt;
+}
+
 /** Reads the PR's diff and splits it into the files the review reads and the files `exclude_paths` leaves out. */
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
@@ -1505,6 +1520,7 @@ async function reviewRound(
               entry.status = event.agentStatus === 'failure' ? 'failed' : 'done';
               entry.findingCount = event.agentFindingCount;
               entry.durationMs = event.agentDurationMs;
+              if (event.agentReused) entry.reused = true;
               if (event.agentStatus === 'failure' && event.retryCount) {
                 entry.retryCount = event.retryCount;
               }
@@ -2182,6 +2198,7 @@ async function runFullReview(
       lockfiles,
       changeDigest: digest,
       automaticRetry: options.automaticRetry,
+      earlierAttempt: await reusableAttempt(octokit, recap, commitSha, options),
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();
