@@ -275,6 +275,7 @@ describe('runPatternChecks', () => {
     const client = fakeClient(user => {
       if (user.includes('`Refund`')) return { answer: 'follows', places: ['src/charge.ts:1'], findings: [finding('Ignored without a difference', ['src/charge.ts:2', 'src/cancel.ts:2'])] };
       if (user.includes('`refunds`') && !user.includes('could not be used')) return { answer: 'maybe' };
+      if (user.includes('`Refunds`')) return { answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1'], findings: [{ proof: ['src/charge.ts:2'], cost: 'Some cost.' }] };
       if (user.includes('`refunds`')) return { answer: 'no_comparable' };
       return {
         answer: 'differs', places: ['src/charge.ts:1', './src/charge.ts:1', 'src/cancel.ts:1-3', 'src/cancel.ts:2', 'src/void.ts:2', 'src/refund.ts:1', 'src/missing.ts:1'],
@@ -285,7 +286,7 @@ describe('runPatternChecks', () => {
           finding('A line the PR adds, spelled another way', ['src/charge.ts:2', './src/refund.ts:2']),
           finding('A place the PR changes', ['src/charge.ts:2', 'src/void.ts:2', 'src/refund.ts:2']),
           finding('A place that is not there', ['src/charge.ts:2', 'src/cancel.ts:40', 'src/refund.ts:2']),
-          finding('A rule', ['src/refund.ts:2'], { rule: 'Every handler must check the session with `withAuth`.', ruleFile: 'AGENTS.md' }),
+          finding('A rule', ['src/refund.ts:2'], { rule: 'Every handler must check the session with `withAuth`.', ruleFile: 'AGENTS.md', file: './src/refund.ts' }),
           finding('A made-up rule', ['src/refund.ts:2'], { rule: 'Every handler must log the request first.', ruleFile: 'AGENTS.md' }),
           finding('No cost', ['src/charge.ts:2', 'src/cancel.ts:2'], { cost: ' ' }),
           finding('Off the new code', ['src/charge.ts:2', 'src/cancel.ts:2'], { file: 'src/charge.ts' }),
@@ -295,7 +296,7 @@ describe('runPatternChecks', () => {
     let result;
     try {
       result = await runPatternChecks(() => client, [
-        piece('refund', { kind: 'file', name: 'src/refund.ts' }), piece('Refund', { kind: 'type' }), piece('refunds', { kind: 'key' }),
+        piece('refund', { kind: 'file', name: 'src/refund.ts' }), piece('Refund', { kind: 'type' }), piece('refunds', { kind: 'key' }), piece('Refunds', { kind: 'type' }),
       ], { effort: 'high', workspace: root, diff, instructionFiles });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -321,11 +322,13 @@ describe('runPatternChecks', () => {
       evidence: { checks: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] },
     }));
     // A place is compared by its path from the root and its lines, a made-up line is left out, and the finding's own line closes the proof.
-    expect(result.findings[1].evidence?.proof).toEqual(['src/refund.ts:2']);
+    expect(result.findings[1]).toEqual(expect.objectContaining({ file: 'src/refund.ts', evidence: expect.objectContaining({ proof: ['src/refund.ts:2'] }) }));
     expect(result.comparisons).toEqual([
       { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 3, dropped: 7 },
       { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0 },
       { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0 },
+      // A difference whose findings are all unusable keeps its answer and places.
+      { kind: 'pattern', reviewer: 'Pattern check: Refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1'], findings: 0, dropped: 1 },
     ]);
   });
 

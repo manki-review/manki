@@ -7,7 +7,7 @@ import * as core from '@actions/core';
 import type { SgNode, SgRoot } from '@ast-grep/napi';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
-import { addedLines, findExcludePattern, rebuildRawDiff } from './diff';
+import { addedLines, findExcludePattern, rebuildRawDiff, removedOldLines, replayDiff } from './diff';
 import { fenceText } from './github';
 import { resolveInRoot } from './mcp-server';
 import { GUIDE_FILES } from './related-repos';
@@ -992,7 +992,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     }
   }
   const lastRanked = new LastRankedFiles(workspace);
-  const pieces = addedPieces(diff, declared, file => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file));
+  const pieces = addedPieces(diff, declared, movedNames(diff, parser), file => TEST_PATH.test(file) || DOC_FILE.test(file) || !!findExcludePattern(file, excludePaths) || lastRanked.has(file));
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -1251,10 +1251,10 @@ function firstAtOrAfter(lines: number[], line: number): number {
   return low;
 }
 
-/** Returns the declarations and config keys on added lines, for a file without a grammar here. */
-function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
+/** Returns the declarations and config keys on `lines`, the added ones by default, for a file without a grammar here. */
+function keywordDeclarations(file: DiffFile, lines: ReadonlyMap<number, string> = addedLines(file)): ChangedSymbol[] {
   const config = CONFIG_FILE.test(file.path);
-  return [...addedLines(file)].flatMap(([line, text]) => {
+  return [...lines].flatMap(([line, text]) => {
     const match = (config ? CONFIG_KEY_LINE : DECLARATION_LINE).exec(text);
     if (!match || (config && !match[1].includes('_'))) return [];
     const kind: SymbolKind = config ? 'key' : KEYWORD_KIND[match[1]] ?? 'type';
@@ -1304,18 +1304,30 @@ function pieceKind(symbol: ChangedSymbol, text: string): AddedPiece['kind'] | un
 }
 
 /**
- * Returns the structure the diff adds: each added file, and each type, function, error kind and config key declared on
- * an added line of another file whose name is an identifier and no removed line declares, so a moved or renamed one is
- * not new. A file `skip` names, and test code, add none. A piece inside a larger one is part of it. The largest pieces
- * come first, at most `MAX_LISTED_PIECES`.
+ * Returns the names declared on the lines the diff removes, found by the parser that finds the added ones: the grammar
+ * on the base version of the file where there is one, and the keywords otherwise.
  */
-function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], skip: (file: string) => boolean): AddedPiece[] {
-  const removed = new Set(diff.files.flatMap(file => file.hunks.flatMap(hunk =>
-    hunk.content.split('\n').flatMap(line => {
-      if (!line.startsWith('-')) return [];
-      const config = CONFIG_FILE.test(file.path);
-      return (config ? CONFIG_KEY_LINE : DECLARATION_LINE).exec(line.slice(1))?.[config ? 1 : 2] ?? [];
-    }))));
+function movedNames(diff: ParsedDiff, parser: Parser): Set<string> {
+  const names = new Set<string>();
+  for (const file of diff.files) {
+    const removed = removedOldLines(file);
+    if (removed.size === 0) continue;
+    const parsed = languageOf(file.path) ? parser.parseBase(file) : undefined;
+    const declared = parsed
+      ? parsed.declarations.filter(d => removed.has(lineOf(d.node))).map(d => d.name)
+      : keywordDeclarations(file, removed).map(s => s.name);
+    for (const name of declared) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * Returns the structure the diff adds: each added file, and each type, function, error kind and config key declared on
+ * an added line of another file whose name is an identifier and was not declared on a removed line, so a moved or
+ * renamed one is not new. A file `skip` names, and test code, add none. A piece inside a larger one is part of it. The
+ * largest pieces come first, at most `MAX_LISTED_PIECES`.
+ */
+function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], removed: ReadonlySet<string>, skip: (file: string) => boolean): AddedPiece[] {
   const files = new Map(diff.files.filter(f => f.changeType !== 'deleted' && !skip(f.path)).map(f => {
     const added = addedLines(f);
     return [f.path, { file: f, added, sorted: [...added.keys()].sort((a, b) => a - b) }];
@@ -1341,13 +1353,13 @@ function addedPieces(diff: ParsedDiff, declared: ChangedSymbol[], skip: (file: s
   }
   pieces.sort((a, b) => b.size - a.size || a.file.localeCompare(b.file) || a.start - b.start);
   const kept: typeof pieces = [];
-  for (const [i, p] of pieces.entries()) {
-    if (kept.length === MAX_LISTED_PIECES) {
-      core.info(`Uses outside the diff: the change adds more than ${MAX_LISTED_PIECES} pieces of structure, so the ${pieces.length - i} smallest are not listed`);
-      break;
-    }
-    if (!kept.some(k => k.file === p.file && k.start <= p.start && p.end <= k.end)) kept.push(p);
+  let cut = 0;
+  for (const p of pieces) {
+    if (kept.some(k => k.file === p.file && k.start <= p.start && p.end <= k.end)) continue;
+    if (kept.length < MAX_LISTED_PIECES) kept.push(p);
+    else cut++;
   }
+  if (cut > 0) core.info(`Uses outside the diff: the change adds more than ${MAX_LISTED_PIECES} pieces of structure, so the ${cut} smallest are not listed`);
   return kept.map(({ from, ...p }) => {
     const { added, sorted } = files.get(p.file)!;
     const lines = sorted.slice(from, from + Math.min(p.size, MAX_EXCERPT_LINES)).map(line => `${line}:+ ${shortLine(added.get(line)!)}`);
@@ -1394,14 +1406,44 @@ class Parser {
       }
       this.files++;
       this.bytes += size;
-      const source = readFileSync(absolute, 'utf-8');
-      const root = this.api.parse(language.lang, source);
+      return this.build(path, readFileSync(absolute, 'utf-8'), touched);
+    } catch (error) {
+      core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Parses `file` as the base holds it, rebuilt from the head and the diff, for its declarations only. Returns
+   * `undefined` when it has no grammar here, the budget is spent or the diff does not match the head.
+   */
+  parseBase(file: DiffFile): ParsedFile | undefined {
+    const language = languageOf(file.path);
+    if (!language || !this.api) return undefined;
+    try {
+      const source = file.changeType === 'deleted'
+        ? [...removedOldLines(file).values()].join('\n')
+        : replayDiff(readFileSync(resolveInRoot(this.workspace, file.path).absolute, 'utf-8'), file, 'undo');
+      const size = Buffer.byteLength(source);
+      if (size > MAX_FILE_BYTES || this.files >= MAX_PARSED_FILES || this.bytes + size > MAX_PARSED_BYTES) return undefined;
+      this.files++;
+      this.bytes += size;
+      return this.build(file.path, source, undefined, false);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private build(path: string, source: string, touched?: Set<number>, reliedOn = this.reliedOn): ParsedFile | undefined {
+    const language = languageOf(path)!;
+    try {
+      const root = this.api!.parse(language.lang, source);
       const tree = Tree.build(root.root(), MAX_NESTING);
       if (!tree) {
         core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
         return undefined;
       }
-      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched, this.reliedOn);
+      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched, reliedOn);
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;

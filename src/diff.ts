@@ -328,6 +328,20 @@ export function replayDiff(text: string, file: DiffFile, direction: 'undo' | 'ap
   return out.join('\n');
 }
 
+/** Returns the text of each line the diff removes from the file, keyed by its line number in the old file. */
+export function removedOldLines(file: DiffFile): Map<number, string> {
+  const removed = new Map<number, string>();
+  for (const hunk of file.hunks) {
+    let line = hunk.oldStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('+') || content.startsWith('\\')) continue;
+      if (content.startsWith('-')) removed.set(line, content.slice(1));
+      line++;
+    }
+  }
+  return removed;
+}
+
 /**
  * Check if a line number, or any line from `line` to `end`, is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.

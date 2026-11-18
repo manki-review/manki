@@ -368,9 +368,9 @@ ${fenceExcerpt({ file: piece.file, line: piece.start, code: piece.code })}${rule
 /**
  * Reads a pattern check's answer. Only a `differs` answer keeps findings, and only those on a line the PR adds whose
  * `proof` cites two existing places, lines there that the PR does not add, or that quote a rule of `instructionFiles`.
- * Places are compared by their path from the repository root, and places whose lines overlap count once. A finding's
- * `proof` keeps only its existing places and its own line. A finding that names no `cost` is a note at most. The record
- * keeps the answer and the existing places it cites.
+ * Places are compared by their path from the repository root, and places whose lines overlap count once. A kept
+ * finding's file is that path, and its `proof` keeps only its existing places and its own line. A finding that names no
+ * `cost` is a note at most. The record keeps the answer and the existing places it cites, also when no finding is usable.
  */
 function parsePatternAnswer(
   content: string, reviewer: string, workspace: string, diff: ParsedDiff, instructionFiles: readonly InstructionFile[],
@@ -399,9 +399,9 @@ function parsePatternAnswer(
   const places = existing(parsed.places);
   const record = { answer, ...(places.length > 0 && { places }) };
   if (answer !== 'differs' || !Array.isArray(parsed.findings)) return { findings: [], record };
-  const reported = parseFindings(JSON.stringify(parsed.findings), reviewer, instructionFiles);
   // `parseFindings` maps the usable elements in order, so the raw `proof` and `cost` of each finding are the element at its index.
   const elements = parsed.findings.filter(isUsableElement);
+  const reported = elements.length > 0 ? parseFindings(JSON.stringify(elements), reviewer, instructionFiles) : [];
   const findings = reported.flatMap((finding, i) => {
     const { proof: cited, cost } = elements[i];
     const own = rootPath(finding.file);
@@ -409,10 +409,10 @@ function parsePatternAnswer(
     if ((!finding.rule && proof.length < 2) || !addsTo(own, finding.line, finding.line)) return [];
     const evidence = { ...(finding.evidence ?? { checks: [] }), proof: [...proof, `${own}:${finding.line}`] };
     const stated = typeof cost === 'string' ? cost.trim() : '';
-    if (!stated) return [{ ...finding, evidence, severity: 'note' as const }];
-    return [{ ...finding, evidence, description: `${finding.description} ${stated}`.trim() }];
+    if (!stated) return [{ ...finding, file: own, evidence, severity: 'note' as const }];
+    return [{ ...finding, file: own, evidence, description: `${finding.description} ${stated}`.trim() }];
   });
-  return { findings, dropped: reported.length - findings.length, record };
+  return { findings, dropped: parsed.findings.length - findings.length, record };
 }
 
 /**

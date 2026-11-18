@@ -456,6 +456,8 @@ describe('listUsesOutsideDiff', () => {
       'src/util.rs': 'pub fn noop() {}\n',
       'src/ledger.ts': 'export const VERSION = 1;\n// loadLedger is still to come.\n',
       'lib/shop.rb': 'class Basket\n  def size\n    0\n  end\nend\n',
+      'src/cart.ts': 'export class Cart {\n  items = 0;\n  clear() {\n    this.items = 0;\n  }\n}\n\nexport class Till {\n  total = 0;\n}\n',
+      'cmd/store.swift': 'class Shelf {\n    func restock() {\n        return\n    }\n}\n\nclass Aisle {\n    var size = 0\n}\n',
       'app/handlers.py': 'def charge(order):\n    return order\n',
       'cmd/main.swift': 'import Foundation\n',
       'manki.yml': 'review:\n  noise: low\n',
@@ -470,11 +472,14 @@ describe('listUsesOutsideDiff', () => {
       'app/handlers.py': 'def charge(order):\n    return order\n\n\ndef refund(order):\n    return order\n',
       'cmd/main.swift': `import Foundation\n\nfunc computeFee(n: Int) -> Int {\n    return n\n}\nstruct Fee {}\nfunc ${'a'.repeat(200)}() {}\nclass Cart {\n    func add() {\n        return\n    }\n\n    func clear() {}\n}\n`,
       'lib/shop.rb': 'class Trolley\n  def size\n    0\n  end\nend\n',
+      'src/cart.ts': 'export class Cart {\n  items = 0;\n}\n\nexport class Till {\n  total = 0;\n  clear() {\n    this.total = 0;\n  }\n}\n',
+      'cmd/store.swift': 'class Shelf {\n}\n\nclass Aisle {\n    var size = 0\n    func restock() {\n        return\n    }\n}\n',
       'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n',
     }, ['build/**']);
 
     // Without a grammar, a class spans its indented body and closing line, so its methods are part of it, and a class
-    // whose body the change does not add is left out. A name only a removed comment holds is still new.
+    // whose body the change does not add is left out. A method moved to another class, declared with a keyword or
+    // without one, is not new, while a name only a removed comment holds is.
     expect(pieces?.map(p => `${p.kind} ${p.name} ${p.file}:${p.start}-${p.end} (${p.size})`)).toEqual([
       'type Cart cmd/main.swift:8-14 (7)',
       'type Ledger src/ledger.ts:3-9 (7)',
@@ -488,10 +493,13 @@ describe('listUsesOutsideDiff', () => {
     ]);
     expect(pieces?.find(p => p.name === 'refund')?.code).toBe('5:+ def refund(order):\n6:+     return order');
 
+    // The methods of the class are part of it, so they are not counted among the pieces left out.
     const many = Array.from({ length: 22 }, (_, i) => `def handle_step_${i}(order):\n    return order\n`).join('\n');
-    const capped = await usesFor({ 'app/steps.py': 'VERSION = 1\n' }, { 'app/steps.py': `VERSION = 1\n\n${many}` });
+    const runner = 'class Runner:\n    def start(self):\n        return 1\n\n    def stop(self):\n        return 2\n';
+    const capped = await usesFor({ 'app/steps.py': 'VERSION = 1\n' }, { 'app/steps.py': `VERSION = 1\n\n${runner}\n${many}` });
     expect(capped.pieces).toHaveLength(20);
-    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the change adds more than 20 pieces of structure, so the 2 smallest are not listed');
+    expect(capped.pieces?.[0].name).toBe('Runner');
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the change adds more than 20 pieces of structure, so the 3 smallest are not listed');
   });
 
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
