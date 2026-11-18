@@ -827,7 +827,9 @@ const CLEARED_HOLDS: ReadonlyArray<[Exclude<ApprovalHeld, false>, string]> = [
 
 /** Returns `line` for the hold `reason`, led by what cleared since the holds `before`, or as it is when none of them cleared. */
 function stillHeldLine(line: string, reason: Exclude<ApprovalHeld, false>, before: readonly ApprovalHeld[]): string {
-  const cleared = CLEARED_HOLDS.slice(0, CLEARED_HOLDS.findIndex(([r]) => r === reason)).filter(([r]) => before.includes(r)).map(([, text]) => text);
+  // A refusal can follow a check that could not read the PR, so only the warnings, which the check read, are known to have cleared.
+  const cleared = CLEARED_HOLDS.slice(0, CLEARED_HOLDS.findIndex(([r]) => r === reason))
+    .filter(([r]) => before.includes(r) && (reason !== 'refused' || r === 'warnings')).map(([, text]) => text);
   return cleared.length > 0 ? `${cleared.join(' ')} ${line.replace(/^\*\*Approval held:\*\*/, '**Approval is still held:**')}` : line;
 }
 

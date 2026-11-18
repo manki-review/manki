@@ -1426,7 +1426,9 @@ describe('checkAndAutoApprove', () => {
       ['a draft to a conflict', { held: 'draft' }, false, 'This PR is no longer a draft. **Approval is still held:** this PR conflicts'],
       ['a draft with warnings to a conflict', { held: 'draft', warningsHeld: true }, false, 'Every warning that held the approval is handled. This PR is no longer a draft. **Approval is still held:** this PR conflicts'],
       ['a conflict with warnings to the same conflict', { held: 'conflict', warningsHeld: true }, false, 'Every warning that held the approval is handled. **Approval is still held:** this PR conflicts'],
-      ['a conflict to a refusal', { held: 'conflict' }, true, 'The conflict with the base branch is resolved. All blocking threads are resolved, but repository settings'],
+      // The check may not have read the PR before a refusal, so it never claims the conflict is resolved.
+      ['a conflict to a refusal', { held: 'conflict' }, true, 'All blocking threads are resolved, but repository settings'],
+      ['a conflict with warnings to a refusal', { held: 'conflict', warningsHeld: true }, true, 'Every warning that held the approval is handled. All blocking threads are resolved, but repository settings'],
       // The same hold, or none before, keeps the notice as it is.
       ['a conflict to the same conflict', { held: 'conflict' }, false, '**Approval held:** this PR conflicts'],
       ['no hold to a conflict', undefined, false, '**Approval held:** this PR conflicts'],
