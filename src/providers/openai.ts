@@ -8,8 +8,8 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse } from '../utils';
-import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, withLargestRequest, ZERO_USAGE } from './types';
+import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, fileReadBy, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 import { checkLoginFilePath, withLoginFile } from './codex-login-file';
 
 const execFileAsync = promisify(execFile);
@@ -271,10 +271,27 @@ const agentMessage = (event: CodexEvent): string | undefined => {
   return event.type === 'item.completed' && item?.type === 'agent_message' ? textOf(item.text) : undefined;
 };
 
-/** Returns the id of the call of Manki's tool server that `event` starts or ends, or `undefined` when it is none. */
-function toolCallId(event: CodexEvent | undefined): string | undefined {
-  const item = event?.item as { type?: unknown; id?: unknown } | undefined;
-  return (event?.type === 'item.started' || event?.type === 'item.completed') && item?.type === 'mcp_tool_call' ? textOf(item.id) : undefined;
+/** A call of Manki's tool server that a Codex event starts or ends. */
+interface CodexToolCall {
+  id: string;
+  /** The tool, named as the Claude CLI names a tool of the same server. */
+  tool: string;
+  arguments: unknown;
+  /** The characters of text the result gave the model, on the event that ends the call. */
+  resultChars?: number;
+}
+
+/** Returns the call of Manki's tool server that `event` starts or ends, or `undefined` when it is none. */
+function toolCall(event: CodexEvent | undefined): CodexToolCall | undefined {
+  const item = event?.item as { type?: unknown; id?: unknown; server?: unknown; tool?: unknown; arguments?: unknown; result?: { content?: unknown } | null; error?: { message?: unknown } | null } | undefined;
+  const id = textOf(item?.id);
+  if ((event?.type !== 'item.started' && event?.type !== 'item.completed') || item?.type !== 'mcp_tool_call' || id === undefined) return undefined;
+  return {
+    id,
+    tool: `mcp__${textOf(item.server) ?? ''}__${textOf(item.tool) ?? ''}`,
+    arguments: item.arguments,
+    ...(event.type === 'item.completed' && { resultChars: resultChars(item.result ? item.result.content : item.error?.message) }),
+  };
 }
 
 /** Reads the token counts of a `turn.completed` event's `usage`, or `undefined` when it has none. */
@@ -614,6 +631,10 @@ export class OpenAIClient implements LLMClient {
 
     // The stdout of the run that runs now, or ran last.
     let output = '';
+    // The tool steps and files read of every run of the call, since a resumed run goes on with the same budget.
+    const toolSteps: ToolStep[] = [];
+    const filesRead = new Set<string>();
+    const fileReadings = () => (filesRead.size > 0 ? { filesRead: [...filesRead] } : {});
     const unreachableLimit = endpoint ? 'OpenAI endpoint unreachable' : 'OpenAI unreachable';
     const call = () => withPromptDir(async (promptDir) => {
       // Manki's instructions replace Codex's own, so stdin carries only the untrusted content.
@@ -627,19 +648,29 @@ export class OpenAIClient implements LLMClient {
         ? codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, stepsDir, related: repoTools.related, readsFile }), env)
         : [];
       const reads = () => (repoTools?.related ? readRelatedReads(readsFile) : undefined);
-      const carry = (error: unknown): never => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); };
+      const carry = (error: unknown): never => { throw carryReadings(error, { relatedReads: reads(), ...fileReadings(), ...limitReadings() }); };
       const run = async (runArgs: string[], input: string, usedMs?: number): Promise<CliExit & { events: CodexRunEvents }> => {
         output = '';
-        // Where the lines of `output` not read for tool calls yet start, and the calls seen, which each start and end once.
+        // Where the lines of `output` not read for tool calls yet start, and when each call of this run was seen to
+        // start. A call starts and ends once, but Codex can report only its end.
         let unread = 0;
-        const toolCalls = new Set<string>();
-        const readToolCalls = (onToolStep: () => void): void => {
+        const starts = new Map<string, number | undefined>();
+        const ended = new Set<string>();
+        const readToolCalls = (): void => {
           for (let end = output.indexOf('\n', unread); end !== -1; end = output.indexOf('\n', unread)) {
-            const id = toolCallId(parseCodexEvent(output.slice(unread, end)));
+            const call = toolCall(parseCodexEvent(output.slice(unread, end)));
             unread = end + 1;
-            if (id === undefined || toolCalls.has(id)) continue;
-            toolCalls.add(id);
-            onToolStep();
+            if (call === undefined || ended.has(call.id)) continue;
+            if (!starts.has(call.id)) {
+              starts.set(call.id, call.resultChars === undefined ? Date.now() : undefined);
+              options?.onToolStep?.();
+            }
+            if (call.resultChars === undefined) continue;
+            ended.add(call.id);
+            const start = starts.get(call.id);
+            const file = fileReadBy(call.tool, call.arguments, repoTools?.root);
+            if (file) filesRead.add(file);
+            toolSteps.push({ tool: call.tool, ...(start !== undefined && { durationMs: Date.now() - start }), ...(file && { file }), resultChars: call.resultChars });
           }
         };
         const exit = await runCli({
@@ -660,7 +691,7 @@ export class OpenAIClient implements LLMClient {
           retrying: () => retryNote(output),
           onStdout: (chunk) => {
             output += chunk;
-            if (options?.onToolStep) readToolCalls(options.onToolStep);
+            readToolCalls();
           },
         }).catch(carry);
         return { ...exit, events: readCodexEvents(output, exit) };
@@ -699,7 +730,7 @@ export class OpenAIClient implements LLMClient {
       const limitError = codexLimitError(events.failure, !!endpoint);
       if (limitError) {
         core.warning(limitError.message);
-        throw carryReadings(limitError, { relatedReads, ...limits });
+        throw carryReadings(limitError, { relatedReads, ...fileReadings(), ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -714,7 +745,7 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', events.reply ?? '');
-      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, ...limits });
+      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, ...fileReadings(), ...limits });
     }
     const content = events.answer.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
@@ -724,7 +755,9 @@ export class OpenAIClient implements LLMClient {
       ...(events.usage && { usage: events.session ? withLargestRequest(events.usage, readCodexRequestInputs(home, events.session, startTime)) : events.usage }),
       latencyMs: Date.now() - startTime,
       model: this.model,
+      ...((toolSteps.length > 0 || repoTools) && { toolSteps }),
       ...(relatedReads && { relatedReads }),
+      ...fileReadings(),
       ...limits,
     };
   }

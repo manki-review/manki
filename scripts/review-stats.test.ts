@@ -49,13 +49,17 @@ describe('review stats', () => {
       usage: {
         estimatedCostUsd: 0.5,
         llmCalls: [
-          { ...call('claude-sonnet', 4), agent: 'Sonnet', stepBudget: 15, filesRead: ['src/a.ts', 'src//util.ts'] },
+          // A step whose record has no characters counts in no figure of them.
+          {
+            ...call('claude-sonnet', 4), agent: 'Sonnet', stepBudget: 15, filesRead: ['src/a.ts', 'src//util.ts'],
+            toolSteps: [{ tool: 'Read', resultChars: 100 }, { tool: 'Read', resultChars: 300 }, { tool: 'Read' }, { tool: 'Read', resultChars: 200 }],
+          },
           { ...call('claude-opus', 10), agent: 'Opus', stepBudget: 12, wrapUpNoted: true }, { ...call('j', 3), stage: 'judge' },
           // A fallback that answered for the Sonnet finder on another model still counts for that finder. A file both calls
           // read counts once, however each spells it. A file of a related repo counts apart from the share in the diff.
           {
             ...call('gpt-5', 2), agent: 'Sonnet', fallback: true, filesRead: ['./src/a.ts', 'o/r:lib/x.ts'],
-            toolSteps: [{ tool: 'mcp__manki__read_file', durationMs: 1 }, { tool: 'Grep', durationMs: 1 }],
+            toolSteps: [{ tool: 'mcp__manki__read_file', durationMs: 1, file: 'src/a.ts', resultChars: 20_000 }, { tool: 'Grep', durationMs: 1, resultChars: 50 }],
           },
           { ...call('gpt-5', 5), stage: 'judge', agent: 'refute_pair', costUsd: 0.12 },
           { ...call('claude-sonnet', 6), stage: 'sweep', agent: 'Sweep 1', costUsd: 0.1 }, { ...call('j', 0), stage: 'judge', agent: 'sweep', costUsd: 0.05 },
@@ -118,8 +122,8 @@ describe('review stats', () => {
         verdictTrace: { survivingBlockers: [{ file: 'a', line: 1, title: 'x', fingerprint: 'k1' }, { file: 'b', line: 2, title: 'y', fingerprint: 'k2' }], unresolvedPriors: [] },
       },
       // A record too large to keep `diff.perFile` leaves its files out of the share read in the diff. Two finders on one model
-      // count as two finder rounds. A failed call adds no files, and a client that reports no steps, as the Codex CLI, counts
-      // in no figure of tool use.
+      // count as two finder rounds. A failed call adds no files, and a call without steps, as in an older record of a Codex
+      // call, counts in no figure of tool use.
       usage: {
         estimatedCostUsd: 1,
         llmCalls: [
@@ -189,14 +193,17 @@ describe('review stats', () => {
       'claude-sonnet': {
         rounds: 1, rawFindings: 3, keptOnly: 1, keptShared: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0,
         stepsPerRound: [6], filesPerRound: [3], relatedFiles: 1, filesInDiff: 1, filesInListedRounds: 2, readSteps: 4, readFileSteps: 1, otherSteps: 1,
+        readChars: [100, 300, 200], readFileChars: [20_000],
       },
       'claude-opus': {
         rounds: 1, rawFindings: 1, keptOnly: 0, keptShared: 1, toolSteps: [10, 1, 1, 0], budgetedCalls: 1, wrapUps: 1,
         stepsPerRound: [10, 1, 1], filesPerRound: [0, 1, 0], relatedFiles: 0, filesInDiff: 0, filesInListedRounds: 0, readSteps: 12, readFileSteps: 0, otherSteps: 0,
+        readChars: [], readFileChars: [],
       },
       'gpt-5': {
         rounds: 0, rawFindings: 0, keptOnly: 0, keptShared: 0, toolSteps: [0], budgetedCalls: 0, wrapUps: 0,
         stepsPerRound: [], filesPerRound: [], relatedFiles: 0, filesInDiff: 0, filesInListedRounds: 0, readSteps: 0, readFileSteps: 0, otherSteps: 0,
+        readChars: [], readFileChars: [],
       },
     });
 
@@ -240,10 +247,10 @@ describe('review stats', () => {
     expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
     expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | 1 | mean 3.0, median 1.0, max 10.0 | 100% (1 of 1) |');
     expect(report).toContain([
-      '| model | finder rounds | tool steps per round | files read per round | files read in a related repo | own files read that the diff changes | `Read` steps | `read_file` steps | other steps |',
-      '| --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |',
-      '| claude-opus | 3 | mean 4.0, median 1.0, max 10.0 | mean 0.3, median 0.0, max 1.0 | 0 | - | 12 | 0 | 0 |',
-      '| claude-sonnet | 1 | mean 6.0, median 6.0, max 6.0 | mean 3.0, median 3.0, max 3.0 | 1 | 50% (1 of 2) | 4 | 1 | 1 |',
+      '| model | finder rounds | tool steps per round | files read per round | files read in a related repo | own files read that the diff changes | `Read` steps | characters per `Read` step | `read_file` steps | characters per `read_file` step | other steps |',
+      '| --- | ---: | --- | --- | ---: | ---: | ---: | --- | ---: | --- | ---: |',
+      '| claude-opus | 3 | mean 4.0, median 1.0, max 10.0 | mean 0.3, median 0.0, max 1.0 | 0 | - | 12 | - | 0 | - | 0 |',
+      '| claude-sonnet | 1 | mean 6.0, median 6.0, max 6.0 | mean 3.0, median 3.0, max 3.0 | 1 | 50% (1 of 2) | 4 | mean 200, median 200, max 300 | 1 | mean 20000, median 20000, max 20000 | 1 |',
       '',
       '## Refutations',
     ].join('\n'));

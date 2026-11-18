@@ -8210,7 +8210,7 @@ describe('recordCalls', () => {
     const budgeted: LLMCall[] = [];
     for (const steps of [4, 5, 3]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps, related: undefined } });
     await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4, related: undefined } }).catch(() => undefined);
-    // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
+    // A client that reports no tool steps leaves it unknown whether the model was told to wrap up.
     const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 }, filesRead: ['src/a.ts'] }), repoTools: true } as unknown as LLMClient;
     await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } });
     // A call with tools whose model called none reports an empty list, and its record keeps it apart from a client that reports no steps.

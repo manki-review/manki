@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join } from 'path';
+import { dirname, isAbsolute, join, relative } from 'path';
 import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
@@ -638,6 +638,29 @@ export function toolServerCommand(
 /** The file in a call's own folder where its tool server keeps how many calls read each related repo. */
 export function relatedReadsFile(dir: string): string {
   return join(dir, 'related-reads.json');
+}
+
+/**
+ * Returns the file a `Read` or `read_file` call reads, relative to `root` when the call names its full path. A file in a
+ * related repo gets `owner/name:` in front.
+ */
+export function fileReadBy(tool: string, input: unknown, root: string | undefined): string | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const { file_path: filePath, path, repo } = input as Record<string, unknown>;
+  const file = tool === 'Read' && typeof filePath === 'string' ? filePath
+    : tool === 'mcp__manki__read_file' && typeof path === 'string' ? (typeof repo === 'string' && repo ? `${repo}:${path}` : path)
+      : undefined;
+  return file && root && isAbsolute(file) ? relative(root, file) : file;
+}
+
+/** Returns the characters of text in a tool result's `content`: a string, or a list of content blocks whose text counts. */
+export function resultChars(content: unknown): number {
+  if (typeof content === 'string') return content.length;
+  if (!Array.isArray(content)) return 0;
+  return content.reduce((sum: number, block: unknown) => {
+    const text = block && typeof block === 'object' ? (block as { text?: unknown }).text : undefined;
+    return sum + (typeof text === 'string' ? text.length : 0);
+  }, 0);
 }
 
 /** What a call measured before it failed. */
