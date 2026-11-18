@@ -272,7 +272,7 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
       const answer = (answers[i] && typeof answers[i] === 'object' ? answers[i] : {}) as Record<string, unknown>;
       const { proof: cited, relatedProof: citedRelated } = shownLines(answer.proof, workspace, related);
       return {
-        premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited, citedRelated), reason: replyText(answer.reason),
+        premise: doubt.premise, decides: doubt.decides, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited, citedRelated), reason: replyText(answer.reason),
         ...(cited.length > 0 && { proof: cited }), ...(citedRelated.length > 0 && { relatedProof: citedRelated }),
       };
     });

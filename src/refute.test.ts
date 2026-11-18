@@ -1218,7 +1218,7 @@ describe('refuteBlockers', () => {
       // only because it runs past the file's end is no such line, where a range the file holds is.
       const ranges = await refuteBlockers(client, ['Range past the end of a changed file disproves', 'Range of a changed file disproves'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(ranges.map(f => [f.severity, outcomeOf(f.refutation!), f.refutation?.proof])).toEqual([['warning', 'unsettled', undefined], ['ignore', 'disproved', ['src/api.ts:1-9']]]);
-      expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
+      expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, decides: 'defect', outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
       // The files a stored answer is tied to are files of the PR, and the file with the related repo's name is not among them.
       expect(checked[0].refutation?.files).toEqual(['src/math.ts']);
       // A list keeps its first 10 related lines, and the answer keeps 10 of its own and its premises' lines together, its own first. No line past the first 10 is looked up.
@@ -1375,6 +1375,16 @@ describe('refuteBlockers', () => {
     // A stored disproof that confirmed the defect contradicts itself, so the finding is asked again.
     const [contradicted] = await refuteRound(confirming, [old()], { ...onUnchanged, priorRounds: roundsWith({ ...doubted.refutation, outcome: 'disproved' }) });
     expect([confirming.calls.length, outcomeOf(contradicted.refutation!), checkStatus(contradicted)]).toEqual([3, 'confirmed', 'confirmed']);
+    // A stored check that left open the premise that decided the defect when it ran confirms nothing, whichever doubts a later judge names.
+    const open = { ...doubted.refutation!, outcome: 'unsettled', premises: doubted.refutation!.premises!.map(p => ({ ...p, outcome: 'unsettled' as const })) };
+    const asGrade = (premise: string) => finding('Old copy leaks', { severity: 'warning', preExisting: 'The copy predates this PR.', doubts: [{ premise, decides: 'grade' }] });
+    const statusLater = async (refutation: unknown, later: Finding) => checkStatus((await refuteRound(confirming, [later], { ...onUnchanged, priorRounds: roundsWith(refutation) }))[0]);
+    const stillOpen = [old('The copy is never dropped'), old('Nothing frees the copy'), old(), asGrade('The copy is never dropped')];
+    expect(await Promise.all(stillOpen.map(later => statusLater(open, later)))).toEqual(['unconfirmed', 'unconfirmed', 'unconfirmed', 'unconfirmed']);
+    // A stored premise that does not say what it decided counts as deciding the defect, unless a doubt of the finding names it as one about the grade.
+    const unmarked = { ...open, premises: open.premises.map(({ decides: _decides, ...rest }) => rest) };
+    expect(await Promise.all(stillOpen.map(later => statusLater(unmarked, later)))).toEqual(['unconfirmed', 'unconfirmed', 'unconfirmed', 'confirmed']);
+    expect(confirming.calls.length).toBe(3);
 
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
