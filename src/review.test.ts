@@ -8104,6 +8104,15 @@ describe('recordCalls', () => {
     const marked: LLMCall[] = [];
     await recordCalls(fallback, finder, marked).sendMessage('sys', 'user', { sweep: true });
     expect([marked[0].sweep, capped[0].sweep]).toEqual([true, undefined]);
+    // A call whose input passes the model's long-prompt limit in sum, with its largest request unknown, gets the standard
+    // price and records that the estimate assumes no request passed the limit. A known largest request settles it.
+    const long = { inputTokens: 300_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+    const priced: LLMCall[] = [];
+    for (const largest of [undefined, 30_000, 300_000]) {
+      const sol = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage: { ...long, ...(largest && { largestRequestInputTokens: largest }) }, model: 'gpt-6.2-sol' }) } as unknown as LLMClient;
+      await recordCalls(sol, finder, priced).sendMessage('sys', 'user');
+    }
+    expect(priced.map(c => [c.costUsd, c.costAssumesShortRequests, c.largestRequestInputTokens])).toEqual([[0.6, true, undefined], [0.6, undefined, 30_000], [1.2, undefined, 300_000]]);
     expect(calls).toEqual([
       { stage: 'judge', effort: 'high', attempt: 1, promptDigest, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
       { stage: 'judge', attempt: 2, promptDigest, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },

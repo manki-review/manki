@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import * as core from '@actions/core';
 
 import { wrapUpNoted } from '../tool-steps';
-import { estimateCostUsd } from './model-registry';
+import { assumesShortRequests, estimateCostUsd } from './model-registry';
 import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, QuotaError, RefusalError, SendMessageOptions, TimeoutError, UsageSummary, ZERO_USAGE } from './types';
 import { readingsOf, sanitizeLogOutput } from './cli-utils';
 
@@ -180,6 +180,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...usage,
           // Some paths report zeros when the provider sent no counts, and no real call uses no tokens.
           costUsd: response.model && (usage.inputTokens > 0 || usage.outputTokens > 0) ? estimateCostUsd(response.model, usage) : null,
+          ...(response.model && assumesShortRequests(response.model, usage) && { costAssumesShortRequests: true as const }),
         });
         return response;
       } catch (error) {

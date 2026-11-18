@@ -183,7 +183,7 @@ describe('sendMessage effort option (API path)', () => {
     });
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-pro-preview' });
     const result = await client.sendMessage('system', 'user', { effort: 'high' });
-    expect(result.usage).toEqual({ inputTokens: 350, outputTokens: 160, cacheReadTokens: 25, cacheWriteTokens: 0, reasoningTokens: 70 });
+    expect(result.usage).toEqual({ inputTokens: 350, outputTokens: 160, cacheReadTokens: 25, cacheWriteTokens: 0, reasoningTokens: 70, largestRequestInputTokens: 350 });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 

@@ -515,12 +515,15 @@ describe('sendViaOAuth — error paths', () => {
   it('gives the CLI read-only tools on the repository and Manki\'s tool server when asked for them, and reports the tool steps and files read', async () => {
     const toolUse = (id: string, name: string, input: object = {}) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
     const toolResult = (id: string) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } });
+    // Each request starts with a `message_start` that reports its own input, and the `result` sums the requests.
+    const request = (n: number) => ({ type: 'stream_event', event: { type: 'message_start', message: { id: `msg_${n}`, usage: { input_tokens: 10 * n, cache_read_input_tokens: 1000 * n, cache_creation_input_tokens: 100 * n, output_tokens: 1 } } } });
+    const result = (inputTokens: number) => ({ type: 'result', result: '[]', usage: { input_tokens: inputTokens, cache_read_input_tokens: 15_000, cache_creation_input_tokens: 1500, output_tokens: 75 } });
     const events = [
-      toolUse('t1', 'Read', { file_path: '/work/repo/src/a.rs' }), toolResult('t1'),
-      toolUse('t2', 'mcp__manki__git_history', { path: 'src/b.rs' }), toolResult('t2'),
-      toolUse('t3', 'Read', { file_path: '/work/repo/src/a.rs', offset: 400 }), toolResult('t3'),
-      toolUse('t4', 'mcp__manki__read_file', { repo: 'dashpay/dash', path: 'src/net.cpp' }), toolResult('t4'),
-      { type: 'result', result: '[]' },
+      request(1), toolUse('t1', 'Read', { file_path: '/work/repo/src/a.rs' }), toolResult('t1'),
+      request(2), toolUse('t2', 'mcp__manki__git_history', { path: 'src/b.rs' }), toolResult('t2'),
+      request(3), toolUse('t3', 'Read', { file_path: '/work/repo/src/a.rs', offset: 400 }), toolResult('t3'),
+      request(4), toolUse('t4', 'mcp__manki__read_file', { repo: 'dashpay/dash', path: 'src/net.cpp' }), toolResult('t4'),
+      request(5), result(150),
     ];
     setupSpawnMock({ stdout: `${events.map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
     const spawnProc = mockSpawn.getMockImplementation()!;
@@ -584,6 +587,13 @@ describe('sendViaOAuth — error paths', () => {
     expect(systemPromptFile).toContain('- Read a **reference** when the changed code implements or mirrors it, such as a spec, a file or wire format, another implementation or an API this code talks to. Compare both directions of each contract: what this code produces against what the reference accepts, and the reverse, along with limits, field order, field types and versions.');
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps?.map(step => step.tool)).toEqual(['Read', 'mcp__manki__git_history', 'Read', 'mcp__manki__read_file']);
+    expect(response.usage).toEqual({ inputTokens: 16_650, outputTokens: 75, cacheReadTokens: 15_000, cacheWriteTokens: 1500, reasoningTokens: 0, largestRequestInputTokens: 5550 });
+    // Requests that do not add up to the `result` leave the largest unknown, since the missing one could be it. The largest
+    // one seen is kept as a lower bound.
+    setupSpawnMock({ stdout: `${[request(1), request(2), result(200)].map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
+    const partial = (await client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15, related: undefined } })).usage;
+    expect(partial).not.toHaveProperty('largestRequestInputTokens');
+    expect(partial?.largestSeenRequestInputTokens).toBe(2220);
     // A call with tools whose model called none reports an empty list, which tells it from a client that reports no
     // steps at all. A call without tools reports none.
     setupSpawnMock({ stdout: 'ok' });
@@ -1735,7 +1745,7 @@ describe('AnthropicClient API-path usage', () => {
     });
     const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
     const result = await client.sendMessage('sys', 'user');
-    expect(result.usage).toEqual({ inputTokens: 110, outputTokens: 25, cacheReadTokens: 10, cacheWriteTokens: 0, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 110, outputTokens: 25, cacheReadTokens: 10, cacheWriteTokens: 0, reasoningTokens: 0, largestRequestInputTokens: 110 });
     expect(typeof result.latencyMs).toBe('number');
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });

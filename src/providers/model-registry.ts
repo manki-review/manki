@@ -77,7 +77,7 @@ interface ModelPrice {
   cacheRead: number;
   /** Five-minute cache writes. Only Anthropic reports them. */
   cacheWrite: number;
-  /** Prices for a prompt over `aboveTokens`, where the model charges more for one. */
+  /** Prices for a request whose prompt is over `aboveTokens`, where the model charges more for one. */
   longPrompt?: { aboveTokens: number; input: number; output: number; cacheRead?: number };
 }
 
@@ -111,14 +111,31 @@ const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
 /** Anthropic charges a 1-hour cache write at twice the input price. */
 const ONE_HOUR_WRITE_RATE = 2;
 
+function priceOf(model: string): ModelPrice | undefined {
+  return MODEL_PRICES[model] ?? MODEL_PRICES[model.replace(/-\d{8}$/, '')];
+}
+
+/**
+ * Whether `estimateCostUsd` gives `usage` the standard price only because its largest request is unknown: `model`
+ * charges more for a long request, and the call's input passes that limit.
+ */
+export function assumesShortRequests(model: string, usage: LLMUsage): boolean {
+  const limit = priceOf(model)?.longPrompt?.aboveTokens;
+  return limit !== undefined && usage.largestRequestInputTokens === undefined && usage.inputTokens > limit
+    && !((usage.largestSeenRequestInputTokens ?? 0) > limit);
+}
+
 /**
  * Returns an estimate of a call's cost in USD at public API prices, or `null` for a model without a
- * known price. Subscription use is not billed per token, so this is what the same calls would cost on the API.
+ * known price. Subscription use is not billed per token, so this is what the same calls would cost on the API. The
+ * long-prompt price is charged per request, so it applies only when `usage.largestRequestInputTokens` passes its limit.
  */
 export function estimateCostUsd(model: string, usage: LLMUsage): number | null {
-  const price = MODEL_PRICES[model] ?? MODEL_PRICES[model.replace(/-\d{8}$/, '')];
+  const price = priceOf(model);
   if (!price) return null;
-  const long = price.longPrompt && usage.inputTokens > price.longPrompt.aboveTokens ? price.longPrompt : undefined;
+  // A seen request past the limit proves the long price even when other requests went unseen.
+  const largest = usage.largestRequestInputTokens ?? usage.largestSeenRequestInputTokens;
+  const long = price.longPrompt && largest !== undefined && largest > price.longPrompt.aboveTokens ? price.longPrompt : undefined;
   const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
   const oneHourWrites = usage.cacheWrite1hTokens ?? 0;
   const cost = uncached * (long?.input ?? price.input)

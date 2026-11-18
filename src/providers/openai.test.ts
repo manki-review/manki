@@ -58,6 +58,21 @@ const answered = (text: string, ...before: object[]): string => jsonl(started(),
 /** The stdout of a turn Codex failed with its error `text`, after the events `before`. Codex prints the error twice. */
 const failedTurn = (text: string, ...before: object[]): string => jsonl(started(), TURN, ...before, error(text), failed(text));
 
+/**
+ * Writes the session file of `SESSION` into this process's Codex home, with the `token_count` event Codex writes after
+ * each request for each `[session input, request input]` of `counts`. Returns a function that removes it.
+ */
+function writeSessionFile(counts: [number, number][]): () => void {
+  const sessions = join(cliHome('codex'), 'sessions');
+  const today = new Date();
+  const folder = join(sessions, String(today.getFullYear()), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0'));
+  mkdirSync(folder, { recursive: true });
+  const usage = (input: number) => ({ input_tokens: input, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: input });
+  const lines = counts.map(([total, last]) => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: usage(total), last_token_usage: usage(last), model_context_window: 258400 } } }));
+  writeFileSync(join(folder, `rollout-2026-11-18T17-15-29-${SESSION}.jsonl`), `${lines.join('\n')}\n`);
+  return () => rmSync(sessions, { recursive: true, force: true });
+}
+
 // A test may point `RUNNER_TEMP` at a folder that does not exist, so the Codex home of this process is made first.
 beforeAll(() => cliHome('codex'));
 
@@ -386,6 +401,7 @@ describe('sendMessage (API path)', () => {
       cacheReadTokens: 40,
       cacheWriteTokens: 0,
       reasoningTokens: 15,
+        largestRequestInputTokens: 200,
     });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
@@ -696,11 +712,14 @@ describe('sendViaCLI (Codex CLI path)', () => {
         failedRun('exceeded retry limit, last status: 429 Too Many Requests'), answer,
       ];
       const { stdin, instructions, starts } = setupSpawnMock('', first, ...resumed);
+      // As Codex wrote it for a run whose first request answered and whose second failed, and a resumed run's request.
+      // A failed run repeats its last count.
+      const removeSession = writeSessionFile([[1000, 1000], [1000, 1000], [4000, 3000]]);
 
-      const { value, tookMs } = await settle(endpoint.sendMessage('Review the diff.', 'the diff', { effort: 'high', ...tools }));
+      const { value, tookMs } = await settle(endpoint.sendMessage('Review the diff.', 'the diff', { effort: 'high', ...tools })).finally(removeSession);
 
       expect(value?.content).toBe('[]');
-      expect(value?.usage).toEqual({ inputTokens: 4000, outputTokens: 40, cacheReadTokens: 400, cacheWriteTokens: 0, reasoningTokens: 4 });
+      expect(value?.usage).toEqual({ inputTokens: 4000, outputTokens: 40, cacheReadTokens: 400, cacheWriteTokens: 0, reasoningTokens: 4, largestRequestInputTokens: 3000 });
       const pauses = [5_000, 15_000, 0, 0, 0, 3_000, 60_500, 60_000];
       expect(starts.slice(1).map((start, i) => start - starts[i] - RUN_MS)).toEqual(pauses);
       expect(tookMs).toBe(143_500 + 9 * RUN_MS);
@@ -1058,6 +1077,19 @@ describe('sendViaCLI (Codex CLI path)', () => {
     // A turn that reports no token counts leaves them unknown.
     setupSpawnMock(jsonl(started(), TURN, message('[]'), { type: 'turn.completed' }));
     expect((await client.sendMessage('sys', 'user')).usage).toBeUndefined();
+
+    // The session file gives the input of each request, but only requests that add up to the turn's input say which
+    // was the largest.
+    for (const [counts, largest] of [
+      [[[1000, 1000]], 1000],
+      [[[600, 600]], undefined],
+      [[[600, 600], [1000, 300]], undefined],
+    ] as [[number, number][], number | undefined][]) {
+      const removeSession = writeSessionFile(counts);
+      setupSpawnMock(answered('[]'));
+      const { usage } = await client.sendMessage('sys', 'user').finally(removeSession);
+      expect(usage?.largestRequestInputTokens).toBe(largest);
+    }
   });
 
   it('rejects on non-zero exit code with rich diagnostics', async () => {

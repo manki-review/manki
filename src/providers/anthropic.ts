@@ -8,7 +8,7 @@ import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
+import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { STALE_TIMEOUT_MS };
@@ -57,16 +57,21 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * (`is_error`, `subtype`, error text) for diagnostics on failure.
  * `--include-partial-messages` wraps each API stream event in a `stream_event` line.
  * `assistantRefusal` is set on every assistant message: the refusal reason, or null when it did not end on `stop_reason: "refusal"`.
+ * `requestInput` is set on the `message_start` of each request: its input tokens, cache reads and writes included.
  */
 function processJsonLine(line: string): {
   text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string; file?: string }[]; toolResults?: string[];
-  limits?: LimitUsage[];
+  limits?: LimitUsage[]; requestInput?: number;
 } {
   try {
     const event = JSON.parse(line);
     const streamed = event.type === 'stream_event' ? event.event : event;
     if (streamed?.type === 'content_block_delta' && streamed.delta?.type === 'text_delta' && streamed.delta.text) {
       return { text: streamed.delta.text, replace: false, resultEvent: null };
+    }
+    if (event.type === 'stream_event' && streamed?.type === 'message_start') {
+      const usage = streamed.message?.usage;
+      return { text: '', replace: false, resultEvent: null, requestInput: usage && typeof usage === 'object' ? readAnthropicUsage(usage).inputTokens : 0 };
     }
     const blocks: { type?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
     if (event.type === 'assistant') {
@@ -382,12 +387,14 @@ export class AnthropicClient implements LLMClient {
     const root = options?.repoTools?.root;
     // The CLI reports the limits after each request, so a later reading of a window replaces an earlier one.
     const limits = new Map<string, LimitUsage>();
+    const requestInputs: number[] = [];
     // A failed run keeps the readings too, since a used-up limit is when they matter most.
     const readings = () => ({ ...(limits.size > 0 && { limits: [...limits.values()] }), ...(filesRead.size > 0 && { filesRead: [...filesRead] }) });
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
       for (const limit of delta.limits ?? []) limits.set(limit.window, limit);
+      if (delta.requestInput !== undefined) requestInputs.push(delta.requestInput);
       for (const { id, tool, file } of delta.toolUses ?? []) {
         toolStarts.set(id, { tool, start: Date.now() });
         if (file) filesRead.add(root && isAbsolute(file) ? relative(root, file) : file);
@@ -481,7 +488,8 @@ export class AnthropicClient implements LLMClient {
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
       content,
-      usage: extractAnthropicCLIUsage(lastResultEvent),
+      // The `result` event sums the requests of the call, and each request's `message_start` reports its own input.
+      usage: withLargestRequest(extractAnthropicCLIUsage(lastResultEvent), requestInputs),
       latencyMs: Date.now() - startTime,
       model: this.model,
       truncated,
@@ -539,7 +547,7 @@ export class AnthropicClient implements LLMClient {
     }
 
     const sdkUsage = (response as unknown as { usage?: Record<string, unknown> }).usage;
-    const usage: LLMUsage = sdkUsage ? readAnthropicUsage(sdkUsage) : { ...ZERO_USAGE };
+    const usage: LLMUsage = sdkUsage ? oneRequest(readAnthropicUsage(sdkUsage)) : { ...ZERO_USAGE };
 
     return { content, usage, latencyMs: Date.now() - startTime, model: this.model, truncated: response.stop_reason === 'max_tokens' };
   }
