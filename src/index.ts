@@ -886,7 +886,8 @@ async function postRunProgress(
   const latest = latestSettings(comments, bot);
   const failed = latest && isFailedProgress(latest.body) && commitSha.startsWith(latest.settings.head) ? latest : undefined;
   progress.settings = {
-    lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
+    // The block keeps the commit it named when the coordinator holds none, as after its storage was cleared.
+    lastReviewed: settings.lastReviewed ?? latest?.settings.lastReviewed, draft, ticked: tickedBoxes(settings),
     ...(latest && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, undefined, runningSettings(target, progress));

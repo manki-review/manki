@@ -2757,6 +2757,9 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 1 }));
       expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'ddd2222' }));
       expect(ghUtils.showSettings).not.toHaveBeenCalled();
+      // A coordinator without a last reviewed commit leaves the one the block named, and never writes Not reviewed yet over it.
+      await runWith({ settings: settingsState(true) });
+      expect(ghUtils.setSettingsBlock).toHaveBeenLastCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'fff0000' }));
 
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
       await runWith();
