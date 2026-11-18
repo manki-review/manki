@@ -110,9 +110,14 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d
  * Returns when the limit behind `error` lifts, in milliseconds since the epoch, or `undefined` when the provider named
  * no time that reads for certain. A window the call's readings show used up names its reset exactly. Of the provider's
  * own words, only a wait such as `in 1m30s` and an ISO 8601 time with its zone are read: other wording, such as
- * `3pm (America/New_York)`, leaves the day or the zone unsure.
+ * `3pm (America/New_York)`, leaves the day or the zone unsure. A time no `Date` can hold names none.
  */
 export function quotaResetTime(error: QuotaError, now = Date.now()): number | undefined {
+  const time = namedResetTime(error, now);
+  return time !== undefined && !Number.isNaN(new Date(time).getTime()) ? time : undefined;
+}
+
+function namedResetTime(error: QuotaError, now: number): number | undefined {
   const usedUp = (readingsOf(error).limits ?? []).flatMap(l => (l.usedPercent >= 100 && l.resetsAt != null ? [l.resetsAt * 1000] : []));
   if (usedUp.length > 0) return Math.max(...usedUp);
   const wait = advisedWaitMs(error.resetsAt);

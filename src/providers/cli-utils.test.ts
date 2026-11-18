@@ -669,9 +669,11 @@ describe('matchQuotaText', () => {
     const windows = [window(100, '2026-11-18T16:00:00Z'), window(100, '2026-11-18T17:00:00Z'), window(80, '2026-11-25T00:00:00Z')];
     expect(quotaResetTime(limitWith('in 5m', windows), now)).toBe(Date.parse('2026-11-18T17:00:00Z'));
     // Wording without a sure day or zone names no time.
-    for (const text of ['Nov 6, 8pm (UTC)', '3pm', 'at 20 Aug 2026, 16:29', 'after 2s', '2026-11-18T16:00:00', undefined]) {
+    for (const text of ['Nov 6, 8pm (UTC)', '3pm', 'at 20 Aug 2026, 16:29', 'after 2s', '2026-11-18T16:00:00', 'at 2026-13-45T99:99Z', undefined]) {
       expect(quotaResetTime(limitWith(text, [window(80, '2026-11-18T16:00:00Z')]), now)).toBeUndefined();
     }
+    // A time out of a `Date`'s range names none, so it never reaches `toISOString`.
+    expect(quotaResetTime(limitWith('in 5m', [{ ...window(100, '2026-11-18T16:00:00Z'), resetsAt: 1e16 }]), now)).toBeUndefined();
   });
 
   it('reads only the end of a long output and keeps the reset text plain', () => {
