@@ -181,8 +181,9 @@ function withStepsUsedUp(check: Refutation, { toolSteps }: LLMResponse): Refutat
  * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
  * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
  * covers the PR's files only and the related repo can have changed, when it is a disproof that no longer cites the
- * finding's code or that confirmed the defect, which contradicts itself, or when it ended unsettled on its step budget,
- * since it may only have run out of steps.
+ * finding's code or that confirmed the defect, which contradicts itself, when it ended unsettled on its step budget,
+ * since it may only have run out of steps, or when it checked a `drop` premise. Such a check answered whether the
+ * judge's reason to drop holds, never whether the finding is wrong, so it is no answer for a finding the judge kept.
  */
 function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);
@@ -194,7 +195,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
       && restsOnSameCode(refutation, workspace))?.refutation;
     if (!refutation) continue;
-    const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes'
+    const reusable = !citesRelatedRepo(refutation) && refutation.stepsUsedUp !== 'yes' && !refutation.premises?.some(p => p.decides === 'drop')
       && (outcomeOf(refutation) !== 'disproved' || (refutation.defect !== 'confirmed' && citesFindingCode(finding.file, refutation.proof ?? [], diff)));
     return reusable ? refutation : undefined;
   }

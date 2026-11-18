@@ -1463,6 +1463,19 @@ describe('refuteBlockers', () => {
     expect(await Promise.all(stillOpen.map(later => statusLater(unmarked, later)))).toEqual(['unconfirmed', 'unconfirmed', 'unconfirmed', 'confirmed']);
     expect(confirming.calls.length).toBe(3);
 
+    // A check of the premise the judge dropped a blocker on answered whether the drop holds, not whether the finding is
+    // wrong. So a later round that keeps the finding as a warning never reuses it, also when it confirmed the premise.
+    const dropCheck = fakeClient({ 'Dropped then kept': { outcome: 'unsettled', reason: 'Could not tell.', premises: [{ outcome: 'confirmed', reason: 'Every caller bounds them.', proof: ['src/math.ts:1'] }] } });
+    const [stillDropped] = await refuteBlockers(dropCheck, [finding('Dropped then kept', {
+      severity: 'ignore', reviewerSeverity: 'blocker', gradePath: [{ from: 'blocker', to: 'ignore', by: 'judge' }], cell: { row: 'severe', column: 'normal' }, gradeIfConfirmed: 'blocker',
+      doubts: [{ premise: 'Every caller bounds both inputs of `add`', decides: 'drop' }],
+    })], { workspace, diff });
+    expect([stillDropped.severity, outcomeOf(stillDropped.refutation!), stillDropped.refutation?.proof]).toEqual(['ignore', 'disproved', ['src/math.ts:1']]);
+    const droppedRounds = [{ findings: { entries: [] }, judge: { dropped: [{ title: 'Dropped then kept', file: 'src/math.ts', line: 2, reviewers: ['R'], refutation: stillDropped.refutation }] } }] as unknown as RoundContext[];
+    const keptLater = fakeClient({ 'Dropped then kept': { outcome: 'unsettled', reason: 'Could not tell.' } });
+    const [kept] = await refuteRound(keptLater, [finding('Dropped then kept', noProof)], { workspace, diff, priorRounds: droppedRounds });
+    expect([keptLater.calls.length, kept.severity, kept.refutation?.outcome, unprovenReason(kept)]).toEqual([1, 'warning', 'unsettled', 'unsettled_check']);
+
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
     expect(await calls()).toBe(2);
