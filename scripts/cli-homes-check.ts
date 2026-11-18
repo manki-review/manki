@@ -21,6 +21,7 @@
  */
 
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
@@ -40,6 +41,9 @@ const RUNNER_LOGIN = 'runner-oauth-token';
 const REDIRECT = { settings: '/runner-settings/', dotenv: '/runner-dotenv', otel: '/runner-otel', tempDotenv: '/runner-temp-dotenv' };
 // The runner's Bedrock key and Vertex login, which `plantCloudCredentials` plants.
 const RUNNER_AWS_KEY = 'AKIARUNNERPROFILE';
+// The key of the role the stand-in hands out for the runner's `aws sso login` token.
+const RUNNER_SSO_KEY = 'ASIARUNNERSSO';
+const SSO_REGION = 'us-east-1';
 const RUNNER_ADC_REFRESH = 'runner-adc-refresh';
 
 const redirected = (run: StandInRun, path: string): boolean => run.paths.some(p => p.startsWith(path));
@@ -77,6 +81,7 @@ export const GEMINI_TEMP_DOTENV: PlantedItem = { what: '.env in the temp folder 
 // Whether the runner's Bedrock profile or Vertex login, which `plantCloudCredentials` plants, reached the request.
 export const CLOUD_CREDENTIALS: Record<Cloud, PlantedItem> = {
   bedrock: { what: 'Bedrock profile in ~/.aws', found: run => run.keys.some(key => key.includes(`Credential=${RUNNER_AWS_KEY}/`)) },
+  sso: { what: 'Bedrock SSO login in ~/.aws/sso/cache', found: run => run.keys.some(key => key.includes(`Credential=${RUNNER_SSO_KEY}/`)) },
   vertex: { what: 'Vertex login in ~/.config/gcloud', found: run => run.ran.includes(FLAG.adc) },
 };
 
@@ -85,6 +90,8 @@ const CLAUDE_HOSTS = ['api.anthropic.com:443'];
 const GEMINI_HOSTS = ['play.googleapis.com:443'];
 // The Google hosts of the Gemini login and Code Assist, which the stand-in serves.
 const GOOGLE_HOSTS = ['oauth2.googleapis.com', 'www.googleapis.com', 'cloudcode-pa.googleapis.com'];
+// The AWS SSO portal, which hands out a role's key for an `aws sso login` token, and which the stand-in serves too.
+const SSO_PORTAL = `portal.sso.${SSO_REGION}.amazonaws.com`;
 
 function write(path: string, text: string, mode = 0o644): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -142,16 +149,24 @@ export function plantClaudeSetup(home: string, server: MankiCommand, standIn: st
   }));
 }
 
-type Cloud = 'bedrock' | 'vertex';
+type Cloud = 'bedrock' | 'sso' | 'vertex';
 
 /**
- * Plants the runner's credentials of `cloud` in the home folder `home`, as `aws configure` or `gcloud auth
- * application-default login` leave them, and returns the variables that turn the Claude CLI's setup for it on.
+ * Plants the runner's credentials of `cloud` in the home folder `home`, as `aws configure`, `aws sso login` or `gcloud
+ * auth application-default login` leave them, and returns the variables that turn the Claude CLI's setup for it on.
  */
 export function plantCloudCredentials(home: string, cloud: Cloud, standIn: string): NodeJS.ProcessEnv {
+  if (cloud === 'sso') {
+    write(join(home, '.aws', 'config'), `[profile runner]\nsso_session = runner\nsso_account_id = 123456789012\nsso_role_name = runner\nregion = ${SSO_REGION}\n\n[sso-session runner]\nsso_start_url = https://runner.awsapps.com/start\nsso_region = ${SSO_REGION}\n`);
+    // The SDK names the cached token by the SHA-1 of the session's name.
+    const token = { accessToken: 'runner-sso-token', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), region: SSO_REGION, startUrl: 'https://runner.awsapps.com/start' };
+    write(join(home, '.aws', 'sso', 'cache', `${createHash('sha1').update('runner').digest('hex')}.json`), JSON.stringify(token), 0o600);
+  }
   if (cloud === 'bedrock') {
     write(join(home, '.aws', 'credentials'), `[runner]\naws_access_key_id = ${RUNNER_AWS_KEY}\naws_secret_access_key = runner-secret\n`, 0o600);
     write(join(home, '.aws', 'config'), '[profile runner]\nregion = us-east-1\n');
+  }
+  if (cloud !== 'vertex') {
     // The stand-in streams server-sent events, not Bedrock's own format.
     return { CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_BEDROCK_BASE_URL: standIn, AWS_PROFILE: 'runner', CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_DEFAULT: '1' };
   }
@@ -198,6 +213,11 @@ function answerClaude(run: StandInRun): Answer {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ access_token: 'stand-in', expires_in: 3600, token_type: 'Bearer' }));
       return;
     }
+    if (req.headers.host === SSO_PORTAL) {
+      const role = { accessKeyId: RUNNER_SSO_KEY, secretAccessKey: 'runner-secret', sessionToken: 'runner-session', expiration: Date.now() + 3_600_000 };
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ roleCredentials: role }));
+      return;
+    }
     if (req.method !== 'POST' || !/\/v1\/messages$|\/invoke(?:-with-response-stream)?$|:(?:stream)?rawPredict$/i.test((req.url ?? '').split('?')[0])) {
       res.writeHead(404).end();
       return;
@@ -239,13 +259,15 @@ function answerGemini(run: StandInRun): Answer {
   };
 }
 
-function runCli(command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; stderr: string }> {
+/** Runs the CLI and returns its exit code with its output, where `claude -p` also reports its errors. */
+function runCli(command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; output: string }> {
   return new Promise((done, fail) => {
-    const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'ignore', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+    const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', (data: Buffer) => { output += data.toString(); });
+    child.stderr.on('data', (data: Buffer) => { output += data.toString(); });
     child.on('error', fail);
-    child.on('close', code => done({ code, stderr }));
+    child.on('close', code => done({ code, output }));
     child.stdin.end('Reply with OK.');
   });
 }
@@ -272,7 +294,7 @@ const STAND_IN_LOGIN = 'manki-stand-in-token';
  */
 async function checkRun({ cli, control, tools = false, cloud }: CheckRun, repo: string, scratch: string, google: { served: ServedHosts; ca: string }): Promise<StandInRun> {
   const run = newRun();
-  const standIn = await startStandIn(run, cli === 'claude' ? answerClaude(run) : answerGemini(run), cli === 'gemini' || cloud === 'vertex' ? google.served : undefined);
+  const standIn = await startStandIn(run, cli === 'claude' ? answerClaude(run) : answerGemini(run), cli === 'gemini' || cloud ? google.served : undefined);
   try {
     const home = mkdtempSync(join(scratch, 'home-'));
     const work = mkdtempSync(join(scratch, 'work-'));
@@ -312,9 +334,9 @@ async function checkRun({ cli, control, tools = false, cloud }: CheckRun, repo: 
       const login = join(control === 'home' ? home : cliHome('gemini'), '.gemini', 'oauth_creds.json');
       if (!existsSync(login)) write(login, JSON.stringify({ access_token: STAND_IN_LOGIN, refresh_token: 'stand-in', token_type: 'Bearer', expiry_date: Date.now() + 3_600_000 }), 0o600);
     }
-    const { code, stderr } = await runCli(cli, args, env, cwd);
+    const { code, output } = await runCli(cli, args, env, cwd);
     run.ran.push(...readdirSync(flags));
-    if (code !== 0 || run.bodies.length === 0) throw new Error(`${cli}${cloud ? ` on ${cloud}` : ''} exited with ${code}${run.bodies.length === 0 ? ' without asking the model' : ''}:\n${stderr.slice(-2000)}`);
+    if (code !== 0 || run.bodies.length === 0) throw new Error(`${cli}${cloud ? ` on ${cloud}` : ''} exited with ${code}${run.bodies.length === 0 ? ' without asking the model' : ''}:\n${output.slice(-2000)}`);
     return run;
   } finally {
     standIn.close();
@@ -346,19 +368,22 @@ async function main(): Promise<number> {
   process.env.TMPDIR = join(scratch, 'temp');
   mkdirSync(process.env.TMPDIR);
   try {
-    const google = makeCertificate(scratch, GOOGLE_HOSTS);
+    const google = makeCertificate(scratch, [...GOOGLE_HOSTS, SSO_PORTAL]);
     const problems: string[] = [];
     for (const tools of [false, true]) {
       const label = `claude${tools ? ' with repository tools' : ''}`;
       const run = await checkRun({ cli: 'claude', tools }, repo, scratch, google);
       problems.push(...plantedProblems(label, 'Claude', CLAUDE_SETUP, run), ...hostProblems(label, run, CLAUDE_HOSTS));
     }
-    for (const cloud of ['bedrock', 'vertex'] as const) {
+    for (const cloud of ['bedrock', 'sso', 'vertex'] as const) {
       const label = `claude on ${cloud}`;
       const run = await checkRun({ cli: 'claude', cloud }, repo, scratch, google);
       problems.push(...plantedProblems(label, 'Claude', CLAUDE_SETUP, run), ...hostProblems(label, run, CLAUDE_HOSTS));
       problems.push(...controlProblems(label, 'Claude', [CLOUD_CREDENTIALS[cloud]], run));
     }
+    // The SSO login must also sign in on the runner's own home, so a failure above is Manki's link and not the plant.
+    const ssoControl = await checkRun({ cli: 'claude', cloud: 'sso', control: 'home' }, repo, scratch, google);
+    problems.push(...controlProblems('claude on sso with its defaults on the runner\'s own home', 'Claude', [CLOUD_CREDENTIALS.sso], ssoControl));
     const gemini = await checkRun({ cli: 'gemini' }, repo, scratch, google);
     problems.push(...plantedProblems('gemini', 'Gemini', [...GEMINI_SETUP, GEMINI_TEMP_DOTENV], gemini), ...hostProblems('gemini', gemini, GEMINI_HOSTS));
     const claudeControl = await checkRun({ cli: 'claude', control: 'home' }, repo, scratch, google);

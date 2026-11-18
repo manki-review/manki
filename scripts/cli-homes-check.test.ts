@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -38,7 +39,11 @@ describe('the planted Claude and Gemini setups', () => {
     }
   });
 
-  it('plants the runner\'s Bedrock profile and Vertex login, and turns the setup for each on', () => {
+  it('plants the runner\'s Bedrock profile, SSO login and Vertex login, and turns the setup for each on', () => {
+    expect(plantCloudCredentials(home, 'sso', 'http://127.0.0.1:9')).toEqual(expect.objectContaining({ CLAUDE_CODE_USE_BEDROCK: '1', AWS_PROFILE: 'runner' }));
+    expect(read('.aws/config')).toContain('sso_session = runner\n');
+    // The AWS SDK looks for the token under the SHA-1 of the session name.
+    expect(JSON.parse(read(`.aws/sso/cache/${createHash('sha1').update('runner').digest('hex')}.json`)).accessToken).toBe('runner-sso-token');
     expect(plantCloudCredentials(home, 'bedrock', 'http://127.0.0.1:9')).toEqual(expect.objectContaining({ CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_BEDROCK_BASE_URL: 'http://127.0.0.1:9', AWS_PROFILE: 'runner' }));
     expect(read('.aws/credentials')).toContain('[runner]\naws_access_key_id = AKIARUNNERPROFILE\n');
     expect(read('.aws/config')).toBe('[profile runner]\nregion = us-east-1\n');
@@ -89,6 +94,8 @@ describe('the problems of a planted part', () => {
     expect(controlProblems('claude on bedrock', 'Claude', [CLOUD_CREDENTIALS.bedrock], run({ keys: ['Bearer manki'] }))).toEqual([
       'claude on bedrock: the runner\'s Bedrock profile in ~/.aws no longer reaches Claude in this control run, so the check cannot see it',
     ]);
+    expect(CLOUD_CREDENTIALS.sso.found(run({ keys: ['AWS4-HMAC-SHA256 Credential=ASIARUNNERSSO/20261118/us-east-1/bedrock/aws4_request'] }))).toBe(true);
+    expect(CLOUD_CREDENTIALS.sso.found(signed)).toBe(false);
     expect(CLOUD_CREDENTIALS.vertex.found(run({ ran: ['adc-refresh'] }))).toBe(true);
     expect(CLOUD_CREDENTIALS.vertex.found(run({ keys: ['Bearer stand-in'] }))).toBe(false);
   });

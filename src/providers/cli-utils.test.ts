@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -278,6 +278,20 @@ describe('cliEnv', () => {
         .toEqual({ CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', ...aws, ...named });
       expect(passed('claude', {}, undefined, { HOME: home })).toEqual({});
       for (const provider of ['codex', 'gemini'] as const) expect(passed(provider, {}, undefined, { ...bedrock, ...vertex })).toEqual({});
+
+      // The token of `aws sso login` has no variable, so only its folder is linked, and only when Bedrock reads AWS credentials.
+      const cache = join(home, '.aws', 'sso', 'cache');
+      const link = join(cliHome('claude'), '.aws', 'sso', 'cache');
+      mkdirSync(cache, { recursive: true });
+      for (const off of [{ CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1' }, { AWS_BEARER_TOKEN_BEDROCK: 'bedrock-key' }, { CLAUDE_CODE_USE_BEDROCK: '0' }]) {
+        cliEnv('claude', {}, undefined, { ...bedrock, ...off });
+        expect(existsSync(link)).toBe(false);
+      }
+      cliEnv('codex', {}, undefined, bedrock);
+      expect(existsSync(link)).toBe(false);
+      cliEnv('claude', {}, undefined, { ...bedrock, AWS_PROFILE: 'sso', AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE', AWS_SECRET_ACCESS_KEY: 'secret' });
+      expect(realpathSync(link)).toBe(realpathSync(cache));
+      expect(readdirSync(join(cliHome('claude'), '.aws'), { recursive: true })).toEqual(['sso', join('sso', 'cache')]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

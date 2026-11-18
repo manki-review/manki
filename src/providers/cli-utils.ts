@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { StringDecoder } from 'string_decoder';
@@ -437,7 +437,7 @@ export function cliHome(provider: CliProvider): string {
  * and, for Claude, the credentials of a Bedrock, Vertex or gateway setup that is on. Those are registered as secrets.
  * `HOME` and the CLI's own folder variable point at `cliHome`, whatever `env` and `vars` say. With a Bedrock or Vertex
  * setup on, each credential file of that setup in the runner's home is passed by the variable that names it, unless
- * `env` or `vars` set that variable.
+ * `env` or `vars` set that variable, and `linkSsoCache` links the runner's AWS SSO cache.
  */
 export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const modes = provider === 'claude' ? CLAUDE_MODE_CREDENTIALS.filter(mode => mode.on(env)) : [];
@@ -468,7 +468,24 @@ export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, cred
       }
     }
   }
+  if (provider === 'claude' && runnerHome) linkSsoCache(runnerHome, result);
   return result;
+}
+
+/**
+ * Links the runner's `~/.aws/sso/cache` into the Claude CLI's own home while Bedrock is on, so an `aws sso login`
+ * profile still signs in. The AWS SDK reads that token from the home it runs with, and no variable names another
+ * folder. Nothing else of `~/.aws` is linked. With a Bedrock key or skipped Bedrock auth the CLI reads no AWS
+ * credentials, so then there is no link. An access key in `env` does not count, since a profile in `AWS_PROFILE` wins.
+ */
+function linkSsoCache(runnerHome: string, env: NodeJS.ProcessEnv): void {
+  if (!isOn(env.CLAUDE_CODE_USE_BEDROCK) || isOn(env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) || env.AWS_BEARER_TOKEN_BEDROCK) return;
+  const cache = join(runnerHome, '.aws', 'sso', 'cache');
+  const link = join(cliHome('claude'), '.aws', 'sso', 'cache');
+  if (!existsSync(cache) || existsSync(link)) return;
+  mkdirSync(dirname(link), { recursive: true });
+  // A junction needs no rights on Windows, and other systems ignore the type.
+  symlinkSync(cache, link, 'junction');
 }
 
 // Fields of a Google credentials file that identify an account or endpoint and are safe to post.
