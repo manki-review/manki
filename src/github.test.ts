@@ -1891,9 +1891,14 @@ describe('postReview body lead', () => {
     // A thread without a link is named by its file and line, or by its title alone without a place.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{ findingTitle: 'No link', place: { file: 'src/b.ts', line: 7 } }, { findingTitle: 'No place' }] });
     expect(lastBody().split('\n\n')[1]).toBe('**Still open from earlier reviews:**\n- `src/b.ts:7`: No link\n- No place');
-    // A thread GitHub keeps on the file has line 0, so the entry takes the line the finding names.
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [{ findingTitle: 'On the file', place: { file: 'src/c.ts', line: 0, findingLine: 42 } }] });
-    expect(lastBody().split('\n\n')[1]).toBe('**Still open from earlier reviews:**\n- `src/c.ts:42`: On the file');
+    // A thread on the file (GitHub's line 1) or on a fallback line shows the line its finding names, moved with the code.
+    // An outdated thread (line 0) shows the finding's line.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [
+      { findingTitle: 'On the file', place: { file: 'src/c.ts', line: 1, originalLine: 1, findingLine: 42 } },
+      { findingTitle: 'On a fallback line', place: { file: 'src/c.ts', line: 12, originalLine: 10, findingLine: 30 } },
+      { findingTitle: 'Outdated', place: { file: 'src/c.ts', line: 0, originalLine: 5, findingLine: 7 } },
+    ] });
+    expect(lastBody().split('\n\n')[1]).toBe('**Still open from earlier reviews:**\n- `src/c.ts:42`: On the file\n- `src/c.ts:32`: On a fallback line\n- `src/c.ts:7`: Outdated');
     // With `auto_approve` off an answer runs no approval check, so the line names the Review again box.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry')], autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. Once every warning is handled, tick Review again in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');

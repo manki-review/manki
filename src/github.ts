@@ -1822,7 +1822,7 @@ export async function postReview(
     /** The `review.rules` setting, which decides whether a confirmed rule keeps a finding a check disproved. */
     rules?: RulesMode;
     /** The earlier warning threads that still hold the approval, or `unread` when they could not be read, which holds it too. */
-    openWarnings?: ReadonlyArray<{ isSecurity?: boolean; findingTitle: string; place?: { file: string; line: number; findingLine?: number }; threadUrl?: string }> | 'unread';
+    openWarnings?: ReadonlyArray<{ isSecurity?: boolean; findingTitle: string; place?: { file: string; line: number; originalLine?: number; findingLine?: number }; threadUrl?: string }> | 'unread';
     /** The `auto_approve` setting, which decides what the lines for a held draft and for warnings tell the reader to do. */
     autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
@@ -1975,7 +1975,7 @@ export async function postReview(
   const holdingUnthreaded = unthreaded.filter(holdsApproval).length;
   const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length + holdingUnthreaded;
   const security = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity).length + holding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length;
-  const earlierWarnings = openWarnings === 'unread' ? [] : openWarnings.map(t => ({ file: t.place?.file ?? '', line: t.place?.line || t.place?.findingLine || 0, title: t.findingTitle, threadUrl: t.threadUrl }));
+  const earlierWarnings = openWarnings === 'unread' ? [] : openWarnings.map(t => ({ file: t.place?.file ?? '', line: t.place ? currentFindingLine(t.place) || (t.place.findingLine ?? 0) : 0, title: t.findingTitle, threadUrl: t.threadUrl }));
   const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' }
     : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }), ...(earlierWarnings.length > 0 && { earlier: earlierWarnings }) } : undefined;
   // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
