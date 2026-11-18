@@ -1,0 +1,34 @@
+id: terraform-39303
+repo: hashicorp/terraform
+source: terraform upstream PR 39303
+base: db4eef44f5bbd39a115f939304279caee7cf9b12
+head: 4320f3685eb658a9255dc7433e4cba93d9518c65
+title: "fmt: Change how file content is replaced to reduce the chances of data loss in error scenarios"
+body: |
+  Fixes terraform issue 39299
+
+  This PR changes the approach used when `fmt` updates files on disk that need formatting.
+
+  Previously `fmt` used `os.WriteFile` that truncates a file before writing content to it. When an error occurs between those two steps the end result is data loss in the affected file. This is warned about in the method's godoc comments:
+
+  > Since WriteFile requires multiple system calls to complete, a failure mid-operation can leave the file in a partially written state.
+
+  This PR makes the command use a new approach where formatted contents are written to a temporary file and then that tmp file is renamed to replace the original file. This reduces the chance of data loss as Terraform has to perform a successful write action before the original file is touched.
+
+  Having said that, there are a few caveats around use of `os.Rename`. The godoc comment includes these warnings:
+
+  > OS-specific restrictions may apply when oldpath and newpath are in different directories. Even within the same directory, on non-Unix platforms Rename is not an atomic operation. If there is an error, it will be of type *LinkError.
+
+  I've tried to mitigate the first by ensuring the temporary file is created in the same directory as the original file. The second point about renaming not being an atomic operation isn't addressed, but I feel it's reasonable to wait for an user bug reports related to that to see if it's relevant to our users.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The new `FmtCommand.replaceFile` hand-rolls a write to a temporary file followed by a rename, although the repository already has `replacefile.AtomicWriteFile` for exactly this, which the lock file code (`internal/depsfile/locks_file.go`) uses. The copy drops what the existing helper does: it never sets the file mode, so the temporary file's `0600` from `os.CreateTemp` replaces the original's mode and `terraform fmt` makes formatted files private. It renames while the temporary file is still open (`defer f.Close()`), which fails on Windows, where the helper closes first and goes through `AtomicRename`. And it leaves the temporary file behind when the write fails. Use `replacefile.AtomicWriteFile` instead."
+    locations: ["internal/command/fmt.go", "replaceFile", "processFile", "internal/replacefile/writefile.go", "AtomicWriteFile"]
+    fix: "565c6630041b6ad2d150a0da84aa4762129bcf1a"
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "When `os.CreateTemp` fails it returns a nil file, and the error path of `replaceFile` calls `f.Name()` on it, so `terraform fmt` panics instead of reporting the error."
+    locations: ["internal/command/fmt.go", "replaceFile"]

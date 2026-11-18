@@ -1,0 +1,20 @@
+id: playwright-42671
+repo: microsoft/playwright
+source: playwright upstream PR 42671
+base: f1ea64bd00626329fe981e31ca4db4726eda50a3
+head: ca17330aaf8a7ff89ba003e71cd2efac3fdf9dd5
+title: "feat(mcp): offer page-registered WebMCP tools as MCP tools"
+body: |
+  ## Summary
+  - The current tab's WebMCP tools are offered over MCP as `webmcp_<tool>` tools, with a tools-changed notification when the page's tools or the current tab change.
+  - The page header names the page's WebMCP tools the first time a tab reports them, collapsing back to a bare count while the set is unchanged.
+  - `browser_webmcp_list` / `browser_webmcp_call` stay available over MCP and the CLI for clients that ignore the tools-changed notification.
+  - `--no-webmcp` (also `webmcp` config option and `PLAYWRIGHT_MCP_WEBMCP`) opts out of collecting page-registered tools.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`BrowserBackend._callDynamicTool` copies the call path of `BrowserBackend.callTool` (building the `Response`, `setRunningTool`, draining unhandled rejections, serializing and logging to the session log) instead of sharing it, and the copy already differs. On a thrown error it reports only the error and leaves the pending unhandled rejections queued, so they show up in the next tool's response, while `callTool` drains them into the error. It also skips the dispose that `callTool` runs after a call when the browser disconnected or the response asks to close. Route page tools through the same call path as the built-in tools, with only the lookup and argument parsing differing."
+    locations: ["packages/playwright-core/src/tools/backend/browserBackend.ts", "_callDynamicTool", "callTool"]
+    fix: "6ece4eaef3b2bc75d9d4b6e9a03b7b403eaee81a"
+nice_to_have: []
