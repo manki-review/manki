@@ -6,7 +6,7 @@ import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
-import { extractReviewRecords, hasOwnMarker, hasReviewRecord } from './review-record';
+import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
 import { COMMENT_MARKER, ownMarker } from './utils';
 
@@ -388,10 +388,15 @@ interface PreviousFinding extends FindingMetadata {
   peakGrade?: FindingSeverity;
   /** Set when a round record could not be read, so the grade it may hold is unknown and the thread stays guarded. */
   gradeUnknown?: boolean;
-  /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
+  /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open, but `llmDeduplicateFindings` drops a repeat of one `decidedWithoutFix`. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
   fixed?: boolean;
+  /**
+   * Settled without a fix: Manki accepted an answer that accepted no fix, as its reply record says, or someone with write
+   * access posted a dismiss command. No reply of Manki's accepted or confirmed a fix, and no round's judge found it fixed.
+   */
+  decidedWithoutFix?: boolean;
   threadId?: string;
   threadUrl?: string;
   /** Slug from the thread's `<!-- manki:<severity>:<slug> -->` marker. */
@@ -645,8 +650,10 @@ async function fetchRecapState(
     id: t.threadId,
     ...(authorCannotClear(t) && !t.commentsIncomplete && t.authorReplyLogin && { latestReplyLogin: t.authorReplyLogin }),
     ...(authorCannotClear(t) && t.resolvedByHuman && t.resolvedByLogin && { resolverLogin: t.resolvedByLogin }),
+    ...(t.isResolved && !t.resolvedByHuman && t.settlement?.dismissLogins.length && { dismissLogins: t.settlement.dismissLogins }),
   })));
 
+  const everAddressed = judgeAddressedThreadIds(priorRounds);
   const previousFindings = botThreads.map(t => {
     const facts = { ...t, ...backing.get(t.threadId) };
     const settled = settledBy(facts, bot, prAuthorLogin, prAuthorRole);
@@ -664,6 +671,7 @@ async function fetchRecapState(
       ...(t.gradeUnknown && { gradeUnknown: true }),
       status,
       ...(facts.addressed && status !== 'open' && status !== 'replied' && { fixed: true }),
+      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && (t.settlement.decidedByAnswer || facts.writerDismissed) && { decidedWithoutFix: true }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -737,6 +745,28 @@ interface ThreadFacts extends OverrideCandidate {
   writerReplyLogin?: string;
   /** Who resolved the thread, when `hasWriteAccess` confirms a person with write access. GraphQL types every resolver as `User`, a bot included. */
   writerResolverLogin?: string;
+  /** Whether `hasWriteAccess` confirms someone who posted a dismiss command in the thread, as the dismiss handler requires. */
+  writerDismissed?: boolean;
+}
+
+/** How the comments of a thread settled it, which `decidedWithoutFix` of `PreviousFinding` is made of. */
+interface Settlement {
+  /** A reply of Manki's accepted or confirmed a fix. */
+  fixAnswered: boolean;
+  /** Manki's own reply record says it accepted an answer that accepted no fix and settled the thread. */
+  decidedByAnswer: boolean;
+  /** Who posted a dismiss command in the thread. Only one with write access counts, which `resolveBacking` checks. */
+  dismissLogins: string[];
+}
+
+/** Returns how the comments of a thread settled it. Of a person's text only the dismiss command counts, with its sender. */
+function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement {
+  const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
+  return {
+    fixAnswered: own.some(body => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined),
+    decidedByAnswer: own.some(body => !!settlingDecision(body)),
+    dismissLogins: personReplies(bot, comments).flatMap(c => c.author?.login && DISMISS_COMMAND_RE.test(c.body ?? '') ? [c.author.login] : []),
+  };
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
@@ -750,19 +780,22 @@ function latestPersonReply<T extends { author?: { login: string; __typename?: st
 }
 
 /**
- * Returns `addressed`, `writerReplyLogin` and `writerResolverLogin` of `ThreadFacts` for each thread. A caller leaves
- * out `latestReplyLogin` when it did not read every comment of the thread, since a later reply may be hidden.
+ * Returns `addressed`, `writerReplyLogin`, `writerResolverLogin` and `writerDismissed` of `ThreadFacts` for each thread.
+ * A caller leaves out `latestReplyLogin` when it did not read every comment of the thread, since a later reply may be
+ * hidden. A login whose access cannot be read counts as without write access.
  */
 async function resolveBacking(
-  octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[], threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string }>,
-): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin'>>> {
+  octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[],
+  threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string; dismissLogins?: string[] }>,
+): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin' | 'writerDismissed'>>> {
   const addressed = judgeAddressedThreadIds(priorRounds, true);
-  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? []].flat()))];
+  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? [], t.dismissLogins ?? []].flat()))];
   const writers = new Set((await Promise.all(logins.map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
   return new Map(threads.map(t => [t.id, {
     ...(addressed.has(t.id) && { addressed: true }),
     ...(t.latestReplyLogin && writers.has(t.latestReplyLogin) && { writerReplyLogin: t.latestReplyLogin }),
     ...(t.resolverLogin && writers.has(t.resolverLogin) && { writerResolverLogin: t.resolverLogin }),
+    ...(t.dismissLogins?.some(login => writers.has(login)) && { writerDismissed: true }),
   }]));
 }
 
@@ -942,6 +975,8 @@ interface ReviewThread extends FindingMetadata {
   /** Set when the thread's later comments could not be read, so its latest reply is unknown. */
   commentsIncomplete?: boolean;
   answer?: string;
+  /** How Manki's replies and the dismiss commands settled the thread, by `settlement`. Unset when not every comment was read. */
+  settlement?: Settlement;
 }
 
 /** Earlier wordings of `MISSED_EARLIER_NOTE` that threads posted before still carry. */
@@ -1124,6 +1159,7 @@ async function fetchReviewThreads(
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
+      const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes) : undefined;
 
       return {
         threadId: thread.id,
@@ -1155,6 +1191,7 @@ async function fetchReviewThreads(
         ...(authorReplyAssociation && { authorReplyAssociation }),
         ...(incomplete.has(thread.id) && { commentsIncomplete: true }),
         ...(answer && { answer }),
+        ...(settled && { settlement: settled }),
       };
     });
     return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };
@@ -1200,9 +1237,7 @@ function deduplicateFindings(
       core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
       duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
     } else if (answeredMatch) {
-      const { threadId, answer, severity, recordedGrade, peakGrade, gradeUnknown } = answeredMatch.prev;
-      const grade = { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }), ...(gradeUnknown && { gradeUnknown }) };
-      unique.push({ ...finding, answeredIn: { threadId, answer, grade } });
+      unique.push({ ...finding, answeredIn: answeredInOf(answeredMatch.prev) });
     } else {
       unique.push(finding);
     }
@@ -1229,6 +1264,12 @@ function withPostedLine(previousFindings: PreviousFinding[]): PreviousFinding[] 
 
 function isAnswered(f: PreviousFinding): f is PreviousFinding & { answer: string; threadId: string } {
   return !!f.answer && !!f.threadId;
+}
+
+/** Returns the thread and Manki's answer there that a finding repeating the answered `prev` goes to the judge with. */
+function answeredInOf(prev: PreviousFinding & { answer: string; threadId: string }): NonNullable<Finding['answeredIn']> {
+  const { threadId, answer, severity, recordedGrade, peakGrade, gradeUnknown } = prev;
+  return { threadId, answer, grade: { severity, ...(recordedGrade && { recordedGrade }), ...(peakGrade && { peakGrade }), ...(gradeUnknown && { gradeUnknown }) } };
 }
 
 function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]): { prev: P; matchType: DuplicateMatchType } | undefined {
@@ -1320,22 +1361,29 @@ function describeForDedup(f: DedupItem): string {
 }
 
 /**
- * Asks `client` which findings repeat an earlier resolved one in the same file, in any wording. A repeat of a waived
- * finding is dropped, and a repeat of a fixed one goes to the judge with a note. A failed call, or one the round did
- * not start or stopped, keeps every finding.
+ * Asks `client` which findings repeat an earlier resolved one, or an `auto-resolved` one `decidedWithoutFix`, in any
+ * wording. A match counts in the same file, or in another file when `acrossFiles` pairs the two. A repeat of a waived
+ * finding is dropped, and a repeat of a fixed one goes to the judge with a note. A repeat of an `auto-resolved` thread,
+ * and any repeat in another file, is dropped only while `mayHaveChanged` says no push could have changed its code.
+ * Otherwise a repeat in the thread's own file goes to the judge with the thread's answer as `answeredIn`, as static
+ * dedup sends an answered repeat, and one in another file goes to the judge on its own. A failed call, or one the round
+ * did not start or stopped, keeps every finding.
  */
 async function llmDeduplicateFindings(
   findings: Finding[],
   previousFindings: PreviousFinding[],
   client: LLMClient,
+  acrossFiles: (prev: PreviousFinding, finding: Finding) => boolean = () => false,
+  mayHaveChanged: (prev: PreviousFinding, finding: Finding) => boolean = () => true,
 ): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
   // A lockfile alert names its package and change, so only the exact static match may drop it.
   const alerts = findings.filter(f => isLockfileAlert(f.title));
   if (alerts.length > 0) {
-    const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client);
+    const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client, acrossFiles, mayHaveChanged);
     return { unique: [...alerts, ...rest.unique], duplicates: rest.duplicates };
   }
-  const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved');
+  // A thread Manki resolved after an answer that accepted no fix was decided like one a person resolved. Any other may have been fixed.
+  const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved' || (f.status === 'auto-resolved' && f.decidedWithoutFix));
   if (findings.length === 0 || resolved.length === 0) {
     return { unique: findings, duplicates: [] };
   }
@@ -1358,15 +1406,25 @@ async function llmDeduplicateFindings(
     const unique: Finding[] = [];
     const duplicates: DuplicateMatch[] = [];
     for (let i = 0; i < findings.length; i++) {
-      // A finding in another file is another place, which the static matcher never matches either.
-      const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedResolved - 1]).filter(p => p?.file === findings[i].file);
-      const waived = priors.find(p => mayWaive(p, findings[i]));
+      // A finding in another file is another place, which the static matcher never matches either, unless `acrossFiles` pairs them.
+      const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedResolved - 1])
+        .filter(p => !!p && (p.file === findings[i].file || acrossFiles(p, findings[i])));
+      // Manki's answer on an `auto-resolved` thread held for the code it read, and a match in another file can be a fix
+      // that came back there, so after a change the judge checks either again.
+      const sameFile = (p: PreviousFinding) => p.file === findings[i].file;
+      const recheck = (p: PreviousFinding) => (p.status === 'auto-resolved' || !sameFile(p)) && mayHaveChanged(p, findings[i]);
+      const waived = priors.find(p => mayWaive(p, findings[i]) && !recheck(p));
       const fixed = priors.find(p => p.fixed);
+      // Only a repeat in the thread's own file is answered there. One in another file keeps its own place and thread.
+      const answered = priors.filter(p => sameFile(p) && mayWaive(p, findings[i])).find(isAnswered);
       if (waived) {
         core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${waived.title}"`);
         duplicates.push({ finding: findings[i], matchedTitle: waived.title ?? 'unknown', matchType: 'llm' });
       } else if (fixed) {
         unique.push(resemblingFixed(findings[i], fixed));
+      } else if (answered) {
+        core.info(`LLM dedup: "${findings[i].title}" repeats answered "${answered.title}" on code a push may have changed, sending it to the judge`);
+        unique.push({ ...findings[i], answeredIn: answeredInOf(answered) });
       } else {
         unique.push(findings[i]);
       }
