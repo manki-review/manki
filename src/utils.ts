@@ -1,4 +1,9 @@
+import { createHash } from 'crypto';
+
 import * as core from '@actions/core';
+
+/** Returns the SHA-256 of `value` as JSON, in hex. */
+export const digestOf = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** Returns `text` with every character a regular expression gives a meaning escaped. */
 export function escapeRegExp(text: string): string {

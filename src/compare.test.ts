@@ -84,8 +84,8 @@ describe('runComparisons', () => {
       evidence: { checks: ['src/text.rs:3 rejects versions above 3'], proof: [], emptySearch: 'grep `version >` in src/image.rs: no match' },
     })]);
     expect(result.comparisons).toEqual([
-      { kind: 'field', reviewer: 'Sibling field: idle vs retired', at: ['src/claim.py:2'], status: 'answered', findings: 1 },
-      { kind: 'implementations', reviewer: 'Sibling code: FromWire::from_wire', at: ['src/text.rs:2', 'src/image.rs:8'], status: 'answered', findings: 1 },
+      { kind: 'field', reviewer: 'Sibling field: idle vs retired', at: ['src/claim.py:2'], status: 'answered', findings: 1, inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      { kind: 'implementations', reviewer: 'Sibling code: FromWire::from_wire', at: ['src/text.rs:2', 'src/image.rs:8'], status: 'answered', findings: 1, inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/) },
     ]);
 
     const plain = fakeClient(() => '[]', false);
@@ -115,6 +115,33 @@ describe('runComparisons', () => {
       'Sibling field: idle vs h: cut',
       'Sibling code: check_0 #2: cut',
     ]);
+
+    // A retry asks only the question whose call failed, and keeps each answer whose question it would send unchanged.
+    const raised = { severity: 'warning' as const, title: 'Kept', file: 'src/claim.py', line: 2, description: 'd', reviewers: ['Sibling field: idle vs a'] };
+    const confirm = jest.fn(async () => true);
+    const earlier = { answers: new Map(result.comparisons.map(c => [c.reviewer, { record: c, findings: c.reviewer === raised.reviewers[0] ? [raised] : [] }])), confirm };
+    const again = fakeClient(() => '[]');
+    const retried = await runComparisons(() => again, { fields, implementations }, { earlier });
+    expect(again.calls.map(c => c.user.includes('`b` instead'))).toEqual([true]);
+    expect(retried.comparisons.map(c => `${c.reviewer}: ${c.status}${c.reused ? ', kept' : ''}`)).toEqual([
+      ...['a', 'b', 'c', 'd', 'e', 'f'].map(s => `Sibling field: idle vs ${s}: answered${s === 'b' ? '' : ', kept'}`),
+      ...Array.from({ length: 6 }, (_, i) => `Sibling code: check_${i}: answered, kept`),
+      'Sibling field: idle vs g: cut',
+      'Sibling field: idle vs h: cut',
+      'Sibling code: check_0 #2: cut',
+    ]);
+    expect(retried.findings).toEqual([raised]);
+    // A question sent anything else, here at another effort, is asked again.
+    const other = fakeClient(() => '[]');
+    confirm.mockClear();
+    await runComparisons(() => other, { fields, implementations }, { earlier, effort: 'high' });
+    expect(other.calls).toHaveLength(12);
+    // Nothing could be kept, so nothing asked whether it may be.
+    expect(confirm).not.toHaveBeenCalled();
+    // A question whose answer may not be kept is asked again.
+    const refused = fakeClient(() => '[]');
+    await runComparisons(() => refused, { fields, implementations }, { earlier: { ...earlier, confirm: async () => false } });
+    expect(refused.calls).toHaveLength(12);
   });
 
   it('records a question still running when the signal stops the round waiting as timed out, and asks none after it', async () => {
@@ -197,9 +224,9 @@ describe('runRelatedChecks', () => {
       evidence: { checks: ['acme/node:src/net.cpp:2 rejects it with `nVersion < MIN_PEER_VERSION`'], proof: ['src/peer.rs:2'], relatedProof: ['acme/node:src/net.cpp:2'] },
     })]);
     expect(result.comparisons).toEqual([
-      { kind: 'reference', reviewer: 'Reference check: MIN_PEER_VERSION', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 1, dropped: 3 },
-      { kind: 'consumer', reviewer: 'Consumer check: PeerInfo', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 0 },
-      { kind: 'dependency', reviewer: 'Dependency check: read_varint', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 0 },
+      { kind: 'reference', reviewer: 'Reference check: MIN_PEER_VERSION', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 1, dropped: 3, inputDigest: expect.any(String) },
+      { kind: 'consumer', reviewer: 'Consumer check: PeerInfo', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 0, inputDigest: expect.any(String) },
+      { kind: 'dependency', reviewer: 'Dependency check: read_varint', at: ['acme/node:src/net.cpp:2'], status: 'answered', findings: 0, inputDigest: expect.any(String) },
     ]);
   });
 

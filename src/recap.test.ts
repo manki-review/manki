@@ -1795,7 +1795,7 @@ describe('fetchRecapState', () => {
         findings: { count: 1, severityCounts: {}, entries: [makeFindingFingerprintEntry({ severity: 'blocker', threadId: 'thread-1' })] },
         judge: { summary: 'failed round', threadEvaluations: [{ threadId: 'thread-1', status: 'addressed', reason: 'fixed' }] },
       });
-      const review = (id: number, ctx: RoundContext) => ({ id, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } });
+      const review = (id: number, ctx: RoundContext | string) => ({ id, node_id: `R_${id}`, body: typeof ctx === 'string' ? ctx : htmlCommentBlock(ctx), user: { login: BOT_LOGIN } });
       const state = (reviews: ReturnType<typeof review>[]) => fetchRecapState(mockOctokit([makeThread()], reviews), TEST_BOT, 'owner', 'repo', 1);
       const complete = await state([review(10, first), review(30, second)]);
       expect(complete.priorRounds.map(r => [r.meta.round, r.meta.commitSha])).toEqual([[1, first.meta.commitSha], [2, second.meta.commitSha]]);
@@ -1803,15 +1803,18 @@ describe('fetchRecapState', () => {
       for (const reviews of [
         [review(10, first), review(20, incomplete(2)), review(30, second)],
         [review(5, incomplete(1)), review(10, first), review(30, second)],
-        // Posted last, under a number a complete round has or under the next one.
-        [review(10, first), review(30, second), review(40, incomplete(2))],
-        [review(10, first), review(30, second), review(40, incomplete(3))],
       ]) {
         expect(await state(reviews)).toEqual(complete);
+      }
+      // Posted last, under a number a complete round has or under the next one, it is the attempt a retry may start from.
+      for (const round of [2, 3]) {
+        expect(await state([review(10, first), review(30, second), review(40, incomplete(round))])).toEqual({ ...complete, lastAttempt: { record: incomplete(round), review: 40, nodeId: 'R_40' } });
       }
       // A skipped record is neither unread nor a duplicate.
       expect(complete.priorRoundsIncomplete).toBeUndefined();
       expect(core.warning).not.toHaveBeenCalled();
+      // A newer record that does not read leaves no such attempt.
+      expect((await state([review(40, incomplete(3)), review(50, '<!-- manki-context: {not json} -->')])).lastAttempt).toBeUndefined();
     });
 
     it('skips a context block whose parsed value is null (not an object)', async () => {

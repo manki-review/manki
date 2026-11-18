@@ -7,7 +7,7 @@ import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
-import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
+import { AuthorClearRole, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
 import { COMMENT_MARKER, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -515,6 +515,8 @@ interface RecapState {
   priorRoundsIncomplete?: true;
   /** The reviews whose round record could not be read, when the reviews themselves could be listed. */
   unreadRecords?: string[];
+  /** The record of the PR's newest round, when that round ended incomplete. */
+  lastAttempt?: EarlierAttempt;
   /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
   openThreadsState?: OpenThreadsState;
   /** Count of fingerprints whose `authorReplyClass` flipped during `refreshAuthorReplyClass`. Optional so test mocks omitting the field still typecheck; defaults to 0. */
@@ -532,21 +534,26 @@ const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planne
  * the entry with the highest review id (latest-posted). Result is sorted
  * ascending by `meta.round`. The record of an incomplete round is left out: it holds
  * diagnostics only, and the next round takes its number. `postedAt` maps each kept round to the time its review was
- * submitted, when the review gives one.
+ * submitted, when the review gives one. `lastAttempt` is the record of the newest review with one, when that record
+ * reads and its round ended incomplete.
  */
 function parseContextBlocks(
-  reviews: Array<{ body: string; id: number; submitted_at?: string | null }>,
+  reviews: Array<{ body: string; id: number; node_id?: string; submitted_at?: string | null }>,
   owner: string,
   repo: string,
   prNumber: number,
-): { rounds: RoundContext[]; unread: string[]; postedAt: Map<number, string> } {
+): { rounds: RoundContext[]; unread: string[]; postedAt: Map<number, string>; lastAttempt?: EarlierAttempt } {
   const unread = new Set<string>();
   const byRound = new Map<number, { ctx: RoundContext; reviewId: number; submittedAt?: string | null }>();
   const duplicateRounds = new Set<number>();
+  // The newest review with a record, and that record when it reads and its round ended incomplete.
+  let newest: { id: number; attempt?: EarlierAttempt } | undefined;
 
   for (const review of reviews) {
     const reviewUrl = `${github.context.serverUrl || 'https://github.com'}/${owner}/${repo}/pull/${prNumber}#pullrequestreview-${review.id}`;
     const { records: candidates, errors } = extractReviewRecords(review.body);
+    const isNewest = candidates.length + errors.length > 0 && (!newest || review.id > newest.id);
+    if (isNewest) newest = { id: review.id };
     for (const error of errors) {
       core.warning(`Skipping undecodable Manki context block at ${reviewUrl}: ${error}`);
       unread.add(reviewUrl);
@@ -594,7 +601,10 @@ function parseContextBlocks(
       }
 
       const ctx = migrateStoredSeverities(parsed as RoundContext);
-      if (ctx.meta.incomplete) continue;
+      if (ctx.meta.incomplete) {
+        if (isNewest) newest = { id: review.id, attempt: { record: ctx, review: review.id, ...(review.node_id && { nodeId: review.node_id }) } };
+        continue;
+      }
       const existing = byRound.get(round);
       if (existing) {
         duplicateRounds.add(round);
@@ -616,7 +626,7 @@ function parseContextBlocks(
     .map(v => v.ctx)
     .sort((a, b) => a.meta.round - b.meta.round);
   const postedAt = new Map([...byRound].flatMap(([round, v]) => v.submittedAt ? [[round, v.submittedAt] as const] : []));
-  return { rounds, unread: [...unread], postedAt };
+  return { rounds, unread: [...unread], postedAt, ...(newest?.attempt && { lastAttempt: newest.attempt }) };
 }
 
 /**
@@ -632,7 +642,7 @@ async function fetchRecapState(
   prAuthorLogin?: string,
   clearRole?: AuthorClearRole,
 ): Promise<RecapState> {
-  const [threadsResult, { priorRounds, lastApprovalAt, priorRoundsIncomplete, unreadRecords }] = await Promise.all([
+  const [threadsResult, { priorRounds, lastApprovalAt, priorRoundsIncomplete, unreadRecords, lastAttempt }] = await Promise.all([
     fetchReviewThreads(octokit, bot, owner, repo, prNumber),
     fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber),
   ]);
@@ -711,6 +721,7 @@ async function fetchRecapState(
     ...(lastApprovalAt && { lastApprovalAt }),
     ...(priorRoundsIncomplete && { priorRoundsIncomplete }),
     ...(unreadRecords && { unreadRecords }),
+    ...(lastAttempt && { lastAttempt }),
     openThreadsState,
     reclassifiedPriorCount,
     reclassifiedPriors,
@@ -921,7 +932,7 @@ async function fetchPriorRoundContexts(
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt' | 'priorRoundsIncomplete' | 'unreadRecords'> & { postedAt?: Map<number, string> }> {
+): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt' | 'priorRoundsIncomplete' | 'unreadRecords' | 'lastAttempt'> & { postedAt?: Map<number, string> }> {
   try {
     const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
@@ -930,13 +941,16 @@ async function fetchPriorRoundContexts(
       per_page: 100,
     });
     const botReviews = reviews.filter((r): r is typeof r & { body: string; id: number } => !!r.body && isBotLogin(bot, r.user?.login));
-    const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id, submitted_at: r.submitted_at }));
+    const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id, node_id: r.node_id, submitted_at: r.submitted_at }));
     // A round review quotes model text, which could echo the marker, so only a review without a round context counts.
     const lastApprovalAt = botReviews
       .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && hasOwnMarker(r.body, AUTO_APPROVE_MARKER))
       .at(-1)?.submitted_at;
-    const { rounds, unread, postedAt } = parseContextBlocks(candidates, owner, repo, prNumber);
-    return { priorRounds: rounds, postedAt, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }) };
+    const { rounds, unread, postedAt, lastAttempt } = parseContextBlocks(candidates, owner, repo, prNumber);
+    return {
+      priorRounds: rounds, postedAt, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }),
+      ...(lastAttempt && { lastAttempt }),
+    };
   } catch (error) {
     core.warning(`Failed to fetch prior round contexts: ${error}`);
     return { priorRounds: [], priorRoundsIncomplete: true };

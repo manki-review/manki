@@ -54,6 +54,11 @@ export function relatedRepoTools(repos: RelatedRepo[] | undefined, asOf?: string
   return repos?.length ? { repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }) } : undefined;
 }
 
+/** Returns what `related` offers a model, without the directories of the run, so the same offer in two runs compares equal. */
+export function offeredRepos(related: RelatedRepoTools | undefined): Pick<RelatedRepoTools, 'repos' | 'guides' | 'asOf'> | null {
+  return related ? { repos: related.repos, guides: related.guides, asOf: related.asOf } : null;
+}
+
 /**
  * Returns the read-only tools of a call on the checkout at `root`. Every stage builds its `RepoTools` here, so each one
  * states its related repos. `use` is `check` for a call that checks one finding or statement, `find` for one that reports

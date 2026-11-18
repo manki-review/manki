@@ -17,6 +17,7 @@ import type { PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { extractApprovalRecords, formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
+import { modelDisplayName } from './providers/model-registry';
 import { formatRunner } from './run-diagnostics';
 import { RELATED_REPO_HOST } from './related-repos';
 import { distinctModels } from './routing';
@@ -800,7 +801,7 @@ function renderAgentLines(agents: AgentProgressEntry[], now: number): string {
   return agents.map(a => {
     const name = sanitizeMarkdown(a.name);
     if (a.status === 'done') {
-      return `${INDENT}✅ ${name}: ${countOf(a.findingCount ?? 0, 'finding')} (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}✅ ${name}: ${countOf(a.findingCount ?? 0, 'finding')} (${a.reused ? 'kept from the last attempt' : formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
       const why = (a.notStarted ?? []).map(line => `. ${sanitizeMarkdown(line.charAt(0).toUpperCase() + line.slice(1))}`).join('');
@@ -1281,6 +1282,16 @@ export async function updateProgressComment(
     withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER),
     settings,
   );
+}
+
+/** Says what the round kept of the last attempt on its commit: the models of the finders it did not run again, and the checks. */
+function reusedLine(context: RoundContext): string | undefined {
+  if (!context.meta.reusedFrom) return undefined;
+  const models = [...new Set((context.reviewers.agentMetrics ?? []).filter(m => m.reused).map(m => sanitizeMarkdown(m.model ? modelDisplayName(m.model) : m.name)))];
+  const checks = [...(context.comparisons ?? []), ...(context.prClaims?.claims ?? [])].filter(c => c.reused).length;
+  const answers = checks > 0 ? `the answers of ${countOf(checks, 'check')}` : '';
+  if (models.length === 0) return answers ? `This review kept ${answers} from the last attempt on this commit.` : undefined;
+  return `${models.join(' and ')} read this commit in the last attempt, and ${models.length === 1 ? 'its' : 'their'} findings were kept${answers && `, as were ${answers}`}.`;
 }
 
 /** Whether `body` is a progress comment whose review failed or ended incomplete. */
@@ -2125,6 +2136,8 @@ export async function postReview(
     const line = approvalRefusal ? APPROVAL_REFUSED_LINES[approvalRefusal] : heldLines;
     let head = line ? `${line}\n\n${lead}` : lead;
     if (context?.meta.trigger?.catchUp) head += `\n\n${CATCH_UP_LINE}`;
+    const kept = context && reusedLine(context);
+    if (kept) head += `\n\n${kept}`;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
@@ -3994,6 +4007,20 @@ async function hasBotReviewOnCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
 ): Promise<boolean> {
   return (await findBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) !== undefined;
+}
+
+/** Whether anyone edited the review or comment with the GraphQL node id `nodeId`. A query that fails counts as an edit. */
+export async function wasEdited(octokit: Octokit, nodeId: string): Promise<boolean> {
+  try {
+    const { node } = await octokit.graphql<{ node: { lastEditedAt?: string | null } | null }>(
+      'query($id: ID!) { node(id: $id) { ... on Comment { lastEditedAt } } }',
+      { id: nodeId },
+    );
+    return node?.lastEditedAt !== null;
+  } catch (error) {
+    core.warning(`Could not read whether ${nodeId} was edited, so it counts as edited: ${error instanceof Error ? error.message : error}`);
+    return true;
+  }
 }
 
 /**

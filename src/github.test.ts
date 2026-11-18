@@ -2424,6 +2424,22 @@ describe('postReview body lead', () => {
     expect(limited).toContain(`${extractReviewRecords(limited).records[0]} -->\n\n<!-- manki-no-verdict -->\n<!-- manki-retry-after: 2026-11-18T15:30:00.000Z -->\n`);
     expect(recorded).not.toContain('manki-retry-after');
     expect(recorded).not.toContain('Started automatically');
+
+    // A round that kept findings of the last attempt names the models of their finders below that, with the checks it kept.
+    const keptFrom = (agentMetrics: RoundContext['reviewers']['agentMetrics'], comparisons?: RoundContext['comparisons']) => makeContext({
+      meta: { ...retried.meta, reusedFrom: { review: 7, timestamp: '2026-11-18T15:00:00.000Z' } }, reviewers: { agents: [], agentMetrics }, ...(comparisons && { comparisons }),
+    });
+    const keptLine = async (context: RoundContext): Promise<string> => {
+      mockCreateReview.mockClear();
+      await postReview(mockOctokit, 'owner', 'repo', 1, SHA_A, incomplete, diff, context, 1000, { noVerdict: true });
+      return lead((mockCreateReview.mock.calls[0][0] as { body: string }).body).split('\n\n')[2];
+    };
+    const opus = { name: 'Claude Opus 5.5 · high', model: 'claude-opus-5-5', reused: true as const };
+    const gpt = { name: 'GPT-5.5 · high', model: 'gpt-5.5', reused: true as const };
+    const compared = { kind: 'field' as const, reviewer: 'Sibling field: a vs b', at: ['src/a.ts:1'], status: 'answered' as const, reused: true as const };
+    expect(await keptLine(keptFrom([opus, { ...gpt, reused: undefined }]))).toBe('Claude Opus 5.5 read this commit in the last attempt, and its findings were kept.');
+    expect(await keptLine(keptFrom([opus, gpt], [compared]))).toBe('Claude Opus 5.5 and GPT 5.5 read this commit in the last attempt, and their findings were kept, as were the answers of 1 check.');
+    expect(await keptLine(keptFrom([], [compared, compared]))).toBe('This review kept the answers of 2 checks from the last attempt on this commit.');
   });
 
   it('posts follow-up warnings off the changed lines as file-level threads, security ones included, and lists the suggestions', async () => {
@@ -3396,18 +3412,20 @@ describe('buildDashboard', () => {
 
   it('renders per-agent progress when agentProgress is provided', () => {
     const data: DashboardData = {
-      phase: 'started', lineCount: 150, agentCount: 5,
+      phase: 'started', lineCount: 150, agentCount: 6,
       agentProgress: [
         { name: 'Security & Safety', status: 'done', findingCount: 2, durationMs: 4000 },
         { name: 'Architecture & Design', status: 'done', findingCount: 0, durationMs: 3200 },
         { name: 'Correctness & Logic', status: 'reviewing' },
         { name: 'Testing & Coverage', status: 'pending' },
         { name: 'Performance & Efficiency', status: 'pending' },
+        { name: 'Kept & Reused', status: 'done', findingCount: 3, reused: true },
       ],
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Review in progress**');
-    expect(md).toContain('**Review:** 2/5 agents complete');
+    expect(md).toContain('**Review:** 3/6 agents complete');
+    expect(md).toContain(`${INDENT}✅ Kept & Reused: 3 findings (kept from the last attempt)`);
     expect(md).toContain(`${INDENT}✅ Security & Safety: 2 findings (4s)`);
     expect(md).toContain(`${INDENT}✅ Architecture & Design: 0 findings (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);

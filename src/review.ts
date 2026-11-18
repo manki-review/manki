@@ -4,15 +4,15 @@ import * as core from '@actions/core';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, quotaResetTime, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
-import { escapeRegExp, formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
+import { digestOf, escapeRegExp, formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
+import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, RoundUses, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUses, EarlierAttempt, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
-import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
@@ -22,7 +22,7 @@ import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH } from './symbol-uses';
-import { runComparisons, runRelatedChecks } from './compare';
+import { EarlierAnswer, EarlierAnswers, runComparisons, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
@@ -346,6 +346,92 @@ function quotaRoundEnd(quotaErrors: ReadonlyMap<string, QuotaError>, failedAgent
   return limitEnd([...byLimit.values()], automatic, [...(others.length > 0 ? [`${others.join(', ')} also failed after retries.`] : []), ...unretried]);
 }
 
+/** What a round keeps of an earlier attempt: the finders and checks whose reads finished, each with its findings. */
+interface KeptAttempt {
+  from: RoundReusedFrom;
+  /** The finders whose read finished, by name. */
+  finders: Map<string, EarlierAnswer<RoundAgentMetric>>;
+  /** The answered sibling comparisons and related repo checks, by reviewer name. */
+  comparisons: Map<string, EarlierAnswer<RoundComparison>>;
+  /** The claim checks that answered, by reviewer name. */
+  claims: Map<string, EarlierAnswer<RoundPrClaim>>;
+}
+
+/** Returns a finding the round record of an earlier attempt kept, as the finder's reply gave it. */
+function findingOf({ title, file, line, severity, reviewers, description, suggestedFix, howToFix, evidence, notChecked, lead, preExisting, rule }: RoundRawFinding): Finding {
+  return {
+    severity, title, file, line, description: description ?? '', suggestedFix, reviewers,
+    ...(howToFix && { howToFix }), ...(evidence && { evidence }), ...(notChecked && { notChecked: true }), ...(lead && { lead }), ...(preExisting && { preExisting }), ...(rule && { rule }),
+  };
+}
+
+/**
+ * Returns what the round may keep of `attempt`, or `undefined` when it reads the change in full. The attempt must have ended
+ * incomplete on the same commit, diff, Manki release and finders, with every finding in full in its record.
+ */
+function keptAttempt(attempt: EarlierAttempt | undefined, team: TeamRoster, options: Pick<ReviewOptions, 'headSha' | 'changeDigest' | 'deeper'>): KeptAttempt | undefined {
+  if (!attempt || options.deeper) return undefined;
+  try {
+    return keptOf(attempt, team, options);
+  } catch (error) {
+    core.info(`The last attempt is not reused, since its record could not be read: ${error}`);
+    return undefined;
+  }
+}
+
+function keptOf(attempt: EarlierAttempt, team: TeamRoster, { headSha, changeDigest }: Pick<ReviewOptions, 'headSha' | 'changeDigest'>): KeptAttempt | undefined {
+  const { record } = attempt;
+  const { meta } = record;
+  const sameTeam = (record.routing?.reviewers ?? []).map(r => [r.name, r.model, r.effort ?? null].join('\0')).join('\n')
+    === team.finders.map(f => [f.name, f.model, f.sentEffort].join('\0')).join('\n');
+  const refusals: Array<[boolean, string]> = [
+    [meta.incomplete !== true, 'it did not end incomplete'],
+    [!headSha || meta.commitSha !== headSha, 'it reviewed another commit'],
+    [!changeDigest || record.diff.changeDigest !== changeDigest, 'it reviewed another diff'],
+    [MANKI_VERSION === 'unknown' || meta.mankiVersion !== MANKI_VERSION, 'another Manki release ran it'],
+    [!!meta.omitted?.length || !!meta.compacted?.length, 'its record was cut to fit'],
+    [record.routing?.group !== team.routing.group || !sameTeam, 'another group of finders, models or efforts read it'],
+  ];
+  const refusal = refusals.find(([refused]) => refused);
+  if (refusal) {
+    core.info(`The last attempt is not reused, since ${refusal[1]}`);
+    return undefined;
+  }
+  const raw = record.reviewers.rawFindings ?? [];
+  const findingsOf = (name: string): Finding[] => raw.filter(f => f.reviewers.includes(name)).map(findingOf);
+  const moved = new Set((record.models.fallbacks ?? []).flatMap(f => (f.agent ? [f.agent] : [])));
+  let counted = true;
+  const keep = <R>(name: string, entry: R, count: number | undefined): Array<[string, EarlierAnswer<R>]> => {
+    const findings = findingsOf(name);
+    counted &&= findings.length === (count ?? 0);
+    return moved.has(name) ? [] : [[name, { record: entry, findings }]];
+  };
+  // `findingsRaw` is counted from the same list the findings are read from, so only `findingsReturned` can show a lost one.
+  const finders = new Map((record.reviewers.agentMetrics ?? []).flatMap(m => (m.status === 'success' && !m.failureReason && m.inputDigest && m.findingsReturned !== undefined ? keep(m.name, m, m.findingsReturned) : [])));
+  const comparisons = new Map((record.comparisons ?? []).flatMap(c => (c.status === 'answered' && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
+  const claims = new Map((record.prClaims?.claims ?? []).flatMap(c => (!c.call && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
+  if (!counted) {
+    core.info('The last attempt is not reused, since its record lists another number of findings than it holds');
+    return undefined;
+  }
+  return { from: { review: attempt.review, timestamp: meta.timestamp }, finders, comparisons, claims };
+}
+
+/**
+ * Whether the round reads each related repo the attempt of `record` read at the commit the attempt read it at. Fetches
+ * each such repo to find out. A repo the attempt left `unused` was read by no call of it, so its commit does not matter.
+ */
+async function readsSameRelatedCommits(record: RoundContext, related: RelatedRepoTools | undefined): Promise<boolean> {
+  if (!related) return true;
+  const then = new Map((record.relatedRepos ?? []).map(r => [r.repo, r]));
+  const read = related.repos.filter(r => then.get(r.repo)?.status !== 'unused');
+  await fetchRelatedRepos({ ...related, repos: read });
+  return relatedRepoOutcomes(read, related.stateDir).every(now => {
+    const before = then.get(now.repo);
+    return now.status === 'fetched' && !!now.commit && before?.status === 'fetched' && before.commit === now.commit;
+  });
+}
+
 /** The answers used when the planner fails: each takes the side that adds review. */
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
@@ -513,6 +599,8 @@ export interface ReviewProgress {
   agentFindingCount?: number;
   agentDurationMs?: number;
   agentStatus?: 'success' | 'failure' | 'retrying';
+  /** Set on the `agent-complete` event of a finder whose findings the round kept from an earlier attempt. */
+  agentReused?: true;
   /** Why a retry or a move to the fallback model of the failed finder `agentName` was not started, one line each. */
   notStarted?: string[];
   rawFindingCount?: number;
@@ -787,6 +875,8 @@ export interface ReviewOptions {
   changeDigest?: string;
   /** The token service starts one more review of the commit if this round ends incomplete, so its summary says so. */
   automaticRetry?: boolean;
+  /** The PR's newest round, which ended incomplete. The round keeps each finder and check of it that `keptAttempt` allows. */
+  earlierAttempt?: EarlierAttempt;
 }
 
 export async function runReview(
@@ -996,6 +1086,19 @@ export async function runReview(
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
   if (related && unread) return incomplete(unread);
+  const kept = keptAttempt(options.earlierAttempt, team, options);
+  // Checked only once a part of the attempt could be kept, and then once for the whole round.
+  let sameRelated: Promise<boolean> | undefined;
+  const confirmKept = (): Promise<boolean> => (sameRelated ??= readsSameRelatedCommits(options.earlierAttempt!.record, related)
+    .catch((error: unknown) => {
+      core.info(`The related repos could not be checked: ${error}`);
+      return false;
+    })
+    .then(same => {
+      if (!same) core.info('The last attempt is not reused, since a related repo is not at the commit it read');
+      return same;
+    }));
+  const earlierOf = <R>(answers: Map<string, EarlierAnswer<R>> | undefined): EarlierAnswers<R> | undefined => answers && { answers, confirm: confirmKept };
   // Asked beside the finders on the judge's client. Only the round's end reads the answer, so nothing waits for it before then.
   const scopePromise = runScopeReader(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'scope'), {
     diff, rawDiff, prContext, linkedIssues, workspace, trivial: quickCheckOnly(team), changeDigest: options.changeDigest, priorRounds,
@@ -1003,10 +1106,11 @@ export async function runReview(
   // Asked alongside the finders on the first reader's model, at its effort. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonEffort = team.finders[0].effort;
   const comparisonDeadline = new AbortController();
+  const checksStart = Date.now();
   const sideProgress = (kind: SideCheckKind): CheckProgress<number> | undefined =>
     onProgress && reportChecks(event => onProgress({ phase: 'side-check', sideCheck: { kind, ...event } }));
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
-    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal, progress: sideProgress('comparison'),
+    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal, progress: sideProgress('comparison'), earlier: earlierOf(kept?.comparisons),
   });
   const checkWorkspace = quickCheckOnly(team) ? undefined : workspace;
   // Lines of the related repos for the claims' own checks. A repo is fetched for them also when the diff's names start no search of their own.
@@ -1039,7 +1143,7 @@ export async function runReview(
       return { lines: new Map<number, string[]>(), record: undefined };
     }), cut]);
     const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
-      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal, progress: sideProgress('claim'),
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal, progress: sideProgress('claim'), earlier: earlierOf(kept?.claims),
     });
     return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims), terms };
   });
@@ -1054,7 +1158,7 @@ export async function runReview(
   // Each counterpart in a related repo gets a call of its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
   const relatedChecksPromise = runRelatedChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'related_check', reviewer),
     checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], {
-      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'),
+      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: earlierOf(kept?.comparisons),
     });
   const usesOutsideDiff = uses.section + relatedUses.section;
   const finderUses = uses.finderSection + relatedUses.finderSection;
@@ -1073,6 +1177,19 @@ export async function runReview(
     ...(retryNote && { retryNote }),
     ...(oneSlice !== undefined && { oneSlice }),
   });
+  // Everything a finder is sent, so a later attempt can tell whether its own read would be the same.
+  const finderDigest = (finder: Finder): string => {
+    const tools = !!workspace && !!finderClients.get(finder.name)?.repoTools;
+    const shown = usesFor(finder);
+    return digestOf([
+      finder.model, finder.effort, finder.steps, tools, tools && offeredRepos(relatedTools), !!shown.openListed, rawDiff,
+      buildReviewerSystemPrompt(finder.prompt, config, plannerResult?.language, tools),
+      buildReviewerUserMessage(rawDiff, repoContext, {
+        fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, usesOutsideDiff: shown.usesOutsideDiff, lockfileChanges,
+      }),
+    ]);
+  };
+  const finderDigests = new Map(team.finders.map(f => [f.name, finderDigest(f)]));
 
   const allFindings: Finding[] = [];
   const failedAgents: string[] = [];
@@ -1082,7 +1199,16 @@ export async function runReview(
   const agentRetryCount = new Map<string, number>();
   const agentWarnings = new Map<string, string[]>();
   const agentsAskedAgain: string[] = [];
-  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentsAskedAgain });
+  const agentInputDigests = new Map<string, string>();
+  const agentFindingsReturned = new Map<string, number>();
+  // A finder whose second ask failed did not finish the read it was asked for, so it gets no digest and a retry runs it again.
+  const secondAskFailed = new Set<string>();
+  const finishedRead = (name: string, findings: number): void => {
+    if (secondAskFailed.has(name)) return;
+    agentInputDigests.set(name, finderDigests.get(name)!);
+    agentFindingsReturned.set(name, findings);
+  };
+  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentsAskedAgain, agentInputDigests, agentFindingsReturned });
   const quotaErrors = new Map<string, QuotaError>();
   // Why a failed finder is not run again: a used-up limit, or its own time limit, which a retry from the start would meet again.
   const noRetry = new Map<string, string>();
@@ -1145,6 +1271,7 @@ export async function runReview(
       };
     } catch (error) {
       core.warning(`${finder.name}: the second ask failed, so its first answer stays: ${recordWarning(finder.name, error)}`);
+      secondAskFailed.add(finder.name);
       return first;
     }
   };
@@ -1152,8 +1279,7 @@ export async function runReview(
   let completedCount = 0;
   let progressFindingCount = 0;
 
-  core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
-  const agentPromises = team.finders.map(agent => {
+  const startFinder = (agent: Finder): Promise<Finding[]> => {
     const startTime = Date.now();
     onProgress?.({ phase: 'agent-start', agentName: agent.name });
     return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
@@ -1163,6 +1289,7 @@ export async function runReview(
         agentResponseLengths.set(agent.name, agentResult.responseLength);
         accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
         accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
+        finishedRead(agent.name, agentResult.findings.length);
         progressFindingCount += agentResult.findings.length;
         const durationMs = Date.now() - startTime;
 
@@ -1200,19 +1327,45 @@ export async function runReview(
         }
         throw error;
       });
-  });
+  };
 
-  const agentResults = await Promise.allSettled(agentPromises);
+  // A finder whose read of the last attempt finished on the same input is not run again, and its findings stand. The
+  // other finders start at once, before the related repos are checked for the ones that may be kept.
+  const mayKeep = team.finders.filter(f => kept?.finders.get(f.name)?.record.inputDigest === finderDigests.get(f.name));
+  const running = team.finders.filter(f => !mayKeep.includes(f));
+  core.info(`Running ${running.length} reviewer agents in parallel...`);
+  // Settled at once, so a finder that fails during the wait for the related repos is no unhandled rejection.
+  const settled = (agent: Finder): Promise<PromiseSettledResult<Finding[]>> => Promise.allSettled([startFinder(agent)]).then(([result]) => result);
+  const agentPromises = running.map(settled);
+  const reusedFinders = mayKeep.length > 0 && await confirmKept() ? mayKeep : [];
+  for (const finder of mayKeep.filter(f => !reusedFinders.includes(f))) {
+    running.push(finder);
+    agentPromises.push(settled(finder));
+  }
+  for (const finder of reusedFinders) {
+    const findings = kept!.finders.get(finder.name)!.findings;
+    allFindings.push(...findings);
+    finishedRead(finder.name, findings.length);
+    completedCount++;
+    progressFindingCount += findings.length;
+    core.info(`${finder.name}: kept the ${findings.length} findings of the last attempt`);
+    onProgress?.({
+      phase: 'agent-complete', agentName: finder.name, agentFindingCount: findings.length, agentStatus: 'success', agentReused: true,
+      rawFindingCount: progressFindingCount, completedAgents: completedCount, totalAgents: team.finders.length,
+    });
+  }
+
+  const agentResults = await Promise.all(agentPromises);
 
   for (let i = 0; i < agentResults.length; i++) {
     const result = agentResults[i];
     if (result.status === 'fulfilled') {
       allFindings.push(...result.value);
-      core.info(`${team.finders[i].name}: ${result.value.length} findings`);
+      core.info(`${running[i].name}: ${result.value.length} findings`);
     } else {
-      failedAgents.push(team.finders[i].name);
-      recordFailure(team.finders[i].name, result.reason);
-      core.warning(`${team.finders[i].name} failed: ${result.reason}`);
+      failedAgents.push(running[i].name);
+      recordFailure(running[i].name, result.reason);
+      core.warning(`${running[i].name} failed: ${result.reason}`);
     }
   }
 
@@ -1269,6 +1422,7 @@ export async function runReview(
         agentResponseLengths.set(agent.name, agentResult.responseLength);
         accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
         accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
+        finishedRead(agent.name, agentResult.findings.length);
         agentFailureReasons.delete(agent.name);
         progressFindingCount += agentResult.findings.length;
         completedCount++;
@@ -1315,7 +1469,9 @@ export async function runReview(
   }
 
   // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
-  const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), COMPARISON_GRACE_MS);
+  // With every finder kept, the checks still get the time a finder could have taken.
+  const findersEnd = running.length > 0 ? Date.now() : Math.min(checksStart + FINDER_TOOLS_TIMEOUT_MS, finderDeadline ?? Infinity);
+  const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), Math.max(0, findersEnd - Date.now()) + COMPARISON_GRACE_MS);
   const { findings: comparisonFindings, comparisons: siblingComparisons } = await comparisonsPromise;
   const relatedChecks = await relatedChecksPromise;
   const claimChecks = await claimChecksPromise;
@@ -1325,6 +1481,12 @@ export async function runReview(
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   const usesWithTerms = usesRecord || claimChecks.terms ? { ...usesRecord, ...(claimChecks.terms && { claimTerms: claimChecks.terms }) } : undefined;
   finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
+  const reusedChecks = [...comparisons, ...(claimChecks.record?.claims ?? [])].filter(c => c.reused).length;
+  const reused = kept && (reusedFinders.length > 0 || reusedChecks > 0) ? { from: kept.from, finders: reusedFinders.map(f => f.name) } : undefined;
+  if (reused) {
+    core.info(`Kept from the last attempt: ${reused.finders.length} finder(s) and ${reusedChecks} check(s)`);
+    recorded.reused = reused;
+  }
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     // A limit names itself in `quotaRoundEnd`, so only the other reasons a finder was not retried are said here.
@@ -1898,6 +2060,9 @@ export async function runReview(
     agentRetryCount,
     agentWarnings,
     agentsAskedAgain,
+    agentInputDigests,
+    agentFindingsReturned,
+    ...(reused && { reused }),
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
     plannerDurationMs,
     ...(judgeSkipped && { judgeSkipped }),

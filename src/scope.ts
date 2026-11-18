@@ -1,5 +1,3 @@
-import { createHash } from 'crypto';
-
 import * as core from '@actions/core';
 
 import { fileList, LinkedIssue, titleToSlug } from './github';
@@ -10,7 +8,7 @@ import { PreviousFinding } from './recap';
 import { repoTools } from './related-repos';
 import { buildReviewerUserMessage, parseLocation, parseProof } from './review';
 import { agreedOutcome, confirmsAll, Finding, ParsedDiff, PrContext, Refutation, RoundContext, RoundScope, SCOPE_DOUBT_TITLE, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, ScopeTopic } from './types';
-import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
+import { digestOf, jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 
 const SCOPE_STEPS = 10;
@@ -117,8 +115,6 @@ function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | u
 function citedDigest(proof: readonly string[], workspace: string): string | undefined {
   return codeDigest(workspace, [...new Set(proof.flatMap(at => parseLocation(at)?.file ?? []))].sort());
 }
-
-const digestOf = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** Returns the `purpose` digest of the PR title and description in `prContext`. */
 function purposeOf(prContext: PrContext | undefined): string {

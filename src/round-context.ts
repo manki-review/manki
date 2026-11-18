@@ -122,6 +122,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         const warnings = result.agentWarnings?.get(name);
         const model = agentModels.get(name);
         const effort = result.agentEffortMap?.get(name);
+        const inputDigest = result.agentInputDigests?.get(name);
+        const findingsReturned = result.agentFindingsReturned?.get(name);
         return {
           name,
           findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
@@ -139,6 +141,9 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
           ...(failureReason && { failureReason }),
           model,
           ...(effort && { effort }),
+          ...(inputDigest && { inputDigest }),
+          ...(findingsReturned !== undefined && { findingsReturned }),
+          ...(result.reused?.finders.includes(name) && { reused: true as const }),
         };
       })
     : undefined;
@@ -223,6 +228,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.evidence && { evidence: f.evidence }),
     ...(f.notChecked && { notChecked: true }),
     ...(f.lead && { lead: f.lead }),
+    ...(f.preExisting && { preExisting: f.preExisting }),
+    ...(f.rule && { rule: f.rule }),
   }));
   const judgeDrops: RoundJudgeDrop[] = allJudged.filter(f => f.severity === 'ignore').map(f => ({
     title: f.title,
@@ -292,6 +299,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(options.draft && { draft: true }),
       ...(!result.reviewComplete && { incomplete: true as const }),
       ...(result.retryAfter && { retryAfter: result.retryAfter }),
+      ...(result.reused && { reusedFrom: result.reused.from }),
     },
     config: {
       memoryEnabled: config.memory?.enabled ?? false,

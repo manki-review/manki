@@ -672,6 +672,10 @@ export interface RoundComparison {
   findings?: number;
   /** The findings of a counterpart's answer dropped since they cite no line of the PR or none of the related repo that exists. */
   dropped?: number;
+  /** A digest of everything the call was sent, set on an answered question. */
+  inputDigest?: string;
+  /** Set when the round kept the answer from `meta.reusedFrom` and did not ask again. */
+  reused?: true;
 }
 
 /** A search of the diff for other instances of one finding's defect class. */
@@ -723,6 +727,10 @@ export interface RoundPrClaim extends PrClaim {
   relatedProof?: string[];
   /** The defects it reported for a `disproven` claim, before dedup and the judge. */
   findings?: number;
+  /** A digest of everything the check was sent, set when the check answered. */
+  inputDigest?: string;
+  /** Set when the round kept the answer from `meta.reusedFrom` and did not check again. */
+  reused?: true;
 }
 
 /** The claims a round took from the PR text, each with its check. */
@@ -1252,6 +1260,12 @@ export interface ReviewResult {
   agentWarnings?: Map<string, string[]>;
   /** The finders asked once more, since their first answer opened none of the files outside the diff that the lists in their message name. */
   agentsAskedAgain?: string[];
+  /** The `inputDigest` of each finder whose read finished, run this round or kept from an earlier attempt. */
+  agentInputDigests?: Map<string, string>;
+  /** The findings each finder of `agentInputDigests` gave, counted when its read finished. */
+  agentFindingsReturned?: Map<string, number>;
+  /** Set when the round kept results of an earlier attempt: which attempt, and the finders whose findings it kept. */
+  reused?: { from: RoundReusedFrom; finders: string[] };
   plannerDurationMs?: number;
   /** Set when the round had no finding, open thread or carried warning to judge, so no judge was called. */
   judgeSkipped?: true;
@@ -1789,6 +1803,8 @@ export interface AgentProgressEntry {
   startedAt?: number;
   /** The tool calls the finder started so far. */
   toolSteps?: number;
+  /** Set when the round kept the finder's findings from an earlier attempt and did not run it. */
+  reused?: true;
 }
 
 /** A step of calls that run beside the finders, or after the judge for the sweeps. */
@@ -2094,6 +2110,8 @@ export interface RoundMeta {
    * providers named one. The token service starts no retry of the commit before it.
    */
   retryAfter?: string;
+  /** Set when the round kept results of an earlier attempt on the same commit that ended incomplete. */
+  reusedFrom?: RoundReusedFrom;
   /**
    * Set when the record was too large for the review even compressed: the fields of per-file and per-finding
    * diagnostics that were left out, such as `judge.dropped`.
@@ -2104,6 +2122,20 @@ export interface RoundMeta {
    * `usesOutsideDiff` with `types` cut to their locations: the fields it shortened.
    */
   compacted?: string[];
+}
+
+/** The attempt whose results a round kept: the review that holds its round record, and when that attempt ended. */
+export interface RoundReusedFrom {
+  review: number;
+  timestamp: string;
+}
+
+/** The round record of the PR's newest round, which ended incomplete, and the review that holds it. */
+export interface EarlierAttempt {
+  record: RoundContext;
+  review: number;
+  /** The review's GraphQL node id, which tells whether anyone edited it. */
+  nodeId?: string;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */
@@ -2345,6 +2377,8 @@ export interface RoundRawFinding {
   evidence?: FindingEvidence;
   notChecked?: boolean;
   lead?: OpenLead;
+  preExisting?: string;
+  rule?: Finding['rule'];
 }
 
 /** A finding the judge dropped, with the judge's reasoning. */
@@ -2397,6 +2431,12 @@ export interface RoundAgentMetric {
   keptShared?: number;
   /** Effort level the agent ran with. */
   effort?: EffortLevel;
+  /** A digest of everything the finder was sent, set once its read finished. A retry keeps the findings of a finder whose input digest is the same. */
+  inputDigest?: string;
+  /** The findings the finder gave, counted when its read finished, apart from `findingsRaw`. A retry keeps nothing when they differ. */
+  findingsReturned?: number;
+  /** Set when the round kept the finder's findings from `meta.reusedFrom` and did not run it. */
+  reused?: true;
 }
 
 export interface RoundJudge {

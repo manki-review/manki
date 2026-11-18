@@ -162,15 +162,33 @@ describe('runClaimChecks', () => {
     }, claims, { rawDiff, effort: 'high', workspace: root });
 
     expect(names).toEqual(['Claim check 1', 'Claim check 2', 'Claim check 3', 'Claim check 4', 'Claim check 5']);
+    const inputDigest = expect.stringMatching(/^[0-9a-f]{64}$/);
     expect(result.claims).toEqual([
-      { ...claims[0], reviewer: 'Claim check 1', status: 'disproven', reason: 'The lines decide it.', proof: ['src/export.ts:2'], findings: 1 },
-      { ...claims[1], reviewer: 'Claim check 2', status: 'proven', reason: 'The lines decide it.', proof: ['src/export.ts:1-3'] },
-      { ...claims[2], reviewer: 'Claim check 3', status: 'unchecked', reason: 'The lines decide it.' },
-      { ...claims[3], reviewer: 'Claim check 4', status: 'unchecked', reason: 'The lines decide it.' },
-      { ...claims[4], reviewer: 'Claim check 5', status: 'unchecked', reason: 'No caller of `allow` was found.' },
+      { ...claims[0], reviewer: 'Claim check 1', status: 'disproven', reason: 'The lines decide it.', proof: ['src/export.ts:2'], findings: 1, inputDigest },
+      { ...claims[1], reviewer: 'Claim check 2', status: 'proven', reason: 'The lines decide it.', proof: ['src/export.ts:1-3'], inputDigest },
+      { ...claims[2], reviewer: 'Claim check 3', status: 'unchecked', reason: 'The lines decide it.', inputDigest },
+      { ...claims[3], reviewer: 'Claim check 4', status: 'unchecked', reason: 'The lines decide it.', inputDigest },
+      { ...claims[4], reviewer: 'Claim check 5', status: 'unchecked', reason: 'No caller of `allow` was found.', inputDigest },
     ]);
     // Only a claim a check disproved with a real line reports a defect.
     expect(result.findings).toEqual([expect.objectContaining({ title: defect.title, severity: 'blocker', reviewers: ['Claim check 1'], evidence: { checks: [], proof: ['src/export.ts:2'] } })]);
+
+    // A retry checks again only the claim whose check gave no answer, and keeps each answer whose check it would send unchanged.
+    const answers = result.claims.map(c => (c.reviewer === 'Claim check 2' ? { ...claims[1], reviewer: c.reviewer, status: 'unchecked' as const, call: 'failed' as const } : c));
+    const earlier = { answers: new Map(answers.map(c => [c.reviewer, { record: c, findings: result.findings.filter(f => f.reviewers.includes(c.reviewer)) }])), confirm: async () => true };
+    const again = fakeClient(user => Object.entries(replies).find(([key]) => user.includes(key))![1]);
+    const retried = await runClaimChecks(() => again, claims, { rawDiff, effort: 'high', workspace: root, earlier });
+    expect(again.calls.map(c => c.user.includes('upload service'))).toEqual([true]);
+    expect(retried.claims).toEqual(result.claims.map((c, i) => (i === 1 ? c : { ...c, reused: true })));
+    expect(retried.findings).toEqual(result.findings);
+    // A check sent anything else, here another diff, is asked again.
+    const other = fakeClient(user => Object.entries(replies).find(([key]) => user.includes(key))![1]);
+    await runClaimChecks(() => other, claims, { rawDiff: `${rawDiff}\n`, effort: 'high', workspace: root, earlier });
+    expect(other.calls).toHaveLength(5);
+    // A check whose answer may not be kept is asked again.
+    const refused = fakeClient(user => Object.entries(replies).find(([key]) => user.includes(key))![1]);
+    await runClaimChecks(() => refused, claims, { rawDiff, effort: 'high', workspace: root, earlier: { ...earlier, confirm: async () => false } });
+    expect(refused.calls).toHaveLength(5);
 
     const [first, second] = client.calls;
     expect(first.options).toEqual({ effort: 'high', repoTools: { root, steps: 12 }, timeoutMs: 600_000 });
