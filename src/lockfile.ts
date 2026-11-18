@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { posix } from 'path';
 import { isMap, isScalar, LineCounter, parseDocument } from 'yaml';
 
-import { addedLines, parsePRDiff, rebuildRawDiff } from './diff';
+import { addedLines, parsePRDiff, rebuildRawDiff, replayDiff } from './diff';
 import { DiffFile, ParsedDiff, StaticSignal } from './types';
 
 /** How many packages the alert past the alert cap names. */
@@ -174,34 +174,6 @@ function clean(text: string): string {
 
 function parseContent(parse: Parser, text: string): LockEntry[] {
   return text.trim() ? parse(text) : [];
-}
-
-/** Rebuilds the other side of `file`'s change from `text`: undoing it from the head, or applying it to the base. Throws when `text` does not match the diff. */
-function replayDiff(text: string, file: DiffFile, direction: 'undo' | 'apply'): string {
-  const [dropped, kept] = direction === 'undo' ? ['+', '-'] : ['-', '+'];
-  const lines = text.split('\n');
-  const out: string[] = [];
-  let cursor = 0;
-  for (const hunk of file.hunks) {
-    const [first, count] = direction === 'undo' ? [hunk.newStart, hunk.newLines] : [hunk.oldStart, hunk.oldLines];
-    // A hunk with no line on this side starts after line `first`, any other one at it.
-    const start = count === 0 ? first : first - 1;
-    if (start < cursor || start > lines.length) throw new Error('its diff does not match the file');
-    for (; cursor < start; cursor++) out.push(lines[cursor]);
-    for (const line of hunk.content.split('\n')) {
-      if (line.startsWith('\\')) continue;
-      const content = line.slice(1);
-      if (line.startsWith(kept)) {
-        out.push(content);
-        continue;
-      }
-      if (lines[cursor] !== content) throw new Error('its diff does not match the file');
-      if (!line.startsWith(dropped)) out.push(content);
-      cursor++;
-    }
-  }
-  for (; cursor < lines.length; cursor++) out.push(lines[cursor]);
-  return out.join('\n');
 }
 
 /** Pairs the entries of the two versions of a lockfile and returns what changed, sorted by name. */
