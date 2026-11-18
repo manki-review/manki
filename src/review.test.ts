@@ -311,14 +311,13 @@ describe('parseFindings', () => {
       // Findings that are all unusable fail the reply as they do without unit lines, so the finder's retry asks again.
       expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer'))
         .toThrow(/^no element has a title or a description \(1 element\(s\), keys: severity, file, line\)$/);
-      // An element with a key a finding is built from is a finding, so a malformed one that names a unit fails the reply too.
-      for (const malformed of [{ unit: 'U1', severity: 'warning', file: 'a.sh', line: 1 }, { unit: 'U1', checked: 'Read it.', proof: ['a.sh:1'] }]) {
-        expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer')).toThrow(/^no element has a title or a description \(1 element\(s\), /);
-        expect(parseUnitLines(JSON.stringify([malformed]), units)).toEqual([]);
-      }
-      // Any other extra key leaves a unit line a unit line.
-      const extra = JSON.stringify([{ unit: 'U1', checked: 'Read it.', defect: 'none', confidence: 'high' }]);
-      expect([parseFindings(extra, 'Reviewer'), parseUnitLines(extra, units)]).toEqual([[], [{ unit: 'U1', checked: 'Read it.' }]]);
+      // Any element with a string `unit` and no `title` is a unit line, whatever else it holds.
+      const located = JSON.stringify([{ unit: 'U1', checked: 'Read it.', defect: 'none', severity: 'note', file: 'a.sh', line: 1, confidence: 'high' }]);
+      expect([parseFindings(located, 'Reviewer'), parseUnitLines(located, units)]).toEqual([[], [{ unit: 'U1', checked: 'Read it.' }]]);
+      // An element with a `title` is a finding, so a malformed one that names a unit fails the reply.
+      const malformed = { unit: 'U1', title: '', severity: 'warning', file: 'a.sh', line: 1 };
+      expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer')).toThrow(/^no element has a title or a description \(1 element\(s\), keys: unit, title, severity, file, line\)$/);
+      expect(parseUnitLines(JSON.stringify([malformed]), units)).toEqual([]);
       // A reply that does not parse holds no line.
       expect(parseUnitLines('I checked U1.', units)).toEqual([]);
     } finally {
@@ -2623,6 +2622,11 @@ describe('runReview', () => {
     rmSync(join(deleted, 'src/big.ts'));
     git(deleted, 'add', '-A');
     const gone = { root: deleted, diff: parsePRDiff(git(deleted, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
+    // A change read in two slices, each with a unit.
+    const twoSlices = gitWorkspace({ 'src/gate.ts': gate('') }, {
+      'src/gate.ts': gate('  if (user.banned) return false;\n'),
+      'lib/limit.ts': `${Array.from({ length: 1600 }, (_, i) => `// pad ${i}\n`).join('')}export const cap = (n: number) => n > 1 && n < 9;\n`,
+    });
     // A file split between slices whose last hunk only removes its last line, a condition, so its head line is past that hunk.
     const tail = (mark: string, last: string) => `${Array.from({ length: 2500 }, (_, i) => `// ${mark.repeat(90)} ${i}\n`).join('')}${Array.from({ length: 10 }, (_, i) => `const k${i} = ${i};\n`).join('')}${last}`;
     const trailing = gitWorkspace({ 'src/tail.ts': tail('x', 'if (debug) console.log(1);\n') }, { 'src/tail.ts': tail('y', '') });
@@ -2690,6 +2694,15 @@ describe('runReview', () => {
       }
       expect(slices.result.rawFindings?.map(f => f.title)).toEqual(['First', 'First', 'Second', 'First', 'First', 'Second']);
       expect([...slices.result.agentUnitLines!]).toEqual(slices.result.agentNames.map(name => [name, recorded]));
+      // Units without a line in two slices are asked about in one call on each of them.
+      const lineFor = (unit: string) => ({ unit, checked: 'Both sides of the check.', defect: 'none' });
+      const both = await run([], ['U1', 'U2', 'U3'].map(lineFor), twoSlices);
+      const bothFirst = both.first.filter(message => message.includes('## Units of the Change'));
+      expect([bothFirst.length, both.again.length]).toEqual([4, 4]);
+      for (const message of both.again) expect(bothFirst.some(first => message.startsWith(first))).toBe(true);
+      expect(both.again.filter(message => message.includes('without a line for the unit U1 of'))).toHaveLength(2);
+      expect(both.again.filter(message => message.includes('without a line for the units U2, U3 of'))).toHaveLength(2);
+      expect([...both.result.agentUnitLines!]).toEqual(both.result.agentNames.map(name => [name, ['U1', 'U2', 'U3'].map(unit => ({ unit, checked: 'Both sides of the check.' }))]));
 
       // A file split between slices: its units go to the call whose slice holds their lines.
       const split = await run([checkedU1, checkedU2], [], big);
@@ -2727,7 +2740,7 @@ describe('runReview', () => {
       expect(sendMessage.mock.calls.filter(([, message]) => message.includes(RETRY_NOTE))).toHaveLength(retried.agentNames.length);
       expect(retried.rawFindings?.map(f => f.title)).toEqual(['Retried', 'Retried']);
     } finally {
-      for (const dir of [root, sliced.root, big.root, deleted, trailing.root]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [root, sliced.root, big.root, deleted, trailing.root, twoSlices.root]) rmSync(dir, { recursive: true, force: true });
     }
   }, GIT_TEST_TIMEOUT_MS);
 

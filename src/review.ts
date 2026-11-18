@@ -290,20 +290,11 @@ function unitsSection(units: readonly ChangeUnit[]): string {
 
 const MAX_UNIT_LINE_CHARS = 200;
 
-/** The keys `parseFindings` builds a finding from. `checked` is left out, since a unit line has it too. */
-const FINDING_KEYS = [
-  'title', 'severity', 'file', 'line', 'description', 'suggestedFix', 'howToFix', 'evidence', 'proof', 'claimsMissing', 'emptySearch',
-  'lead', 'left', 'notChecked', 'preExisting', 'preExistingReason', 'rule', 'ruleFile',
-];
-
-/**
- * Whether a reply element is a unit line: a string `unit` and none of `FINDING_KEYS`. Other keys are ignored. An element
- * with a finding key is a finding, so a malformed finding that names a unit still fails as one.
- */
+/** Whether a reply element is a unit line: a string `unit` and no `title`. Any element with a `title` is a finding. */
 function isUnitLine(element: unknown): boolean {
   if (element === null || typeof element !== 'object' || Array.isArray(element)) return false;
   const f = element as Record<string, unknown>;
-  return typeof f.unit === 'string' && !FINDING_KEYS.some(key => key in f);
+  return typeof f.unit === 'string' && !('title' in f);
 }
 
 /** Returns the lines of a finder reply for the `units` it was asked about. A line counts only when it says what was checked. */
@@ -1395,25 +1386,25 @@ export async function runReview(
     if (!unopened && missing.length === 0) return first;
     const slices = slicesOfDiff();
     const sliced = slices.length > 1;
+    // A sliced finder is asked on each slice that holds a unit without a line, and on the slice the unopened files pick.
     const fileSlice = unopened && sliced ? askAgainSlice(slices, usesRecord, listed) : undefined;
-    const perSlice = slices.map((_, i) => missing.filter(unit => unitSlice(unit, slices) === i).length);
-    const index = sliced ? fileSlice?.index ?? (Math.max(...perSlice) > 0 ? perSlice.indexOf(Math.max(...perSlice)) : undefined) : undefined;
-    const units = index === undefined ? missing : missing.filter(unit => unitSlice(unit, slices) === index);
-    const files = unopened && (!sliced || fileSlice) ? fileSlice?.files ?? listed : [];
-    if (unopened && sliced && !fileSlice && units.length === 0) {
-      core.info(`${finder.name} opened none of the ${listed.length} listed files, but no slice holds a name they use, so it is not asked again`);
-    }
-    if (files.length === 0 && units.length === 0) return first;
+    if (unopened && sliced && !fileSlice) core.info(`${finder.name} opened none of the ${listed.length} listed files, but no slice holds a name they use, so it is not asked about them`);
+    const asks: Array<{ index?: number; files: string[]; units: ChangeUnit[] }> = sliced
+      ? [...slices.keys()].map(index => ({ index, files: index === fileSlice?.index ? fileSlice.files : [], units: missing.filter(unit => unitSlice(unit, slices) === index) }))
+        .filter(ask => ask.files.length + ask.units.length > 0)
+      : [{ index: undefined, files: unopened ? listed : [], units: missing }];
+    if (asks.length === 0) return first;
     agentsAskedAgain.push(finder.name);
-    const reasons = [...(files.length > 0 ? [`opened none of the ${listed.length} listed files`] : []), ...(units.length > 0 ? [`left ${units.length} of its ${asked.length} units without a line`] : [])];
-    core.info(`${finder.name} ${reasons.join(' and ')}, so it is asked once more`);
+    const reasons = [...(asks.some(ask => ask.files.length > 0) ? [`opened none of the ${listed.length} listed files`] : []), ...(missing.length > 0 ? [`left ${missing.length} of its ${asked.length} units without a line`] : [])];
+    core.info(`${finder.name} ${reasons.join(' and ')}, so it is asked once more${sliced ? ` on ${asks.length} of its ${slices.length} slices` : ''}`);
     try {
-      const second = await runReviewerAgent(finderClients.get(finder.name)!, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues,
-        finderOptions(finder, askAgainNote(files, units.map(unit => unit.id), sliced), index));
+      const startedAt = Date.now();
+      const second = combinedResult(await mapWithConcurrency(asks, MAX_PARALLEL_SLICES, ask => runReviewerAgent(finderClients.get(finder.name)!, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues,
+        finderOptions(finder, askAgainNote(ask.files, ask.units.map(unit => unit.id), sliced), ask.index))), startedAt);
       const usage = addUsage(first.usage, second.usage);
       const latencyMs = first.latencyMs + second.latencyMs;
       const unitLines = [...first.unitLines ?? [], ...second.unitLines ?? []];
-      if (!sliced && units.length === 0) return { ...second, usage, latencyMs, unitLines };
+      if (!sliced && missing.length === 0) return { ...second, usage, latencyMs, unitLines };
       // A repeat of a first finding reaches the judge as a second copy of one finder, which it folds like two slices' copies.
       return {
         findings: [...first.findings, ...second.findings], responseLength: first.responseLength + second.responseLength, usage, latencyMs,

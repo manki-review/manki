@@ -527,6 +527,7 @@ describe('listUsesOutsideDiff', () => {
     const gate = 'export class Gate {\n  open(user: User): boolean {\n    return user.admin;\n  }\n}\n';
     const base = {
       '.github/workflows/ci.yml': workflow,
+      'scripts/pick.lua': 'if a then\n  x()\nend\n',
       'scripts/release.sh': '#!/bin/sh\nset -e\nprev=$(cat VERSION)\n[ "$prev" != "$VERSION" ] ||\n  die "no bump"\necho done\n',
       'src/auth.ts': gate,
       'src/gate.py': 'def allowed(user):\n    if user.banned:\n        return False\n    return True\n',
@@ -539,6 +540,7 @@ describe('listUsesOutsideDiff', () => {
     };
     const head = {
       '.github/workflows/ci.yml': `${workflow}      - if: github.event_name == 'push'\n        run: npm run publish\n`,
+      'scripts/pick.lua': 'if a then\n  x()\nelseif b then\n  y()\nend\n',
       'scripts/release.sh': '#!/bin/sh\nset -e\n# if this fails, nothing is published\n[ -n "$(git diff --name-only HEAD^ HEAD -- CHANGELOG.md)" ] ||\n  die "no changelog"\nstatus=0\ngit ls-remote --exit-code origin "$tag" >/dev/null || status=$?\n[ "$status" -eq 2 ] && exit 0\necho done\n',
       'src/auth.ts': gate.replace('user.admin;', 'user.admin && !user.locked;'),
       'src/gate.py': 'def allowed(user):\n    return True\n',
@@ -555,6 +557,7 @@ describe('listUsesOutsideDiff', () => {
     const condition = (file: string, start: number, end: number, code: string) => ({ kind: 'condition', file, start, end, code });
     expect(units?.map(({ id: _id, ...unit }) => unit)).toEqual([
       condition('.github/workflows/ci.yml', 6, 6, "+      - if: github.event_name == 'push'"),
+      condition('scripts/pick.lua', 3, 3, '+elseif b then'),
       // A changed condition shows the line it replaced. A comment that says `if` is no condition, and lines next to each other are one unit.
       condition('scripts/release.sh', 4, 4, '-[ "$prev" != "$VERSION" ] ||\n+[ -n "$(git diff --name-only HEAD^ HEAD -- CHANGELOG.md)" ] ||'),
       condition('scripts/release.sh', 7, 8, '+git ls-remote --exit-code origin "$tag" >/dev/null || status=$?\n+[ "$status" -eq 2 ] && exit 0'),
@@ -572,7 +575,7 @@ describe('listUsesOutsideDiff', () => {
       // A constant that holds a function is no function unit, and a long condition shows its first 6 lines.
       condition('src/rules.ts', 2, 9, `${Array.from({ length: 6 }, (_, i) => `+  a > ${i + 1} &&`).join('\n')}\n... 2 more lines`),
     ]);
-    expect(units?.map(unit => unit.id)).toEqual(Array.from({ length: 12 }, (_, i) => `U${i + 1}`));
+    expect(units?.map(unit => unit.id)).toEqual(Array.from({ length: 13 }, (_, i) => `U${i + 1}`));
 
     // A deleted file adds each stretch of condition lines it removes, at its base lines.
     const kept = gitWorkspace({ 'run.sh': 'echo\n' }, { 'run.sh': 'echo\n' });

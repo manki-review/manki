@@ -1441,7 +1441,7 @@ function changeUnits(files: DiffFile[], declared: ChangedSymbol[], skip: (file: 
 }
 
 // A line that opens a branch, loop, guard or assertion, such as `} else if` or `- if:`. `case`, `when` and `match` are left to the function's unit.
-const CONDITION = /^\s*(?:[-}]\s*)?(?:else\s+if|elif|elsif|if|unless|while|until|guard)\b|^\s*(?:debug_)?assert(?:\w*!?\s*\(|\s)/;
+const CONDITION = /^\s*(?:[-}]\s*)?(?:else\s+if|elseif|elif|elsif|if|unless|while|until|guard)\b|^\s*(?:debug_)?assert(?:\w*!?\s*\(|\s)/;
 // `&&` or `||` between two operands with spaces around it, or ending a line after one or starting one before one. That
 // leaves out a reference type such as `&&str` and a closure such as `|| {`, `move || x` or `(|| x)`.
 const JOINED = /[\w)\]'"`?](?<!\bmove)\s+(?:&&|\|\|)\s+[\w(!'"`$[-]|[\w)\]'"`?](?<!\bmove)\s*(?:&&|\|\|)\s*$|^\s*(?:&&|\|\|)\s+[^\s{]/;
