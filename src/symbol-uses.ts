@@ -43,6 +43,9 @@ const MAX_HIDDEN_NAMES = 20;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_PARSED_FILES = 200;
 const MAX_PARSED_BYTES = 16 * 1024 * 1024;
+// The base versions read for moved names have their own budget, so they never take parses from the head lookups.
+const MAX_BASE_PARSED_FILES = 40;
+const MAX_BASE_PARSED_BYTES = 4 * 1024 * 1024;
 /**
  * A file whose syntax tree nests deeper than this is not parsed. Finding a node's parent or neighbour costs its depth,
  * so a deep tree, from nested blocks or from a long chain such as `a.b.c...` or `x + y + z...`, would make the work
@@ -368,8 +371,9 @@ const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'funct
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
 // A type named for errors, such as `ParseError`, `IOException` or `ApiErr`, whose new variants are new kinds of error.
 const ERROR_TYPE = /(?:Error|Exception|Err|Failure|Fault)s?$/;
-// A constant that holds a function, such as `export const load = async () => {`.
-const FUNCTION_VALUE = /=>|\bfunction\b/;
+// A constant whose value starts as a function, such as `export const load = async () => {`, and not one that only
+// passes one on, such as `const ids = items.map(i => i.id)`.
+const FUNCTION_VALUE = /^[^=]*=\s*(?:async\s+)?(?:function\b|func\b|lambda\b|(?:<[^>]*>\s*)?\([^)]*\)\s*(?::[^=]*)?=>|[A-Za-z_$][\w$]*\s*=>)/;
 /** Pieces of added structure `listUsesOutsideDiff` lists, the largest first. */
 const MAX_LISTED_PIECES = 20;
 // A config key. Only keys with an underscore, such as `max_diff_lines`, are distinct enough to search for.
@@ -1305,7 +1309,7 @@ function pieceKind(symbol: ChangedSymbol, text: string): AddedPiece['kind'] | un
 
 /**
  * Returns the names declared on the lines the diff removes, found by the parser that finds the added ones: the grammar
- * on the base version of the file where there is one, and the keywords otherwise.
+ * on the base version of the file where there is one and its budget allows, and the keywords otherwise.
  */
 function movedNames(diff: ParsedDiff, parser: Parser): Set<string> {
   const names = new Set<string>();
@@ -1318,6 +1322,7 @@ function movedNames(diff: ParsedDiff, parser: Parser): Set<string> {
       : keywordDeclarations(file, removed).map(s => s.name);
     for (const name of declared) names.add(name);
   }
+  if (parser.baseSkipped > 0) core.info(`Uses outside the diff: the parse limit left the base versions of ${parser.baseSkipped} files unparsed, so their removed lines were read by keyword`);
   return names;
 }
 
@@ -1383,6 +1388,10 @@ class Parser {
   private files = 0;
   private bytes = 0;
   skipped = 0;
+  /** The base versions `parseBase` left unparsed for its budget. */
+  baseSkipped = 0;
+  private baseFiles = 0;
+  private baseBytes = 0;
 
   /** `reliedOn` asks for the names each changed file calls or reads outside tests. */
   constructor(private readonly workspace: string, private readonly api?: AstGrepApi, private readonly reliedOn = false) {}
@@ -1414,8 +1423,9 @@ class Parser {
   }
 
   /**
-   * Parses `file` as the base holds it, rebuilt from the head and the diff, for its declarations only. Returns
-   * `undefined` when it has no grammar here, the budget is spent or the diff does not match the head.
+   * Parses `file` as the base holds it, rebuilt from the head and the diff, for its declarations only, within its own
+   * budget of `MAX_BASE_PARSED_FILES` files and `MAX_BASE_PARSED_BYTES`. Returns `undefined` when it has no grammar
+   * here, the budget is spent or the diff does not match the head.
    */
   parseBase(file: DiffFile): ParsedFile | undefined {
     const language = languageOf(file.path);
@@ -1425,9 +1435,13 @@ class Parser {
         ? [...removedOldLines(file).values()].join('\n')
         : replayDiff(readFileSync(resolveInRoot(this.workspace, file.path).absolute, 'utf-8'), file, 'undo');
       const size = Buffer.byteLength(source);
-      if (size > MAX_FILE_BYTES || this.files >= MAX_PARSED_FILES || this.bytes + size > MAX_PARSED_BYTES) return undefined;
-      this.files++;
-      this.bytes += size;
+      if (size > MAX_FILE_BYTES) return undefined;
+      if (this.baseFiles >= MAX_BASE_PARSED_FILES || this.baseBytes + size > MAX_BASE_PARSED_BYTES) {
+        this.baseSkipped++;
+        return undefined;
+      }
+      this.baseFiles++;
+      this.baseBytes += size;
       return this.build(file.path, source, undefined, false);
     } catch {
       return undefined;

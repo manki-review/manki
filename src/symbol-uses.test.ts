@@ -464,7 +464,7 @@ describe('listUsesOutsideDiff', () => {
     }, {
       'src/orders.rs': 'pub enum OrderError {\n    Missing,\n    Rejected,\n}\n\npub fn place() { todo!() }\n',
       'src/util.rs': 'pub fn noop() {}\n\nfn round_cents(n: u64) -> u64 { n }\n',
-      'src/ledger.ts': 'export const VERSION = 1;\n\n// Sums what each order paid.\nexport class Ledger {\n  total = 0;\n  add(n: number) {\n    this.total += n;\n  }\n}\n\nexport const loadLedger = async () => {\n  return new Ledger();\n};\n',
+      'src/ledger.ts': 'export const VERSION = 1;\n\n// Sums what each order paid.\nexport class Ledger {\n  total = 0;\n  add(n: number) {\n    this.total += n;\n  }\n}\n\nexport const loadLedger = async () => {\n  return new Ledger();\n};\nexport const ids = [1, 2].map(i => i * 2);\nexport const double = (n: number): number => n * 2;\n',
       'src/invoice.ts': 'export function invoice() {\n  return 1;\n}\n',
       'src/ledger.test.ts': 'test("adds", () => {});\n',
       'docs/billing.md': '# Billing\n',
@@ -479,7 +479,8 @@ describe('listUsesOutsideDiff', () => {
 
     // Without a grammar, a class spans its indented body and closing line, so its methods are part of it, and a class
     // whose body the change does not add is left out. A method moved to another class, declared with a keyword or
-    // without one, is not new, while a name only a removed comment holds is.
+    // without one, is not new, while a name only a removed comment holds is. A constant is a function only when its
+    // value starts as one, so `ids`, which only passes an arrow on, is no piece.
     expect(pieces?.map(p => `${p.kind} ${p.name} ${p.file}:${p.start}-${p.end} (${p.size})`)).toEqual([
       'type Cart cmd/main.swift:8-14 (7)',
       'type Ledger src/ledger.ts:3-9 (7)',
@@ -489,6 +490,7 @@ describe('listUsesOutsideDiff', () => {
       'function refund app/handlers.py:5-6 (2)',
       'type Fee cmd/main.swift:6-6 (1)',
       'key slice_lines manki.yml:3-3 (1)',
+      'function double src/ledger.ts:15-15 (1)',
       'error Rejected src/orders.rs:3-3 (1)',
     ]);
     expect(pieces?.find(p => p.name === 'refund')?.code).toBe('5:+ def refund(order):\n6:+     return order');
@@ -1024,6 +1026,19 @@ ${body}	return true
     expect(budget.section).toContain('`total_paid` (210 uses)');
     expect(budget.section).toContain('### `balance` (field of `Account`)\n\n```\ndeclared at src/account.rs:7\nsrc/use.rs:2: a.balance + a.spent\nsrc/a_view.rs:7: self.balance\nsrc/a_view.rs:2: pub balance: u64,\n```');
     expect(budget.section).toContain('### `spent` (field of `Account`)\n\n```\ndeclared at src/account.rs:3\nsrc/use.rs:2: a.balance + a.spent\nsrc/a_other.rs:7: self.spent\nsrc/a_other.rs:2: pub spent: u64,\n```');
+
+    // The base versions read for moved names have a budget of their own. With 191 of the 200 parses spent on changed
+    // files, the lookups of `balance` still read the files they need, and 151 of the 191 base versions are read by keyword.
+    jest.mocked(core.info).mockClear();
+    const handlers = (value: number) => Object.fromEntries(Array.from({ length: 190 }, (_, i) => [`gen/h${String(i).padStart(3, '0')}.go`, `package gen\n\n// Version ${value}.\n`]));
+    const based = await usesFor({
+      ...handlers(1), 'src/account.rs': account(false), 'src/use.rs': 'pub fn left(a: &Account) -> u64 {\n    a.balance\n}\n',
+      'src/a_view.rs': 'pub struct AccountView {\n    pub balance: u64,\n}\n\nimpl AccountView {\n    pub fn shown(&self, _: &Account) -> u64 {\n        self.balance\n    }\n}\n',
+    }, { ...handlers(2), 'src/account.rs': account(true) });
+    expect(based.section).toContain('declared at src/account.rs:7\nsrc/use.rs:2: a.balance\nsrc/a_view.rs:7: self.balance\nsrc/a_view.rs:2: pub balance: u64,\n```');
+    expect(based.section).not.toContain('left 1 more files unparsed');
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the parse limit left the base versions of 151 files unparsed, so their removed lines were read by keyword');
+    expect(core.info).not.toHaveBeenCalledWith(expect.stringMatching(/^Uses outside the diff: the parse limit left \d+ files unparsed$/));
   }, 30_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', finderSection: '', readingSection: '', siblings: { fields: [], implementations: [] } };
