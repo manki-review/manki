@@ -1,5 +1,4 @@
-import { lstatSync, readdirSync, statSync } from 'fs';
-import { join, posix } from 'path';
+import { posix } from 'path';
 import { validRange } from 'semver';
 import { parse } from 'yaml';
 
@@ -215,14 +214,18 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
       }
       return matchesWorkspace(patterns, posix.relative(root, member));
     },
-    installedCopy(dir, name) {
-      // A committed `node_modules` copy, or a zip in Yarn's committed cache, is what the project runs, whatever the lockfile says.
-      const installed = posix.join('node_modules', name);
-      if (lstatSync(join(dir, installed), { throwIfNoEntry: false })) return installed;
-      const cache = join(dir, '.yarn', 'cache');
-      // Yarn follows a cache folder that is a symlink, so the check does too.
-      const zip = statSync(cache, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(cache).find(f => f.startsWith(`${name.replace('/', '-')}-npm-`)) : undefined;
-      return zip && `.yarn/cache/${zip}`;
+    installedCopy(paths, name) {
+      // A committed `node_modules` copy in any folder, since Node looks for one in every folder above a file, or a zip in
+      // Yarn's committed cache, is what the project runs, whatever the lockfile says.
+      const named = name.split('/');
+      const zip = `${name.replace('/', '-')}-npm-`;
+      for (const path of paths) {
+        const parts = path.split('/');
+        const at = parts.findIndex((part, i) => part === 'node_modules' && named.every((n, j) => parts[i + 1 + j] === n));
+        if (at >= 0) return parts.slice(0, at + 1 + named.length).join('/');
+        if (parts.at(-3) === '.yarn' && parts.at(-2) === 'cache' && parts.at(-1)!.startsWith(zip)) return path;
+      }
+      return undefined;
     },
     validName: name => name.length <= 214 && /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name),
     sameName: (a, b) => a === b,

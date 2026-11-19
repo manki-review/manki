@@ -52,6 +52,8 @@ interface Resolved {
 /** The lockfiles, manifests and settings of the checkout, and why Manki cannot tell which code the PR runs from them, if it cannot. */
 interface Listing {
   files: readonly string[];
+  /** The tracked paths inside a committed install, such as `node_modules` or Yarn's cache. */
+  installed: readonly string[];
   cut?: string;
 }
 
@@ -179,7 +181,7 @@ function mayName(text: string, name: string): boolean {
  * none.
  */
 async function resolveDependency(
-  root: string, { files, cut }: Listing, registry: Registry, name: string, version: string | undefined, fetch: RegistryFetch, budget: ReadBudget,
+  root: string, { files, installed, cut }: Listing, registry: Registry, name: string, version: string | undefined, fetch: RegistryFetch, budget: ReadBudget,
 ): Promise<Resolved> {
   const label = `${registry.id}/${name}`;
   // Each reason passes the PR's own text, such as a path or a source, through `shown`, as the registries' reasons do.
@@ -214,10 +216,8 @@ async function resolveDependency(
   // An install file Manki does not read, such as a `bun.lock`, can decide the packages of its folder tree. A lockfile
   // above it can lock the packages of that tree too, so it counts for a lockfile in either direction.
   const unreadInstall = files.filter(f => registry.unreadInstallFiles.includes(posix.basename(f)));
-  for (const dir of new Set(['.', ...files.map(f => posix.dirname(f))])) {
-    const copy = registry.installedCopy(join(root, dir), name);
-    if (copy) refuse(`the checkout holds ${shown(posix.join(dir, copy))}, which the project runs in place of the archive ${registry.id} publishes`);
-  }
+  const copy = registry.installedCopy(installed, name);
+  if (copy) refuse(`the checkout holds ${shown(copy)}, which the project runs in place of the archive ${registry.id} publishes`);
   const unreadIn = (dir: string, below = false) => unreadInstall.find(f => within(dir, posix.dirname(f)) || (below && within(posix.dirname(f), dir)));
   const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)));
   // A lockfile past the cap may lock the package too, so the listing cannot settle it.
@@ -451,25 +451,29 @@ export function dependencyLoader(
     && !(r.buildFolder !== undefined && path.split('/').includes(r.buildFolder)));
   // Only files git tracks count, since only those are the PR's.
   let listing: Promise<Listing> | undefined;
-  const listed = (): Promise<Listing> => listing ??= trackedFiles(root, [], ['node_modules']).then((tracked): Listing => {
-    if (!tracked) return { files: [], cut: 'Manki could not list the files of the checkout, so it cannot tell which code the PR runs' };
+  const listed = (): Promise<Listing> => listing ??= trackedFiles(root, [], []).then((all): Listing => {
+    const refused = (cut: string): Listing => ({ files: [], installed: [], cut });
+    if (!all) return refused('Manki could not list the files of the checkout, so it cannot tell which code the PR runs');
     // `closed_paths` deletes files from the checkout and its index, so a closed lockfile, setting or committed copy looks absent.
     let removed: string[];
     try {
       removed = removedPathsOf(root);
     } catch {
-      return { files: [], cut: 'Manki could not read which files `closed_paths` removed from the checkout, so it cannot tell which code the PR runs' };
+      return refused('Manki could not read which files `closed_paths` removed from the checkout, so it cannot tell which code the PR runs');
     }
     const closed = removed.find(path => isRead(path) || INSTALLED_COPY.test(path));
-    if (closed) return { files: [], cut: `\`closed_paths\` removed ${shown(closed)} from the checkout, and that path can decide which code the PR runs` };
+    if (closed) return refused(`\`closed_paths\` removed ${shown(closed)} from the checkout, and that path can decide which code the PR runs`);
+    const installed = all.filter(f => INSTALLED_COPY.test(f.path)).map(f => f.path);
+    // The files of a committed `node_modules` only show whether it holds the package, so they are neither read nor counted.
+    const tracked = all.filter(f => !f.path.split('/').includes('node_modules'));
     // An install follows a symlink, which can hold a lockfile, a setting or a whole folder of them where Manki does not look.
     const plainFiles = new Set(tracked.filter(f => !f.symlink).map(f => f.path));
     const link = tracked.find(f => f.symlink && (isRead(f.path) || !linksToPlainFile(root, f.path, plainFiles)));
-    if (link) return { files: [], cut: `the checkout holds ${shown(link.path)} as a symlink, which Manki does not follow, so it cannot tell which code the PR runs` };
+    if (link) return refused(`the checkout holds ${shown(link.path)} as a symlink, which Manki does not follow, so it cannot tell which code the PR runs`);
     const files = [...plainFiles].filter(isRead);
     return files.length > maxListed
-      ? { files, cut: `the checkout holds more than ${maxListed} lockfiles, manifests and settings files, the most Manki lists, so it cannot tell which code the PR runs` }
-      : { files };
+      ? { files, installed, cut: `the checkout holds more than ${maxListed} lockfiles, manifests and settings files, the most Manki lists, so it cannot tell which code the PR runs` }
+      : { files, installed };
   });
   // A resolution reads every lockfile and manifest and can fetch a version list, so the round does it once per name.
   const resolutions = join(stateDir, 'resolutions');
