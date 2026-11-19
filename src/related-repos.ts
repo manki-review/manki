@@ -7,7 +7,7 @@ import { runTool } from './binary-analyzers';
 import { RepoTools } from './providers/types';
 import { makeScratchDir } from './tool-install';
 import { STALE_TIMEOUT_MS } from './tool-steps';
-import { LOCKFILE_NAMES, lockedGitCommits, MAX_LOCKFILE_BYTES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
+import { LOCKFILE_NAMES, lockedGitCommits, MAX_LOCKFILE_BYTES, MAX_LOCKFILES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RepoLock, RoundRelatedRepo } from './types';
 import { sanitizeLogOutput } from './utils';
 import { gitEnv } from './workspace';
@@ -65,7 +65,24 @@ export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspa
   };
 }
 
-const MAX_LOCKFILES = 50;
+/** A file git tracks in a checkout, and whether git holds it as a symlink. */
+export interface TrackedFile {
+  path: string;
+  /** A checkout with `core.symlinks=false` writes a symlink as a file that holds the link's target. */
+  symlink: boolean;
+}
+
+/**
+ * Returns the files git tracks in the checkout at `workspace` that `pathspecs` match, all of them without any, outside
+ * `node_modules` and `target`. Returns `undefined` when git cannot list them.
+ */
+export async function trackedFiles(workspace: string, pathspecs: readonly string[] = []): Promise<TrackedFile[] | undefined> {
+  const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...pathspecs], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
+  if (listed.code !== 0) return undefined;
+  // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, and mode `120000` is a symlink.
+  return listed.stdout.split('\0').filter(Boolean).map(entry => ({ path: entry.slice(entry.indexOf('\t') + 1), symlink: entry.startsWith('120000 ') }))
+    .filter(({ path }) => path && !path.split('/').some(part => part === 'node_modules' || part === 'target'));
+}
 
 /**
  * Returns `repos` with the `ref` of each `dependency` repo that names none set to the commit that the lockfiles of the
@@ -80,12 +97,9 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   // Each commit a lockfile locks, by `owner/name` in lower case, with the first lockfile that locks it.
   const found = new Map<string, Map<string, string>>();
   let unread: string | undefined;
-  const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...LOCKFILE_NAMES.map(name => `:(glob)**/${name}`)], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
-  if (listed.code !== 0) unread = 'the lockfiles of the checkout could not be listed';
-  // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, and mode `120000` is a symlink.
-  const entries = listed.code === 0 ? listed.stdout.split('\0').filter(Boolean) : [];
-  const files = entries.filter(entry => !entry.startsWith('120000 ')).map(entry => entry.slice(entry.indexOf('\t') + 1))
-    .filter(f => f && !f.split('/').some(part => part === 'node_modules' || part === 'target'));
+  const tracked = await trackedFiles(workspace, LOCKFILE_NAMES.map(name => `:(glob)**/${name}`));
+  if (!tracked) unread = 'the lockfiles of the checkout could not be listed';
+  const files = (tracked ?? []).filter(f => !f.symlink).map(f => f.path);
   // A lockfile past the cap may lock another commit, so it counts as one that could not be read.
   if (files.length > MAX_LOCKFILES) unread ??= `the checkout holds ${files.length} lockfiles, more than the ${MAX_LOCKFILES} a round reads`;
   let budget = MAX_LOCKFILES_TOTAL_BYTES;
