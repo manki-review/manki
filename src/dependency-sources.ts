@@ -261,7 +261,9 @@ async function resolveDependency(
     if (installFile) refuse(`${shown(file)} requires it, and ${shown(installFile)}, which Manki does not read, can decide what an install there gets`, origin);
     // A manifest under a lockfile takes its versions from the nearest one, but only as part of that lockfile's project.
     // A lockfile further up that also counts it as a member leaves Manki unsure which of the two an install reads.
-    const covering = lockfiles.filter(f => within(dir, posix.dirname(f))).sort((a, b) => posix.dirname(b).length - posix.dirname(a).length);
+    // By depth, since the root's `.` is as long as a one-letter folder.
+    const depth = (lockfile: string) => (posix.dirname(lockfile) === '.' ? 0 : posix.dirname(lockfile).split('/').length);
+    const covering = lockfiles.filter(f => within(dir, posix.dirname(f))).sort((a, b) => depth(b) - depth(a));
     if (covering.length > 0) {
       const nearest = posix.dirname(covering[0]);
       // Each lockfile there must count the manifest, since Manki cannot tell which of them an install reads.

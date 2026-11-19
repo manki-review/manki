@@ -510,6 +510,9 @@ describe('dependencyLoader', () => {
       .rejects.toThrow('Manki cannot read apps/web/package.json with certainty: the workspace pattern "apps/{web,api}" is one Manki does not read.');
     // The lockfile in the nearest folder decides, also below one whose path is longer.
     expect((await round({ 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {} }), ...required('tools/'), 'tools/yarn.lock': berry }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    // A root lockfile's folder `.` is as long as a one-letter folder, which is still the nearer one.
+    const oneLetter = round({ 'Cargo.lock': '[[package]]\nname = "other"\nversion = "1.0.0"\n', 'a/Cargo.toml': '[dependencies]\ndemo = "1.2"\n', 'a/Cargo.lock': cargoLock([{ version: '1.2.0' }]) });
+    expect((await oneLetter.load('crates.io/demo')).key).toBe('crates.io/demo@1.2.0');
     // A member's own lockfile next to the workspace's leaves Manki unsure which one an install reads.
     await expect(round({ ...root(['web']), ...required('web/'), 'package-lock.json': lock, 'web/package-lock.json': lock }).load('npm/left-pad'))
       .rejects.toThrow('web/package.json requires it, and both web/package-lock.json and package-lock.json can lock that manifest\'s versions.');
