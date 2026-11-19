@@ -3031,11 +3031,13 @@ function textLines(value: unknown, max = MAX_EVIDENCE_LINES): string[] {
  * comes before any further one, so an entry that lists many lines cannot push another entry out.
  */
 export function parseProof(value: unknown, workspace: string | undefined): string[] {
+  // No entry past the first `MAX_EVIDENCE_LINES` with a location can be kept, so none of them is read.
   const listed = textLines(value, Infinity).flatMap(entry => {
     const [, file, lines] = entry.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
-    if (!file) return [];
+    return file ? [{ file, lines }] : [];
+  }).slice(0, MAX_EVIDENCE_LINES).map(({ file, lines }) => {
     const path = repoPath(file, workspace);
-    return [lines.split(/, ?/).map(range => `${path}:${range}`)];
+    return lines.split(/, ?/).map(range => `${path}:${range}`);
   });
   return [...listed.map(([first]) => first), ...listed.flatMap(([, ...more]) => more)].slice(0, MAX_EVIDENCE_LINES);
 }
