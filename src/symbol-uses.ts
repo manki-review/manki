@@ -1586,8 +1586,7 @@ interface DeclarationView {
  * added, one only the base holds is removed, one whose part before its body differs is a changed declaration, and one
  * whose body differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by
  * keyword from the removed and added lines. A parsed declaration local to a function is never named. A file read by
- * keyword cannot tell a local declaration apart, so its least indented declarations come first, and locals never push
- * them past the cap of the map.
+ * keyword cannot tell a local declaration apart, so among its changes of one kind the least indented come first.
  */
 function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) => boolean): MappedChange[] {
   return files.filter(file => !skip(file.path)).flatMap(file => {
@@ -1604,7 +1603,7 @@ function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) =
       const view = (now ?? old)!;
       if (change) changes.push({ mapped: { file: file.path, symbol: view.label, change }, indent: view.indent ?? 0 });
     }
-    return changes.sort((a, b) => a.indent - b.indent || CHANGE_RANK[a.mapped.change] - CHANGE_RANK[b.mapped.change]).map(c => c.mapped);
+    return changes.sort((a, b) => CHANGE_RANK[a.mapped.change] - CHANGE_RANK[b.mapped.change] || a.indent - b.indent).map(c => c.mapped);
   });
 }
 

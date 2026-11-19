@@ -624,6 +624,7 @@ describe('listUsesOutsideDiff', () => {
       'src/api.gen.ts': 'export function fetchUser() {}\n',
       'src/printer.ts': 'export class Printer {\n  show(x: { balance: bigint }) {}\n}\n',
       'cmd/rates.swift': `func build() {\n${Array.from({ length: 7 }, (_, i) => `    const k${i} = 1\n`).join('')}}\nfunc legacy() {}\n`,
+      'conf/app.yml': 'server:\n  pool:\n    idle_timeout: 30\n',
       'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n}\n',
       'src/ids.rs': 'pub type Id = u8;\n',
       'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: number) {}\n}\n',
@@ -644,6 +645,7 @@ describe('listUsesOutsideDiff', () => {
       'src/api.gen.ts': 'export function fetchAccount() {}\n',
       'src/printer.ts': 'export class Printer {\n  show(x: { balance: number }) {}\n}\n',
       'cmd/rates.swift': 'func build() {\n}\n',
+      'conf/app.yml': `server:\n  pool:\n${Array.from({ length: 6 }, (_, i) => `new_key${i}: 1\n`).join('')}`,
       'src/ids.rs': 'pub type Id = u16;\n',
     });
     const deleted = parsePRDiff('diff --git a/src/legacy.ts b/src/legacy.ts\ndeleted file mode 100644\n--- a/src/legacy.ts\n+++ /dev/null\n@@ -1,4 +0,0 @@\n-export function legacyParse(): void {\n-  const indented = 2;\n-}\n-const TOP_LEVEL = 1;').files;
@@ -655,14 +657,18 @@ describe('listUsesOutsideDiff', () => {
       expect(changes).toEqual([
         { file: 'cmd/fee.swift', symbol: 'function computeFee', change: 'declaration changed' },
         { file: 'cmd/fee.swift', symbol: 'function roundFee', change: 'added' },
-        // Without a grammar, a declaration is named whatever its indentation, the least indented first, so the top-level
-        // `legacy` comes before the locals and the methods `clear` and `reset` are named too.
+        // Without a grammar, a declaration is named whatever its indentation. Removals come first in every file, and among
+        // changes of one kind the least indented, so the top-level `legacy` comes before the locals and the methods `clear`
+        // and `reset` are named too.
         { file: 'cmd/rates.swift', symbol: 'function legacy', change: 'removed' },
         ...Array.from({ length: 7 }, (_, i) => ({ file: 'cmd/rates.swift', symbol: `constant k${i}`, change: 'removed' })),
         { file: 'cmd/shop.swift', symbol: 'function helper', change: 'removed' },
-        { file: 'cmd/shop.swift', symbol: 'function total', change: 'body changed' },
         { file: 'cmd/shop.swift', symbol: 'function clear', change: 'removed' },
+        { file: 'cmd/shop.swift', symbol: 'function total', change: 'body changed' },
         { file: 'cmd/shop.swift', symbol: 'function reset', change: 'added' },
+        // A removed config key four levels deep comes before six added top-level keys, so the cap of the map keeps it.
+        { file: 'conf/app.yml', symbol: 'config key idle_timeout', change: 'removed' },
+        ...Array.from({ length: 6 }, (_, i) => ({ file: 'conf/app.yml', symbol: `config key new_key${i}`, change: 'added' })),
         // A removed config key is mapped, however deep it is nested.
         { file: 'manki.yml', symbol: 'config key old_limit', change: 'removed' },
         // A config key, a Go type, a Rust type alias and a Python class attribute keep their declaration when their value changes.
