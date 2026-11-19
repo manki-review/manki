@@ -2755,6 +2755,17 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });
 
+    it('reviews with the defaults and holds nothing when the base branch has no config file', async () => {
+      configFiles(null, async () => null);
+
+      await callRunFullReview();
+
+      expect(reviewedConfig()).toEqual(actualLoadConfig(undefined));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: undefined }));
+      expect(jest.mocked(ghUtils.markProgressCommentFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    });
+
     const failsClosed = 'names `closed_paths` but does not parse, or its `closed_paths` is not a list of paths';
     it.each([
       ['cannot be read twice', async () => { throw new Error('socket hang up'); }, 'could not be read'],

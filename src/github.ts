@@ -574,11 +574,11 @@ export function brokenConfig(source: ConfigSource, brokenOwnCopy: boolean): Conf
 }
 
 /**
- * Loads the base branch's config, which `read` returns. A read that fails is tried once more. One that cannot be read or
- * does not load gives the defaults, with the source saying why, so the change that fixes it is still reviewed. `describe`
- * words the error in the warning. The defaults keep the `closed_paths` the file sets, as `readClosedPaths` reads them.
- * When the file cannot say which paths it closes, because it cannot be read or `readClosedPaths` reads nothing,
- * `closedUnknown` is the note to post in place of anything a model would read.
+ * Loads the base branch's config, which `read` returns, or the built-in defaults when there is no file. A read that fails
+ * is tried once more. A file that does not load gives the defaults, with the source saying why, so the change that fixes
+ * it is still reviewed. The defaults keep the `closed_paths` the file sets, as `readClosedPaths` reads them. When the file
+ * cannot say which paths it closes, because both reads fail or `readClosedPaths` reads nothing, `closedUnknown` is the
+ * note to post in place of anything a model would read. `describe` words the error in the warning.
  */
 export async function loadBaseConfig(
   read: () => Promise<string | null>,
