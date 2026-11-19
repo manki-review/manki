@@ -3469,6 +3469,15 @@ describe('runReview', () => {
     try {
       result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
       quick = await runReview(trivial, { config: makeConfig(), diff: docs.diff, rawDiff: 'raw diff', repoContext: '', workspace: docs.root, prContext });
+
+      // A retry keeps the answer of a fix check it would send the same again, with its finding, and asks it nothing.
+      const onCommit = { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext, headSha: 'abc', changeDigest: 'digest' };
+      const attempt = postedRecord(await runReview(fixClients(), onCommit));
+      const retrying = fixClients();
+      const retried = await runReview(retrying, { ...onCommit, earlierAttempt: { record: { ...attempt, meta: { ...attempt.meta, incomplete: true } }, review: 7 } });
+      expect(jest.mocked(retrying.reviewer.sendMessage).mock.calls.filter(([system]) => isFixCheck(system))).toEqual([]);
+      expect(retried.fixes?.fixes?.map(f => [f.status, f.reused])).toEqual([['workaround', true]]);
+      expect(mockedRunJudgeAgent.mock.calls.at(-1)![2].findings).toEqual([expect.objectContaining({ title: workaround.finding.title, reviewers: ['Fix check 1'] })]);
     } finally {
       for (const dir of [root, docs.root]) rmSync(dir, { recursive: true, force: true });
     }
@@ -3486,7 +3495,7 @@ describe('runReview', () => {
     expect(result.fixes).toEqual({
       fixes: [{
         at: ['src/report.ts:3'], problem: 'A count of zero divides by zero.', reviewer: 'Fix check 1', status: 'workaround',
-        cause: workaround.cause, stillFails: workaround.stillFails, proof: ['src/rate.ts:2'], findings: 1,
+        cause: workaround.cause, stillFails: workaround.stillFails, proof: ['src/rate.ts:2'], findings: 1, inputDigest: expect.any(String),
       }],
     });
     expect(result.llmCalls?.filter(c => c.stage === 'fixes')).toHaveLength(1);

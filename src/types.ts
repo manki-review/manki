@@ -830,6 +830,10 @@ export interface RoundFix extends ListedFix {
   relatedProof?: string[];
   /** The findings it reported for a `workaround`, before dedup and the judge. */
   findings?: number;
+  /** A digest of everything the check was sent, set when the check answered. */
+  inputDigest?: string;
+  /** Set when the round kept the answer from `meta.reusedFrom` and did not check again. */
+  reused?: true;
 }
 
 /** The fixes a round listed from the diff, each with its check. */

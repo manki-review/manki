@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { realRepoPath } from './mcp-server';
 import { guessClaimTerms, translateNames } from './name-translation';
@@ -457,6 +457,8 @@ interface KeptAttempt {
   comparisons: Map<string, EarlierAnswer<RoundComparison>>;
   /** The claim checks that answered, by reviewer name. */
   claims: Map<string, EarlierAnswer<RoundPrClaim>>;
+  /** The fix checks that answered, by reviewer name. */
+  fixes: Map<string, EarlierAnswer<RoundFix>>;
   /** The second reads of the attempt and the findings of all of them. */
   secondReads?: EarlierAnswer<RoundSecondReads>;
 }
@@ -514,6 +516,7 @@ function keptOf(attempt: EarlierAttempt, team: TeamRoster, { headSha, changeDige
   const finders = new Map((record.reviewers.agentMetrics ?? []).flatMap(m => (m.status === 'success' && !m.failureReason && m.inputDigest && m.findingsReturned !== undefined ? keep(m.name, m, m.findingsReturned) : [])));
   const comparisons = new Map((record.comparisons ?? []).flatMap(c => (c.status === 'answered' && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
   const claims = new Map((record.prClaims?.claims ?? []).flatMap(c => (!c.call && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
+  const fixes = new Map((record.fixes?.fixes ?? []).flatMap(c => (!c.call && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
   const reads = record.secondReads?.reads ?? [];
   for (const read of reads) counted &&= findingsOf(read.reviewer).length === (read.findings ?? 0);
   const secondReads = record.secondReads && { record: record.secondReads, findings: reads.flatMap(read => findingsOf(read.reviewer)) };
@@ -521,7 +524,7 @@ function keptOf(attempt: EarlierAttempt, team: TeamRoster, { headSha, changeDige
     core.info('The last attempt is not reused, since its record lists another number of findings than it holds');
     return undefined;
   }
-  return { from: { review: attempt.review, timestamp: meta.timestamp }, finders, comparisons, claims, ...(secondReads && { secondReads }) };
+  return { from: { review: attempt.review, timestamp: meta.timestamp }, finders, comparisons, claims, fixes, ...(secondReads && { secondReads }) };
 }
 
 /**
@@ -1280,7 +1283,7 @@ export async function runReview(
   const fixClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'fixes'), comparisonDeadline.signal);
   const fixChecksPromise = (checksFixes ? listFixes(fixClient, rawDiff, diff) : Promise.resolve({ fixes: [] })).then(async ({ fixes, ...listed }) => {
     const checked = await runFixChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'fix_check', reviewer), fixes, {
-      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, signal: comparisonDeadline.signal, progress: sideProgress('fix'),
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, signal: comparisonDeadline.signal, progress: sideProgress('fix'), earlier: earlierOf(kept?.fixes),
     });
     return { findings: checked.findings, record: fixesRecord(listed, checked.fixes) };
   });
@@ -1668,7 +1671,7 @@ export async function runReview(
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   const usesWithTerms = usesRecord || claimChecks.terms ? { ...usesRecord, ...(claimChecks.terms && { claimTerms: claimChecks.terms }) } : undefined;
   finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }), ...(fixChecks.record && { fixes: fixChecks.record }) };
-  const reusedChecks = [...comparisons, ...(claimChecks.record?.claims ?? [])].filter(c => c.reused).length;
+  const reusedChecks = [...comparisons, ...(claimChecks.record?.claims ?? []), ...(fixChecks.record?.fixes ?? [])].filter(c => c.reused).length;
   const reused = kept && (reusedFinders.length > 0 || reusedChecks > 0) ? { from: kept.from, finders: reusedFinders.map(f => f.name) } : undefined;
   if (reused) {
     core.info(`Kept from the last attempt: ${reused.finders.length} finder(s) and ${reusedChecks} check(s)`);

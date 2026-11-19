@@ -267,7 +267,7 @@ export const isFixCheck = (reviewer: string): boolean => reviewer.startsWith(`${
  * past the cap, or whose check did not run, failed or was stopped, is `unchecked`, with why in `call`. It never throws.
  */
 export async function runFixChecks(
-  clientFor: (reviewer: string) => LLMClient, fixes: readonly ListedFix[], { rawDiff, ...options }: CheckOptions & { rawDiff: string },
+  clientFor: (reviewer: string) => LLMClient, fixes: readonly ListedFix[], { rawDiff, ...options }: CheckOptions<RoundFix> & { rawDiff: string },
 ): Promise<{ findings: Finding[]; fixes: RoundFix[] }> {
   // A name never carries text from the PR, so each check is numbered and its record holds the problem.
   const named = fixes.map((fix, i) => ({ fix, reviewer: `${FIX_CHECK_NAME} ${i + 1}`, message: checkMessage(fix, rawDiff) }));
@@ -276,10 +276,11 @@ export async function runFixChecks(
   const checked = await checkEach(clientFor, asked, CHECK_SYSTEM_PROMPT,
     (content, reviewer, workspace) => parseFixCheck(content, asked.find(a => a.reviewer === reviewer)!.fix, workspace, reviewer, options.related), options);
   const answers = named.map(({ fix, reviewer }, i): { record: RoundFix; findings: Finding[] } => {
-    const result: Checked<FixAnswer> | { answer?: undefined; call: 'cut' } = i < checked.length ? checked[i] : { call: 'cut' };
+    const result: Checked<FixAnswer, RoundFix> | { answer?: undefined; kept?: undefined; call: 'cut' } = i < checked.length ? checked[i] : { call: 'cut' };
+    if (result.kept) return { record: { ...result.kept.record, reused: true as const }, findings: result.kept.findings };
     if (!result.answer) return { record: { ...fix, reviewer, status: 'unchecked', call: result.call }, findings: [] };
     const { reported, ...answer } = result.answer;
-    return { record: { ...fix, reviewer, ...answer, ...(answer.status === 'workaround' && { findings: reported.length }) }, findings: reported };
+    return { record: { ...fix, reviewer, ...answer, ...(answer.status === 'workaround' && { findings: reported.length }), inputDigest: result.inputDigest }, findings: reported };
   });
   return { findings: answers.flatMap(a => a.findings), fixes: answers.map(a => a.record) };
 }

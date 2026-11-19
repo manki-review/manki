@@ -129,13 +129,15 @@ describe('runFixChecks', () => {
     expect(names).toEqual(['Fix check 1', 'Fix check 2', 'Fix check 3', 'Fix check 4']);
     expect(names.every(isFixCheck)).toBe(true);
     const said = { cause: '`rate` divides without checking `count`.', stillFails: 'Every other caller of `rate`.' };
+    // Each check that answered records a digest of what it was sent, so a retry can keep the answer.
+    const digest = { inputDigest: expect.any(String) };
     expect([...result.fixes, ...rest.fixes]).toEqual([
-      { ...fixes[0], reviewer: 'Fix check 1', status: 'workaround', ...said, proof: ['src/rate.ts:2'], findings: 1 },
-      { ...fixes[1], reviewer: 'Fix check 2', status: 'unchecked', ...said, proof: ['src/report.ts:3'] },
-      { ...fixes[2], reviewer: 'Fix check 3', status: 'unchecked', ...said },
-      { ...fixes[3], reviewer: 'Fix check 4', status: 'root_cause', ...said, proof: ['src/report.ts:3'] },
-      { ...fixes[4], reviewer: 'Fix check 1', status: 'unchecked', ...said, proof: ['src/rate.ts:2'] },
-      { ...fixes[5], reviewer: 'Fix check 2', status: 'unchecked', ...said, reason: 'The callers of `rate` were not read.' },
+      { ...fixes[0], reviewer: 'Fix check 1', status: 'workaround', ...said, ...digest, proof: ['src/rate.ts:2'], findings: 1 },
+      { ...fixes[1], reviewer: 'Fix check 2', status: 'unchecked', ...said, ...digest, proof: ['src/report.ts:3'] },
+      { ...fixes[2], reviewer: 'Fix check 3', status: 'unchecked', ...said, ...digest },
+      { ...fixes[3], reviewer: 'Fix check 4', status: 'root_cause', ...said, ...digest, proof: ['src/report.ts:3'] },
+      { ...fixes[4], reviewer: 'Fix check 1', status: 'unchecked', ...said, ...digest, proof: ['src/rate.ts:2'] },
+      { ...fixes[5], reviewer: 'Fix check 2', status: 'unchecked', ...said, ...digest, reason: 'The callers of `rate` were not read.' },
     ]);
     expect(result.findings).toEqual([expect.objectContaining({ title: finding.title, severity: 'warning', reviewers: ['Fix check 1'], howToFix: finding.howToFix })]);
     // A finding that cites none of the lines the check stood on gets them too.
@@ -147,7 +149,7 @@ describe('runFixChecks', () => {
     try {
       const linked = fakeClient(() => answer('workaround', 'symptom', ['lib/report.ts:3']));
       expect((await runFixChecks(() => linked, [guard], { rawDiff, workspace: root })).fixes).toEqual([
-        { ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, proof: ['lib/report.ts:3'] },
+        { ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, ...digest, proof: ['lib/report.ts:3'] },
       ]);
       // A finding filed through the symlink sits on the diff's file.
       const filed = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2'], { finding: { ...finding, file: 'lib/report.ts' } }));
@@ -160,7 +162,7 @@ describe('runFixChecks', () => {
       const empty = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2'], { finding: lost, ...extra }));
       const built = await runFixChecks(() => empty, [guard], { rawDiff, workspace: root });
       const { stillFails, ...cause } = said;
-      expect(built.fixes).toEqual([{ ...guard, reviewer: 'Fix check 1', status: 'workaround', ...cause, ...(severity === 'warning' && { stillFails }), proof: ['src/rate.ts:2'], findings: 1 }]);
+      expect(built.fixes).toEqual([{ ...guard, reviewer: 'Fix check 1', status: 'workaround', ...cause, ...digest, ...(severity === 'warning' && { stillFails }), proof: ['src/rate.ts:2'], findings: 1 }]);
       expect(built.findings).toEqual([{
         severity, title: 'A count of zero divides by zero.', file: 'src/report.ts', line: 3, reviewers: ['Fix check 1'],
         description: [
@@ -196,7 +198,7 @@ describe('runFixChecks', () => {
     // A path spelled from the current directory or from the file system root is the same file as the fix.
     for (const spelled of ['src/report.ts:3', './src/report.ts:3', `${root}/src/report.ts:3`]) {
       const own = fakeClient(() => answer('workaround', 'symptom', [spelled]));
-      expect((await runFixChecks(() => own, [guard], { rawDiff, workspace: root })).fixes).toEqual([{ ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, proof: ['src/report.ts:3'] }]);
+      expect((await runFixChecks(() => own, [guard], { rawDiff, workspace: root })).fixes).toEqual([{ ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, ...digest, proof: ['src/report.ts:3'] }]);
     }
     // A range that reaches past the fix cites a line outside it.
     const wider = fakeClient(() => answer('workaround', 'symptom', ['./src/report.ts:2-3']));
