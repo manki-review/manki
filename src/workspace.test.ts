@@ -135,6 +135,14 @@ describe('fetchWorkspace', () => {
     symlinkSync('a.ts', join(checkout, 'src/inside.ts'));
     await closePaths(checkout, ['bench/holdout/**']);
     expect(readdirSync(join(checkout, 'src'))).toEqual(['a.ts']);
+    // A closed file that git tracks but the checkout lacks is dropped from the index and recorded as removed too.
+    mkdirSync(join(checkout, 'data'));
+    writeFileSync(join(checkout, 'data/yarn.lock'), 'lock\n');
+    execFileSync('git', ['-C', checkout, 'add', 'data/yarn.lock']);
+    rmSync(join(checkout, 'data'), { recursive: true });
+    await closePaths(checkout, ['data/**']);
+    expect(removedPathsOf(checkout)).toEqual(['data/yarn.lock']);
+    expect(execFileSync('git', ['-C', checkout, 'ls-files'], { encoding: 'utf8' })).toBe('');
     rmSync(checkout, { recursive: true, force: true });
   }, GIT_TEST_TIMEOUT_MS);
 
