@@ -437,6 +437,11 @@ describe('reviewableDiff', () => {
     const odd = reviewableDiff(oddName, [], ['holdout']).closedPaths;
     expect(odd).toEqual(['holdout', '/src/a\\[1\\]\\*.ts']);
     expect(['src/a[1]*.ts', 'src/a1x.ts'].map(path => findClosedPattern(path, odd))).toEqual([odd[1], undefined]);
+    // Braces stay literal, and a backslash in a name matches as the `/` `findClosedPattern` reads it as.
+    const braces = 'diff --git a/holdout/x.ts b/src/{a,b}.ts\nsimilarity index 100%\nrename from holdout/x.ts\nrename to src/{a,b}.ts\n';
+    const slash = 'diff --git a/holdout/y.ts "b/src/c\\\\d.ts"\nsimilarity index 100%\nrename from holdout/y.ts\nrename to "src/c\\\\d.ts"\n';
+    const moved = reviewableDiff(`${braces}${slash}`, [], ['holdout']).closedPaths;
+    expect(['src/{a,b}.ts', 'src/a.ts', 'src/c\\d.ts'].map(path => !!findClosedPattern(path, moved))).toEqual([true, false, true]);
     // Only the closed files make up the change, as when every file is excluded.
     expect(reviewableDiff(CLOSED_DIFF.replace(MULTI_FILE_DIFF, ''), [], ['holdout/**']).fullDiff.files).toEqual([]);
     expect(reviewableDiff(CLOSED_DIFF, ['src/b.ts'], [])).toEqual(reviewableDiff(CLOSED_DIFF, ['src/b.ts']));

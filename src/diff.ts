@@ -71,7 +71,7 @@ export function findExcludePattern(path: string, excludePaths: readonly string[]
  */
 export function findClosedPattern(path: string, closedPaths: readonly string[]): string | undefined {
   if (closedPaths.length === 0) return undefined;
-  const normalized = posix.normalize(path.replace(/\\/g, '/')).replace(/\/+$/, '');
+  const normalized = closedPathKey(path);
   if (normalized === '..' || normalized.startsWith('../') || normalized.startsWith('/')) return closedPaths[0];
   const parts = normalized.split('/');
   for (let end = parts.length; end > 0; end--) {
@@ -81,6 +81,11 @@ export function findClosedPattern(path: string, closedPaths: readonly string[]):
     if (pattern) return pattern;
   }
   return undefined;
+}
+
+/** Returns `path` as `findClosedPattern` matches it: with `/` for each `\`, and without `.` segments or extra slashes. */
+function closedPathKey(path: string): string {
+  return posix.normalize(path.replace(/\\/g, '/')).replace(/\/+$/, '');
 }
 
 /**
@@ -315,7 +320,8 @@ export function reviewableDiff(
 ): { fullDiff: ParsedDiff; diff: ParsedDiff; excludedFiles: RoundDiffExcludedFile[]; rawDiff: string; closedPaths: string[] } {
   const { diff: fullDiff, closed, movedOut } = withoutClosed(parsePRDiff(rawDiff), closedPaths);
   const { diff, excluded } = filterDiff(fullDiff, excludePaths);
-  const withMoved = [...closedPaths, ...movedOut.map(path => `/${minimatch.escape(path)}`)];
+  // `findClosedPattern` matches the path's normalized spelling, and braces would expand to other names unless escaped.
+  const withMoved = [...closedPaths, ...movedOut.map(path => `/${minimatch.escape(closedPathKey(path), { magicalBraces: true })}`)];
   return { fullDiff, diff, excludedFiles: [...closed, ...excluded], rawDiff: rebuildRawDiff(diff), closedPaths: withMoved };
 }
 
