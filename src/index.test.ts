@@ -3399,9 +3399,11 @@ describe('runFullReview orchestration', () => {
     ]);
     expect(decisions?.find(d => d.title === 'Token may not read the repo')).toEqual(expect.objectContaining({ kept: false, listed: true }));
     expect(dashboardArg?.keptCount).toBe(3);
+    // The progress comment counts what the record counts as merged, and the lead neither kept nor dropped.
+    expect(dashboardArg).toMatchObject({ mergedCount: 2, openLeadCount: 1, addedAfterJudgeCount: 0 });
   });
 
-  it('adjusts mergedDuplicates and findingsRaw for pre-judge dedup counts', async () => {
+  it('adjusts mergedDuplicates and findingsRaw for pre-judge dedup counts, as the progress comment does', async () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
@@ -3414,6 +3416,8 @@ describe('runFullReview orchestration', () => {
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
     ];
     const allJudged = [...findings];
+    // No judge call graded the verdict reader's blocker.
+    const readerBlocker = { severity: 'blocker' as const, title: 'Reader blocker', file: 'src/app.ts', line: 9, description: 'desc', reviewers: ['Verdict reader'] };
     // rawFindings: 5 findings from agents (pre-suppression, pre-dedup)
     const rawFindings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
@@ -3425,7 +3429,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
-      findings,
+      findings: [...findings, readerBlocker],
       highlights: [],
       reviewComplete: true,
       rawFindingCount: 5,
@@ -3434,6 +3438,7 @@ describe('runFullReview orchestration', () => {
       rawFindings,
       staticDedupCount: 1,
       llmDedupCount: 1,
+      sweepRepeatCount: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -3444,6 +3449,9 @@ describe('runFullReview orchestration', () => {
 
     // mergedDuplicates excludes pre-judge dedup: 5 - 1 (static) - 1 (llm) - 1 (judged) = 2
     expect(statsArg!.judge.mergedDuplicates).toBe(2);
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4]).toMatchObject({
+      keptCount: 2, droppedCount: 0, mergedCount: 2, addedAfterJudgeCount: 1, openLeadCount: 0, staticDedupCount: 1, llmDedupCount: 1, sweepRepeatCount: 1,
+    });
 
     // findingsRaw comes from rawFindings (pre-dedup per-agent counts)
     expect(statsArg!.reviewers.agentMetrics).toEqual([

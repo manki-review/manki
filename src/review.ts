@@ -714,6 +714,12 @@ export interface ReviewProgress {
   judgeInputCount?: number;
   staticDedupCount?: number;
   llmDedupCount?: number;
+  /** On a `judging` event: the tool results sent to the judge as findings, on top of `rawFindingCount`. */
+  toolAlertCount?: number;
+  /** On a `judging` event: the leads of the last round sent to the judge again. */
+  carriedLeadCount?: number;
+  /** On a `judging` event: the open leads kept from the judge and listed as not finished checking. */
+  openLeadCount?: number;
   completedAgents?: number;
   totalAgents?: number;
   plannerResult?: PlannerResult;
@@ -1725,6 +1731,9 @@ export async function runReview(
   const keptReads = reusedFinders.length === team.finders.length && ['nothing_new', 'cap'].includes(kept?.secondReads?.record.stop ?? '') ? kept?.secondReads : undefined;
   if (keptReads) {
     allFindings.push(...keptReads.findings);
+    const progress = sideProgress('second_read');
+    progress?.started(keptReads.record.reads.length);
+    for (const read of keptReads.record.reads) progress?.ended(read.findings ?? 0);
     recorded.secondReads = { ...keptReads.record, reused: true };
     core.info(`Kept the ${keptReads.record.reads.length} second reads of the last attempt`);
   } else if (readers.length > 0 && getsSecondReads(diff, rawDiff, priorRounds, interRoundDiff)) {
@@ -1809,6 +1818,9 @@ export async function runReview(
       judgeInputCount: findingsForJudge.length,
       staticDedupCount,
       llmDedupCount,
+      toolAlertCount: toolAlerts.length,
+      carriedLeadCount: carried.length,
+      openLeadCount: listedLeads.length,
       totalAgents: team.finders.length,
       completedAgents: team.finders.length,
       ...(judgeSkipped && { judgeSkipped }),
@@ -1932,6 +1944,8 @@ export async function runReview(
   // A finding's defect class can recur elsewhere in the diff, so the kept findings that `review.sweep` names each start a search for it.
   let sweeps: RoundSweep[] | undefined;
   let sweepRaw: Finding[] = [];
+  // The sweep's findings left out before its judge call, since the round judged the same problem already.
+  let sweepRepeatCount = 0;
   // The verdict reader's blockers, which only a round that ends before it checks them records as raw findings.
   let readerRaw: Finding[] = [];
   // The sweep and the checks at the round's end change what the judge's call recorded, so a round that ends incomplete after it records these as they then are.
@@ -1963,6 +1977,7 @@ export async function runReview(
     const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
     const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
     sweepRaw = unmatched.filter((_, i) => !restated.has(i)).map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
+    sweepRepeatCount = sweep.findings.length - sweepRaw.length;
     let fresh = sweepRaw;
     if (previousFindings && previousFindings.length > 0 && fresh.length > 0) {
       const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
@@ -2259,6 +2274,7 @@ export async function runReview(
     reviewComplete: true,
     rawFindingCount: checkedFindings.length + sweepRaw.length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
+    ...(sweepRepeatCount > 0 && { sweepRepeatCount }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
     rawFindings: [...allFindings, ...sweepRaw],

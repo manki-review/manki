@@ -2864,13 +2864,17 @@ describe('runReview', () => {
       jest.mocked(failing.reviewer.sendMessage).mockClear();
       opus.mockClear();
       mockedRunJudgeAgent.mockClear();
-      const again = await runReview(failing, { ...options, earlierAttempt: { record: { ...answered, meta: { ...answered.meta, incomplete: true } }, review: 8 } });
+      const onProgress = jest.fn();
+      const again = await runReview(failing, { ...options, onProgress, earlierAttempt: { record: { ...answered, meta: { ...answered.meta, incomplete: true } }, review: 8 } });
       expect(failing.reviewer.sendMessage).not.toHaveBeenCalled();
       expect(opus).not.toHaveBeenCalled();
       expect(again.comparisons).toEqual([expect.objectContaining({ status: 'answered', reused: true })]);
       expect(again.reused?.finders).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
       // With every finder kept, so are the second reads.
       expect(again.secondReads).toEqual({ ...retried.secondReads, reused: true });
+      // The kept reads show on the progress comment as the reads that ran did, so their findings count there.
+      const reads = onProgress.mock.calls.flatMap(([event]) => (event.sideCheck?.kind === 'second_read' ? [event.sideCheck] : []));
+      expect(reads).toEqual([{ kind: 'second_read', total: 1 }, { kind: 'second_read', ended: retried.secondReads!.reads[0].findings }]);
       expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['Raised', finding.title]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -3919,6 +3923,8 @@ describe('runReview', () => {
     expect(result.findings.map(f => [f.severity, f.noteRank])).toEqual([['blocker', 1], ['warning', 1], ['blocker', undefined], ['note', undefined], ['blocker', undefined]]);
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
     expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 7 }]);
+    // The four places the round judged already are counted, so the progress comment can say where they went.
+    expect(result.sweepRepeatCount).toBe(4);
     // The dedup model gets each place near a judged finding in its file, or sharing a line it cites in any file, kept or
     // dropped. A place two lines off a cited line shares none.
     expect(dedupPairs).toEqual([[original.title, reworded.title], [dropped.title, citedByDropped.title], [other.title, crossFile.title]]);
@@ -4273,13 +4279,16 @@ describe('runReview', () => {
       last.leads.unshift(earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'confirmed', { posted: true }));
       const clients = leadClients([leadOf('note', 'The helper name may confuse a reader', 'src/d.ts', 7)], true);
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, refutation: refuted('unsettled') })) }));
+      const onProgress = jest.fn();
 
       const result = await runReview(clients, {
         config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head', priorRounds: [buildPriorRound(1, []), last],
-        interRoundDiff: 'diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-a\n+b\n',
+        interRoundDiff: 'diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-a\n+b\n', onProgress,
       });
 
       expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ file: 'src/a.ts', lead, leadSince: 1 })]);
+      // The progress comment names the carried lead and the listed one, so the finder's lead and the count graded add up.
+      expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: 'judging', rawFindingCount: 1, judgeInputCount: 1, carriedLeadCount: 1, openLeadCount: 1, toolAlertCount: 0 }));
       expect(result.openLeads?.map(f => [f.file, f.line, f.leadSince])).toEqual([['src/d.ts', 7, 1], ['src/a.ts', 1, 1]]);
       expect(result.leads?.map(l => [l.file, l.outcome, l.since])).toEqual([['src/d.ts', 'not_checked', 1], ['src/a.ts', 'unsettled', 1]]);
 
@@ -8117,6 +8126,7 @@ describe('runReview post-judge suppression', () => {
       findings: input.findings.map(f => ({ ...f, severity: judgeGrades[f.title] ?? (f.toolSource ? 'note' : f.severity) })),
       summary: 'ok',
     }));
+    const onProgress = jest.fn();
 
     const result = await runReview(
       clients, {
@@ -8125,9 +8135,11 @@ describe('runReview post-judge suppression', () => {
         rawDiff: 'raw',
         repoContext: 'ctx',
         prContext: { title: 'PR', body: '', baseBranch: 'main', staticSignals: [codeql, regex, prettier] },
+        onProgress,
       },
     );
 
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: 'judging', rawFindingCount: 2, judgeInputCount: 4, toolAlertCount: 2 }));
     const judged = mockedRunJudgeAgent.mock.calls[0][2].findings;
     expect(judged.map(f => [f.title, f.toolSource, f.toolEvidence?.status])).toEqual([
       ['js/sql-injection: Query built from user input', 'CodeQL', 'confirmed'],

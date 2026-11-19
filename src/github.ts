@@ -905,11 +905,28 @@ function judgeLiveLines(data: DashboardData, now: number): string[] {
   ].filter((line): line is string => !!line);
 }
 
-function preJudgeDrops(data: DashboardData): string {
+/**
+ * What the round added to the review's findings or took out of them before the judge graded them, such as `1 tool alert
+ * added`. While the judge runs it names the open leads too, which the finished comment gives a line of their own.
+ */
+function beforeJudge(data: DashboardData): string {
   const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0);
+  const leads = data.phase === 'complete' ? 0 : data.openLeadCount ?? 0;
+  return ([
+    [data.toolAlertCount ?? 0, 'tool alert added', 'tool alerts added'],
+    [data.carriedLeadCount ?? 0, 'lead carried over from the last round', 'leads carried over from the last round'],
+    [leads, 'lead not finished checking', 'leads not finished checking'],
+    [repeats, 'dropped as a repeat of an earlier resolved finding', 'dropped as repeats of earlier resolved findings'],
+    [data.sweepRepeatCount ?? 0, 'sweep finding already judged', 'sweep findings already judged'],
+  ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural)).join(', ');
+}
+
+/** The finished comment's lines on findings neither kept nor dropped, and on kept ones no judge call graded. */
+function afterJudgeLines(data: DashboardData): string[] {
   return [
-    ...(repeats > 0 ? [countOf(repeats, 'dropped as a repeat of an earlier resolved finding', 'dropped as repeats of earlier resolved findings')] : []),
-  ].join(', ');
+    data.openLeadCount ? `${INDENT}not finished checking: ${countOf(data.openLeadCount, 'lead')}` : '',
+    data.addedAfterJudgeCount ? `${INDENT}added after the judge: ${countOf(data.addedAfterJudgeCount, 'finding')}` : '',
+  ].filter(line => line);
 }
 
 /** Renders the stages of `data`. A review still running shows the time each running stage has taken by `now`. */
@@ -964,14 +981,14 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
       reviewLines.push(`${INDENT}reviewing with ${data.agentCount} agents...`);
     }
   } else {
-    reviewLines.push(`**${review}:** ${countOf(data.rawFindingCount ?? 0, 'finding')}`);
+    // `rawFindingCount` is counted before the judge, so the sweeps that run after it add their findings here.
+    const found = (data.rawFindingCount ?? 0) + (data.sideChecks?.sweep?.findings ?? 0);
+    reviewLines.push(`**${review}:** ${countOf(found, 'finding')}`);
     if (hasAgentProgress) {
       reviewLines.push(renderAgentLines(agents, now));
     }
   }
-  if (data.phase !== 'complete') {
-    reviewLines.push(...[sideCheckLine(data.sideChecks, BESIDE_FINDERS), sideCheckLine(data.sideChecks, ['second_read']), sideCheckLine(data.sideChecks, ['sweep'])].filter((line): line is string => !!line));
-  }
+  reviewLines.push(...[sideCheckLine(data.sideChecks, BESIDE_FINDERS), sideCheckLine(data.sideChecks, ['second_read']), sideCheckLine(data.sideChecks, ['sweep'])].filter((line): line is string => !!line));
   const sameEffort = data.routing?.deeperSameEffort;
   if (sameEffort) {
     reviewLines.push(`${INDENT}_(the deeper review adds no effort for ${sameEffort.map(sanitizeMarkdown).join(', ')}: the model receives no more effort than without it)_`);
@@ -984,20 +1001,21 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
     judgeLines.push(`${INDENT}pending`);
   } else if (data.judgeSkipped) {
     judgeLines.push(`**Judge:** skipped, nothing to judge`);
-    const drops = preJudgeDrops(data);
+    const drops = beforeJudge(data);
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
-    if (data.phase === 'reviewed') judgeLines.push(...judgeLiveLines(data, now));
+    judgeLines.push(...(data.phase === 'reviewed' ? judgeLiveLines(data, now) : afterJudgeLines(data)));
   } else if (data.phase === 'reviewed') {
     judgeLines.push(`**Judge**`);
     if (!data.graded) {
-      const drops = preJudgeDrops(data);
+      const drops = beforeJudge(data);
       const time = data.judgeStartedAt === undefined ? '' : ` · ${soFar(data.judgeStartedAt, now)}`;
       judgeLines.push(`${INDENT}grading ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings${drops ? ` (${drops})` : ''}${time}`);
     }
     judgeLines.push(...judgeLiveLines(data, now));
   } else {
     const judgeDur = data.judgeDurationMs != null ? ` (${formatDuration(data.judgeDurationMs)})` : '';
-    judgeLines.push(`**Judge:** ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${judgeDur}`);
+    const merged = data.mergedCount ? ` · ${data.mergedCount} merged` : '';
+    judgeLines.push(`**Judge:** ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${merged}${judgeDur}`);
     if (data.keptSeverities) {
       const breakdown = renderSeverityBreakdown(data.keptSeverities);
       if (breakdown) judgeLines.push(`${INDENT}kept: ${breakdown}`);
@@ -1006,8 +1024,9 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
       const breakdown = renderSeverityBreakdown(data.droppedSeverities);
       if (breakdown) judgeLines.push(`${INDENT}dropped: ${breakdown}`);
     }
-    const drops = preJudgeDrops(data);
+    const drops = beforeJudge(data);
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
+    judgeLines.push(...afterJudgeLines(data));
     if (data.suppressionCount) judgeLines.push(`${INDENT}suppressed by memory: ${data.suppressionCount}`);
     if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
       judgeLines.push(`${INDENT}suppressed: ${countOf(data.testNitSuppressedCount, 'test-only suggestion')} (round ≥2 throttle)`);

@@ -3385,7 +3385,7 @@ describe('fetchRepoContext instruction files', () => {
 
 describe('buildDashboard', () => {
 
-  it('shows each running stage with one live detail, and the finished comment without them', () => {
+  it('shows each running stage with one live detail, and the finished comment with the steps that found something', () => {
     const lines = (...rows: string[]) => rows.map(row => row.replace(/^> /, INDENT)).join('\n');
     const planner = lines('**Planner** (6s)', '> feat · 954 lines · 2 agents', '> judge effort: high');
     const claude = { name: 'Claude Opus 5.5 · high', status: 'reviewing' as const, startedAt: 12_000 };
@@ -3447,7 +3447,7 @@ describe('buildDashboard', () => {
         ...reviewed, ...graded, refuter: { total: 3, outcomes: { unsettled: 1, disproved: 1, confirmed: 1 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 },
         phase: 'complete', keptCount: 3, droppedCount: 5, judgeDurationMs: 238_000, keptSeverities: { warning: 1, note: 2 }, droppedSeverities: { blocker: 1, warning: 2, note: 2 },
       }, lines(
-        planner, '', ...reviewDone, '', '**Judge:** 3 kept · 5 dropped (3m 58s)', '> kept: 1 warning · 2 suggestions', '> dropped: 1 blocker · 2 warnings · 2 suggestions',
+        planner, '', ...reviewDone, sideDone, '', '**Judge:** 3 kept · 5 dropped (3m 58s)', '> kept: 1 warning · 2 suggestions', '> dropped: 1 blocker · 2 warnings · 2 suggestions',
       )],
     ];
     for (const [second, data, expected] of steps) expect(buildDashboard(data, second * 1000)).toBe(expected);
@@ -3579,6 +3579,9 @@ describe('buildDashboard', () => {
       .toContain(`${INDENT}grading 0 findings (1 dropped as a repeat of an earlier resolved finding)`);
     expect(buildDashboard({ ...data, staticDedupCount: 1, llmDedupCount: 1 }))
       .toContain(`${INDENT}grading 10 findings (2 dropped as repeats of earlier resolved findings)`);
+    // The findings the round adds before the judge are named too, so the count graded adds up.
+    expect(buildDashboard({ ...data, toolAlertCount: 1, carriedLeadCount: 2, openLeadCount: 1, staticDedupCount: 1, llmDedupCount: 0 }))
+      .toContain(`${INDENT}grading 10 findings (1 tool alert added, 2 leads carried over from the last round, 1 lead not finished checking, 1 dropped as a repeat of an earlier resolved finding)`);
     // A round with nothing to judge shows the judge as skipped while it runs and once it is done, never as pending.
     for (const phase of ['reviewed', 'complete'] as const) {
       const skipped = buildDashboard({ ...data, phase, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0, keptCount: 0, droppedCount: 0, judgeSkipped: true });
@@ -3618,6 +3621,54 @@ describe('buildDashboard', () => {
     expect(md).not.toContain('before the judge');
     expect(buildDashboard({ ...data, rawFindingCount: 1, keptCount: 0, droppedCount: 0, suppressionCount: 0, llmDedupCount: 1 }))
       .toContain(`**Judge:** 0 kept · 0 dropped\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
+
+    // The finders and the side checks add up to the review's count, and every finding between it and the judge's is named.
+    const lines = (...rows: string[]) => rows.map(row => row.replace(/^> /, INDENT)).join('\n');
+    const finished: DashboardData = {
+      phase: 'complete', lineCount: 644, agentCount: 2, rawFindingCount: 3, routing: { class: 'behavior', group: 'full' },
+      agentProgress: [
+        { name: 'Claude Sonnet 5.5 · high', status: 'done', findingCount: 0, durationMs: 46_000 },
+        { name: 'Claude Opus 5.5 · high', status: 'done', findingCount: 1, durationMs: 181_000 },
+      ],
+      sideChecks: {
+        comparison: { total: 2, ended: 2, findings: 1, startedAt: 10_000, endedAt: 70_000 },
+        related: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
+        claim: { total: 1, ended: 1, findings: 0, startedAt: 10_000, endedAt: 40_000 },
+        pattern: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
+        second_read: { total: 1, ended: 1, findings: 1, startedAt: 200_000, endedAt: 240_000 },
+      },
+      toolAlertCount: 1, keptCount: 2, droppedCount: 2, judgeDurationMs: 179_000, keptSeverities: { warning: 2 }, droppedSeverities: { note: 2 },
+    };
+    expect(buildDashboard(finished)).toContain(lines(
+      '**Review (behavior · full):** 3 findings',
+      '> ✅ Claude Sonnet 5.5 · high: 0 findings (46s)',
+      '> ✅ Claude Opus 5.5 · high: 1 finding (3m 1s)',
+      '> ✅ Comparisons and claim checks: 3 of 3 done, 1 finding (1m 0s)',
+      '> ✅ Second reads: 1 of 1 done, 1 finding (40s)',
+      '',
+      '**Judge:** 2 kept · 2 dropped (2m 59s)',
+      '> kept: 2 warnings',
+      '> dropped: 2 suggestions',
+      '> before the judge: 1 tool alert added',
+    ));
+    // The sweeps' findings count in the review too. Here 5 found, plus 1 tool alert and 1 carried lead, less 1 repeat, 1
+    // sweep finding judged already and 1 lead not finished checking, plus 1 added after the judge, make 3 kept, 1 dropped and 1 merged.
+    const everything = buildDashboard({
+      ...finished,
+      sideChecks: { ...finished.sideChecks, sweep: { total: 1, ended: 1, findings: 2, startedAt: 420_000, endedAt: 450_000 } },
+      carriedLeadCount: 1, staticDedupCount: 1, llmDedupCount: 0, sweepRepeatCount: 1, openLeadCount: 1,
+      keptCount: 3, droppedCount: 1, mergedCount: 1, addedAfterJudgeCount: 1, keptSeverities: { blocker: 1, warning: 2 }, droppedSeverities: { note: 1 },
+    });
+    expect(everything).toContain(lines('**Review (behavior · full):** 5 findings'));
+    expect(everything).toContain(lines('> ✅ Second reads: 1 of 1 done, 1 finding (40s)', '> ✅ Sweeps: 1 of 1 done, 2 findings (30s)', ''));
+    expect(everything).toContain(lines(
+      '**Judge:** 3 kept · 1 dropped · 1 merged (2m 59s)',
+      '> kept: 1 blocker · 2 warnings',
+      '> dropped: 1 suggestion',
+      '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 dropped as a repeat of an earlier resolved finding, 1 sweep finding already judged',
+      '> not finished checking: 1 lead',
+      '> added after the judge: 1 finding',
+    ));
   });
 
   it('renders per-agent detail and the review class and group in the complete phase', () => {

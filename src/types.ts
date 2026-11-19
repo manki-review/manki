@@ -1244,6 +1244,8 @@ export interface ReviewResult {
   rawFindingCount?: number;
   /** Tool results sent to the judge as candidate findings, on top of `rawFindingCount`. */
   toolAlertCount?: number;
+  /** Findings of the sweep left out of `rawFindingCount`, since the round judged the same problem already. */
+  sweepRepeatCount?: number;
   agentNames: string[];
   allJudgedFindings?: Finding[];
   rawFindings?: Finding[];
@@ -1904,8 +1906,20 @@ export interface DashboardData {
   suppressionCount?: number;
   staticDedupCount?: number;
   llmDedupCount?: number;
+  /** Tool results the judge graded as findings, on top of the review's. */
+  toolAlertCount?: number;
+  /** Leads of the last round the judge graded again, on top of the review's findings. */
+  carriedLeadCount?: number;
+  /** Leads listed as not finished checking, neither kept nor dropped. */
+  openLeadCount?: number;
+  /** Findings of the sweeps left out before the judge, since the round judged the same problem already. */
+  sweepRepeatCount?: number;
   keptCount?: number;
   droppedCount?: number;
+  /** Findings the judge merged into another one. */
+  mergedCount?: number;
+  /** Kept findings no judge call graded, such as the verdict reader's blockers. */
+  addedAfterJudgeCount?: number;
   agentProgress?: AgentProgressEntry[];
   /** The effort the judge runs at. Shown when there is no planner result, which shows it otherwise. */
   judgeEffort?: EffortLevel;
