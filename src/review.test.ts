@@ -3712,21 +3712,22 @@ describe('runReview', () => {
     expect(result.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck])).toEqual([['Loader ignores the lock entry', 'pre_existing']]);
   });
 
-  it('posts a blocker the judge calls pre-existing on a re-indented line as a pre-existing warning once a check finds the same failure before this PR', async () => {
+  it('posts a blocker the judge calls pre-existing next to a re-indented line as a pre-existing warning once a check finds the same failure before this PR', async () => {
     // The PR only adds a comment and re-indents the loop, so the loop that never ends was there before.
     const before = 'export function drain(queue: number[]) {\n  while (queue.length > 0) {\n  queue.at(0);\n  }\n}\n';
     const after = 'export function drain(queue: number[]) {\n  // Reads the queue until it is empty.\n  while (queue.length > 0) {\n    queue.at(0);\n  }\n}\n';
     const title = 'Drain loop never ends';
-    const found = [{
-      severity: 'blocker', title, file: 'src/queue.ts', line: 4, description: 'Nothing removes an entry, so the loop never ends.', evidence: ['src/queue.ts:4 only reads the entry'], proof: ['src/queue.ts:3', 'src/queue.ts:4'],
+    const found = (line: number) => [{
+      severity: 'blocker', title, file: 'src/queue.ts', line, description: 'Nothing removes an entry, so the loop never ends.', evidence: ['src/queue.ts:4 only reads the entry'], proof: ['src/queue.ts:3', 'src/queue.ts:4'],
       preExisting: true, preExistingReason: 'The loop read the queue the same way before this PR.',
     }];
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     // `sameBefore` is each check's answer whether the failure is the PR's own: disproved when the loop failed the same
     // way before. `pairModel` is the second refuter's model, `failed` when its call fails, or none without a second
-    // refuter. `readsBase` says the workspace holds the base, whose lines `baseProof` cites.
-    type Options = { repoTools?: boolean; pairModel?: string | null; readsBase?: boolean; baseProof?: string[]; security?: boolean };
-    const run = async (sameBefore: RefutationOutcome, { repoTools = true, pairModel = 'pair-model', readsBase = true, baseProof = ['src/queue.ts:2', 'src/queue.ts:3'], security = false }: Options = {}) => {
+    // refuter. `readsBase` says the workspace holds the base, whose lines `baseProof` cites. The finding flags `line`,
+    // by default the loop's head, which the PR left as it was at base line 2.
+    type Options = { repoTools?: boolean; pairModel?: string | null; readsBase?: boolean; baseProof?: string[]; security?: boolean; line?: number };
+    const run = async (sameBefore: RefutationOutcome, { repoTools = true, pairModel = 'pair-model', readsBase = true, baseProof = ['src/queue.ts:2', 'src/queue.ts:3'], security = false, line = 3 }: Options = {}) => {
       const { root, diff } = gitWorkspace({ 'src/queue.ts': before }, { 'src/queue.ts': after }, readsBase ? [] : undefined);
       const refuterMessages: string[] = [];
       const reply = (model: string) => ({
@@ -3739,7 +3740,7 @@ describe('runReview', () => {
         repoTools: true, sendMessage: pairModel === 'failed' ? jest.fn().mockRejectedValue(new Error('timed out')) : jest.fn().mockResolvedValue(reply(pairModel)),
       } as unknown as LLMClient;
       const clients = { ...makeClients(), ...(pair && { refuterPair: pair }) };
-      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found(line)) });
       Object.assign(clients.judge, { repoTools });
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You are a code review judge')) {
@@ -3770,7 +3771,7 @@ describe('runReview', () => {
     expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
 
     // The lines of the base prove it, so one refuter's answer lowers the blocker too, and so do two on the same model.
-    // The base answer cites base line 2, which is the head's new comment line.
+    // The base answer cites base line 2, where the flagged head line 3 sat before this PR.
     for (const options of [{ pairModel: null }, { pairModel: 'judge-model' }]) {
       const round = await run('disproved', options);
       expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.tags])]).toEqual([options, 'READY', [['warning', ['pre-existing', 'follow-up']]]]);
@@ -3778,11 +3779,12 @@ describe('runReview', () => {
 
     // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
     // second call that failed, a security finding without both refuters, a workspace without the base, a line the base
-    // does not hold, no cited line in the finding's file, and a round with no check at all keep the blocker its cell gives.
+    // does not hold, no citation of the flagged line at its base line, a flagged line the PR re-indented, and a round with
+    // no check at all keep the blocker its cell gives.
     const kept: Array<[RefutationOutcome, Options]> = [
       ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: 'failed' }], ['disproved', { pairModel: null, security: true }],
-      ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:3', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
-      ['disproved', { repoTools: false }],
+      ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
+      ['disproved', { baseProof: ['src/queue.ts:3'] }], ['disproved', { line: 4 }], ['disproved', { repoTools: false }],
     ];
     for (const [sameBefore, options] of kept) {
       const round = await run(sameBefore, options);
@@ -3795,7 +3797,7 @@ describe('runReview', () => {
     expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
   });
 
-  it('replays a rust-dashcore round: the blockers whose flagged code the base already had are posted as pre-existing warnings, and the security ones keep blocking', async () => {
+  it('replays a rust-dashcore round: a blocker whose flagged line this PR left unchanged and the base already had is posted as a pre-existing warning, and the security ones keep blocking', async () => {
     const fixture = baseProofFixture('base-proof-rust-dashcore');
     const found = fixture.findings.map(f => ({
       severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, evidence: [`${f.file}:${f.line} shows it`], proof: f.proof,
@@ -3831,18 +3833,17 @@ describe('runReview', () => {
       }
     };
 
-    // The finding the PR introduced keeps blocking. So do both security findings, since one refuter never lowers one.
-    // The disproof of the finding on `sml_engine.rs` cites real base lines of its file, but this PR rewrote the code it
-    // flags, so none of them reads as a flagged line and it keeps blocking too.
+    // Only the finding on `masternodes/manager.rs` flags a line this PR left unchanged, and its answer cites that line at
+    // its place in the base. The others flag lines this PR added or changed, so they keep blocking whatever the answer.
+    // The security finding on `instantsend/manager.rs` flags an unchanged line too, but one refuter never lowers one.
     expect(await run()).toEqual(fixture.findings.map(f => [f.title, f.expected]));
-    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'blocker', 'pre-existing', 'blocker', 'blocker']);
-    // With a second refuter that gives the same answers, a security finding whose flagged code the base holds is
-    // pre-existing too. The one on `instantlock.rs` flags a check this PR added, so the base holds none of its lines.
-    expect((await run({ pair: true })).map(([, posted]) => posted)).toEqual(['blocker', 'pre-existing', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
-    // Head line numbers past the end of the file at the base prove nothing there, so the blocker stays.
-    const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[1].title
-      ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[1].file}:870-875`] } } : recorded;
-    expect((await run({ answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'blocker']);
+    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'blocker']);
+    // With a second refuter that gives the same answers, that security finding is pre-existing too.
+    expect((await run({ pair: true })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
+    // The flagged line cited at its head number, which is another line at the base, proves nothing, so the blocker stays.
+    const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[3].title
+      ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[3].file}:${fixture.findings[3].line}`] } } : recorded;
+    expect((await run({ answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker', 'blocker']);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {

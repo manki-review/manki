@@ -1171,11 +1171,9 @@ describe('refuteBlockers', () => {
       // Line 9 of `src/api.ts` is there at the head only, so it is no line of the base, whatever the head holds.
       'Same before on a line of the head': { ...confirmed, base: { ...same, proof: ['src/math.ts:2', 'src/api.ts:9'] } },
       'Same before in a file the PR added': { ...confirmed, base: { ...same, proof: ['src/new.ts:1'] } },
-      // A real line of the finding's file at the base, but not the code it flags, shows nothing about that code.
+      // A real line of the finding's file at the base, even one its evidence cites, is not the line it flags.
       'Same before by another line of its file': { ...confirmed, base: { ...same, proof: ['src/math.ts:1'] } },
       'Same before by a line its evidence cites': { ...confirmed, base: { ...same, proof: ['src/math.ts:1'] } },
-      // A lone brace reads the same in any file, so it shows no flagged code at the base.
-      'Same before by a brace': { ...confirmed, base: { ...same, proof: ['src/math.ts:3'] } },
       'Pending blocker': { ...confirmed, premises: [confirmed], base: same },
       'Security': { ...confirmed, base: same },
       'Plain warning': { ...confirmed, base: same },
@@ -1197,8 +1195,7 @@ describe('refuteBlockers', () => {
       finding('Same before on a line of the head'),
       finding('Same before in a file the PR added', { file: 'src/new.ts', line: 1, evidence: { checks: [], proof: ['src/new.ts:1'] } }),
       finding('Same before by another line of its file'),
-      finding('Same before by a line its evidence cites', { line: 3, evidence: { checks: [], proof: ['src/math.ts:1-2', 'src/api.ts:1'] } }),
-      finding('Same before by a brace', { line: 3, evidence: { checks: [], proof: ['src/math.ts:3'] } }),
+      finding('Same before by a line its evidence cites', { line: 3, evidence: { checks: [], proof: ['src/math.ts:1-2'] } }),
       finding('Pending blocker', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [doubt] }),
       finding('Security', { tags: ['security'] }),
       finding('Plain warning', { severity: 'warning', evidence: { checks: [], proof: [] } }),
@@ -1208,17 +1205,17 @@ describe('refuteBlockers', () => {
 
     const message = (title: string) => client.calls.find(([t]) => t === title)![2];
     const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
-    expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, true, true, true, true, true, false]);
+    expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, true, true, true, true, false]);
     // The workspace holds the base, so the refuter cites the lines of the base and reads a changed file there.
-    expect(client.messages[0][0]).toContain('with at least one line of the finding\'s own file that holds the code the finding flags as it reads at the head. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them');
+    expect(client.messages[0][0]).toContain('with the line the finding flags as it is numbered at the base. Only a flagged line this PR left unchanged can fail the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them');
     expect(client.messages[0][0]).toContain('does not show, read that file at the base with `read_file` and `ref` set to `base`, or how this PR changed those lines with `git_history`, or answer unsettled.');
     // A check that asks shows the PR's change to the cited files and names the other files the PR changes.
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
     expect(message('Pending blocker')).toContain('- **Other files this PR changes**');
     expect(message('Plain warning')).not.toContain('Other files this PR changes');
     // The answer never moves the outcome or the grade here. A disproof counts only when every line it cites is in its
-    // file at the base, and one of them in the finding's own file reads as its flagged line or a line its evidence cites
-    // there at the head. With a second refuter, both must give one, for a security finding as for any other.
+    // file at the base, and one of them is the line the finding flags, at its place in the base. With a second refuter,
+    // both must give one, for a security finding as for any other.
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.base?.outcome, !!sameOnBase(f, true)])).toEqual([
       ['Same before', 'blocker', 'confirmed', 'disproved', true],
       ['No answer about the base', 'blocker', 'confirmed', 'unsettled', false],
@@ -1227,8 +1224,7 @@ describe('refuteBlockers', () => {
       ['Same before on a line of the head', 'blocker', 'confirmed', 'unsettled', false],
       ['Same before in a file the PR added', 'blocker', 'confirmed', 'unsettled', false],
       ['Same before by another line of its file', 'blocker', 'confirmed', 'unsettled', false],
-      ['Same before by a line its evidence cites', 'blocker', 'confirmed', 'disproved', true],
-      ['Same before by a brace', 'blocker', 'confirmed', 'unsettled', false],
+      ['Same before by a line its evidence cites', 'blocker', 'confirmed', 'unsettled', false],
       ['Pending blocker', 'blocker', 'confirmed', 'disproved', true],
       ['Security', 'blocker', 'confirmed', 'disproved', true],
       ['Plain warning', 'warning', 'confirmed', undefined, false],
@@ -1237,7 +1233,38 @@ describe('refuteBlockers', () => {
     // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.
     expect(result[4].refutation?.base?.proof).toEqual(['src/math.ts:2']);
     // Without a second refuter, the first refuter's answer is enough, except on a security finding.
-    expect(result.map(f => !!sameOnBase({ ...f, pairRefutation: undefined }, false))).toEqual([true, false, false, false, false, false, false, true, false, true, false, false]);
+    expect(result.map(f => !!sameOnBase({ ...f, pairRefutation: undefined }, false))).toEqual([true, false, false, false, false, false, false, false, true, false, false]);
+
+    // The diff maps the flagged line to the base. A line the PR changed or added never counts, nor does the same text
+    // at another line of the base, nor an unchanged line the finding's evidence cites.
+    const moved = gitWorkspace({ 'src/lines.ts': 'shared();\nb\nc\nshared();\n' }, { 'src/lines.ts': 'shared();\nb2\nnew\nc\nshared();\n' }, []);
+    const at = (line: number, proof: string[], evidence = [`src/lines.ts:${line}`]) => ({ line, proof, evidence });
+    const cases: Record<string, ReturnType<typeof at>> = {
+      'Unchanged line at its base line': at(5, ['src/lines.ts:4']),
+      'Unchanged line in a cited range': at(5, ['src/lines.ts:3-4']),
+      'Unchanged line at a wrong base line': at(5, ['src/lines.ts:1']),
+      'Changed line': at(2, ['src/lines.ts:2']),
+      'Added line': at(3, ['src/lines.ts:3']),
+      'Changed line with an unchanged evidence line': at(2, ['src/lines.ts:4'], ['src/lines.ts:2', 'src/lines.ts:5']),
+    };
+    const mapped = await refuteBlockers(
+      fakeClient(Object.fromEntries(Object.entries(cases).map(([title, c]) => [title, { ...confirmed, proof: [`src/lines.ts:${c.line}`], base: { ...same, proof: c.proof } }]))),
+      Object.entries(cases).map(([title, c]) => finding(title, { file: 'src/lines.ts', line: c.line, evidence: { checks: [], proof: c.evidence } })),
+      { workspace: moved.root, diff: moved.diff },
+    );
+    expect(mapped.map(f => [f.title, f.refutation?.base?.outcome])).toEqual([
+      ['Unchanged line at its base line', 'disproved'],
+      ['Unchanged line in a cited range', 'disproved'],
+      ['Unchanged line at a wrong base line', 'unsettled'],
+      ['Changed line', 'unsettled'],
+      ['Added line', 'unsettled'],
+      ['Changed line with an unchanged evidence line', 'unsettled'],
+    ]);
+    // A change the diff does not show leaves no line to map, and no diff at all leaves the answer open too.
+    const [hidden] = await refuteBlockers(fakeClient({ 'Unchanged line at its base line': { ...confirmed, proof: ['src/lines.ts:5'], base: { ...same, proof: ['src/lines.ts:4'] } } }),
+      [finding('Unchanged line at its base line', { file: 'src/lines.ts', line: 5, evidence: { checks: [], proof: ['src/lines.ts:5'] } })], { workspace: moved.root, diff: moved.diff, excludedPaths: ['src/lines.ts'] });
+    expect(hidden.refutation?.base?.outcome).toBe('unsettled');
+    rmSync(moved.root, { recursive: true, force: true });
     // With one, a second call that failed, or a second check that finds the failure the PR's own, leaves it open or cites
     // no line found at the base, keeps the finding as it is.
     const [lowered] = result;
@@ -1271,7 +1298,7 @@ describe('refuteBlockers', () => {
     const [cut] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, excludedPaths: paths(50) });
     expect(client.calls.at(-1)![2]).toContain(', and 1 more it does not name');
     const longChange = (lines: number): ParsedDiff => ({
-      ...diff, files: [...diff.files, { path: 'src/math.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 + lines, content: '+  // note\n'.repeat(lines) }] }],
+      ...diff, files: [...diff.files, { path: 'src/math.ts', changeType: 'modified', hunks: [{ oldStart: 3, oldLines: 0, newStart: 4, newLines: lines, content: '+  // note\n'.repeat(lines) }] }],
     });
     const [shortChange] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff: longChange(10) });
     const [cutChange] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff: longChange(1000) });

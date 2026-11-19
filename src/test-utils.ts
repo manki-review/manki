@@ -51,8 +51,8 @@ export interface BaseProofFixture {
   head: string;
   /** How many lines each file holds at the base and the head, which size the files of `baseProofWorkspace`. */
   lineCounts: Record<string, { base: number | null; head: number | null }>;
-  /** The real text of some lines of each file at the base and the head, by line number. */
-  text: Record<string, { base: Record<string, string>; head: Record<string, string> }>;
+  /** The headers of the PR's diff of each file without context, as `-start,count +start,count`. */
+  hunks: Record<string, string[]>;
   findings: Array<{
     title: string; file: string; line: number; description: string; security?: true; proof: string[];
     /** What the round must post: a pre-existing warning, or the blocker. */
@@ -68,17 +68,32 @@ export function baseProofFixture(name: string): BaseProofFixture {
 }
 
 /**
- * Returns a workspace for `fixture` with the base at `BASE_REF`. Each file holds as many lines as it has at the base
- * and at the head, with the real text `fixture.text` gives and a blank line for every other line, so only real code
- * reads the same on both sides.
+ * Returns a workspace for `fixture` with the base at `BASE_REF`, without its code. Each line of the base names its own
+ * number, and the head is the base with the lines `fixture.hunks` removes dropped and the lines it adds written new.
+ * So the diff of the workspace places every line as the PR's diff does.
  */
 export function baseProofWorkspace(fixture: BaseProofFixture): { root: string; diff: ParsedDiff } {
-  const side = (at: 'base' | 'head'): Record<string, string> => Object.fromEntries(Object.entries(fixture.lineCounts).flatMap(([path, counts]) => {
-    const count = counts[at];
-    const known = fixture.text[path]?.[at] ?? {};
-    return count === null ? [] : [[path, Array.from({ length: count }, (_, i) => `${known[String(i + 1)] ?? ''}\n`).join('')]];
-  }));
-  return gitWorkspace(side('base'), side('head'), []);
+  const base: Record<string, string> = {};
+  const head: Record<string, string> = {};
+  for (const [path, counts] of Object.entries(fixture.lineCounts)) {
+    const old = Array.from({ length: counts.base ?? 0 }, (_, i) => `// base line ${i + 1}`);
+    const next: string[] = [];
+    let at = 0;
+    for (const header of fixture.hunks[path] ?? []) {
+      const [, oldStart, oldCount = '1', newStart, newCount = '1'] = header.match(/^-(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?$/)!;
+      // A side with no lines names the line before the hunk.
+      const removedFrom = Number(oldCount) === 0 ? Number(oldStart) : Number(oldStart) - 1;
+      next.push(...old.slice(at, removedFrom));
+      const addedFrom = Number(newCount) === 0 ? Number(newStart) : Number(newStart) - 1;
+      next.push(...Array.from({ length: Number(newCount) }, (_, i) => `// head line ${addedFrom + i + 1}`));
+      at = removedFrom + Number(oldCount);
+    }
+    next.push(...old.slice(at));
+    if (counts.base !== null) base[path] = `${old.join('\n')}\n`;
+    if (counts.head !== null) head[path] = `${next.join('\n')}\n`;
+    if (counts.head !== null && next.length !== counts.head) throw new Error(`the hunks of ${path} give ${next.length} lines, not ${counts.head}`);
+  }
+  return gitWorkspace(base, head, []);
 }
 
 /** How many times larger the large input of `expectLinearTime` is than the small one, unless the caller gives both. */
