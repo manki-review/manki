@@ -3656,6 +3656,7 @@ describe('buildDashboard', () => {
         related: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
         claim: { total: 1, ended: 1, findings: 0, startedAt: 10_000, endedAt: 40_000 },
         pattern: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
+        fix: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
         second_read: { total: 1, ended: 1, findings: 1, startedAt: 200_000, endedAt: 240_000 },
       },
       toolAlertCount: 1, keptCount: 2, droppedCount: 2, judgeDurationMs: 179_000, keptSeverities: { warning: 2 }, droppedSeverities: { note: 2 },
