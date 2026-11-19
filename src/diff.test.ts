@@ -503,6 +503,54 @@ describe('reviewableDiff', () => {
     expect(['docs/t"q.md', 'docs/bïn.dat', 'docs/naïve\ta\\b.md'].map(path => !!findClosedPattern(path, closedPaths))).toEqual([true, true, false]);
     expect(closeRawDiff(quoted, ['höldout/**'])).not.toContain('secret');
   });
+
+  it('reads a name with a quote mark or a date in it as it is, so a file moved to it out of a closed path stays closed', () => {
+    // As `git diff` writes them: these names are not quoted, and a `+++` path with a space ends in a tab.
+    const raw = [
+      'diff --git a/holdout/case.md b/docs/case\'',
+      'similarity index 65%',
+      'rename from holdout/case.md',
+      'rename to docs/case\'',
+      'index 81976dd..e449626 100644',
+      '--- a/holdout/case.md',
+      '+++ b/docs/case\'',
+      '@@ -3,2 +3,2 @@ a',
+      ' secret',
+      '-e',
+      '+e changed',
+      'diff --git a/holdout/it\'s.md b/docs/it\'s.md',
+      'similarity index 100%',
+      'rename from holdout/it\'s.md',
+      'rename to docs/it\'s.md',
+      'diff --git a/holdout/b.dat b/docs/b\'',
+      'similarity index 100%',
+      'rename from holdout/b.dat',
+      'rename to docs/b\'',
+      'diff --git a/docs/note 2024-01-02 10:11:12 +0100\' b/docs/note 2024-01-02 10:11:12 +0100\'',
+      'new file mode 100644',
+      'index 0000000..3e75765',
+      '--- /dev/null',
+      '+++ b/docs/note 2024-01-02 10:11:12 +0100\'\t',
+      '@@ -0,0 +1 @@',
+      '+open text',
+      'diff --git a/docs/mode\' b/docs/mode\'',
+      'old mode 100644',
+      'new mode 100755',
+      '',
+    ].join('\n');
+
+    const parsed = parsePRDiff(raw);
+    expect(parsed.files.map(f => [f.path, f.oldPath])).toEqual([['docs/case\'', 'holdout/case.md'], ['docs/note 2024-01-02 10:11:12 +0100\'', undefined]]);
+    expect(parsed.binarySkipped?.map(b => [b.path, JSON.parse(b.header).slice(0, 2)])).toEqual([
+      ['docs/it\'s.md', ['holdout/it\'s.md', 'docs/it\'s.md']], ['docs/b\'', ['holdout/b.dat', 'docs/b\'']], ['docs/mode\'', ['docs/mode\'', 'docs/mode\'']],
+    ]);
+    expect(parsePRDiff(rebuildRawDiff(parsed)).files.map(f => [f.path, f.oldPath])).toEqual(parsed.files.map(f => [f.path, f.oldPath]));
+
+    const { fullDiff, excludedFiles, closedPaths } = reviewableDiff(raw, [], ['holdout']);
+    expect(JSON.stringify(fullDiff)).not.toContain('secret');
+    expect(excludedFiles.map(f => f.path)).toEqual(['docs/case\'', 'docs/it\'s.md', 'docs/b\'']);
+    expect(['docs/case\'', 'docs/case', 'docs/it\'s.md', 'docs/b\'', 'docs/mode\''].map(path => !!findClosedPattern(path, closedPaths))).toEqual([true, false, true, true, false]);
+  });
 });
 
 describe('findClosedPattern', () => {

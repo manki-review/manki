@@ -8,14 +8,21 @@ import { minimatch } from 'minimatch';
 import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, canLeaveOut } from './types';
 
 /**
- * Parse a unified diff string into structured data.
+ * Parse a unified diff string into structured data. Each `diff --git` section is parsed on its own, and its paths come
+ * from `headerPaths`, since `parse-diff` drops a trailing quote from a name and keeps git's escapes.
  */
 export function parsePRDiff(rawDiff: string): ParsedDiff {
   if (!rawDiff.trim()) {
     return { files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [] };
   }
 
-  const parsed = parseDiff(rawDiff).map(file => ({ ...file, from: file.from && unquotedPath(file.from), to: file.to && unquotedPath(file.to) }));
+  const parsed = rawDiff.split(/(?=^diff --git )/m).flatMap(section => {
+    const [first, ...rest] = parseDiff(section);
+    if (!first || !section.startsWith('diff --git ')) return first ? [first, ...rest] : [];
+    const { from, to } = headerPaths(section);
+    // `/dev/null` comes from a file mode line, which marks an added or deleted file.
+    return [{ ...first, from: first.from === '/dev/null' ? first.from : from ?? first.from, to: first.to === '/dev/null' ? first.to : to ?? first.to }, ...rest];
+  });
   let totalAdditions = 0;
   let totalDeletions = 0;
   const files: DiffFile[] = [];
@@ -125,15 +132,48 @@ const C_ESCAPES: Record<string, string> = { '\u0007': '\\a', '\b': '\\b', '\t': 
 const C_UNESCAPES: Record<string, string> = Object.fromEntries(Object.entries(C_ESCAPES).map(([c, escape]) => [escape[1], c]));
 
 /**
- * Returns a header path that `parse-diff` read with git's C escapes decoded. Git quotes a path with a control character,
- * a quote, a backslash or a non-ASCII byte, and `parse-diff` drops the quotes but keeps the escapes, such as `\303\251`
- * for `é`. Git writes a backslash only inside a quoted path, so a path without one is returned as it is.
+ * Returns a path as a git header line writes it, unquoted. Git quotes a path with a control character, a quote, a
+ * backslash or a non-ASCII byte, and writes C escapes in it, such as `\303\251` for `é`. The tab git adds after a `---`
+ * or `+++` path with a space is dropped.
  */
-function unquotedPath(path: string): string {
-  if (!path.includes('\\')) return path;
+function unquotedPath(text: string): string {
+  const path = text.replace(/\t$/, '');
+  if (path.length < 2 || !path.startsWith('"') || !path.endsWith('"')) return path;
   // Splitting on a capture group puts each escape at an odd index, without its backslash.
-  const parts = path.split(/\\([0-7]{3}|[abtnvfr"\\])/);
+  const parts = path.slice(1, -1).split(/\\([0-7]{3}|[abtnvfr"\\])/);
   return Buffer.concat(parts.map((part, i) => (i % 2 === 0 ? Buffer.from(part) : /^[0-7]{3}$/.test(part) ? Buffer.from([parseInt(part, 8)]) : Buffer.from(C_UNESCAPES[part])))).toString('utf8');
+}
+
+/** The side prefixes `parse-diff` strips from a header path: git's `a/` and `b/`, and its mnemonic ones. */
+const SIDE_PREFIX = /^[abiwco12]\//;
+
+/** Returns a header line's path unquoted, without its side prefix when it has one, and `/dev/null` as it is. */
+function sidePath(text: string, prefixed: boolean): string {
+  const path = unquotedPath(text);
+  return prefixed && path !== '/dev/null' ? path.replace(SIDE_PREFIX, '') : path;
+}
+
+/**
+ * Returns the paths before and after the change from the header of `section`, one file's part of a git diff. They come
+ * from the lines that hold one path each: `rename` or `copy` lines first, then `---` and `+++`. Without those, as for a
+ * binary or a mode change, the `diff --git` line names one path twice, and it is read only when its halves match.
+ */
+function headerPaths(section: string): { from?: string; to?: string } {
+  const lines = section.split('\n');
+  const end = lines.findIndex(line => line.startsWith('@@') || line === 'GIT binary patch');
+  const header = end < 0 ? lines : lines.slice(0, end);
+  const value = (start: string) => header.find(line => line.startsWith(start))?.slice(start.length);
+  const both = value('diff --git ') ?? '';
+  const half = (both.length - 1) / 2;
+  const halves = Number.isInteger(half) && both[half] === ' ' ? [both.slice(0, half), both.slice(half + 1)].map(text => sidePath(text, true)) : [];
+  const same = halves.length === 2 && halves[0] === halves[1] ? halves[0] : undefined;
+  const side = (moved: string[], line: string): string | undefined => {
+    const named = moved.map(value).find(text => text !== undefined);
+    if (named !== undefined) return sidePath(named, false);
+    const text = value(line);
+    return text !== undefined ? sidePath(text, true) : same;
+  };
+  return { from: side(['rename from ', 'copy from '], '--- '), to: side(['rename to ', 'copy to '], '+++ ') };
 }
 
 /**
