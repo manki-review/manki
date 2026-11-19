@@ -1,3 +1,5 @@
+import { Minimatch } from 'minimatch';
+
 import {
   closeRawDiff,
   findClosedPattern,
@@ -554,6 +556,19 @@ describe('reviewableDiff', () => {
 });
 
 describe('findClosedPattern', () => {
+  it('compiles each pattern once, however many paths, folders and patterns it checks', () => {
+    const make = jest.spyOn(Minimatch.prototype, 'make');
+    try {
+      // More patterns than `minimatch` keeps compiled in its own cache, as a PR that moves many files out of a closed path gives.
+      const closed = [...Array.from({ length: 300 }, (_, i) => `/moved/compiled-once-${i}.ts`), 'compiled-once/**'];
+      for (let i = 0; i < 20; i++) expect(findClosedPattern(`src/deep/dir${i}/file${i}.ts`, closed)).toBeUndefined();
+      expect(findClosedPattern('compiled-once/a.ts', closed)).toBe('compiled-once/**');
+      expect(make).toHaveBeenCalledTimes(closed.length);
+    } finally {
+      make.mockRestore();
+    }
+  });
+
   it('matches a path however it is spelled, and closes one that leaves the repository', () => {
     const closed = ['secret/**', 'notes'];
     for (const path of ['secret/x.md', './secret/x.md', 'secret//x.md', 'src/../secret/x.md', 'secret\\x.md', '.\\secret\\x.md', 'secret/./x.md', 'secret/sub/']) {

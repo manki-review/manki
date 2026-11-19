@@ -3,7 +3,7 @@ import { posix } from 'path';
 
 import * as core from '@actions/core';
 import parseDiff from 'parse-diff';
-import { minimatch } from 'minimatch';
+import { minimatch, Minimatch } from 'minimatch';
 
 import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, canLeaveOut } from './types';
 
@@ -96,12 +96,23 @@ function closedPathKey(path: string): string {
 }
 
 /**
+ * Each `closed_paths` pattern compiled once. `findClosedPattern` runs for every prefix of every path of a tree, and
+ * `minimatch` keeps only the last 256 patterns compiled, which the folders moved out of closed paths can pass.
+ */
+const CLOSED_MATCHERS = new Map<string, Minimatch>();
+
+/**
  * Whether the `closed_paths` pattern `pattern` matches `path`. A pattern with a leading `/` matches from the root only,
  * and any other pattern without a slash matches a name at any depth. A leading `#` or `!` is part of the name.
  */
 function closes(path: string, pattern: string): boolean {
-  const options = { dot: true, nocomment: true, nonegate: true };
-  return pattern.startsWith('/') ? minimatch(path, pattern.slice(1), options) : minimatch(path, pattern, { ...options, matchBase: true });
+  let matcher = CLOSED_MATCHERS.get(pattern);
+  if (!matcher) {
+    const options = { dot: true, nocomment: true, nonegate: true };
+    matcher = pattern.startsWith('/') ? new Minimatch(pattern.slice(1), options) : new Minimatch(pattern, { ...options, matchBase: true });
+    CLOSED_MATCHERS.set(pattern, matcher);
+  }
+  return matcher.match(path);
 }
 
 /**
