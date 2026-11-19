@@ -1915,10 +1915,10 @@ class ParsedFile {
 
   /**
    * Returns the name the map of the change shows for `decl`: `Type.name` for a member of a type, and nothing for a
-   * declaration local to a function.
+   * declaration local to a function or a field no type declares itself, such as one of an inline parameter type.
    */
   mappedName(decl: Declaration): string | undefined {
-    if (decl.local) return undefined;
+    if (decl.local || (decl.kind === 'field' && !this.ownFieldKeys.has(decl.key))) return undefined;
     const owner = this.owners.get(decl) ?? (decl.container && this.byKey.get(decl.container)?.name);
     return owner ? `${owner}.${decl.name}` : decl.name;
   }

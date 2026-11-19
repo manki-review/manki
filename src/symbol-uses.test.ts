@@ -622,6 +622,7 @@ describe('listUsesOutsideDiff', () => {
       'src/outer.ts': 'export function outer() {\n  function gone() {}\n  class Gone {\n    size = 1;\n  }\n  return 1;\n}\n',
       'src/job.py': 'class Job:\n    retries = 1\n\n    def __init__(self):\n        self.size = 1\n',
       'src/api.gen.ts': 'export function fetchUser() {}\n',
+      'src/printer.ts': 'export class Printer {\n  show(x: { balance: bigint }) {}\n}\n',
       'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n}\n',
       'src/ids.rs': 'pub type Id = u8;\n',
       'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: number) {}\n}\n',
@@ -640,6 +641,7 @@ describe('listUsesOutsideDiff', () => {
       'src/job.py': 'class Job:\n    retries = 2\n\n    def __init__(self):\n        self.size = 1\n        self.cost = 2\n\n    def run(self):\n        def step():\n            pass\n',
       'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n\tB int\n}\n',
       'src/api.gen.ts': 'export function fetchAccount() {}\n',
+      'src/printer.ts': 'export class Printer {\n  show(x: { balance: number }) {}\n}\n',
       'src/ids.rs': 'pub type Id = u16;\n',
     });
     const deleted = parsePRDiff('diff --git a/src/legacy.ts b/src/legacy.ts\ndeleted file mode 100644\n--- a/src/legacy.ts\n+++ /dev/null\n@@ -1,4 +0,0 @@\n-export function legacyParse(): void {\n-  const indented = 2;\n-}\n-const TOP_LEVEL = 1;').files;
@@ -684,6 +686,9 @@ describe('listUsesOutsideDiff', () => {
         // type, are never named.
         { file: 'src/outer.ts', symbol: 'function outer', change: 'body changed' },
         { file: 'src/outer.ts', symbol: 'constant run', change: 'added' },
+        // A field of an inline parameter type is no field of the class around it.
+        { file: 'src/printer.ts', symbol: 'function Printer.show', change: 'declaration changed' },
+        { file: 'src/printer.ts', symbol: 'type Printer', change: 'body changed' },
         { file: 'src/shapes.ts', symbol: 'function area', change: 'removed' },
         { file: 'src/shapes.ts', symbol: 'type Square', change: 'declaration changed' },
         { file: 'src/shapes.ts', symbol: 'type Circle', change: 'body changed' },
