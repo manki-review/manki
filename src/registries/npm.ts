@@ -111,8 +111,55 @@ function unquoted(text: string): string {
 }
 
 /**
- * Returns the settings of an `.npmrc`, as `key=value`, or of a Yarn 1 `.yarnrc`, as `key value`, either side optionally
- * quoted. It splits each line at the first `=` or space with plain string search, so no line can make it slow.
+ * Reads one side of an `.npmrc` line as npm's `ini` does: trimmed, then without one pair of single or double quotes
+ * and read as JSON when it is quoted, or else cut at an unescaped `;` or `#` and trimmed again.
+ */
+function iniValue(raw: string): string {
+  let value = raw.trim();
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (value.startsWith("'")) value = value.slice(1, -1);
+    try {
+      return String(JSON.parse(value));
+    } catch {
+      return value;
+    }
+  }
+  let out = '';
+  let escaped = false;
+  for (const c of value) {
+    if (escaped) {
+      out += '\\;#'.includes(c) ? c : `\\${c}`;
+      escaped = false;
+    } else if (c === ';' || c === '#') {
+      break;
+    } else if (c === '\\') {
+      escaped = true;
+    } else {
+      out += c;
+    }
+  }
+  return (escaped ? `${out}\\` : out).trim();
+}
+
+/**
+ * Returns the settings of an `.npmrc` as npm's `ini` reads them: the key is all of a line before its first `=`, a
+ * trailing `[]` marks a list, and a line without `=` sets its key to `true`. Plain string search keeps it linear.
+ */
+function iniSettings(text: string): Array<{ key: string; value: string }> {
+  return text.split(/[\r\n]+/).flatMap(line => {
+    const start = line.trimStart();
+    if (!start || start.startsWith(';') || start.startsWith('#')) return [];
+    const eq = line.indexOf('=');
+    if (eq === 0) return [];
+    const spelled = iniValue(eq < 0 ? line : line.slice(0, eq));
+    const key = spelled.length > 2 && spelled.endsWith('[]') ? spelled.slice(0, -2) : spelled;
+    return [{ key, value: eq < 0 ? 'true' : iniValue(line.slice(eq + 1)) }];
+  });
+}
+
+/**
+ * Returns the settings of a Yarn 1 `.yarnrc`, as `key value` or `key=value`, either side optionally quoted. It splits
+ * each line at the first `=` or space with plain string search, so no line can make it slow.
  */
 function lineSettings(text: string): Array<{ key: string; value: string }> {
   return text.split('\n').flatMap(raw => {
@@ -142,7 +189,12 @@ function yamlSettings(text: string): Record<string, unknown> {
 function settingsOf({ file, text }: RegistryConfig): Array<{ key: string; value: unknown }> {
   const base = posix.basename(file);
   if (base === '.yarnrc.yml' || PNPM_WORKSPACE.includes(base)) return Object.entries(yamlSettings(text)).map(([key, value]) => ({ key, value }));
-  return REGISTRY_SETTINGS.includes(base) ? lineSettings(text) : [];
+  return REGISTRY_SETTINGS.includes(base) ? textSettings(file, text) : [];
+}
+
+/** Returns the settings of an `.npmrc` or a Yarn 1 `.yarnrc`, each read as its tool reads it. */
+function textSettings(file: string, text: string): Array<{ key: string; value: string }> {
+  return posix.basename(file) === '.npmrc' ? iniSettings(text) : lineSettings(text);
 }
 
 /**
@@ -172,7 +224,7 @@ function registrySettings({ file, text }: RegistryConfig): RegistrySetting[] {
       ...Object.entries(scopes).flatMap(([scope, entry]) => (isObject(entry) && entry.npmRegistryServer !== undefined ? [{ scope: `@${scope.replace(/^@/, '')}`, url: String(entry.npmRegistryServer) }] : [])),
     ];
   }
-  return lineSettings(text).flatMap(({ key: spelled, value }) => {
+  return textSettings(file, text).flatMap(({ key: spelled, value }) => {
     const key = spelled.toLowerCase();
     if (key === 'registry') return [{ scope: '', url: value }];
     const scope = key.endsWith(':registry') ? key.slice(0, -':registry'.length) : '';

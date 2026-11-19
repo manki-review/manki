@@ -267,11 +267,19 @@ describe('dependencyLoader', () => {
     await expect(round({ ...required, 'pnpm-workspace.yaml': 'registry: https://npm.corp.example/\n' }).load('npm/left-pad')).rejects.toThrow(`${another} pnpm-workspace.yaml sets the registry https://npm.corp.example/.`);
     await expect(round({ ...scopedRequired, 'pnpm-workspace.yaml': 'registries:\n  "@corp": https://npm.corp.example/\n' }).load('npm/@corp/pad')).rejects.toThrow(`${another} pnpm-workspace.yaml sets the registry https://npm.corp.example/ for @corp.`);
     await expect(round({ ...required, '.npmrc': 'REGISTRY=https://npm.corp.example/\n' }).load('npm/left-pad')).rejects.toThrow(`${another} .npmrc sets the registry`);
+    // npm's `ini` drops single or double quotes around a key and any whitespace `trim` drops, and a comment after a value.
+    for (const line of ["'registry' = https://npm.corp.example/", 'registry\v= https://npm.corp.example/', ' "registry"=https://npm.corp.example/ ; mirror']) {
+      await expect(round({ ...required, '.npmrc': `${line}\n` }).load('npm/left-pad')).rejects.toThrow(`${another} .npmrc sets the registry https://npm.corp.example/.`);
+    }
+    await expect(round({ ...required, '.npmrc': "'package-lock' = false\n" }).load('npm/left-pad')).rejects.toThrow('.npmrc sets `package-lock`');
     await expect(round({ ...required, '.npmrc': 'x'.repeat(200) }, { maxManifestBytes: 100 }).load('npm/left-pad')).rejects.toThrow('Manki could not read .npmrc, which can change where packages come from, within its size limits.');
     // A line built to make a pattern backtrack is read in linear time.
-    for (const file of ['.npmrc', '.yarnrc']) {
+    for (const [file, text] of [
+      ['.npmrc', `"registry${'='.repeat(100_000)}\nregistry${' '.repeat(100_000)}=${' \\'.repeat(100_000)}a"b"c\n`],
+      ['.yarnrc', `registry${' '.repeat(100_000)}a"b"c\n"registry${'='.repeat(100_000)}"\n`],
+    ]) {
       const started = Date.now();
-      await expect(round({ ...required, [file]: `registry${' '.repeat(100_000)}a"b"c\n"registry${'='.repeat(100_000)}"\n` }).load('npm/left-pad')).rejects.toThrow(`${another} ${file} sets the registry`);
+      await expect(round({ ...required, [file]: text }).load('npm/left-pad')).rejects.toThrow(`${another} ${file} sets the registry`);
       expect(Date.now() - started).toBeLessThan(1_000);
     }
     expect(server.requests).toEqual([]);
