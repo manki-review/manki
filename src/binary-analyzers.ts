@@ -1,8 +1,8 @@
 import { execFile } from 'child_process';
 import { mkdirSync, writeFileSync } from 'fs';
-import { basename, dirname, join, relative, resolve, sep } from 'path';
+import { basename, dirname, join, resolve, sep } from 'path';
 
-import { addedLines } from './diff';
+import { addedLines, repoPath } from './diff';
 import { installPinned, makeScratchDir, PinnedDownload } from './tool-install';
 import { DiffFile, PackageVulnerability, StaticSignal } from './types';
 import { SYSTEM_ENV } from './utils';
@@ -157,7 +157,7 @@ export async function runGitleaks(files: DiffFile[], tools: ToolRunner): Promise
   ], root, [0]);
   const leaks = JSON.parse(output) as Array<{ RuleID: string; Description: string; StartLine: number; File: string }>;
   return leaks.map(leak => ({
-    tool: 'gitleaks', ruleId: leak.RuleID, severity: 'error', file: repoPath(root, leak.File), line: leak.StartLine,
+    tool: 'gitleaks', ruleId: leak.RuleID, severity: 'error', file: repoPath(leak.File, root), line: leak.StartLine,
     message: leak.Description, source: 'secrets',
   }));
 }
@@ -170,7 +170,7 @@ export async function runOsvScanner(lockfiles: Map<string, string>, tools: ToolR
   // which has none, and mapped back to its repository path.
   const paths = [...lockfiles.keys()];
   const root = writeScanTree(new Map(paths.map((path, i) => [`${i}/${basename(path)}`, lockfiles.get(path)!])));
-  const repoLockfile = (toolPath: string) => paths[Number(repoPath(root, toolPath).split('/')[0])];
+  const repoLockfile = (toolPath: string) => paths[Number(repoPath(toolPath, root).split('/')[0])];
   // Exit code 1 means vulnerabilities were found, and 128 that a lockfile lists no packages.
   const output = await runChecked(tools, 'osv-scanner', binary, [
     'scan', 'source', '--config', join(RULES_DIR, 'osv-scanner.toml'), '--format', 'json', '--no-resolve',
@@ -209,7 +209,7 @@ export async function runOpengrep(rules: string[], files: Map<string, string>, t
   ], root, [0]);
   const { results } = JSON.parse(output) as { results: Array<{ check_id: string; path: string; start: { line: number }; extra: { message: string; severity: string } }> };
   return results.map(r => ({
-    tool: 'opengrep', ruleId: r.check_id, severity: SEMGREP_SEVERITY[r.extra.severity] ?? 'note', file: repoPath(root, r.path),
+    tool: 'opengrep', ruleId: r.check_id, severity: SEMGREP_SEVERITY[r.extra.severity] ?? 'note', file: repoPath(r.path, root),
     line: r.start.line, message: r.extra.message, source: 'semgrep',
   }));
 }
@@ -231,7 +231,7 @@ export async function runActionlint(workflows: Map<string, string>, config: stri
   ], root, [0, 1]);
   const errors = (JSON.parse(output.trim() || '[]') ?? []) as Array<{ message: string; filepath: string; line: number; kind: string }>;
   return errors.map(e => ({
-    tool: 'actionlint', ruleId: e.kind, severity: 'error', file: repoPath(root, e.filepath), line: e.line, message: e.message, source: 'actionlint',
+    tool: 'actionlint', ruleId: e.kind, severity: 'error', file: repoPath(e.filepath, root), line: e.line, message: e.message, source: 'actionlint',
   }));
 }
 
@@ -248,7 +248,7 @@ export async function runZizmor(workflows: Map<string, string>, tools: ToolRunne
     const path = primary?.symbolic.key.Local?.verbatim_path;
     if (!primary || !path) return [];
     return [{
-      tool: 'zizmor', ruleId: finding.ident, severity: ZIZMOR_SEVERITY[finding.determinations.severity] ?? 'note', file: repoPath(root, path),
+      tool: 'zizmor', ruleId: finding.ident, severity: ZIZMOR_SEVERITY[finding.determinations.severity] ?? 'note', file: repoPath(path, root),
       line: primary.concrete.location.start_point.row + 1, message: `${finding.desc}: ${primary.symbolic.annotation}`, source: 'zizmor',
     }];
   });
@@ -265,7 +265,7 @@ export async function runShellcheck(scripts: Map<string, string>, tools: ToolRun
   ], root, [0, 1]);
   const { comments } = JSON.parse(output) as { comments: Array<{ file: string; line: number; level: string; code: number; message: string }> };
   return comments.map(c => ({
-    tool: 'shellcheck', ruleId: `SC${c.code}`, severity: SHELLCHECK_SEVERITY[c.level] ?? 'note', file: repoPath(root, c.file), line: c.line,
+    tool: 'shellcheck', ruleId: `SC${c.code}`, severity: SHELLCHECK_SEVERITY[c.level] ?? 'note', file: repoPath(c.file, root), line: c.line,
     message: c.message, source: 'shellcheck',
   }));
 }
@@ -312,8 +312,4 @@ function writeScanTree(files: Map<string, string>): string {
 /** Returns the paths of the scanned files as tool arguments, each starting with `./` so none reads as an option. */
 function scanArgs(files: Map<string, string>): string[] {
   return [...files.keys()].map(path => `./${path}`);
-}
-
-function repoPath(root: string, toolPath: string): string {
-  return relative(root, resolve(root, toolPath)).split(sep).join('/');
 }

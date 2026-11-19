@@ -117,10 +117,10 @@ function refutationFiles(file: string, proof: readonly string[] = []): string[] 
  * A file `readFileInRoot` does not read, such as one over its size limit, holds no line.
  */
 function existingLocations(workspace: string, proof: readonly string[]): string[] {
-  return proof.filter(location => {
+  return [...new Set(proof.filter(location => {
     const file = readFileInRoot(workspace, locationFile(location));
     return !!file && file !== 'too large' && holdsLines(file.lines.length, ...locationLines(location));
-  });
+  }))];
 }
 
 /**
@@ -153,7 +153,7 @@ function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] 
 export function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
   const names = related?.repos.map(r => r.repo) ?? [];
   const own = Array.isArray(proof) ? proof.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, names)) : proof;
-  return { proof: existingLocations(workspace, parseProof(own)), relatedProof: relatedLocations(proof, related) };
+  return { proof: existingLocations(workspace, parseProof(own, workspace)), relatedProof: relatedLocations(proof, related) };
 }
 
 /** Whether `refutation` rests on a line of a related repo, in its own answer or in a premise. */

@@ -798,6 +798,53 @@ export interface RoundPrClaims {
   claims?: RoundPrClaim[];
 }
 
+/** A part of the change that corrects a behaviour, as a model listed it from the diff alone. */
+export interface ListedFix {
+  /** Its changed lines, as `file:start-end` in the new file, each inside a hunk of the diff. */
+  at: string[];
+  /** The wrong behaviour it is meant to correct, in one sentence. */
+  problem: string;
+}
+
+/** A fix of the round and how its check ended. */
+export interface RoundFix extends ListedFix {
+  /** The reviewer name its findings carry. */
+  reviewer: string;
+  /**
+   * `root_cause` when the check found that the fix changes the code that causes the problem, and `workaround` when the
+   * cause stays as it was. Each stands only with a cited line that exists, and `workaround` only with one outside the
+   * fix. Every other end is `unchecked`. It is a record only: no stage is shown it and no grade depends on it.
+   */
+  status: 'root_cause' | 'workaround' | 'unchecked';
+  /** Why the check gave no answer: as for `RoundPrClaim.call`, and `cut` when the cap on checks left the fix out. */
+  call?: 'failed' | 'timed_out' | 'skipped' | 'cut';
+  /** Where the problem comes from, as the check stated it. */
+  cause?: string;
+  /** The input or path that still fails with the fix in place, as the check stated it. */
+  stillFails?: string;
+  /** What is left to check, as the check stated it. */
+  reason?: string;
+  /** The existing `file:line` locations the check cited for its status. */
+  proof?: string[];
+  /** The lines of related repos it cited for that, as `owner/name:path:line`, each in a checkout the round fetched. */
+  relatedProof?: string[];
+  /** The findings it reported for a `workaround`, before dedup and the judge. */
+  findings?: number;
+  /** A digest of everything the check was sent, set when the check answered. */
+  inputDigest?: string;
+  /** Set when the round kept the answer from `meta.reusedFrom` and did not check again. */
+  reused?: true;
+}
+
+/** The fixes a round listed from the diff, each with its check. */
+export interface RoundFixes {
+  /** Why no fix was listed: the call failed, its reply could not be used or no model is set up for it. */
+  skipped?: string;
+  /** Fixes the listing gave past its cap. */
+  cut?: number;
+  fixes?: RoundFix[];
+}
+
 /** A topic the scope reader sees in a PR, with the changed files that belong to it. */
 export interface ScopeTopic {
   name: string;
@@ -1306,6 +1353,8 @@ export interface ReviewResult {
   secondReads?: RoundSecondReads;
   /** The statements of the PR text the change relies on, each with how its check ended. */
   prClaims?: RoundPrClaims;
+  /** The fixes the change holds, each with how its check ended. */
+  fixes?: RoundFixes;
   /** Whether the PR is useful and covers one topic, by the scope reader. */
   scope?: RoundScope;
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
@@ -1884,7 +1933,7 @@ export interface AgentProgressEntry {
 }
 
 /** A step of calls that run beside the finders, or after the judge for the sweeps. */
-export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'pattern' | 'sweep' | 'second_read';
+export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'pattern' | 'fix' | 'sweep' | 'second_read';
 
 /** Hears of the checks of one step as they run. */
 export interface CheckProgress<R> {
@@ -2079,6 +2128,8 @@ export interface RoundContext {
   secondReads?: RoundSecondReads;
   /** The statements of the PR text the change relies on, each with how its check ended. */
   prClaims?: RoundPrClaims;
+  /** The fixes the change holds, each with how its check ended. */
+  fixes?: RoundFixes;
   /** Whether the PR is useful and covers one topic, by the scope reader. */
   scope?: RoundScope;
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
@@ -2371,7 +2422,7 @@ export interface RoundDiff {
 /** Resolved model IDs per pipeline stage. */
 export interface RoundModels {
   planner?: string;
-  /** Model of the first reader of the round's review group. The sibling comparisons, related repo checks, claim checks, pattern checks and sweeps ran on it too. */
+  /** Model of the first reader of the round's review group. The sibling comparisons, related repo checks, claim checks, pattern checks, fix checks and sweeps ran on it too. */
   reviewer?: string;
   judge: string;
   /** Model of the second refuter, on rounds where it checked a finding or an earlier round's answer of it was reused. */
@@ -2990,7 +3041,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'fixes' | 'fix_check' | 'related_check' | 'pattern_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'scope' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

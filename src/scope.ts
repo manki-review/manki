@@ -95,7 +95,7 @@ function splitProblem(split: ScopeTopic[], diff: ParsedDiff): string | undefined
 function checkScope(answer: ScopeAnswer, diff: ParsedDiff, workspace: string | undefined): RoundScope {
   const dropped: NonNullable<RoundScope['dropped']> = [];
   const changed = new Set(diff.files.map(f => f.path));
-  const proof = !answer.doubt ? [] : workspace ? shownLines(answer.proof, workspace).proof : parseProof(answer.proof).filter(at => isDiffLocation(at, diff));
+  const proof = !answer.doubt ? [] : workspace ? shownLines(answer.proof, workspace).proof : parseProof(answer.proof, undefined).filter(at => isDiffLocation(at, diff));
   if (answer.doubt && proof.length === 0) dropped.push({ part: 'doubt', reason: 'no cited line exists' });
   const topics = answer.topics.map(t => ({ ...t, files: t.files.filter(f => changed.has(f)) })).filter(t => t.files.length > 0).slice(0, MAX_TOPICS);
   const problem = answer.split.length > 0 ? splitProblem(answer.split, diff) : undefined;

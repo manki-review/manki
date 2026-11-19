@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -7,6 +7,7 @@ import * as core from '@actions/core';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
+import { parseFindings } from './review';
 import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { BASE_READS_FILE } from './workspace';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -1670,7 +1671,20 @@ describe('refuteBlockers', () => {
     await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds });
     // A finding the judge could not settle can rest on a caller in any file, which the stored outcome does not cover.
     await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', gradeIfConfirmed: 'blocker' })], { workspace, priorRounds, diff });
-
     expect(client.calls).toHaveLength(5);
+
+    // A finding read from a reply that spells its paths from the current directory reuses the same check.
+    const [spelled] = parseFindings(JSON.stringify([{ ...finding('Sum overflows'), file: './src/math.ts', proof: ['./src/math.ts:2'] }]), 'R', undefined);
+    await refuteBlockers(client, [spelled], { workspace, priorRounds, diff });
+    expect(client.calls).toHaveLength(5);
+    // So does a disproof of such a finding that cites a line of its own file outside the diff.
+    const own = fakeClient({ 'Spelled own file': { outcome: 'disproved', reason: 'Checked at src/math.ts:1.', proof: ['./src/math.ts:1'] } });
+    const [ownFile] = parseFindings(JSON.stringify([{ ...finding('Spelled own file'), file: './src/math.ts' }]), 'R', undefined);
+    expect((await refuteBlockers(own, [ownFile], { workspace }))[0].refutation).toMatchObject({ outcome: 'disproved', proof: ['src/math.ts:1'] });
+    // So does one filed under the absolute path of the checkout, with a disproof that cites the checkout's real path.
+    const absolute = fakeClient({ 'Absolute own file': { outcome: 'disproved', reason: 'Checked at src/math.ts:1.', proof: [`${join(realpathSync(workspace), 'src', 'math.ts')}:1`] } });
+    const [absoluteFile] = parseFindings(JSON.stringify([{ ...finding('Absolute own file'), file: join(workspace, 'src', 'math.ts') }]), 'R', workspace);
+    expect(absoluteFile.file).toBe('src/math.ts');
+    expect((await refuteBlockers(absolute, [absoluteFile], { workspace }))[0].refutation).toMatchObject({ outcome: 'disproved', proof: ['src/math.ts:1'] });
   });
 });

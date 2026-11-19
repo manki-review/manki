@@ -315,7 +315,7 @@ export async function runComparisons(clientFor: (reviewer: string) => LLMClient,
   const implementations = questions.filter(q => q.kind === 'implementations');
   const asked = [...fields.slice(0, MAX_FIELD_QUESTIONS), ...implementations.slice(0, MAX_IMPLEMENTATION_QUESTIONS)];
   const cut = [...fields.slice(MAX_FIELD_QUESTIONS), ...implementations.slice(MAX_IMPLEMENTATION_QUESTIONS)];
-  return ask(clientFor, asked, cut, options, { what: 'sibling comparison', system: systemPrompt, parse: (content, reviewer) => ({ findings: parseFindings(content, reviewer) }) });
+  return ask(clientFor, asked, cut, options, { what: 'sibling comparison', system: systemPrompt, parse: (content, reviewer) => ({ findings: parseFindings(content, reviewer, options.workspace) }) });
 }
 
 /**
@@ -323,7 +323,7 @@ export async function runComparisons(clientFor: (reviewer: string) => LLMClient,
  * in the checkouts of `related`. Their `proof` and `relatedProof` hold only those lines. Returns how many were dropped.
  */
 function parseRelatedFindings(content: string, reviewer: string, workspace: string, related?: RelatedRepoTools): { findings: Finding[]; dropped: number } {
-  const parsed = parseFindings(content, reviewer);
+  const parsed = parseFindings(content, reviewer, workspace);
   // `parseFindings` maps the usable elements in order, so the raw `proof` of each finding is the element at its index.
   const elements = (JSON.parse(extractJSON(content, 'array')) as unknown[]).filter(isUsableElement);
   const findings = parsed.flatMap((finding, i) => {
@@ -403,7 +403,7 @@ function parsePatternAnswer(
   if (answer !== 'differs' || !Array.isArray(parsed.findings)) return { findings: [], record };
   // `parseFindings` maps the usable elements in order, so the raw `proof` and `cost` of each finding are the element at its index.
   const elements = parsed.findings.filter(isUsableElement);
-  const reported = elements.length > 0 ? parseFindings(JSON.stringify(elements), reviewer, instructionFiles) : [];
+  const reported = elements.length > 0 ? parseFindings(JSON.stringify(elements), reviewer, workspace, instructionFiles) : [];
   const findings = reported.flatMap((finding, i) => {
     const { proof: cited, cost } = elements[i];
     const own = rootPath(finding.file);

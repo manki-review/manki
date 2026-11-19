@@ -28,7 +28,7 @@ import { repoToolsPrompt } from './providers/cli-utils';
 import * as mcpServer from './mcp-server';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
+import { parseFindings, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
 import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
@@ -430,7 +430,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Drop it only when you can say concretely why both are wrong.');
     expect(prompt).toContain("The other finder's silence is not evidence against it.");
     expect(prompt).toContain("Agreement never raises or protects a finding's severity.");
-    expect(prompt).toContain('A finding named `Sibling field: ...`, `Sibling code: ...`, `Reference check: ...`, `Consumer check: ...`, `Dependency check: ...`, `Pattern check: ...`, `Claim check N` or `Sweep N` comes from a call asked about that spot, that counterpart in a related repo, that piece of new structure, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two.');
+    expect(prompt).toContain('A finding named `Sibling field: ...`, `Sibling code: ...`, `Reference check: ...`, `Consumer check: ...`, `Dependency check: ...`, `Pattern check: ...`, `Claim check N`, `Fix check N` or `Sweep N` comes from a call asked about that spot, that counterpart in a related repo, that piece of new structure, that statement of the PR author, that fix or that kind of mistake, not from a finder, so it never counts as one of the two.');
     expect(prompt).toContain('Nor does a finding named `Second read N`: one finder\'s model read the change again after it was shown the titles of the round\'s findings, so its copy of a finding is no independent report.');
     expect(prompt).not.toContain('specialist');
 
@@ -1247,14 +1247,14 @@ describe('parseJudgeResponse', () => {
   it('ranks each finding by its place in `noteOrder`, and leaves a finding the judge did not list unranked', () => {
     const entry = (id: number | undefined, title: string) => ({ ...(id && { id }), title, row: 'improvement', reasoning: 'r' });
     const entries = [entry(1, 'A'), entry(2, 'B'), entry(3, 'C'), entry(4, 'D'), entry(undefined, 'E')];
-    const ranks = (noteOrder: unknown) => parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries, noteOrder })).findings.map(f => f.noteRank);
+    const ranks = (noteOrder: unknown) => parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries, noteOrder }), undefined).findings.map(f => f.noteRank);
 
     // A number as a string counts, a number that names no finding takes its place without a finding, and a repeat is ignored.
     expect(ranks([3, '1', 9, 3, 'four', 4])).toEqual([1, undefined, 0, 5, undefined]);
     for (const absent of [undefined, null, 'none', {}, []]) expect(ranks(absent)).toEqual([undefined, undefined, undefined, undefined, undefined]);
 
     const base = { severity: 'note' as const, file: 'src/a.ts', description: 'd', reviewers: ['r'] };
-    const judged = parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries.slice(0, 3), noteOrder: [3, 1] })).findings;
+    const judged = parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries.slice(0, 3), noteOrder: [3, 1] }), undefined).findings;
     const mapped = mapJudgedToFindings(['A', 'B', 'C'].map((title, i) => ({ ...base, title, line: i + 1 })), judged);
     expect(mapped.map(f => [f.title, f.noteRank])).toEqual([['A', 1], ['B', undefined], ['C', 0]]);
   });
@@ -1267,21 +1267,21 @@ describe('parseJudgeResponse', () => {
       { id: 3, title: 'C', row: 'degraded', column: 'sometimes', reasoning: 'r', category: 'toString' },
       { id: 4, title: 'D', row: 'none', column: 'normal', reasoning: 'r' },
       { id: 5, title: 'E', row: 'Ignore', reasoning: 'r' },
-    ] }));
+    ] }), undefined);
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
     // A row or column counts whatever its case, and only an explicit `rare` is a rare column. `ignore` is the prompt's word for a dropped finding.
     expect(result.findings.map(f => [f.row, f.column])).toEqual([['wrong', 'rare'], ['severe', 'rare'], ['degraded', undefined], ['none', undefined], ['none', undefined]]);
     // An entry with any other row has no grade from the judge, so it counts as no entry and the rest of the reply is kept.
     for (const entry of [{ row: 'serious' }, { severity: 'warning' }, { row: 3 }]) {
       const reply = JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'A', row: 'wrong', reasoning: 'r' }, { id: 2, title: 'B', reasoning: 'r', ...entry }] });
-      expect(parseJudgeResponse(reply).findings.map(f => f.id)).toEqual([1]);
+      expect(parseJudgeResponse(reply, undefined).findings.map(f => f.id)).toEqual([1]);
       expect(warnSpy).toHaveBeenCalledWith('Judge named no known `row` for "B", so the entry is not used');
     }
     // A fix that leaves part of the problem says so in the posted fix.
     const leaves = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'Upload unbounded', row: 'degraded', reasoning: 'r', fixLeaves: ' The upload still has no timeout. ' },
       { id: 2, title: 'Covered', row: 'degraded', reasoning: 'r', fixLeaves: '' },
-    ] })).findings;
+    ] }), undefined).findings;
     expect(leaves.map(f => f.fixLeaves)).toEqual(['The upload still has no timeout.', undefined]);
     const base = { severity: 'warning' as const, file: 'src/upload.ts', line: 3, description: 'd', reviewers: ['r'] };
     const mapped = mapJudgedToFindings([{ ...base, title: 'Upload unbounded', howToFix: 'Check the size.' }, { ...base, title: 'Covered', line: 9 }], leaves);
@@ -1293,12 +1293,12 @@ describe('parseJudgeResponse', () => {
       ] },
       { id: 2, title: 'B', row: 'degraded', reasoning: 'r', doubts: [] },
       { id: 3, title: 'C', row: 'degraded', reasoning: 'r', doubts: 'none' },
-    ] })).findings;
+    ] }), undefined).findings;
     expect(doubts.map(f => f.doubts)).toEqual([[{ premise: 'A caller passes `n` unchecked', decides: 'grade' }, { premise: 'The copy is never dropped', decides: 'defect' }], undefined, undefined]);
     // `blocker` and `warning` are kept as the grade the judge states for a doubted finding once its doubts hold. Any other answer is none.
     const stated = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [' Warning ', 'blocker', '', 'note', 3, undefined].map((gradeIfConfirmed, i) => (
       { id: i + 1, title: `F${i + 1}`, row: 'wrong', reasoning: 'r', gradeIfConfirmed }
-    )) })).findings;
+    )) }), undefined).findings;
     expect(stated.map(f => f.gradeIfConfirmed)).toEqual(['warning', 'blocker', undefined, undefined, undefined, undefined]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
@@ -1313,7 +1313,7 @@ describe('parseJudgeResponse', () => {
       ],
     });
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.summary).toBe('Clean PR with one minor issue.');
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].title).toBe('Bug found');
@@ -1327,7 +1327,7 @@ describe('parseJudgeResponse', () => {
       { id: 2, title: 'B', row: 'wrong', reasoning: '', proof: 'src/a.ts:4' },
     ] });
 
-    expect(parseJudgeResponse(json).findings.map(f => f.proof)).toEqual([['src/a.ts:4'], undefined]);
+    expect(parseJudgeResponse(json, undefined).findings.map(f => f.proof)).toEqual([['src/a.ts:4'], undefined]);
   });
 
   it('parses finding ids and drops unusable ones', () => {
@@ -1340,7 +1340,7 @@ describe('parseJudgeResponse', () => {
       ],
     });
 
-    const { findings } = parseJudgeResponse(json);
+    const { findings } = parseJudgeResponse(json, undefined);
     expect(findings.map(f => f.id)).toEqual([2, 1, undefined, undefined]);
   });
 
@@ -1349,7 +1349,7 @@ describe('parseJudgeResponse', () => {
       { title: 'Bug found', row: 'wrong', reasoning: 'This is a real bug.' },
     ]);
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.summary).toBe('Review complete.');
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].title).toBe('Bug found');
@@ -1362,7 +1362,7 @@ describe('parseJudgeResponse', () => {
       ],
     });
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.summary).toBe('Review complete.');
     expect(result.findings).toHaveLength(1);
   });
@@ -1370,19 +1370,19 @@ describe('parseJudgeResponse', () => {
   it('parses JSON wrapped in markdown code fences', () => {
     const json = '```json\n[{"title":"Bug","row":"wrong","reasoning":"Real bug."}]\n```';
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].title).toBe('Bug');
   });
 
   it('throws for empty, malformed or non-object responses', () => {
-    expect(() => parseJudgeResponse('')).toThrow();
-    expect(() => parseJudgeResponse('not json {broken')).toThrow();
-    expect(() => parseJudgeResponse('"just a string"')).toThrow('unexpected format');
+    expect(() => parseJudgeResponse('', undefined)).toThrow();
+    expect(() => parseJudgeResponse('not json {broken', undefined)).toThrow();
+    expect(() => parseJudgeResponse('"just a string"', undefined)).toThrow('unexpected format');
   });
 
   it('returns empty findings for unrecognized object', () => {
-    const result = parseJudgeResponse('{"not": "an array"}');
+    const result = parseJudgeResponse('{"not": "an array"}', undefined);
     expect(result.findings).toEqual([]);
     expect(result.summary).toBe('Review complete.');
   });
@@ -1403,7 +1403,7 @@ describe('parseJudgeResponse', () => {
       ],
     });
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.threadEvaluations!.slice(3)).toEqual([
       // The grade of what remains comes from the cell the judge states, never from a grade it writes.
       { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: 'The upload still has no timeout.', cell: { row: 'degraded', column: 'normal' }, grade: 'warning' },
@@ -1427,7 +1427,7 @@ describe('parseJudgeResponse', () => {
       findings: [],
     });
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.threadEvaluations).toBeUndefined();
   });
 
@@ -1444,7 +1444,7 @@ describe('parseJudgeResponse', () => {
       ],
     });
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.threadEvaluations).toHaveLength(3);
     expect(result.threadEvaluations![0]).toEqual({ threadId: 'PRRT_abc', status: 'addressed', reason: 'Valid' });
     expect(result.threadEvaluations![1]).toEqual({ threadId: 'PRRT_def', status: 'not_addressed', reason: 'Bogus status defaults to not_addressed' });
@@ -1454,7 +1454,7 @@ describe('parseJudgeResponse', () => {
   it('handles missing title and reasoning gracefully', () => {
     const json = JSON.stringify([{ row: 'style' }]);
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].title).toBe('Untitled');
     expect(result.findings[0].reasoning).toBe('');
@@ -1466,7 +1466,7 @@ describe('parseJudgeResponse', () => {
       { title: 'B', row: 'none', reasoning: 'False positive.' },
     ]);
 
-    const result = parseJudgeResponse(json);
+    const result = parseJudgeResponse(json, undefined);
     expect(result.findings).toHaveLength(2);
     expect(result.findings.map(f => f.row)).toEqual(['wrong', 'none']);
   });
@@ -1624,7 +1624,12 @@ describe('runJudgeAgent', () => {
     // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo.
     fs.mkdirSync(path.join(workspace, 'acme', 'reports:src'), { recursive: true });
     fs.writeFileSync(path.join(workspace, 'acme', 'reports:src', 'twin.ts'), 'text of the PR, line 1\ntext of the PR, line 2\n');
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.writeFileSync(path.join(workspace, 'src', 'guard.ts'), 'export const guard = true;\n');
+    // A finder that cites the checkout by its absolute path, read with the workspace, cites the repository's file.
+    const [absolute] = parseFindings(JSON.stringify([{ title: 'Cited by the checkout path', severity: 'note', file: path.join(workspace, 'src', 'guard.ts'), line: 1, description: 'd', evidence: [`${path.join(workspace, 'src', 'guard.ts')}:1 sets the guard`] }]), 'R', workspace);
     const findings = [
+      absolute,
       // Its proof makes the judge read that file of the PR first. The citation after it still shows the related repo's line.
       makeFinding({ title: 'A file of the PR named like a related line', severity: 'note', description: 'See acme/reports:src/twin.ts:2.', evidence: { checks: [], proof: ['acme/reports:src/twin.ts:1'] } }),
       makeFinding({ title: 'Importer reads a date', severity: 'note', description: 'The consumer parses the column at `acme/reports:src/import.ts:2`.' }),
@@ -1681,6 +1686,8 @@ describe('runJudgeAgent', () => {
     expect(shown[1]).toContain('>>> 2: text of the consumer, line 2');
     expect(shown[1]).toContain("- **Cited code outside the diff** (acme/reports:src/twin.ts:1), at the PR's head.");
     expect(shown[1]).toContain('>>> 1: text of the PR, line 1');
+    expect(shown[1]).toContain("- **Cited code outside the diff** (src/guard.ts:1), at the PR's head.");
+    expect(shown[1]).toContain('>>> 1: export const guard = true;');
     expect(shown[1]).not.toContain('>>> 2: text of the PR, line 2');
     expect(withoutRelated[1]).not.toContain('Cited code in a related repo');
     // Only a judge with tool steps reads the repos itself, as a check, with the rule on their content in its prompt.
@@ -6559,7 +6566,7 @@ interface ThreadFixture {
 
 /** The files whose diff the judge is shown for `finding`: its own, and each one a proving line or an evidence line cites. */
 function shownFiles(finding: Finding): string[] {
-  return [finding.file, ...[...(finding.evidence?.proof ?? []), ...parseProof(finding.evidence?.checks)].map(location => location.replace(/:[\d-]+$/, ''))];
+  return [finding.file, ...[...(finding.evidence?.proof ?? []), ...parseProof(finding.evidence?.checks, undefined)].map(location => location.replace(/:[\d-]+$/, ''))];
 }
 
 function loadFixtures<T>(corpus: string): T[] {
@@ -6641,7 +6648,7 @@ describe('judge thread-evaluation fixture corpus', () => {
     );
 
     const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
-    const parsed = parseJudgeResponse(response.content);
+    const parsed = parseJudgeResponse(response.content, undefined);
     const evaluation = parsed.threadEvaluations?.find(e => e.threadId === fixture.openThread.threadId);
 
     const actualStatus = evaluation?.status ?? 'uncertain';

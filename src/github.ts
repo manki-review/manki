@@ -957,9 +957,9 @@ function reviewHeading(routing: DashboardData['routing']): string {
   return `Review (${sanitizeMarkdown(route)})`;
 }
 
-const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', sweep: 'sweeps', second_read: 'second reads' };
-// `runReview` starts these four steps beside the finders in every round, the second reads after the finders and the sweeps after the judge, so the sweeps show under the judge.
-const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern'];
+const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', fix: 'fix checks', sweep: 'sweeps', second_read: 'second reads' };
+// `runReview` starts these five steps beside the finders in every round, the second reads after the finders and the sweeps after the judge, so the sweeps show under the judge.
+const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern', 'fix'];
 
 /**
  * The line of the side checks of `kinds`, such as `⏳ Comparisons and claim checks: 2 of 5 done, 1 finding`. It is done
@@ -1431,7 +1431,7 @@ export async function updateProgressComment(
 function reusedLine(context: RoundContext): string | undefined {
   if (!context.meta.reusedFrom) return undefined;
   const models = [...new Set((context.reviewers.agentMetrics ?? []).filter(m => m.reused).map(m => sanitizeMarkdown(m.model ? modelDisplayName(m.model) : m.name)))];
-  const checks = [...(context.comparisons ?? []), ...(context.prClaims?.claims ?? [])].filter(c => c.reused).length;
+  const checks = [...(context.comparisons ?? []), ...(context.prClaims?.claims ?? []), ...(context.fixes?.fixes ?? [])].filter(c => c.reused).length;
   const answers = checks > 0 ? `the answers of ${countOf(checks, 'check')}` : '';
   if (models.length === 0) return answers ? `This review kept ${answers} from the last attempt on this commit.` : undefined;
   return `${models.join(' and ')} read this commit in the last attempt, and ${models.length === 1 ? 'its' : 'their'} findings were kept${answers && `, as were ${answers}`}.`;

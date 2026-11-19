@@ -1,5 +1,3 @@
-import { posix } from 'path';
-
 import * as core from '@actions/core';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
@@ -9,8 +7,8 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
-import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
+import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -24,6 +22,7 @@ import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
+import { fixesRecord, listFixes, runFixChecks } from './fixes';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
@@ -199,7 +198,7 @@ function fileOf(location: string): string {
 /** Splits a file a client reports as read into the `owner/name:` of a related repo, empty for the PR's own repo, and its path without `./`, `..` or a backslash. */
 export function readFileParts(file: string): { repo: string; path: string } {
   const [, repo = '', path] = /^([^/:]+\/[^/:]+:)?(.*)$/s.exec(file)!;
-  return { repo, path: posix.normalize(path.replace(/\\/g, '/')) };
+  return { repo, path: repoPath(path.replace(/\\/g, '/')) };
 }
 
 /** Returns a file a client reports as read in the spelling of `listedFiles`. */
@@ -457,6 +456,8 @@ interface KeptAttempt {
   comparisons: Map<string, EarlierAnswer<RoundComparison>>;
   /** The claim checks that answered, by reviewer name. */
   claims: Map<string, EarlierAnswer<RoundPrClaim>>;
+  /** The fix checks that answered, by reviewer name. */
+  fixes: Map<string, EarlierAnswer<RoundFix>>;
   /** The second reads of the attempt and the findings of all of them. */
   secondReads?: EarlierAnswer<RoundSecondReads>;
 }
@@ -514,6 +515,7 @@ function keptOf(attempt: EarlierAttempt, team: TeamRoster, { headSha, changeDige
   const finders = new Map((record.reviewers.agentMetrics ?? []).flatMap(m => (m.status === 'success' && !m.failureReason && m.inputDigest && m.findingsReturned !== undefined ? keep(m.name, m, m.findingsReturned) : [])));
   const comparisons = new Map((record.comparisons ?? []).flatMap(c => (c.status === 'answered' && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
   const claims = new Map((record.prClaims?.claims ?? []).flatMap(c => (!c.call && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
+  const fixes = new Map((record.fixes?.fixes ?? []).flatMap(c => (!c.call && c.inputDigest ? keep(c.reviewer, c, c.findings) : [])));
   const reads = record.secondReads?.reads ?? [];
   for (const read of reads) counted &&= findingsOf(read.reviewer).length === (read.findings ?? 0);
   const secondReads = record.secondReads && { record: record.secondReads, findings: reads.flatMap(read => findingsOf(read.reviewer)) };
@@ -521,7 +523,7 @@ function keptOf(attempt: EarlierAttempt, team: TeamRoster, { headSha, changeDige
     core.info('The last attempt is not reused, since its record lists another number of findings than it holds');
     return undefined;
   }
-  return { from: { review: attempt.review, timestamp: meta.timestamp }, finders, comparisons, claims, ...(secondReads && { secondReads }) };
+  return { from: { review: attempt.review, timestamp: meta.timestamp }, finders, comparisons, claims, fixes, ...(secondReads && { secondReads }) };
 }
 
 /**
@@ -1172,7 +1174,7 @@ export async function runReview(
     };
     return [f.name, withFallback(stage, 'reviewer', f.name, movesOnLimit, finderDeadline)];
   }));
-  // The sibling comparisons, related repo checks, claim checks, pattern checks and sweeps run on the model of the group's first reader.
+  // The sibling comparisons, related repo checks, claim checks, pattern checks, fix checks and sweeps run on the model of the group's first reader.
   const comparisonModel = team.finders[0].model;
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
   // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them. The
@@ -1200,7 +1202,7 @@ export async function runReview(
     : undefined;
   const uses = await usesPromise;
   const agentFailureReasons = new Map<string, string>();
-  let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims'> = {};
+  let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims' | 'fixes'> = {};
   // Related work is left out: the posted incomplete review would render it.
   const incomplete = (end: string | RoundEnd, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
     verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', findings: [], highlights: [], reviewComplete: false,
@@ -1273,6 +1275,16 @@ export async function runReview(
       rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal, progress: sideProgress('claim'), earlier: earlierOf(kept?.claims),
     });
     return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims), terms };
+  });
+  // Each fix the change holds gets a check of its own beside the finders, under the comparisons' deadline. The list is read
+  // from the diff alone. Without a check that can run, such as the quick check of a trivial change, no list is asked for.
+  const checksFixes = !!checkWorkspace && !!pickReviewerClient(clients, comparisonModel).client.repoTools;
+  const fixClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'fixes'), comparisonDeadline.signal);
+  const fixChecksPromise = (checksFixes ? listFixes(fixClient, rawDiff, diff) : Promise.resolve({ fixes: [] })).then(async ({ fixes, ...listed }) => {
+    const checked = await runFixChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'fix_check', reviewer), fixes, {
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, signal: comparisonDeadline.signal, progress: sideProgress('fix'), earlier: earlierOf(kept?.fixes),
+    });
+    return { findings: checked.findings, record: fixesRecord(listed, checked.fixes) };
   });
   const referenceNames = uses.referenceNames ?? [];
   const dependencyNames = uses.dependencyNames ?? [];
@@ -1651,13 +1663,14 @@ export async function runReview(
   const relatedChecks = await relatedChecksPromise;
   const claimChecks = await claimChecksPromise;
   const patternChecks = await patternChecksPromise;
+  const fixChecks = await fixChecksPromise;
   clearTimeout(comparisonGrace);
-  allFindings.push(...comparisonFindings, ...relatedChecks.findings, ...claimChecks.findings, ...patternChecks.findings);
+  allFindings.push(...comparisonFindings, ...relatedChecks.findings, ...claimChecks.findings, ...patternChecks.findings, ...fixChecks.findings);
   const comparisons = [...siblingComparisons, ...relatedChecks.comparisons, ...patternChecks.comparisons];
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   const usesWithTerms = usesRecord || claimChecks.terms ? { ...usesRecord, ...(claimChecks.terms && { claimTerms: claimChecks.terms }) } : undefined;
-  finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
-  const reusedChecks = [...comparisons, ...(claimChecks.record?.claims ?? [])].filter(c => c.reused).length;
+  finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }), ...(fixChecks.record && { fixes: fixChecks.record }) };
+  const reusedChecks = [...comparisons, ...(claimChecks.record?.claims ?? []), ...(fixChecks.record?.fixes ?? [])].filter(c => c.reused).length;
   const reused = kept && (reusedFinders.length > 0 || reusedChecks > 0) ? { from: kept.from, finders: reusedFinders.map(f => f.name) } : undefined;
   if (reused) {
     core.info(`Kept from the last attempt: ${reused.finders.length} finder(s) and ${reusedChecks} check(s)`);
@@ -2633,7 +2646,7 @@ async function runReviewerOnSlice(
   }
   let findings: Finding[];
   try {
-    findings = parseFindings(response.content, finder.name, instructionFiles);
+    findings = parseFindings(response.content, finder.name, workspace, instructionFiles);
   } catch (error) {
     throw new FinderReplyError(error instanceof Error ? error.message : String(error));
   }
@@ -2878,7 +2891,7 @@ export function buildReviewerUserMessage(
   return message;
 }
 
-export function parseFindings(responseText: string, reviewerName: string, instructionFiles: readonly InstructionFile[] = []): Finding[] {
+export function parseFindings(responseText: string, reviewerName: string, workspace: string | undefined, instructionFiles: readonly InstructionFile[] = []): Finding[] {
   core.debug(`${reviewerName} response length: ${responseText.length}`);
 
   if (responseText.trim().length === 0) {
@@ -2907,14 +2920,14 @@ export function parseFindings(responseText: string, reviewerName: string, instru
   }
 
   return elements.filter(isUsableElement).map(f => {
-    const evidence = parseEvidence(f);
+    const evidence = parseEvidence(f, workspace);
     const lead = f.lead === true ? { checked: textOf(f.checked), left: textOf(f.left) } : undefined;
     // A lead the judge keeps is posted like a finding, so it needs a description even when the reviewer gave none.
     const leadDescription = lead && `A reviewer raised this as a suspicion it had not finished checking. It had checked: ${leadText(lead).checked}. Still to check: ${leadText(lead).left}.`;
     return {
       severity: validateSeverity(f.severity),
       title: String(f.title || 'Untitled finding'),
-      file: String(f.file || ''),
+      file: repoPath(String(f.file || ''), workspace),
       line: Number(f.line) || 0,
       description: String(f.description || leadDescription || ''),
       suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
@@ -3017,18 +3030,32 @@ function textLines(value: unknown, max = MAX_EVIDENCE_LINES): string[] {
  * lists, and drops entries without one. It returns at most `MAX_EVIDENCE_LINES`, and the first location of every entry
  * comes before any further one, so an entry that lists many lines cannot push another entry out.
  */
-export function parseProof(value: unknown): string[] {
+export function parseProof(value: unknown, workspace: string | undefined): string[] {
+  // No entry past the first `MAX_EVIDENCE_LINES` with a location can be kept, so none of them is read.
   const listed = textLines(value, Infinity).flatMap(entry => {
     const [, file, lines] = entry.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
-    return file ? [lines.split(/, ?/).map(range => `${file}:${range}`)] : [];
+    return file ? [{ file, lines }] : [];
+  }).slice(0, MAX_EVIDENCE_LINES).map(({ file, lines }) => {
+    const path = repoPath(file, workspace);
+    return lines.split(/, ?/).map(range => `${path}:${range}`);
   });
   return [...listed.map(([first]) => first), ...listed.flatMap(([, ...more]) => more)].slice(0, MAX_EVIDENCE_LINES);
 }
 
-/** Reads a reviewer entry's `evidence`, `proof` and `claimsMissing` with `emptySearch`, or returns `undefined` when it cites none. */
-export function parseEvidence(f: Record<string, unknown>): FindingEvidence | undefined {
-  const checks = textLines(f.evidence);
-  const proof = parseProof(f.proof);
+/** Returns the evidence line `check` with the path of the location it starts with as `repoPath` gives it. */
+function withRepoPath(check: string, workspace?: string): string {
+  const [, file] = check.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
+  const path = file && repoPath(file, workspace);
+  return path && path !== file ? check.replace(file, () => path) : check;
+}
+
+/**
+ * Reads a reviewer entry's `evidence`, `proof` and `claimsMissing` with `emptySearch`, or returns `undefined` when it
+ * cites none. The paths its evidence and proof lines start with are read as `repoPath` says.
+ */
+export function parseEvidence(f: Record<string, unknown>, workspace: string | undefined): FindingEvidence | undefined {
+  const checks = textLines(f.evidence).map(check => withRepoPath(check, workspace));
+  const proof = parseProof(f.proof, workspace);
   const emptySearch = f.claimsMissing === true ? textOf(f.emptySearch) : undefined;
   if (checks.length === 0 && proof.length === 0 && emptySearch === undefined) return undefined;
   return { checks, proof, ...(emptySearch !== undefined && { emptySearch }) };
@@ -3373,7 +3400,8 @@ function filesMayHaveChangedSince(round: number, files: readonly string[], sorte
 
 /** Returns the file `f` sits in and the files it cites in its proof or checks. */
 function citedFiles(f: { file: string; evidence?: FindingEvidence }): string[] {
-  return [f.file, ...[...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)].flatMap(at => parseLocation(at)?.file ?? [])].filter(Boolean);
+  // `parseEvidence` already read these lines with the round's workspace, so no checkout is needed to read them again.
+  return [f.file, ...[...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks, undefined)].flatMap(at => parseLocation(at)?.file ?? [])].filter(Boolean);
 }
 
 /**

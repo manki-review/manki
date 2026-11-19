@@ -1,9 +1,9 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
+import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, SideCheckState } from './types';
+import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, SideCheckState } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -248,6 +248,8 @@ describe('formatFindingComment', () => {
       proof: ['src/util.ts:9'],
     } };
     expect(parseFindingData(render(citing))?.evidenceFiles).toEqual(['src/util.ts', 'lib/unread.ts']);
+    // Git allows a backslash in a file name, so no slash stands for one, and such a name is not a plain repository path.
+    expect(plainCitedFiles(['src\\x.ts', 'src/a.ts'], undefined)).toEqual(['src/a.ts']);
     expect(parseFindingData(render(onOwnLine))).not.toHaveProperty('evidenceFiles');
     // A finding with no separate fix keeps the rest of its description as why it matters.
     expect(render({ ...baseFinding, description, evidence })).toContain(`<summary>Why it matters and 1 place read</summary>\n\n**Why it matters**\n${sentence(4)} ${sentence(5)}\n\n**Checked in the code**\n`);
@@ -2526,8 +2528,8 @@ describe('postReview body lead', () => {
     expect(recorded).not.toContain('Started automatically');
 
     // A round that kept findings of the last attempt names the models of their finders below that, with the checks it kept.
-    const keptFrom = (agentMetrics: RoundContext['reviewers']['agentMetrics'], comparisons?: RoundContext['comparisons']) => makeContext({
-      meta: { ...retried.meta, reusedFrom: { review: 7, timestamp: '2026-11-18T15:00:00.000Z' } }, reviewers: { agents: [], agentMetrics }, ...(comparisons && { comparisons }),
+    const keptFrom = (agentMetrics: RoundContext['reviewers']['agentMetrics'], comparisons?: RoundContext['comparisons'], fixes?: RoundFix[]) => makeContext({
+      meta: { ...retried.meta, reusedFrom: { review: 7, timestamp: '2026-11-18T15:00:00.000Z' } }, reviewers: { agents: [], agentMetrics }, ...(comparisons && { comparisons }), ...(fixes && { fixes: { fixes } }),
     });
     const keptLine = async (context: RoundContext): Promise<string> => {
       mockCreateReview.mockClear();
@@ -2540,6 +2542,9 @@ describe('postReview body lead', () => {
     expect(await keptLine(keptFrom([opus, { ...gpt, reused: undefined }]))).toBe('Claude Opus 5.5 read this commit in the last attempt, and its findings were kept.');
     expect(await keptLine(keptFrom([opus, gpt], [compared]))).toBe('Claude Opus 5.5 and GPT 5.5 read this commit in the last attempt, and their findings were kept, as were the answers of 1 check.');
     expect(await keptLine(keptFrom([], [compared, compared]))).toBe('This review kept the answers of 2 checks from the last attempt on this commit.');
+    // A kept fix check counts as a kept check too.
+    const fixed: RoundFix = { at: ['src/a.ts:1'], problem: 'p', reviewer: 'Fix check 1', status: 'root_cause', reused: true };
+    expect(await keptLine(keptFrom([], undefined, [fixed]))).toBe('This review kept the answers of 1 check from the last attempt on this commit.');
   });
 
   it('posts follow-up warnings off the changed lines as file-level threads, security ones included, and lists the suggestions', async () => {
@@ -3412,6 +3417,7 @@ describe('buildDashboard', () => {
       related: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 },
       claim: { total: 2, ended: claims, findings: 0, startedAt: 12_000, ...(endedAt && { endedAt }) },
       pattern: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 },
+      fix: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 },
     });
     const started: DashboardData = {
       phase: 'started', lineCount: 954, agentCount: 2, plannerStartedAt: 0, plannerDurationMs: 6000,
@@ -3483,11 +3489,15 @@ describe('buildDashboard', () => {
     // side checks show once a step asks one.
     const quiet = buildDashboard({ ...started, agentProgress: [claude, { name: gpt.name, status: 'reviewing' }], sideChecks: { comparison: { total: 0, ended: 0, findings: 0, startedAt: 12_000, endedAt: 12_000 } } }, 20_000);
     expect(quiet).toContain(lines('**Review (behavior · full):** 0/2 agents complete', '> ⏳ Claude Opus 5.5 · high: 8s so far', '> ⏳ GPT 6.2 Sol · high', '', '**Judge**'));
-    // The side checks stay running until every step beside the finders reported, and name the related repo checks.
+    // The side checks stay running until every step beside the finders reported, and name the related repo and fix checks.
     expect(buildDashboard({ ...started, sideChecks: { related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 } } }, 40_000))
       .toContain('> ⏳ Related checks: 1 of 1 done'.replace('> ', INDENT));
-    expect(buildDashboard({ ...started, sideChecks: { ...side(3, 2, 0, 238_000), related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 } } }, 300_000))
-      .toContain('> ✅ Comparisons, related checks and claim checks: 6 of 6 done (3m 46s)'.replace('> ', INDENT));
+    const { fix: _fix, ...withoutFix } = side(3, 2, 0, 238_000)!;
+    expect(buildDashboard({ ...started, sideChecks: { ...withoutFix, related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 } } }, 300_000))
+      .toContain('> ⏳ Comparisons, related checks and claim checks: 6 of 6 done'.replace('> ', INDENT));
+    expect(buildDashboard({ ...started, sideChecks: {
+      ...side(3, 2, 0, 238_000), related: { total: 1, ended: 1, findings: 0, startedAt: 12_000, endedAt: 30_000 }, fix: { total: 2, ended: 2, findings: 1, startedAt: 40_000, endedAt: 200_000 },
+    } }, 300_000)).toContain('> ✅ Comparisons, related checks, claim checks and fix checks: 8 of 8 done, 1 finding (3m 46s)'.replace('> ', INDENT));
     // The pattern checks run beside the finders too, so the line waits for them and names them.
     const { pattern: _pattern, ...withoutPattern } = side(3, 2, 0, 238_000)!;
     expect(buildDashboard({ ...started, sideChecks: withoutPattern }, 300_000)).toContain('> ⏳ Comparisons and claim checks: 5 of 5 done'.replace('> ', INDENT));
@@ -3651,6 +3661,7 @@ describe('buildDashboard', () => {
         related: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
         claim: { total: 1, ended: 1, findings: 0, startedAt: 10_000, endedAt: 40_000 },
         pattern: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
+        fix: { total: 0, ended: 0, findings: 0, startedAt: 10_000, endedAt: 10_000 },
         second_read: { total: 1, ended: 1, findings: 1, startedAt: 200_000, endedAt: 240_000 },
       },
       toolAlertCount: 1, keptCount: 2, droppedCount: 2, judgeDurationMs: 179_000, keptSeverities: { warning: 2 }, droppedSeverities: { note: 2 },

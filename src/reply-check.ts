@@ -91,18 +91,18 @@ function shownPlaces(cited: unknown, sources: ReplySources): { own: string[]; re
     const { proof, relatedProof } = shownLines(cited, sources.workspace, sources.related);
     return { own: proof, related: relatedProof };
   }
-  return { own: ownCitations(cited, sources.relatedNames).filter(location => isDiffLocation(location, sources.diff)), related: [] };
+  return { own: ownCitations(cited, sources.relatedNames, undefined).filter(location => isDiffLocation(location, sources.diff)), related: [] };
 }
 
 /** Returns the locations `cited` names in the PR's repository. An entry that starts with a related repo's line is not one. */
-function ownCitations(cited: unknown, relatedNames: readonly string[]): string[] {
-  return parseProof(Array.isArray(cited) ? cited.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, relatedNames)) : cited);
+function ownCitations(cited: unknown, relatedNames: readonly string[], workspace: string | undefined): string[] {
+  return parseProof(Array.isArray(cited) ? cited.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, relatedNames)) : cited, workspace);
 }
 
 /** Returns why no line of `cited` could be shown to exist. */
 function unshownReason(cited: unknown, sources: ReplySources): { why: UncheckedReason; detail?: string } {
   const related = Array.isArray(cited) ? cited.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, sources.relatedNames) ?? [] : [])) : [];
-  if (related.length === 0 && ownCitations(cited, sources.relatedNames).length === 0) return { why: 'no_line' };
+  if (related.length === 0 && ownCitations(cited, sources.relatedNames, sources.workspace).length === 0) return { why: 'no_line' };
   // Without a checkout only a line inside the diff can be read, so whether the others exist is unknown.
   if (!sources.workspace) return { why: 'no_checkout' };
   const fetched = sources.related ? fetchedRelatedRepos(sources.related.stateDir) : new Map<string, string>();

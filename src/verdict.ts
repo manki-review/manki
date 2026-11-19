@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 
 import { LLMClient } from './providers';
 import { extractJSON } from './json';
+import { repoPath } from './diff';
 import { howToFixOf, parseEvidence } from './review';
 import { Finding, TestGuide, VERDICT_READER_NAME, VerdictReport } from './types';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
@@ -120,11 +121,11 @@ function parseVerdictReport(responseText: string): VerdictReport {
 /** Turns one of the reader's blockers into a blocking finding. A blocker without a location lands in the review body. */
 function blockerFinding(blocker: Record<string, unknown>): Finding {
   const title = String(blocker.title).trim();
-  const evidence = parseEvidence(blocker);
+  const evidence = parseEvidence(blocker, undefined);
   return {
     severity: 'blocker',
     title: safeTruncate(title, MAX_BLOCKER_TITLE_LENGTH),
-    file: typeof blocker.file === 'string' ? blocker.file.replace(/`/g, '').trim() : '',
+    file: typeof blocker.file === 'string' ? repoPath(blocker.file.replace(/`/g, '')) : '',
     line: Number(blocker.line) || 0,
     description: typeof blocker.description === 'string' && blocker.description.trim() ? blocker.description.trim() : title,
     ...howToFixOf(blocker),

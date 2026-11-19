@@ -7,6 +7,7 @@ import { runCliCommand } from './cli';
 import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
 import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
+import { isFixCheck } from './fixes';
 import { isClaimCheck } from './pr-claims';
 import { cutLegacyCommands, estimateCostUsd, hasAnyProviderCredentials, parseModelSpec, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
@@ -452,6 +453,8 @@ interface GradeRoute {
   security?: true;
   /** Set on a finding that only claim checks reported. */
   byClaimCheck?: true;
+  /** Set on a finding that only fix checks reported. */
+  byFixCheck?: true;
 }
 
 /** Where a finding a finder reported left the review, by the round record. */
@@ -883,6 +886,7 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(f.reviewers.includes(VERDICT_READER_NAME) && { byReader: true as const }),
     ...(isSecurityFinding(f.tags, f.reviewers) && { security: true as const }),
     ...(f.reviewers.length > 0 && f.reviewers.every(isClaimCheck) && { byClaimCheck: true as const }),
+    ...(f.reviewers.length > 0 && f.reviewers.every(isFixCheck) && { byFixCheck: true as const }),
   };
 }
 
@@ -1650,6 +1654,7 @@ const BLOCKER_ROUTES = {
   doubt: 'raised by a confirmed doubt',
   consequence: 'raised by a confirmed doubt and consequence',
   claim: 'claim check',
+  fix: 'fix check',
   reader: 'verdict reader',
   other: 'other',
   unknown: 'unknown',
@@ -1662,12 +1667,13 @@ type BlockerRoute = keyof typeof BLOCKER_ROUTES;
  * the last step that raised it to blocker. A step that gives back the blocker an `unproven` cap lowered is no raise. A
  * raise by `judge` is the judge's cell alone, and a raise by `refutation` is a check that confirmed the doubts holding
  * the finding down, `consequence` when they include a `consequence` premise, which only a finding that needed it keeps.
- * A blocker only claim checks reported is `claim`, whatever grade it was filed at. It is `unknown` without a stored route.
+ * A blocker only claim checks reported is `claim`, and one only fix checks reported is `fix`, whatever grade it was filed at. It is `unknown` without a stored route.
  */
 function blockerRoute(route: GradeRoute | undefined): BlockerRoute {
   if (!route) return 'unknown';
   if (route.byReader) return 'reader';
   if (route.byClaimCheck) return 'claim';
+  if (route.byFixCheck) return 'fix';
   const steps = route.gradePath ?? [];
   const raise = steps.filter((step, i) => step.to === 'blocker' && steps[i - 1]?.by !== 'unproven').at(-1);
   if (route.finderGrade === 'blocker' && !(route.lowestFinderGrade && raise?.by === 'refutation')) return 'finder';
