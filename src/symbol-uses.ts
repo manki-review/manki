@@ -454,6 +454,8 @@ interface Declaration {
   kind: SymbolKind;
   /** First line, counting the comments and attributes above it. */
   start: number;
+  /** The column on `start` where the declaration or the first of those comments and attributes begins. */
+  startColumn: number;
   /** Last line of the signature or header, before the body. */
   headerEnd: number;
   end: number;
@@ -1821,6 +1823,8 @@ class ParsedFile {
   /** Each lookup of an item in a collection field on a touched line, outside tests. */
   readonly lookups: Lookup[];
   private readonly byKey = new Map<string, Declaration>();
+  /** The type each of `methods` is declared on. */
+  private readonly owners: Map<Declaration, string>;
   private readonly members = new Map<string, Declaration[]>();
   private readonly fieldsByLine = new Map<number, Declaration[]>();
   /** Each field a type declares itself, as `Type.field`, and the `key` of each such field. */
@@ -1868,6 +1872,7 @@ class ParsedFile {
       if (decl.kind === 'type' || decl.kind === 'variant') this.typesByName.set(decl.name, this.typesByName.has(decl.name) ? undefined : decl);
     }
     this.methods = this.findMethods();
+    this.owners = new Map(this.methods.map(m => [m.decl, m.owner]));
     const selfMethods = this.methods.filter(m => m.self);
     const methodNodes = new Set(selfMethods.map(m => m.decl.node.id()));
     const { kinds: rebinders = [], byParameter } = rules.rebinds ?? {};
@@ -1902,7 +1907,7 @@ class ParsedFile {
    */
   mappedName(decl: Declaration): string | undefined {
     if (decl.kind !== 'field' && decl.kind !== 'variant' && this.tree.ancestors(decl.node).some(a => this.rules.declarations[a.kind()] === 'function')) return undefined;
-    const owner = this.methods.find(m => m.decl === decl)?.owner ?? (decl.container && this.byKey.get(decl.container)?.name);
+    const owner = this.owners.get(decl) ?? (decl.container && this.byKey.get(decl.container)?.name);
     return owner ? `${owner}.${decl.name}` : decl.name;
   }
 
@@ -1911,6 +1916,7 @@ class ParsedFile {
     const end = (decl.node.field('body') ?? decl.node.field('value'))?.range().start ?? decl.node.range().end;
     const lines = this.lines.slice(decl.start - 1, end.line + 1);
     lines[lines.length - 1] = lines[lines.length - 1].slice(0, end.column);
+    lines[0] = lines[0].slice(decl.startColumn);
     return lines.join('\n');
   }
 
@@ -1923,8 +1929,9 @@ class ParsedFile {
     const body = node.field('body') ?? node.field('value');
     const end = node.range().end.line + 1;
     const container = this.tree.ancestors(node).find(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
+    const { line: start, column: startColumn } = this.leadingStart(node);
     return {
-      node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
+      node, name, kind, start, startColumn, headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
       shape: this.rules.shapes.includes(String(node.kind())), test: this.inTestCode(node), ...(container && { container: nodeKey(container) }),
     };
   }
@@ -1936,16 +1943,18 @@ class ParsedFile {
     return this.groups.get(key) === 1;
   }
 
-  private leadingStart(node: SgNode): number {
+  /** Returns where `node` begins with the wrappers, comments and attributes that belong to it, as a line and a column. */
+  private leadingStart(node: SgNode): { line: number; column: number } {
     let anchor = node;
     // A grouped declaration such as Go's `const ( ... )` wraps several, so the comments above it belong to none of them.
     const wraps = (parent: SgNode) => WRAPPERS.includes(String(parent.kind())) && this.holdsOne(parent, String(anchor.kind()));
     for (let parent = this.tree.parent(node); parent && wraps(parent); parent = this.tree.parent(parent)) anchor = parent;
-    let start = lineOf(anchor);
-    for (let prev = this.tree.prev(anchor); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= start - 1; prev = this.tree.prev(prev)) {
-      start = lineOf(prev);
+    let first = anchor;
+    for (let prev = this.tree.prev(anchor); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= lineOf(first) - 1; prev = this.tree.prev(prev)) {
+      first = prev;
     }
-    return start;
+    const { line, column } = first.range().start;
+    return { line: line + 1, column };
   }
 
   /** `skip` leaves out the reads it holds for. */

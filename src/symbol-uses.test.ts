@@ -1132,6 +1132,12 @@ ${body}	return true
     const methods = (n: number) => `export class ${'C'.repeat(7 * n)} {\n${Array.from({ length: n }, (_, i) => `  m${i}() {}\n`).join('')}}\n`;
     await usesInLinearTime(n => [{ 'src/methods.ts': 'export const c = 0;\n' }, { 'src/methods.ts': methods(n) }], 8_000, { smaller: 500 });
 
+    // A class of many methods on one line whose bodies all change: the map of the change names each method with its
+    // class, and compares each from its own start on the line.
+    const inlineClass = (n: number, value: number) => `export class Inline { ${Array.from({ length: n }, (_, i) => `m${i}() { return ${value}; }`).join(' ')} }\n`;
+    const mapped = await usesInLinearTime(n => [{ 'src/inline.ts': inlineClass(n, 1) }, { 'src/inline.ts': inlineClass(n, 2) }], 8_000, { smaller: 500 });
+    expect(mapped.changes).toEqual([{ file: 'src/inline.ts', symbol: 'type Inline', change: 'body changed' }, ...Array.from({ length: 8_000 }, (_, i) => ({ file: 'src/inline.ts', symbol: `function Inline.m${i}`, change: 'body changed' }))]);
+
     // Many assignments in a Python method with a long name: the name is not read to tell whether the method is `__init__`.
     const assigned = (n: number, x: number) => `class A:\n    def ${'m'.repeat(37 * n)}(self):\n${Array.from({ length: n }, (_, i) => `        self.a${i} = 1\n`).join('')}x = ${x}\n`;
     await usesInLinearTime(n => [{ 'src/assigned.py': assigned(n, 1) }, { 'src/assigned.py': assigned(n, 2) }], 16_000, { smaller: 1_000 });
