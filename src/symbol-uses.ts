@@ -1575,8 +1575,6 @@ interface DeclarationView {
   signature: string;
   /** The whole declaration, unset when it was read by keyword from one line. */
   text?: () => string;
-  /** Whether the declaration may be local to a function, which no other file can use. */
-  local?: boolean;
 }
 
 /**
@@ -1585,8 +1583,7 @@ interface DeclarationView {
  * and name, a method or field by its type's name too, between the base and the head. A declaration only the head holds is
  * added, one only the base holds is removed, one whose part before its body differs is a changed declaration, and one
  * whose body differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by
- * keyword from the removed and added lines. A declaration local to a function is never named. Among those read by
- * keyword, an indented removed one counts as local, unless it is a config key.
+ * keyword from the removed and added lines. A parsed declaration local to a function is never named.
  */
 function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) => boolean): MappedChange[] {
   return files.filter(file => !skip(file.path)).flatMap(file => {
@@ -1600,7 +1597,7 @@ function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) =
       const [old, now] = [before.all.get(key), after.all.get(key)];
       const change = !old ? 'added' : !now ? 'removed' : old.signature !== now.signature ? 'declaration changed'
         : !now.text || !old.text || now.text() !== old.text() ? 'body changed' : undefined;
-      if (change && !(change === 'removed' && old!.local)) changes.push({ file: file.path, symbol: (now ?? old)!.label, change });
+      if (change) changes.push({ file: file.path, symbol: (now ?? old)!.label, change });
     }
     return changes.sort((a, b) => CHANGE_RANK[a.change] - CHANGE_RANK[b.change]);
   });
@@ -1636,9 +1633,7 @@ function parsedViews(parsed: ParsedFile | undefined, changed: { has(line: number
 function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
   const all = new Map<string, DeclarationView>();
   for (const { name, kind, line } of keywordDeclarations(file, lines)) {
-    const text = lines.get(line)!;
-    // An indented declaration is most often local to a function, but an indented config key is nested in a section.
-    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), local: kind !== 'key' && /^\s/.test(text) });
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(lines.get(line)!) });
   }
   return { all, touched: all };
 }

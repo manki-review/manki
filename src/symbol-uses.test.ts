@@ -618,7 +618,7 @@ describe('listUsesOutsideDiff', () => {
       'manki.yml': 'review:\n  noise: low\n  old_limit: 2\n  max_rounds: 3\n',
       'src/shapes.ts': 'export function area() {\n  return 1;\n}\n\nexport function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 1;\n  }\n}\n\n/** A square. */\nexport class Square {\n  draw() {\n    return 1;\n  }\n}\n\nexport const scale = (n: number) => n;\n',
       'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n',
-      'cmd/shop.swift': 'func helper() {}\nfunc total() -> Int { return 1 }\nfunc outer() {\n    func inner() {}\n    struct Local {}\n}\n',
+      'cmd/shop.swift': 'func helper() {}\nfunc total() -> Int { return 1 }\nclass Cart {\n    func clear() {}\n}\n',
       'src/outer.ts': 'export function outer() {\n  function gone() {}\n  class Gone {\n    size = 1;\n  }\n  return 1;\n}\n',
       'src/job.py': 'class Job:\n    retries = 1\n\n    def __init__(self):\n        self.size = 1\n',
       'src/api.gen.ts': 'export function fetchUser() {}\n',
@@ -633,7 +633,7 @@ describe('listUsesOutsideDiff', () => {
       'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n  max_rounds: 4\n',
       'src/shapes.ts': 'export function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 2;\n  }\n}\n\n/** A square, drawn from its corner. */\nexport class Square {\n  draw() {\n    return 2;\n  }\n}\n\nexport const scale = (n: number) => n * 2;\n',
       'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n',
-      'cmd/shop.swift': 'func total() -> Int { return 2 }\nfunc outer() {\n}\n',
+      'cmd/shop.swift': 'func total() -> Int { return 2 }\nclass Cart {\n    func reset() {}\n}\n',
       'src/outer.ts': 'export function outer() {\n  function inner() {}\n  class Local {\n    size = 1;\n  }\n  return 2;\n}\n\nexport const run = () => {\n  function step() {}\n};\n',
       'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: string) {}\n}\n',
       'src/hooks.go': 'package hooks\n\nvar Handle = func() {\n\ttype event struct{ ID int }\n}\n',
@@ -651,9 +651,11 @@ describe('listUsesOutsideDiff', () => {
       expect(changes).toEqual([
         { file: 'cmd/fee.swift', symbol: 'function computeFee', change: 'declaration changed' },
         { file: 'cmd/fee.swift', symbol: 'function roundFee', change: 'added' },
-        // Without a grammar, an indented declaration such as `inner` or `Local` is most often local to a function.
+        // Without a grammar, a declaration is named whatever its indentation, such as the methods `clear` and `reset`.
         { file: 'cmd/shop.swift', symbol: 'function helper', change: 'removed' },
+        { file: 'cmd/shop.swift', symbol: 'function clear', change: 'removed' },
         { file: 'cmd/shop.swift', symbol: 'function total', change: 'body changed' },
+        { file: 'cmd/shop.swift', symbol: 'function reset', change: 'added' },
         // A removed config key is mapped, however deep it is nested.
         { file: 'manki.yml', symbol: 'config key old_limit', change: 'removed' },
         // A config key, a Go type, a Rust type alias and a Python class attribute keep their declaration when their value changes.
