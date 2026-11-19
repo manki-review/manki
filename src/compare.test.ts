@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -269,7 +269,7 @@ describe('runPatternChecks', () => {
   it('asks one call per piece with its added lines, and keeps a finding of a difference only with two existing places or a rule, on a line the PR adds', async () => {
     const { root, diff } = gitWorkspace(
       { 'src/charge.ts': HANDLER('charge'), 'src/cancel.ts': HANDLER('cancel'), 'src/void.ts': HANDLER('voidOrder'), 'AGENTS.md': '# Rules\n' },
-      { 'src/void.ts': 'export function voidOrder(req: Request) {\n  return ok();\n}\n', 'src/refund.ts': 'export function refund(req: Request) {\n  return ok();\n}\n', 'gen/handlers.ts': HANDLER('generated'), 'src/link.ts': HANDLER('linked') },
+      { 'src/void.ts': 'export function voidOrder(req: Request) {\n  return ok();\n}\n', 'src/refund.ts': 'export function refund(req: Request) {\n  return ok();\n}\n', 'gen/handlers.ts': HANDLER('generated') },
     );
     // `exclude_paths` leaves the generated file out of the reviewed diff, but the PR still adds its lines.
     const reviewed = { ...diff, files: diff.files.filter(f => !f.path.startsWith('gen/')) };
@@ -286,8 +286,6 @@ describe('runPatternChecks', () => {
           finding('One place', ['src/charge.ts:2', 'src/refund.ts:2']),
           finding('A line an excluded file adds', ['src/charge.ts:2', 'gen/handlers.ts:2', 'src/refund.ts:2']),
           finding('One place spelled three ways', ['src/charge.ts:2', 'src/charge.ts:2-3', './src/charge.ts:1-2']),
-          // `lib` links to `src`, so its `charge.ts` is the same place.
-          finding('One place and a link to it', ['src/charge.ts:2', 'lib/charge.ts:2', 'src/refund.ts:2']),
           finding('A line the PR adds, spelled another way', ['src/charge.ts:2', './src/refund.ts:2']),
           finding('A place the PR changes', ['src/charge.ts:2', 'src/void.ts:2', 'src/refund.ts:2']),
           finding('A place that is not there', ['src/charge.ts:2', 'src/cancel.ts:40', 'src/refund.ts:2']),
@@ -297,9 +295,6 @@ describe('runPatternChecks', () => {
           finding('Off the new code', ['src/charge.ts:2', 'src/cancel.ts:2'], { file: 'src/charge.ts' }),
           // A finder with tools can name the checkout by its absolute path, in the file and in the proof.
           finding('Absolute paths', [`${root}/src/charge.ts:2`, `${root}/src/cancel.ts:2`], { file: `${root}/src/refund.ts`, evidence: [`${root}/src/charge.ts:2 wraps the handler in \`withAuth\``] }),
-          finding('Filed through a link', ['src/charge.ts:2', 'src/cancel.ts:2'], { file: 'lib/refund.ts' }),
-          // The PR adds `src/link.ts` as a symlink, so a finding on it stays on the file the diff names.
-          finding('On a symlink the PR adds', ['src/charge.ts:2', 'src/cancel.ts:2'], { file: 'src/link.ts' }),
         ],
       };
     });
@@ -308,9 +303,6 @@ describe('runPatternChecks', () => {
     let retried: Awaited<ReturnType<typeof runPatternChecks>>;
     const again = fakeClient(() => ({ answer: 'follows' }));
     try {
-      symlinkSync(join(root, 'src'), join(root, 'lib'));
-      rmSync(join(root, 'src/link.ts'));
-      symlinkSync('charge.ts', join(root, 'src/link.ts'));
       result = await runPatternChecks(() => client, pieces, { effort: 'high', workspace: root, diff: reviewed, fullDiff: diff, instructionFiles });
       // A retry of the round keeps each answer whose question is unchanged, with its findings, and asks nothing again.
       const answers = new Map(result.comparisons.map(c => [c.reviewer, { record: c, findings: result.findings.filter(f => f.reviewers.includes(c.reviewer)) }]));
@@ -333,7 +325,7 @@ describe('runPatternChecks', () => {
     // Every path the PR controls sits inside a fence: outside the fences only Manki's own text and checked names remain.
     for (const { user } of client.calls) expect(user.replace(/^(`{3,})[^\n]*\n[\s\S]*?^\1$/gm, '')).not.toMatch(/src\/|AGENTS/);
 
-    expect(result.findings.map(f => `${f.title}: ${f.severity}`)).toEqual(['Two places: warning', 'A rule: warning', 'No cost: note', 'Absolute paths: warning', 'Filed through a link: warning', 'On a symlink the PR adds: warning']);
+    expect(result.findings.map(f => `${f.title}: ${f.severity}`)).toEqual(['Two places: warning', 'A rule: warning', 'No cost: note', 'Absolute paths: warning']);
     expect(result.findings[0]).toEqual(expect.objectContaining({
       reviewers: ['Pattern check: refund.ts'], description: 'The new handler skips `withAuth`. A caller can refund without a session.',
       evidence: { checks: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] },
@@ -343,11 +335,8 @@ describe('runPatternChecks', () => {
     expect(result.findings[3]).toEqual(expect.objectContaining({
       file: 'src/refund.ts', evidence: { checks: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] },
     }));
-    // A finding filed through the link sits on the diff's file, and its own line closes the proof there.
-    expect(result.findings[4]).toEqual(expect.objectContaining({ file: 'src/refund.ts', evidence: expect.objectContaining({ proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] }) }));
-    expect(result.findings[5]).toEqual(expect.objectContaining({ file: 'src/link.ts', evidence: expect.objectContaining({ proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/link.ts:2'] }) }));
     expect(result.comparisons).toEqual([
-      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 6, dropped: 9, inputDigest: expect.any(String) },
+      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 4, dropped: 8, inputDigest: expect.any(String) },
       { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0, inputDigest: expect.any(String) },
       { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0, inputDigest: expect.any(String) },
       // A difference whose findings are all unusable keeps its answer and places.

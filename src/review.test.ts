@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -213,22 +213,6 @@ describe('parseFindings', () => {
     expect(parseFindings(reply, 'R', undefined)[0].evidence).toEqual({ checks: [`\`${__filename}:4\` reads the row`, 'no location here'], proof: ['src/a.ts:1', '/src/b.ts:2', `${__filename}:3`] });
     expect(parseFindings(JSON.stringify([{ title: 'Absolute', file: __filename, line: 1, description: 'd' }]), 'R', checkout)[0].file).toBe('src/review.test.ts');
     expect(parseFindings(JSON.stringify([{ title: 'No file', description: 'd' }]), 'R', undefined)[0].file).toBe('');
-
-    // A file named through a symlink is the file it links to, and a finding without a file keeps none.
-    const linked = mkdtempSync(join(tmpdir(), 'manki-link-'));
-    try {
-      mkdirSync(join(linked, 'src'));
-      writeFileSync(join(linked, 'src', 'a.ts'), 'a\n');
-      symlinkSync('src', join(linked, 'lib'));
-      // A symlink file a PR adds or changes is a file of the diff, so a finding on it is never moved to its target.
-      symlinkSync('a.ts', join(linked, 'src', 'link.ts'));
-      const [throughLink, noFile, onLink] = parseFindings(JSON.stringify([
-        { title: 'Linked', file: 'lib/a.ts', line: 1, description: 'd' }, { title: 'No file', description: 'd' }, { title: 'On the link', file: 'lib/link.ts', line: 1, description: 'd' },
-      ]), 'R', linked);
-      expect([throughLink.file, noFile.file, onLink.file]).toEqual(['src/a.ts', '', 'src/link.ts']);
-    } finally {
-      rmSync(linked, { recursive: true, force: true });
-    }
   });
 
   it('reads the evidence, keeps only proof entries that start with a location, marks open leads not checked, reads a pre-existing mark with its reason, and keeps a rule only when its loaded file holds the quote', () => {

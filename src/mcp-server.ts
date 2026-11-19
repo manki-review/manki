@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
-import { isAbsolute, join, posix, relative, resolve, sep } from 'path';
+import { isAbsolute, join, relative, resolve, sep } from 'path';
 import { promisify } from 'util';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -54,26 +54,6 @@ const MAX_MATCHES = 200;
 interface RepoPath {
   absolute: string;
   relative: string;
-}
-
-/**
- * Returns the path from `root` of the file `path` names, with symlinks followed, so a link and its target compare equal.
- * With `keepName`, only the symlinks in its directories are followed and the file name stays. A path a diff names then
- * stays as it is, also for a symlink the diff changes, since git never lists a path through a linked directory. Returns
- * `path` when `root` is unset or `path` names nothing inside it.
- */
-export function realRepoPath(root: string | undefined, path: string, keepName = false): string {
-  if (!root) return path;
-  const normal = posix.normalize(path.replace(/\\/g, '/'));
-  const name = posix.basename(normal);
-  if (keepName && ['', '.', '..'].includes(name)) return path;
-  try {
-    if (!keepName) return resolveInRoot(root, path).relative;
-    const dir = resolveInRoot(root, posix.dirname(normal)).relative;
-    return dir === '.' ? name : `${dir}/${name}`;
-  } catch {
-    return path;
-  }
 }
 
 /**

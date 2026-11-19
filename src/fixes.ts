@@ -4,7 +4,6 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { newLineNumbers, repoLocation } from './diff';
 import { checkEach, Checked, CheckOptions } from './pr-claims';
-import { realRepoPath } from './mcp-server';
 import { LLMClient } from './providers';
 import { shownLines } from './refute';
 import { parseFindings, parseLocation } from './review';
@@ -191,14 +190,12 @@ function checkMessage({ at, problem }: ListedFix, rawDiff: string): string {
 
 /**
  * Whether every line `location` cites is inside a range of `at` or right next to one, such as the signature above an
- * added guard. Both name their file by the path from the repository root at `workspace`, and a path through a linked
- * directory is the same file as its real path.
+ * added guard. Both name their file by the path from the repository root.
  */
-function atFix(location: string, at: readonly string[], workspace: string): boolean {
+function atFix(location: string, at: readonly string[]): boolean {
   const cited = parseLocation(location);
   if (!cited) return false;
-  const file = realRepoPath(workspace, cited.file, true);
-  const ranges = at.flatMap(range => parseLocation(range) ?? []).filter(fix => realRepoPath(workspace, fix.file, true) === file);
+  const ranges = at.flatMap(range => parseLocation(range) ?? []).filter(fix => fix.file === cited.file);
   for (let line = cited.start; line <= cited.end; line++) if (!ranges.some(fix => line >= fix.start - 1 && line <= fix.end + 1)) return false;
   return true;
 }
@@ -243,7 +240,7 @@ function parseFixCheck(text: string, fix: ListedFix, workspace: string, reviewer
   const stated = STATUSES.find(status => status === parsed.status);
   if (!stated) throw new Error(`the status is ${JSON.stringify(parsed.status)}, not one of ${STATUSES.join(', ')}`);
   const { proof, relatedProof } = stated === 'unchecked' ? { proof: [], relatedProof: [] } : shownLines(parsed.proof, workspace, related);
-  const consistent = stated === 'root_cause' ? parsed.actsAt === 'cause' : parsed.actsAt === 'symptom' && (relatedProof.length > 0 || proof.some(p => !atFix(p, fix.at, workspace)));
+  const consistent = stated === 'root_cause' ? parsed.actsAt === 'cause' : parsed.actsAt === 'symptom' && (relatedProof.length > 0 || proof.some(p => !atFix(p, fix.at)));
   const status = consistent && proof.length + relatedProof.length > 0 ? stated : 'unchecked';
   const cause = oneLine(parsed.cause, MAX_ANSWER_CHARS);
   const stillFails = oneLine(parsed.stillFails, MAX_ANSWER_CHARS);

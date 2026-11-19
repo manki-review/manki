@@ -1,5 +1,4 @@
-import { readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { rmSync } from 'fs';
 
 // `review` imports `fixes`, so loading it first is the order of a real run.
 import { titlesMatch } from './review';
@@ -149,31 +148,6 @@ describe('runFixChecks', () => {
     const bare = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2', 'src/report.ts:3'], { finding: { ...finding, proof: [] } }));
     expect((await runFixChecks(() => bare, [guard], { rawDiff, workspace: root })).findings[0].evidence).toEqual({ checks: [], proof: ['src/rate.ts:2', 'src/report.ts:3'] });
     expect(rest.findings).toEqual([]);
-    // A cause cited through a symlink to the fix's own lines is on the fix too.
-    symlinkSync('src', join(root, 'lib'));
-    try {
-      const linked = fakeClient(() => answer('workaround', 'symptom', ['lib/report.ts:3']));
-      expect((await runFixChecks(() => linked, [guard], { rawDiff, workspace: root })).fixes).toEqual([
-        { ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, ...digest, proof: ['lib/report.ts:3'] },
-      ]);
-      // A finding filed through the symlink sits on the diff's file.
-      const filed = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2'], { finding: { ...finding, file: 'lib/report.ts' } }));
-      expect((await runFixChecks(() => filed, [guard], { rawDiff, workspace: root })).findings[0]).toMatchObject({ file: 'src/report.ts', line: 3 });
-    } finally {
-      rmSync(join(root, 'lib'));
-    }
-    // A fix in a file the PR turns into a symlink stays on that file, and the target's lines are outside the fix.
-    const reportText = readFileSync(join(root, 'src/report.ts'), 'utf-8');
-    rmSync(join(root, 'src/report.ts'));
-    symlinkSync('rate.ts', join(root, 'src/report.ts'));
-    try {
-      const onLink = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:3']));
-      const linkedFix = await runFixChecks(() => onLink, [guard], { rawDiff, workspace: root });
-      expect([linkedFix.fixes[0].status, linkedFix.findings[0]?.file]).toEqual(['workaround', 'src/report.ts']);
-    } finally {
-      rmSync(join(root, 'src/report.ts'));
-      writeFileSync(join(root, 'src/report.ts'), reportText);
-    }
     // A workaround that stands without a finding that can be read reports one written from the check's answer.
     for (const [lost, extra, severity] of [[null, {}, 'warning'], [{ severity: 'blocker', file: 'src/rate.ts', line: 2 }, { stillFails: '' }, 'note']] as const) {
       const empty = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2'], { finding: lost, ...extra }));

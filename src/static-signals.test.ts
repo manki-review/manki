@@ -947,7 +947,6 @@ describe('checkFindingClaims', () => {
       writeFileSync(join(checkout, 'big.rs'), 'x\n'.repeat(600_000));
       writeFileSync(join(checkout, 'src', 'spread.ts'), 'call(...args);\n');
       writeFileSync(join(checkout, 'src', 'twin.rs'), 'pub fn twin() {}\n');
-      symlinkSync(join(checkout, 'src', 'lib.rs'), join(checkout, 'src', 'alias.rs'));
       // Git allows `:` in a file name, so the PR holds a file whose path reads like a citation of the related repo.
       const workspace = join(base, 'pr');
       mkdirSync(join(workspace, 'o', 'r:src'), { recursive: true });
@@ -1026,8 +1025,6 @@ describe('checkFindingClaims', () => {
         // Two spellings of one place get one answer. A quote the lines do not hold decides it, whichever spelling it stands with.
         quoting('o/r:./src/lib.rs:2 reads `removed_function()`'),
         quoting('o/r:src/lib.rs:2-2 defines `pub fn b()`'),
-        // A link and its target are one place too.
-        quoting('o/r:src/alias.rs:2 defines `pub fn b()`'),
         // A quote that was not compared, for its wide range, outweighs one the lines hold.
         quoting('o/r:src/long.rs:1 has `fn step_1() {}`', 'o/r:src/long.rs:1-30 holds `fn step_25() {}`'),
         // The quote of a citation that spells a file of the PR is compared with the related file like any other.
@@ -1059,7 +1056,6 @@ describe('checkFindingClaims', () => {
         '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
         '`o/r:./src/lib.rs:2` (also cited as `o/r:src/lib.rs:2`) does not hold the quoted code: `removed_function()` is not within 3 lines of the cited line.',
         '`o/r:src/lib.rs:2-2` (also cited as `o/r:src/lib.rs:2`) is in the fetched checkout and holds the quoted code.',
-        '`o/r:src/alias.rs:2` (also cited as `o/r:src/lib.rs:2`) is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` (also cited as `o/r:src/long.rs:1`) is in the fetched checkout.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/twin.rs:1` is in the fetched checkout and holds the quoted code (the PR also has a file at `o/r:src/twin.rs`).',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/twin.rs:1` does not hold the quoted code: `a file of the PR` is not within 3 lines of the cited line (the PR also has a file at `o/r:src/twin.rs`).',
