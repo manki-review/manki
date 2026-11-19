@@ -13,7 +13,7 @@ import { resolveInRoot } from './mcp-server';
 import { GUIDE_FILES } from './related-repos';
 import { LISTED_FILES_TO_OPEN } from './tool-steps';
 import { ClaimTerms, DiffFile, DiffHunk, NameTranslation, ParsedDiff, RELATED_REPO_KINDS, RelatedCheckout, RelatedRepoKind, RoundClaimTerms, RoundNameTranslation, RoundReferenceUse, RoundUses, RoundUsesSymbol } from './types';
-import { escapeRegExp } from './utils';
+import { appendTo, escapeRegExp } from './utils';
 import { gitEnv } from './workspace';
 
 const execFileAsync = promisify(execFile);
@@ -1747,12 +1747,6 @@ class Parser {
 function namedSibling(tree: Tree, node: SgNode, side: 'prev' | 'next'): SgNode | undefined {
   for (let sibling = tree[side](node); sibling; sibling = tree[side](sibling)) if (sibling.isNamed()) return sibling;
   return undefined;
-}
-
-function appendTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
-  const list = map.get(key);
-  if (list) list.push(value);
-  else map.set(key, [value]);
 }
 
 /**

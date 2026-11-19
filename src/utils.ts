@@ -5,6 +5,13 @@ import * as core from '@actions/core';
 /** Returns the SHA-256 of `value` as JSON, in hex. */
 export const digestOf = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+/** Adds `value` to the list `map` holds for `key`, in place. */
+export function appendTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
 /** Returns `text` with every character a regular expression gives a meaning escaped. */
 export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
