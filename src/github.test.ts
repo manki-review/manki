@@ -3654,11 +3654,12 @@ describe('buildDashboard', () => {
     ));
     // The sweeps run on the kept findings, so their findings show under the judge. Here 3 found, plus 1 tool alert and 1
     // carried lead, less 1 repeat and 1 lead not finished checking, plus 2 sweep findings less 1 judged already, plus 1
-    // added after the judge, make 3 kept, 1 dropped and 1 merged.
+    // added after the judge, make 3 kept, 1 dropped and 1 merged. A sweep finding that repeats an earlier resolved finding
+    // counts among the round's repeats but shows under the sweeps, so here 2 are recorded and 1 shows before the judge.
     const everything = buildDashboard({
       ...finished,
       sideChecks: { ...finished.sideChecks, sweep: { total: 1, ended: 1, findings: 2, startedAt: 420_000, endedAt: 450_000 } },
-      carriedLeadCount: 1, staticDedupCount: 1, llmDedupCount: 0, sweepRepeatCount: 1, openLeadCount: 1,
+      carriedLeadCount: 1, staticDedupCount: 2, llmDedupCount: 0, sweepRepeatCount: 1, sweepDedupCount: 1, openLeadCount: 1,
       keptCount: 3, droppedCount: 1, mergedCount: 1, addedAfterJudgeCount: 1, keptSeverities: { blocker: 1, warning: 2 }, droppedSeverities: { note: 1 },
     });
     expect(everything).toContain(lines('**Review (behavior · full):** 3 findings'));
@@ -3669,7 +3670,7 @@ describe('buildDashboard', () => {
       '> dropped: 1 suggestion',
       '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 dropped as a repeat of an earlier resolved finding',
       '> ✅ Sweeps: 1 of 1 done, 2 findings (30s)',
-      '> 1 sweep finding already judged',
+      '> 1 sweep finding already judged this round, 1 sweep finding dropped as repeats of earlier resolved findings',
       '> not finished checking: 1 lead',
       '> added after the judge: 1 finding',
     ));

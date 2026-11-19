@@ -3439,6 +3439,7 @@ describe('runFullReview orchestration', () => {
       staticDedupCount: 1,
       llmDedupCount: 1,
       sweepRepeatCount: 1,
+      sweepDedupCount: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -3450,7 +3451,7 @@ describe('runFullReview orchestration', () => {
     // mergedDuplicates excludes pre-judge dedup: 5 - 1 (static) - 1 (llm) - 1 (judged) = 2
     expect(statsArg!.judge.mergedDuplicates).toBe(2);
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4]).toMatchObject({
-      keptCount: 2, droppedCount: 0, mergedCount: 2, addedAfterJudgeCount: 1, openLeadCount: 0, staticDedupCount: 1, llmDedupCount: 1, sweepRepeatCount: 1,
+      keptCount: 2, droppedCount: 0, mergedCount: 2, addedAfterJudgeCount: 1, openLeadCount: 0, staticDedupCount: 1, llmDedupCount: 1, sweepRepeatCount: 1, sweepDedupCount: 1,
     });
 
     // findingsRaw comes from rawFindings (pre-dedup per-agent counts)

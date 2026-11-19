@@ -63,7 +63,7 @@ While a review runs, Manki edits the progress comment every 20 seconds, so each 
 The finished comment keeps each finder's line and the lines of the side checks and the second reads, so the review's count is the sum of those lines. The judge's line says how many findings it kept, dropped and merged into another one. The lines below it name every step between the two counts, each only when its count is not zero:
 
 - `before the judge` names what the round added and dropped before grading. It adds tool alerts and leads carried over from the last round. It drops repeats of earlier resolved findings.
-- The sweeps' line adds the places the sweeps found, and the line below it drops those the round had judged already.
+- The sweeps' line adds the places the sweeps found, and the line below it drops those the round had judged already and those that repeat earlier resolved findings.
 - `not finished checking` counts the leads listed as not finished, which are neither kept nor dropped.
 - `added after the judge` counts the kept findings no judge call graded, such as the verdict reader's blockers.
 

@@ -911,7 +911,7 @@ function judgeLiveLines(data: DashboardData, now: number): string[] {
  * added`. While the judge runs it names the open leads too, which the finished comment gives a line of their own.
  */
 function beforeJudge(data: DashboardData): string {
-  const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0);
+  const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0) - (data.sweepDedupCount ?? 0);
   const leads = data.phase === 'complete' ? 0 : data.openLeadCount ?? 0;
   return ([
     [data.toolAlertCount ?? 0, 'tool alert added', 'tool alerts added'],
@@ -921,12 +921,15 @@ function beforeJudge(data: DashboardData): string {
   ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural)).join(', ');
 }
 
-/** The sweeps' line, which runs on the findings the judge kept, and how many of its findings were already judged. */
+/** The sweeps' line, which runs on the findings the judge kept, and how many of its findings were dropped as repeats. */
 function sweepLines(data: DashboardData): string[] {
   const line = sideCheckLine(data.sideChecks, ['sweep']);
   if (!line) return [];
-  const repeats = data.sweepRepeatCount ?? 0;
-  return [line, ...(repeats > 0 ? [`${INDENT}${countOf(repeats, 'sweep finding', 'sweep findings')} already judged`] : [])];
+  const drops = ([
+    [data.sweepRepeatCount ?? 0, 'already judged this round'],
+    [data.sweepDedupCount ?? 0, 'dropped as repeats of earlier resolved findings'],
+  ] as const).filter(([count]) => count > 0).map(([count, what]) => `${countOf(count, 'sweep finding', 'sweep findings')} ${what}`);
+  return [line, ...(drops.length > 0 ? [`${INDENT}${drops.join(', ')}`] : [])];
 }
 
 /** The finished comment's lines on findings neither kept nor dropped, and on kept ones no judge call graded. */

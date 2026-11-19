@@ -3931,6 +3931,10 @@ describe('runReview', () => {
     expect(result.sweeps).toEqual([{ reviewer, source: 'src/cache.ts:10', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 7 }]);
     // The four places the round judged already are counted, so the progress comment can say where they went.
     expect(result.sweepRepeatCount).toBe(4);
+    expect(result.sweepDedupCount).toBeUndefined();
+    // A place that repeats an earlier resolved finding counts among the round's repeats and as the sweep's own.
+    const earlier = await run('blockers', false, undefined, { deadline: Date.now() + 3_600_000, on: () => undefined, previousFindings: [{ title: elsewhere.title, file: elsewhere.file, line: elsewhere.line, severity: 'blocker', status: 'resolved' }] });
+    expect([earlier.result.sweepDedupCount, earlier.result.staticDedupCount]).toEqual([1, 1]);
     // The dedup model gets each place near a judged finding in its file, or sharing a line it cites in any file, kept or
     // dropped. A place two lines off a cited line shares none.
     expect(dedupPairs).toEqual([[original.title, reworded.title], [dropped.title, citedByDropped.title], [other.title, crossFile.title]]);
