@@ -423,6 +423,11 @@ describe('Manki tool server', () => {
     const unlisted = await connect(pr);
     expect((await unlisted.listTools()).tools.map(t => t.name)).not.toContain('read_file');
     await unlisted.close();
+    // A client with file tools that asks for the base there is told so, and never gets the head in its place.
+    const headOnly = await connect(pr, { fileTools: true });
+    expect(await call(headOnly, 'read_file', { path: 'src/a.ts', ref: 'base' }))
+      .toEqual({ text: 'This workspace holds no copy of the PR\'s base, so no file can be read there.', isError: true });
+    await headOnly.close();
     writeFileSync(join(pr, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['*.lock'] }));
 
     const claude = await connect(pr);

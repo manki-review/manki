@@ -634,12 +634,14 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
         offset: z.number().int().positive().optional().describe('First line to read. Defaults to 1.'),
         limit: z.number().int().positive().max(MAX_READ_LINES).optional().describe(`At most this many lines. Defaults to ${MAX_READ_LINES}.`),
         ...repoArg(fileTools || !!baseExcludes),
-        ...(baseExcludes && { ref }),
+        // Declared without a base too, since the schema would drop an undeclared `ref` and read the head instead.
+        ref,
       },
       annotations: READ_ONLY,
     }, (args) => run(async () => {
       const { repo, ref: at } = args as { repo?: string; ref?: 'head' | 'base' };
-      if (at === 'base' && baseExcludes) {
+      if (at === 'base') {
+        if (!baseExcludes) throw new Error('This workspace holds no copy of the PR\'s base, so no file can be read there.');
         if (repo) throw new Error('`ref` reads only the PR\'s own repository, so leave out `repo` to read the base.');
         return readBaseFile(root, args, baseExcludes);
       }
