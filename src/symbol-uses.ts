@@ -1577,6 +1577,8 @@ interface DeclarationView {
   text?: () => string;
   /** How far a declaration read by keyword is indented. */
   indent?: number;
+  /** Whether it is a local variable read by keyword, an indented constant, whose removal is never named. */
+  local?: boolean;
 }
 
 /**
@@ -1586,7 +1588,8 @@ interface DeclarationView {
  * added, one only the base holds is removed, one whose part before its body differs is a changed declaration, and one
  * whose body differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by
  * keyword from the removed and added lines. A parsed declaration local to a function is never named. A file read by
- * keyword cannot tell a local declaration apart, so among its changes of one kind the least indented come first.
+ * keyword names every declaration except an indented constant on a removed line, which is a local variable, and among
+ * its changes of one kind the least indented come first.
  */
 function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) => boolean): MappedChange[] {
   return files.filter(file => !skip(file.path)).flatMap(file => {
@@ -1601,7 +1604,7 @@ function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) =
       const change = !old ? 'added' : !now ? 'removed' : old.signature !== now.signature ? 'declaration changed'
         : !now.text || !old.text || now.text() !== old.text() ? 'body changed' : undefined;
       const view = (now ?? old)!;
-      if (change) changes.push({ mapped: { file: file.path, symbol: view.label, change }, indent: view.indent ?? 0 });
+      if (change && !(change === 'removed' && old!.local)) changes.push({ mapped: { file: file.path, symbol: view.label, change }, indent: view.indent ?? 0 });
     }
     return changes.sort((a, b) => CHANGE_RANK[a.mapped.change] - CHANGE_RANK[b.mapped.change] || a.indent - b.indent).map(c => c.mapped);
   });
@@ -1638,7 +1641,8 @@ function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all
   const all = new Map<string, DeclarationView>();
   for (const { name, kind, line } of keywordDeclarations(file, lines)) {
     const text = lines.get(line)!;
-    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), indent: text.length - text.trimStart().length });
+    const indent = text.length - text.trimStart().length;
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), indent, local: kind === 'constant' && indent > 0 });
   }
   return { all, touched: all };
 }
