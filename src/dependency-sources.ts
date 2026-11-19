@@ -446,11 +446,12 @@ export function dependencyLoader(
   // A folder of its own, so a package's markers never meet a related repository's of the same name.
   stateDir = dependencyState(stateDir);
   mkdirSync(stateDir, { recursive: true });
-  const wanted = new Set(registries.flatMap(r => [...r.manifests, ...r.lockfiles, ...r.unreadInstallFiles]));
-  const isRead = (path: string) => wanted.has(posix.basename(path)) || registries.some(r => r.isConfigFile(path));
+  // A folder named like one registry's build output, such as `target`, is an ordinary folder to the others.
+  const isRead = (path: string) => registries.some(r => ([...r.manifests, ...r.lockfiles, ...r.unreadInstallFiles].includes(posix.basename(path)) || r.isConfigFile(path))
+    && !(r.buildFolder !== undefined && path.split('/').includes(r.buildFolder)));
   // Only files git tracks count, since only those are the PR's.
   let listing: Promise<Listing> | undefined;
-  const listed = (): Promise<Listing> => listing ??= trackedFiles(root).then((tracked): Listing => {
+  const listed = (): Promise<Listing> => listing ??= trackedFiles(root, [], ['node_modules']).then((tracked): Listing => {
     if (!tracked) return { files: [], cut: 'Manki could not list the files of the checkout, so it cannot tell which code the PR runs' };
     // `closed_paths` deletes files from the checkout and its index, so a closed lockfile, setting or committed copy looks absent.
     let removed: string[];

@@ -641,6 +641,9 @@ describe('dependencyLoader', () => {
     const apps = Object.fromEntries(Array.from({ length: 3 }, (_, i) => [`apps/f${i}.txt`, '']));
     const listed = round({ ...installed, ...apps, 'target/Cargo.lock': lock, 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/left-pad': { version: '1.2.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz', integrity: sha512Integrity(PAD) } } }) }, { maxListed: 1 });
     expect((await listed.load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    // Only Cargo builds into `target`, so an npm manifest there is the project's own and can refuse the package.
+    const member = round({ 'packages/target/package.json': JSON.stringify({ name: 'left-pad' }), 'package.json': JSON.stringify({ dependencies: { 'left-pad': '^1.0.0' } }) });
+    await expect(member.load('npm/left-pad')).rejects.toThrow('packages/target/package.json');
     // A listing past its cap may have missed a lockfile or setting, so it refuses every package, also one a listed lockfile locks.
     const many = round({ 'a/Cargo.lock': lock, 'b/Cargo.lock': lock }, { maxListed: 1 });
     await expect(many.load('crates.io/demo@1.2.0')).rejects.toThrow('the checkout holds more than 1 lockfiles, manifests and settings files, the most Manki lists');

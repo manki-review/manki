@@ -74,14 +74,16 @@ export interface TrackedFile {
 
 /**
  * Returns the files git tracks in the checkout at `workspace` that `pathspecs` match, all of them without any, outside
- * `node_modules` and `target`. Returns `undefined` when git cannot list them.
+ * the folders named in `skipped`. Returns `undefined` when git cannot list them.
  */
-export async function trackedFiles(workspace: string, pathspecs: readonly string[] = []): Promise<TrackedFile[] | undefined> {
+export async function trackedFiles(
+  workspace: string, pathspecs: readonly string[] = [], skipped: readonly string[] = ['node_modules', 'target'],
+): Promise<TrackedFile[] | undefined> {
   const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...pathspecs], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
   if (listed.code !== 0) return undefined;
   // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, and mode `120000` is a symlink.
   return listed.stdout.split('\0').filter(Boolean).map(entry => ({ path: entry.slice(entry.indexOf('\t') + 1), symlink: entry.startsWith('120000 ') }))
-    .filter(({ path }) => path && !path.split('/').some(part => part === 'node_modules' || part === 'target'));
+    .filter(({ path }) => path && !path.split('/').some(part => skipped.includes(part)));
 }
 
 /**

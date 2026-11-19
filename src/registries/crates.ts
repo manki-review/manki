@@ -175,6 +175,7 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     validName: name => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name),
     sameName: (a, b) => normalize(a) === normalize(b),
     unreadInstallFiles: [],
+    buildFolder: 'target',
     installedCopy: () => undefined,
     isWorkspaceMember(lockfile, member, text) {
       const root = posix.dirname(lockfile);

@@ -51,6 +51,8 @@ export interface Registry {
   lockfiles: readonly string[];
   /** The file names of lockfiles and install settings Manki does not read, which decide the packages of the manifests in their folder and below. */
   unreadInstallFiles: readonly string[];
+  /** The name of the folders that hold the build output, such as Cargo's `target`, whose files of this registry no install reads. */
+  buildFolder?: string;
   /**
    * Returns the path, relative to the folder `dir`, of a copy of the package `name` that the checkout itself holds,
    * such as a committed `node_modules` folder, or `undefined`. Such a copy is what the project runs.
