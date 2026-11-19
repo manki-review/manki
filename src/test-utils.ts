@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -42,6 +42,42 @@ export function gitWorkspace(base: Record<string, string>, head: Record<string, 
   write(head);
   git(root, 'add', '-A');
   return { root, diff: parsePRDiff(git(root, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
+}
+
+/** A recorded round whose blockers a refuter checked against the PR's base, from `src/refute.fixtures`. */
+export interface BaseProofFixture {
+  repository: string;
+  base: string;
+  head: string;
+  /** How many lines each file holds at the base and the head, which size the files of `baseProofWorkspace`. */
+  lineCounts: Record<string, { base: number | null; head: number | null }>;
+  findings: Array<{
+    title: string; file: string; line: number; description: string; security?: true; proof: string[];
+    /** What the round must post: a pre-existing warning, or the blocker. */
+    expected: 'pre-existing' | 'blocker';
+    /** The refuter's answer, with its answer about the base from the code at the base commit. */
+    recorded: Record<string, unknown>;
+  }>;
+}
+
+/** Returns the fixture `name` of `src/refute.fixtures`. */
+export function baseProofFixture(name: string): BaseProofFixture {
+  return JSON.parse(readFileSync(join(__dirname, 'refute.fixtures', `${name}.json`), 'utf8')) as BaseProofFixture;
+}
+
+/**
+ * Returns a workspace for `fixture` without its code: each file holds a numbered line per line it has at the base and
+ * at the head, with the base at `BASE_REF`. The base check reads only which lines a file holds there. The head
+ * changes each finding's own line, so the diff touches every finding.
+ */
+export function baseProofWorkspace(fixture: BaseProofFixture): { root: string; diff: ParsedDiff } {
+  const changed = new Set(fixture.findings.map(f => `${f.file}:${f.line}`));
+  const side = (at: 'base' | 'head'): Record<string, string> => Object.fromEntries(Object.entries(fixture.lineCounts).flatMap(([path, counts]) => {
+    const count = counts[at];
+    const text = (n: number): string => (at === 'head' && changed.has(`${path}:${n}`) ? `// changed line ${n}\n` : `// line ${n}\n`);
+    return count === null ? [] : [[path, Array.from({ length: count }, (_, i) => text(i + 1)).join('')]];
+  }));
+  return gitWorkspace(side('base'), side('head'), []);
 }
 
 /** How many times larger the large input of `expectLinearTime` is than the small one, unless the caller gives both. */

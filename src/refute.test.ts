@@ -4,13 +4,15 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
+import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
+import { AnthropicClient } from './providers/anthropic';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
 import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
-import { git, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
-import { BASE_READS_FILE } from './workspace';
+import { baseProofFixture, git, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
+import { BASE_READS_FILE, fetchWorkspace } from './workspace';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -1714,4 +1716,35 @@ describe('refuteBlockers', () => {
     expect(absoluteFile.file).toBe('src/math.ts');
     expect((await refuteBlockers(absolute, [absoluteFile], { workspace }))[0].refutation).toMatchObject({ outcome: 'disproved', proof: ['src/math.ts:1'] });
   });
+});
+
+// The live replay fetches the fixture's repository and asks a real refuter, so it runs only with
+// RUN_REFUTE_LIVE_FIXTURES=1 and the token `claude setup-token` prints in CLAUDE_CODE_OAUTH_TOKEN. CI skips it.
+const LIVE_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
+if (process.env.RUN_REFUTE_LIVE_FIXTURES === '1' && !LIVE_TOKEN) {
+  console.warn('Skipping the live refuter replay: set CLAUDE_CODE_OAUTH_TOKEN to the token `claude setup-token` prints.');
+}
+const liveIt = process.env.RUN_REFUTE_LIVE_FIXTURES === '1' && LIVE_TOKEN ? it : it.skip;
+
+describe('live base replay', () => {
+  liveIt('live refuter finds at the base each rust-dashcore blocker the base already had', async () => {
+    const fixture = baseProofFixture('base-proof-rust-dashcore');
+    const workspace = await fetchWorkspace(fixture.repository, fixture.head, undefined, [], { sha: fixture.base, excludePaths: [] });
+    try {
+      const diff = parsePRDiff(git(workspace, 'diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', fixture.base, fixture.head));
+      const client = new AnthropicClient({ auth: { kind: 'oauth', token: LIVE_TOKEN }, model: process.env.REFUTE_LIVE_MODEL ?? 'claude-opus-5-5' });
+      const findings: Finding[] = fixture.findings.map(f => ({
+        severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, reviewers: ['replay'],
+        evidence: { checks: [], proof: f.proof }, ...(f.security && { tags: ['security'] }),
+      }));
+      const checked = await refuteBlockers(client, findings, { workspace, diff, effort: 'high' });
+      for (const f of checked) {
+        console.log(`[live-refute] ${f.title}: base=${f.refutation?.base?.outcome} proof=${JSON.stringify(f.refutation?.base?.proof ?? [])} reason=${JSON.stringify(f.refutation?.base?.reason ?? '')}`);
+      }
+      // Without a second refuter, only a non-security finding the base already had is pre-existing.
+      expect(checked.map(f => [f.title, sameOnBase(f, false) ? 'pre-existing' : 'blocker'])).toEqual(fixture.findings.map(f => [f.title, f.expected]));
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 60 * 60_000);
 });

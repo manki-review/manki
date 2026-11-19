@@ -41,7 +41,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
-import { expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -3794,6 +3794,53 @@ describe('runReview', () => {
     const both = await run('disproved', { security: true });
     expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
   });
+
+  it('replays a rust-dashcore round: the blockers its base already had are posted as pre-existing warnings, and the security ones keep blocking', async () => {
+    const fixture = baseProofFixture('base-proof-rust-dashcore');
+    const found = fixture.findings.map(f => ({
+      severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, evidence: [`${f.file}:${f.line} shows it`], proof: f.proof,
+    }));
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    // Each refuter gives the recorded answer of the finding whose location its message names. `answer` can change it.
+    const run = async ({ pair = false, answer = (recorded: Record<string, unknown>) => recorded }: { pair?: boolean; answer?: (recorded: Record<string, unknown>, title: string) => Record<string, unknown> } = {}) => {
+      const { root, diff } = baseProofWorkspace(fixture);
+      const reply = (model: string) => async (system: string, user: string) => {
+        const f = fixture.findings.find(x => user.includes(`- **Location**: ${x.file}:${x.line}\n`))!;
+        return { model, content: JSON.stringify(answer(f.recorded, f.title)) };
+      };
+      const refuterPair = pair ? { repoTools: true, sendMessage: jest.fn(reply('pair-model')) } as unknown as LLMClient : undefined;
+      const clients = { ...makeClients(), ...(refuterPair && { refuterPair }) };
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+      Object.assign(clients.judge, { repoTools: true });
+      const refute = reply('judge-model');
+      jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
+        if (system.startsWith('You are a code review judge')) {
+          return { content: JSON.stringify({ summary: 's', findings: fixture.findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'severe', ...(f.security && { security: true }), reasoning: 'r' })) }) };
+        }
+        if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+        return refute(system, user);
+      });
+      try {
+        const { findings } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+        return fixture.findings.map(f => {
+          const posted = findings.find(p => p.title === f.title)!;
+          return [f.title, posted.severity === 'warning' && !!posted.tags?.includes('pre-existing') ? 'pre-existing' : posted.severity];
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+
+    // The finding the PR introduced keeps blocking. So do both security findings, since one refuter never lowers one.
+    expect(await run()).toEqual(fixture.findings.map(f => [f.title, f.expected]));
+    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'pre-existing', 'blocker', 'blocker']);
+    // With a second refuter that gives the same answers, the security findings are pre-existing too.
+    expect((await run({ pair: true })).map(([, posted]) => posted)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing']);
+    // Head line numbers past the end of the file at the base prove nothing there, so the blocker stays.
+    const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[1].title
+      ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[1].file}:870-875`] } } : recorded;
+    expect((await run({ answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'pre-existing', 'pre-existing', 'blocker', 'blocker']);
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {
     const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
