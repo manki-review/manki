@@ -17,7 +17,7 @@ import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
-import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
@@ -2724,7 +2724,7 @@ Example of one finding:
 }
 \`\`\`
 
-\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case. Check that the fix removes every failure the description names. When it removes only part, say in \`howToFix\` which failure it leaves. When the finding lists several cases or places, \`howToFix\` covers every one of them. Propose the fix for the root cause of the problem, never another patch for its symptom: when your evidence shows where the problem starts, the fix goes there. Never advise repeating the PR's own handling on another path when one change at the root cause covers every path.
+\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case. Check that the fix removes every failure the description names. When it removes only part, say in \`howToFix\` which failure it leaves. When the finding lists several cases or places, \`howToFix\` covers every one of them. ${ROOT_CAUSE_FIX_RULE}
 
 ## Evidence
 
