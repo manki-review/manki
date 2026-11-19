@@ -8,7 +8,7 @@ import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
-import { COMMENT_MARKER, ownMarker } from './utils';
+import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -140,8 +140,8 @@ function recordedThreadGrades(priorRounds: readonly RoundContext[]): Map<string,
 /** The grade the round records last gave a thread, the highest one they ever gave it, and the grade each round gave it, oldest first. */
 interface RecordedGrade { grade: FindingSeverity; peak: FindingSeverity; history: Array<{ round: number; grade: FindingSeverity }> }
 
-// The outcome a Manki reply to a developer starts with.
-const REPLY_OUTCOME_RE = /^\**(Fixed|Withdrawn|Agreed|Kept|Unverified)\./;
+// The outcome a Manki reply to a developer starts with. "Confirmed:" answers a fix in another PR and settles nothing.
+const REPLY_OUTCOME_RE = /^\**(?:(?:Fixed|Withdrawn|Agreed|Kept|Unverified)\.|Confirmed:)/;
 
 /** Returns Manki's latest answer to a developer in `comments`, without its markers: an outcome reply, or a found-again reply. */
 function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string | undefined {
@@ -173,6 +173,7 @@ interface ThreadSecurityOverride extends Omit<SecurityOverride, 'thread'> {
   role: AuthorClearRole;
   /** Whether Manki has already replied on the thread to record the override. */
   announced: boolean;
+  fixClaim?: FixClaim;
 }
 
 /** Returns the override recorded in one of Manki's own replies on a thread, if any. The first comment holds a finder's text, so it records none. */
@@ -184,6 +185,51 @@ function recordedSecurityOverride(
     if (match) return { via: match[1] as SecurityOverride['via'], login: match[2] };
   }
   return undefined;
+}
+
+const FIX_CLAIM_OPENER = '<!-- manki-fix-claim:';
+
+/** Marks Manki's answer to a reply that named pull request `pr` as the fix, with whether Manki confirmed that `pr` replaced the cited line. */
+function fixClaimMarker({ pr, status }: FixClaim): string {
+  return `${FIX_CLAIM_OPENER}${pr}:${status} -->`;
+}
+
+/**
+ * A pull request a reply in a thread named, maybe as carrying the fix. `confirmed`: Manki confirmed that it replaced the
+ * cited line. `unconfirmed`: Manki checked and could not confirm it. `unchecked`: no answer of Manki checked it, so the
+ * reply may only mention it.
+ */
+interface FixClaim {
+  pr: number;
+  status: 'confirmed' | 'unconfirmed' | 'unchecked';
+}
+
+/**
+ * Returns the pull requests of `repo`, as `owner/name`, that `text` names as `#N` or by URL, in the order it names them.
+ * Code spans and blocks name none.
+ */
+function namedPullRequests(text: string, repo: string): number[] {
+  const plain = withoutCode(text);
+  const escaped = escapeRegExp(repo);
+  const named = [...plain.matchAll(new RegExp(`(?<![\\w&/#])#(\\d{1,9})\\b|/${escaped}/pull/(\\d{1,9})\\b`, 'gi'))].map(m => Number(m[1] ?? m[2]));
+  return [...new Set(named)];
+}
+
+/**
+ * Returns the fix claim of a thread on PR `prNumber` of `repo`, as `owner/name`: the one of Manki's latest answer that
+ * checked one, read only below Manki's own comment marker. Without such an answer, it is the first other pull request
+ * that the latest person reply naming one names, of any account, as `unchecked`.
+ */
+function fixClaimOf(
+  bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string; __typename?: string } | null }>, repo: string, prNumber: number,
+): FixClaim | undefined {
+  for (const c of comments.slice(1).reverse()) {
+    if (!isBotLogin(bot, c.author?.login)) continue;
+    const match = ownMarker(c.body ?? '', FIX_CLAIM_OPENER, COMMENT_MARKER)?.match(/^(\d{1,9}):(confirmed|unconfirmed)$/);
+    if (match) return { pr: Number(match[1]), status: match[2] as 'confirmed' | 'unconfirmed' };
+  }
+  const named = personReplies(bot, [...comments]).flatMap(c => namedPullRequests(c.body ?? '', repo).filter(pr => pr !== prNumber).slice(0, 1)).at(-1);
+  return named === undefined ? undefined : { pr: named, status: 'unchecked' };
 }
 
 /**
@@ -219,6 +265,7 @@ interface OverrideCandidate {
   isResolved: boolean;
   resolvedByLogin?: string;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
+  fixClaim?: FixClaim;
 }
 
 function isLogin(login: string | undefined, prAuthorLogin: string | undefined): login is string {
@@ -231,19 +278,20 @@ function isOverrideCandidate(t: OverrideCandidate, prAuthorLogin: string | undef
 }
 
 /** The security overrides on `previousFindings`, one per thread. */
-function securityOverridesIn(previousFindings: PreviousFinding[]): Array<Required<SecurityOverride> & { announced: boolean }> {
+function securityOverridesIn(previousFindings: PreviousFinding[]): Array<Required<SecurityOverride> & Pick<ThreadSecurityOverride, 'announced' | 'fixClaim'>> {
   return previousFindings.flatMap(f => f.threadId && f.securityOverride ? [{ thread: f.threadId, ...f.securityOverride }] : []);
 }
 
 /**
  * Returns how the PR author cleared a resolved guarded thread: the override Manki recorded on it, or else the author's
  * own resolve. Both need `prAuthorRole`, the role `authorClearRole` confirmed for the author. A marker alone proves
- * nothing, since a Manki reply can echo text it was given.
+ * nothing, since a Manki reply can echo text it was given. The thread's fix claim rides along for the note that records it.
  */
 function securityOverrideOf(t: OverrideCandidate, prAuthorLogin: string | undefined, prAuthorRole: AuthorClearRole | undefined): ThreadSecurityOverride | undefined {
   if (!prAuthorRole || !isOverrideCandidate(t, prAuthorLogin)) return undefined;
-  if (t.recordedOverride && isLogin(t.recordedOverride.login, prAuthorLogin)) return { ...t.recordedOverride, role: prAuthorRole, announced: true };
-  return isLogin(t.resolvedByLogin, prAuthorLogin) ? { login: t.resolvedByLogin, via: 'resolve', role: prAuthorRole, announced: false } : undefined;
+  const claim = t.fixClaim && { fixClaim: t.fixClaim };
+  if (t.recordedOverride && isLogin(t.recordedOverride.login, prAuthorLogin)) return { ...t.recordedOverride, role: prAuthorRole, announced: true, ...claim };
+  return isLogin(t.resolvedByLogin, prAuthorLogin) ? { login: t.resolvedByLogin, via: 'resolve', role: prAuthorRole, announced: false, ...claim } : undefined;
 }
 
 const LLM_DEDUP_TIMEOUT_MS = 120_000;
@@ -973,6 +1021,7 @@ interface ReviewThread extends FindingMetadata {
   isSecurity: boolean;
   reopenedByManki: boolean;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
+  fixClaim?: FixClaim;
   hasHumanReply: boolean;
   findingTitle: string;
   file: string;
@@ -1172,6 +1221,8 @@ async function fetchReviewThreads(
 
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
+      // A claim in a thread whose comments were not all read may be out of date, so the thread names none.
+      const fixClaim = isBotThread && !incomplete.has(thread.id) ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
       const settled = isBotThread && !incomplete.has(thread.id) ? settlement(bot, thread.comments.nodes) : undefined;
 
@@ -1185,6 +1236,7 @@ async function fetchReviewThreads(
         isSecurity: isBotThread && isSecurityThread(body),
         reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
         ...(recordedOverride && { recordedOverride }),
+        ...(fixClaim && { fixClaim }),
         hasHumanReply,
         findingTitle,
         description,
@@ -1491,4 +1543,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

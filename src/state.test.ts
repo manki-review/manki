@@ -1198,6 +1198,48 @@ describe('checkAndAutoApprove', () => {
     }
   });
 
+  it('names the fix claim of a thread when the PR author dismisses, and lists only one Manki confirmed apart', async () => {
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const claimed = (pr: number, status: string) => `Unverified. You name #${pr}.\n\n<!-- manki -->\n<!-- manki-fix-claim:${pr}:${status} -->`;
+    const resolved = (id: string, title: string, replies: Array<{ body: string; author: { login: string } }>) => makeGraphqlFetchThreadNode({
+      id, isResolved: true, resolvedBy: 'author', url: `https://github.com/o/r/pull/1#${id}`, line: 3, replies,
+      body: formatFindingComment({ severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [] }, TEST_LINKS),
+    });
+    const octokit = makeMockOctokit({
+      threads: [
+        resolved('r1', 'Token leaks into logs', [{ body: 'Fixed in #7.', author: { login: 'reader' } }, { body: claimed(7, 'confirmed'), author: { login: 'manki-review[bot]' } }]),
+        resolved('r2', 'Off by one', [{ body: claimed(8, 'unconfirmed'), author: { login: 'manki-review[bot]' } }]),
+        // The marker counts only in Manki's own reply, so a person's reply naming #9 is a claim Manki did not check.
+        resolved('r3', 'Lock never released', [{ body: claimed(9, 'confirmed'), author: { login: 'author' } }]),
+        // A reply of an account without write access starts no check, and the note still names its claim.
+        resolved('r5', 'Cache never expires', [{ body: 'This is fixed in #12, further up the stack.', author: { login: 'reader' } }]),
+        // A thread at the comment limit may hide a later answer, so it names no claim.
+        resolved('r4', 'Retry never stops', [
+          ...Array.from({ length: 98 }, () => ({ body: 'Still looking.', author: { login: 'reader' } })),
+          { body: claimed(7, 'confirmed'), author: { login: 'manki-review[bot]' } },
+        ]),
+      ],
+      createReviewFn: createReviewMock,
+      role: 'maintain',
+    });
+
+    expect((await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, { ...DEFAULT_CONFIG, author_clear_role: 'maintain' })).approved).toBe(true);
+    const notes = jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => (vars as { body: string }).body.split('\n')[0]);
+    const dismissed = 'Finding dismissed by `@author`, the PR author, who has the `maintain` role on this repository.';
+    expect(notes).toEqual([
+      `${dismissed} A reply here named #7 as the fix, and Manki confirmed that #7 replaced the cited line on the default branch.`,
+      `${dismissed} A reply here named #8 as the fix. Manki could not confirm that #8 fixes this finding.`,
+      `${dismissed} A reply here names #9. Manki did not check whether it fixes this finding.`,
+      `${dismissed} A reply here names #12. Manki did not check whether it fixes this finding.`,
+      dismissed,
+    ]);
+    const body: string = createReviewMock.mock.calls[0][0].body;
+    expect(body).toContain('**Findings dismissed by the PR author** `@author` (`maintain` role):\n\n- [Off by one](https://github.com/o/r/pull/1#r2)\n'
+      + '- [Lock never released](https://github.com/o/r/pull/1#r3)\n- [Cache never expires](https://github.com/o/r/pull/1#r5)\n- [Retry never stops](https://github.com/o/r/pull/1#r4)');
+    expect(body).toContain('**Findings dismissed by the PR author** `@author` (`maintain` role) **as fixed in another PR.** In a reply, Manki confirmed that the PR named replaced the cited line on the default branch.\n\n'
+      + '- [Token leaks into logs](https://github.com/o/r/pull/1#r1): #7');
+  });
+
   it('approves when blocking threads are resolved and only suggestion and old nitpick threads are open', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const suggestion = formatFindingComment({ severity: 'note', title: 'Name the retry', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], suggestedFix: 'retryOnce();' }, TEST_LINKS);

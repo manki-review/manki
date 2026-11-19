@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -87,6 +87,8 @@ interface ReviewThread {
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
+  /** The fix in another pull request that a reply in the thread named, and whether Manki checked it, by `fixClaimOf`. */
+  fixClaim?: FixClaim;
   findingTitle: string;
   /** Where the thread was posted, for which finding and on which commit. Absent for a thread without a finding marker. */
   place?: { file: string; line: number; originalLine?: number; findingLine?: number; markerSlug: string; commit?: string };
@@ -238,6 +240,8 @@ async function fetchBotReviewThreads(
       const resolvedByLogin = thread.resolvedBy?.login;
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
+      // A thread at the comment limit may hide a later answer, so it names no claim.
+      const fixClaim = (isSecurity || isBlocking) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
         const sha = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', FIXED_MARKER_OPENER, BOT_MARKER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
         return sha ? [sha] : [];
@@ -255,6 +259,7 @@ async function fetchBotReviewThreads(
         ...(holdLifted && { holdLifted }),
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
+        ...(fixClaim && { fixClaim }),
         findingTitle,
         ...(place && { place }),
         ...(threadUrl && { threadUrl }),
@@ -366,14 +371,25 @@ async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean
 }
 
 /**
- * Replies once on each thread to record a security override. The reply's marker is what later rounds read the override from.
- * Returns the overrides it could record.
+ * Says which pull request a reply in the thread named, and whether Manki confirmed it as the fix. Only Manki's check
+ * reads a reply as naming the fix, so an unchecked one only names the pull request.
  */
-async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Required<SecurityOverride>>): Promise<SecurityOverride[]> {
+function fixClaimLine({ pr, status }: FixClaim): string {
+  if (status === 'confirmed') return `A reply here named #${pr} as the fix, and Manki confirmed that #${pr} replaced the cited line on the default branch.`;
+  if (status === 'unconfirmed') return `A reply here named #${pr} as the fix. Manki could not confirm that #${pr} fixes this finding.`;
+  return `A reply here names #${pr}. Manki did not check whether it fixes this finding.`;
+}
+
+/**
+ * Replies once on each thread to record a security override, and says what the thread's `fixClaim` was. The reply's
+ * marker is what later rounds read the override from. Returns the overrides it could record.
+ */
+async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Required<SecurityOverride> & { fixClaim?: FixClaim }>): Promise<SecurityOverride[]> {
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
-      await replyToReviewThread(octokit, o.thread, `Finding dismissed by \`@${o.login}\`, the PR author, who has ${rolePhrase(o.role)} on this repository.`, securityOverrideMarker(o.via, o.login));
+      const claim = o.fixClaim ? ` ${fixClaimLine(o.fixClaim)}` : '';
+      await replyToReviewThread(octokit, o.thread, `Finding dismissed by \`@${o.login}\`, the PR author, who has ${rolePhrase(o.role)} on this repository.${claim}`, securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {

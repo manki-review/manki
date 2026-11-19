@@ -1,10 +1,11 @@
+import * as core from '@actions/core';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { parsePRDiff } from './diff';
 import * as mcpServer from './mcp-server';
-import { checkReply, ReplySources, statementList, statementRecords, statementSummary } from './reply-check';
+import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementList, statementRecords, statementSummary } from './reply-check';
 import { RelatedRepoTools } from './types';
 
 const REPLY = 'The exporter writes rows as CSV columns.\nNothing   calls `Ledger::snapshot`. The mobile app never stores them, see @alice and [the docs](https://example.com). The description no longer names `MAX_ROWS`.';
@@ -12,6 +13,7 @@ const REPLY = 'The exporter writes rows as CSV columns.\nNothing   calls `Ledger
 const DESCRIPTION = `Rewrites the exporter.\n\nIt writes one   row\nper ledger entry, with **no** cap.\n\n${'Every row keeps its order. '.repeat(9)}`;
 const HELD = 'writes one row per ledger entry';
 const UNPROVEN = 'I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.';
+const NO_FIXING_PR = 'The reply names no other pull request of this repository that I could check, so a maintainer should decide and resolve this thread.';
 const DIFF = parsePRDiff('diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -2,2 +2,3 @@\n context\n+    rows.write_csv();\n context');
 
 describe('checkReply', () => {
@@ -215,6 +217,8 @@ describe('checkReply', () => {
     ['Agreed', 'needs no proof', ['acme/reports:lib/rows.py:2'], 'Agreed. The exporter writes CSV.'],
     ['Kept', 'is left to the check for new lines', undefined, 'Kept. The exporter writes CSV.'],
     ['Unverified', 'stays', ['src/ledger.rs:3'], 'Unverified. The exporter writes CSV.'],
+    // A fix in another pull request waits for that pull request's own check, whatever lines of this one are cited.
+    ['FixedElsewhere', 'becomes Unverified until another check confirms it', ['src/ledger.rs:3'], `Unverified. The exporter writes CSV. ${NO_FIXING_PR}`],
     ['Resolved', 'is no outcome', ['src/ledger.rs:3'], 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.'],
   ])('lets the proof only ever turn an outcome into Unverified: %s %s', (outcome, _name, proof, text) => {
     // Every statement is confirmed, by a line and by the PR description, which changes nothing.
@@ -226,13 +230,29 @@ describe('checkReply', () => {
     expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text).toBe(text);
   });
 
+  it('sets `fixedIn` only to a pull request of this repository that the developer\'s own words name', () => {
+    const repo = 'acme/ledger';
+    const reply = 'This is fixed in #42, see also https://github.com/acme/ledger/pull/57 and https://github.com/acme/other/pull/61, not `#77`.';
+    const fixedIn = (n: unknown, from: ReplySources = { ...sources, repo }) => checkReply(JSON.stringify({ outcome: 'FixedElsewhere', answer: 'You name another PR.', fixed_in: n }), reply, from);
+
+    expect(fixedIn(42)).toMatchObject({ outcome: 'Unverified', answer: 'You name another PR.', fixedIn: 42, text: `Unverified. You name another PR. ${NO_FIXING_PR}` });
+    expect(fixedIn(57).fixedIn).toBe(57);
+    // Another repository's pull request, a number in code, one the reply does not name, and one without the repository all name none.
+    for (const n of [61, 77, 43, '42']) expect(fixedIn(n).fixedIn).toBeUndefined();
+    expect(fixedIn(42, sources).fixedIn).toBeUndefined();
+    // The PR's own number never fixes its finding elsewhere.
+    expect(fixedIn(42, { ...sources, repo, pr: 42 }).fixedIn).toBeUndefined();
+    // Any other outcome names none, whatever `fixed_in` says.
+    expect(checkReply(JSON.stringify({ outcome: 'Fixed', answer: 'Done.', fixed_in: 42 }), reply, { ...sources, repo }).fixedIn).toBeUndefined();
+  });
+
   it.each([
     ['plain text', 'Withdrawn. The exporter writes CSV.'],
     ['a list', '["Withdrawn"]'],
     ['no answer', '{"outcome": "Withdrawn", "proof": ["src/ledger.rs:3"]}'],
   ])('answers Unverified when the model returns %s', (_name, content) => {
     expect(checkReply(content, REPLY, sources)).toEqual({
-      text: 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.', statements: [], unchecked: 0, dropped: 0,
+      text: 'Unverified. I could not check this reply, so a maintainer should decide and resolve this thread.', outcome: 'Unverified', answer: '', proof: [], statements: [], unchecked: 0, dropped: 0,
     });
   });
 
@@ -268,5 +288,201 @@ describe('checkReply', () => {
 
     expect(statementSummary(checked, false)).toBe(checks);
     expect(statementSummary(checked, true)).toBe(`${checks} ${decision}`);
+  });
+});
+
+describe('checkFixedElsewhere', () => {
+  let workspace: string;
+  const HEAD = 'a'.repeat(40);
+  const OTHER_HEAD = 'b'.repeat(40);
+  const MERGE = 'c'.repeat(40);
+  const FIX = 'd'.repeat(40);
+  // The commit a detached thread was posted on, which this PR's head holds.
+  const POSTED = 'f'.repeat(40);
+  // What GitHub's merge of this PR changes against its head: the finding's line 2 is replaced by two lines.
+  const SINCE_HEAD = { filename: 'src/ledger.rs', status: 'modified', patch: '@@ -1,2 +1,3 @@\n pub struct Ledger;\n-impl Ledger {}\n+impl Ledger {\n+  fn check() {}' };
+  // #7 replaced line 2 of the base with the same two lines.
+  const FILE = { ...SINCE_HEAD };
+  const notFound = () => Object.assign(new Error('Not Found'), { status: 404 });
+  // A merge that also holds a change another pull request made to another file.
+  const OTHER_CHANGE = { filename: 'src/other.rs', status: 'added', patch: '@@ -0,0 +1,1 @@\n+fn other() {}' };
+
+  beforeAll(() => {
+    workspace = mkdtempSync(join(tmpdir(), 'manki-elsewhere-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src/ledger.rs'), 'pub struct Ledger;\nimpl Ledger {\n  fn check() {}\n}\n');
+    writeFileSync(join(workspace, 'src/other.rs'), 'fn other() {}\n');
+  });
+
+  afterAll(() => rmSync(workspace, { recursive: true, force: true }));
+
+  type Pull = { state: string; merged: boolean; head: { sha: string }; base: { ref: string }; merge_commit_sha: string | null; changed_files: number };
+  const own: Pull = { state: 'open', merged: false, head: { sha: HEAD }, base: { ref: 'main' }, merge_commit_sha: MERGE, changed_files: 1 };
+  const OWN_FILE = { filename: 'src/app.rs', status: 'modified', patch: '@@ -1,1 +1,1 @@\n-a\n+b' };
+  const merged: Pull = { state: 'closed', merged: true, head: { sha: OTHER_HEAD }, base: { ref: 'main' }, merge_commit_sha: FIX, changed_files: 1 };
+  // A pull request stacked on this one, which the replier can open with any code to back their own claim.
+  const stacked: Pull = { state: 'open', merged: false, head: { sha: OTHER_HEAD }, base: { ref: 'feature' }, merge_commit_sha: 'e'.repeat(40), changed_files: 1 };
+
+  /** `holds` lists the `ancestor..commit` pairs where the commit holds the ancestor, and the comparison of `failing` throws. */
+  function setup(other: Pull | Error, { holds = [`${HEAD}..${OTHER_HEAD}`, `${HEAD}..${MERGE}`, `${FIX}..${MERGE}`, `${POSTED}..${HEAD}`], failing = '', files = [FILE] as object[], ownFiles = [OWN_FILE] as object[], sinceHead = [SINCE_HEAD] as object[], answer = '' as string | Error, checkout = true as boolean | 'none', line = 2, ownBase = 'main', postedOn, sincePosted = [] as object[] }: {
+    holds?: string[]; failing?: string; files?: object[] | Error; ownFiles?: object[]; sinceHead?: object[]; answer?: string | Error; checkout?: boolean | 'none'; line?: number; ownBase?: string; postedOn?: string; sincePosted?: object[];
+  } = {}) {
+    const octokit = {
+      rest: {
+        pulls: {
+          get: jest.fn(async ({ pull_number }: { pull_number: number }) => {
+            if (pull_number === 1) return { data: { ...own, base: { ref: ownBase } } };
+            if (other instanceof Error) throw other;
+            return { data: other };
+          }),
+          listFiles: jest.fn(),
+        },
+        repos: {
+          get: jest.fn(async () => ({ data: { default_branch: 'main' } })),
+          compareCommits: jest.fn(async ({ base, head }: { base: string; head: string }) => {
+            if (`${base}..${head}` === failing) throw new Error('compare failed');
+            return {
+              data: { status: holds.includes(`${base}..${head}`) ? 'ahead' : 'diverged', ...(base === HEAD && head === MERGE && { files: sinceHead }), ...(base === POSTED && { files: sincePosted }) },
+            };
+          }),
+        },
+      },
+      paginate: jest.fn(async (_list: unknown, { pull_number }: { pull_number: number }) => {
+        if (pull_number === 1) return ownFiles;
+        if (files instanceof Error) throw files;
+        return files;
+      }),
+    };
+    const ask = answer instanceof Error ? jest.fn().mockRejectedValue(answer) : jest.fn().mockResolvedValue(answer || JSON.stringify({ outcome: 'Fixed', answer: 'The ledger now checks the key.', proof: ['src/ledger.rs:2-3'] }));
+    const checkoutFn = jest.fn().mockResolvedValue(checkout ? workspace : undefined);
+    const sources: ElsewhereSources = {
+      octokit: octokit as unknown as ElsewhereSources['octokit'], owner: 'acme', repo: 'ledger', prNumber: 1, file: 'src/ledger.rs', line, evidenceFiles: [], ask,
+      ...(postedOn && { postedOn }),
+      ...(checkout !== 'none' && { checkout: checkoutFn }),
+    };
+    return { sources, ask, checkout: checkoutFn };
+  }
+
+  it('confirms a fix #7 made by replacing the finding\'s line, checked at GitHub\'s merge of this PR that holds it', async () => {
+    const { sources, ask, checkout } = setup(merged, { sinceHead: [SINCE_HEAD, OTHER_CHANGE] });
+
+    expect(await checkFixedElsewhere(7, sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
+    expect(checkout).toHaveBeenCalledWith(MERGE);
+    // The model sees what the other pull request changes in the finding's files, never its text.
+    expect(ask).toHaveBeenCalledWith(workspace, expect.stringContaining('+  fn check() {}'), 7, [2, 3]);
+  });
+
+  // A detached thread names line 1 of the commit it was posted on. This PR has since put line 1 back above it, so the
+  // finding's line is line 2 at the head, which #7 replaced.
+  it('confirms a fix on the line a detached finding moved to at this PR\'s head', async () => {
+    const { sources, ask } = setup(merged, { line: 1, postedOn: POSTED, sincePosted: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -0,0 +1,1 @@\n+pub struct Ledger;' }] });
+
+    expect(await checkFixedElsewhere(7, sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
+    expect(ask).toHaveBeenCalledWith(workspace, expect.any(String), 7, [2, 3]);
+    // A line posted on the head, or in a file this PR has not changed since, keeps its number.
+    expect(await checkFixedElsewhere(7, setup(merged, { postedOn: HEAD }).sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
+    expect(await checkFixedElsewhere(7, setup(merged, { postedOn: POSTED, sincePosted: [OTHER_CHANGE] }).sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
+  });
+
+  // #7 changed the file under the name it has on the base, before this PR renamed it.
+  it.each<[string, object]>([
+    ['renamed and changed', { filename: 'src/ledger.rs', previous_filename: 'src/old_ledger.rs', status: 'renamed', changes: 2, patch: '@@ -5,1 +5,1 @@\n-a\n+b' }],
+    ['only renamed', { filename: 'src/ledger.rs', previous_filename: 'src/old_ledger.rs', status: 'renamed', changes: 0 }],
+  ])('confirms a fix in a file this PR %s', async (_name, ownFile) => {
+    const { sources } = setup(merged, { ownFiles: [ownFile], files: [{ ...FILE, filename: 'src/old_ledger.rs' }] });
+
+    expect(await checkFixedElsewhere(7, sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
+  });
+
+  // A reason that can pass later says when to reply again, and no reason is a final verdict on the claim.
+  // Each failed lookup logs its cause.
+  it.each<[string, Pull | Error, Parameters<typeof setup>[1], string, string, string | undefined]>([
+    ['an open pull request into this PR\'s base', { ...stacked, base: { ref: 'main' } }, {}, '#7 is not merged yet', 'once #7 is merged into `main`', undefined],
+    ['a pull request that cannot be read', new Error('Not Found'), {}, '#7 or this PR could not be read', 'in a few minutes', 'Failed to read the repository, this PR or #7: Not Found'],
+    ['a comparison of this PR\'s head with its merge that fails', merged, { failing: `${HEAD}..${MERGE}` }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', `Failed to compare this PR's head with its merge ${MERGE}: compare failed`],
+    ['a lookup of whether this PR\'s head holds #7 that fails', merged, { failing: `${FIX}..${HEAD}` }, 'whether this PR\'s head holds #7 could not be read', 'in a few minutes', `Failed to compare ${FIX} with ${HEAD}: compare failed`],
+    ['a merge of this PR from before its head', merged, { holds: [`${FIX}..${MERGE}`] }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', undefined],
+    ['a merge of this PR GitHub has not updated with the fix yet', merged, { holds: [`${HEAD}..${MERGE}`] }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', undefined],
+    ['no merge of this PR', { ...merged, merge_commit_sha: null }, {}, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', undefined],
+    ['files that cannot be read', merged, { files: new Error('boom') }, 'the files this PR and #7 change could not be read', 'in a few minutes', 'Failed to list the files of #7: boom'],
+    ['a checkout that fails', merged, { checkout: false }, 'the merge with #7 could not be checked out', 'in a few minutes', undefined],
+    ['a check of the merge that fails', merged, { answer: new Error('timed out') }, 'the check of the merge with #7 failed', 'in a few minutes', 'Failed to check the merge with #7: timed out'],
+    ['a detached finding whose line at the head cannot be read', merged, { postedOn: POSTED, failing: `${POSTED}..${HEAD}` }, 'where `src/ledger.rs:2` is at this PR\'s head could not be read', 'in a few minutes', `Failed to compare ${POSTED} with this PR's head: compare failed`],
+  ])('confirms nothing yet for %s', async (_name, other, options, why, retry, logged) => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const { sources } = setup(other, options);
+
+    expect(await checkFixedElsewhere(7, sources)).toEqual({ why, retry });
+    if (logged) expect(warning).toHaveBeenCalledWith(logged);
+    else expect(warning).not.toHaveBeenCalled();
+    warning.mockRestore();
+  });
+
+  it.each<[string, Pull | Error, Parameters<typeof setup>[1], string]>([
+    ['an issue, or a number with no pull request', notFound(), {}, '#7 is not a pull request in this repository'],
+    // A pull request merged after #7 changed the code #7 put in place of the finding's line again.
+    ['a fix a later pull request changed again', merged, { files: [{ ...FILE, patch: '@@ -1,2 +1,3 @@\n pub struct Ledger;\n-impl Ledger {}\n+impl Ledger {\n+  fn check_old() {}' }] }, 'the code that replaced `src/ledger.rs:2` is not the code #7 put there, so a later change may have made the fix'],
+    ['a list of files GitHub cut short', { ...merged, changed_files: 2 }, {}, 'GitHub does not list every file this PR and #7 change'],
+    ['a merge that deletes the finding\'s file', merged, { sinceHead: [{ filename: 'src/ledger.rs', status: 'removed', patch: '@@ -1,2 +0,0 @@\n-pub struct Ledger;\n-impl Ledger {}' }] }, 'the merge with #7 deletes `src/ledger.rs`'],
+    ['a pull request closed without a merge', { ...stacked, state: 'closed', base: { ref: 'main' } }, {}, '#7 is closed without being merged'],
+    ['a pull request merged into another branch', { ...merged, base: { ref: 'release' } }, {}, '#7 targets `release`, not the default branch `main`'],
+    // Whoever may push to a stacked PR's base branch can merge any code there, so only the default branch counts.
+    ['a throwaway pull request stacked on this one', stacked, {}, '#7 targets `feature`, not the default branch `main`'],
+    ['a throwaway pull request merged into the base of this stacked PR', { ...merged, base: { ref: 'feature' } }, { ownBase: 'feature' }, 'this PR\'s base `feature` is not the default branch `main`'],
+    ['a pull request this PR\'s head already holds', merged, { holds: [`${HEAD}..${MERGE}`, `${FIX}..${MERGE}`, `${FIX}..${HEAD}`] }, 'this PR\'s head already holds #7, so #7 cannot be what fixes it'],
+    ['no change to a file the finding cites', merged, { files: [{ ...FILE, filename: 'src/other.rs' }] }, '#7 changes none of the files this finding cites'],
+    ['a finding on the whole file', merged, { line: 0 }, 'this finding names no line'],
+    ['a merge that keeps the finding\'s line and replaces the next one', merged, { line: 1 }, 'the merge with #7 changes only the lines next to `src/ledger.rs:1`, and the check needs `src/ledger.rs:1` itself replaced'],
+    ['a merge that only adds a guard above the finding\'s line', merged, { sinceHead: [{ ...SINCE_HEAD, patch: '@@ -1,2 +1,3 @@\n pub struct Ledger;\n+// guard\n impl Ledger {}' }] }, 'the merge with #7 changes only the lines next to `src/ledger.rs:2`, and the check needs `src/ledger.rs:2` itself replaced'],
+    ['a merge that changes the finding\'s file far from its line', merged, { line: 40 }, 'the merge with #7 leaves `src/ledger.rs:40` as it is'],
+    ['a merge that does not change the finding\'s file', merged, { sinceHead: [{ ...SINCE_HEAD, filename: 'src/other.rs' }] }, 'the merge with #7 leaves `src/ledger.rs:2` as it is'],
+    // A change GitHub does not show in full is no proof either way, so a maintainer decides.
+    ['a merge whose change GitHub shows without lines', merged, { sinceHead: [{ ...SINCE_HEAD, patch: undefined }] }, 'GitHub shows no lines of the change the merge with #7 makes to `src/ledger.rs`'],
+    ['a merge with more files than GitHub lists', merged, { sinceHead: Array.from({ length: 300 }, (_, i) => ({ ...SINCE_HEAD, filename: `src/f${i}.rs` })) }, 'GitHub lists only 300 of the files the merge with #7 changes, so it does not show `src/ledger.rs`'],
+    ['a change of this PR GitHub shows without lines', merged, { ownFiles: [{ filename: 'src/ledger.rs', status: 'modified' }] }, 'GitHub shows no lines of this PR\'s change to `src/ledger.rs`'],
+    ['a change of #7 GitHub shows without lines', merged, { files: [{ ...FILE, patch: undefined }] }, 'GitHub shows no lines of the change #7 makes to `src/ledger.rs`'],
+    // The merge holds every change on the base since this PR branched, so another merged PR can be what replaced the line.
+    ['a fix another merged pull request made, with #7 changing the same file far from it', merged, { files: [{ ...FILE, patch: '@@ -40,1 +40,1 @@\n-old\n+new' }] }, '#7 does not replace `src/ledger.rs:2`'],
+    ['a fix an earlier pull request made, with #7 changing the line next to it', merged, { files: [{ ...FILE, patch: '@@ -1,1 +1,1 @@\n-pub struct Ledger;\n+pub struct Ledger2;' }] }, '#7 does not replace `src/ledger.rs:2`'],
+    // This PR removed the first 10 lines, so the finding's line 2 was line 12 on the base, far from #7's change to line 1.
+    ['a change #7 made where the finding\'s line was not on the base', merged, { ownFiles: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -1,10 +0,0 @@\n' + '-x\n'.repeat(10).trimEnd() }] }, '#7 does not replace `src/ledger.rs:2`'],
+    ['a line this PR adds', merged, { ownFiles: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -1,1 +1,2 @@\n pub struct Ledger;\n+impl Ledger {}' }] }, '#7 does not replace `src/ledger.rs:2`'],
+    // Where a detached finding's line is now is not certain, so its claim is never confirmed.
+    ['a detached finding whose line this PR changed since', merged, { postedOn: POSTED, sincePosted: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -2,1 +2,1 @@\n-impl Ledger {}\n+impl Ledger { }' }] }, 'this PR changed `src/ledger.rs:2` or its file since this finding was posted, so where the line is now is not certain'],
+    ['a detached finding whose file this PR renamed since', merged, { postedOn: POSTED, sincePosted: [{ filename: 'src/book.rs', previous_filename: 'src/ledger.rs', status: 'renamed', changes: 0 }] }, 'this PR changed `src/ledger.rs:2` or its file since this finding was posted, so where the line is now is not certain'],
+    ['a detached finding posted on a commit a force push dropped', merged, { postedOn: POSTED, holds: [`${HEAD}..${MERGE}`, `${FIX}..${MERGE}`] }, 'this PR\'s head no longer holds the commit this finding was posted on, so where `src/ledger.rs:2` is now is not certain'],
+    ['a detached finding whose file GitHub does not list since', merged, { postedOn: POSTED, sincePosted: Array.from({ length: 300 }, (_, i) => ({ ...OTHER_CHANGE, filename: `src/f${i}.rs` })) }, 'GitHub lists only 300 of the files this PR changed since this finding was posted, so where `src/ledger.rs:2` is now is not certain'],
+    ['a check that keeps the finding', merged, { answer: JSON.stringify({ outcome: 'Kept', answer: 'Still there.', proof: ['src/ledger.rs:2'] }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
+    ['a fix on a line that does not exist', merged, { answer: JSON.stringify({ outcome: 'Fixed', answer: 'Gone.', proof: ['src/ledger.rs:99'] }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
+    ['a fix on lines the merge added for another pull request', merged, { sinceHead: [SINCE_HEAD, OTHER_CHANGE], answer: JSON.stringify({ outcome: 'Fixed', answer: 'Gone.', proof: ['src/ledger.rs:2', 'src/other.rs:1'] }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
+    ['a fix on a line the merge did not change', merged, { answer: JSON.stringify({ outcome: 'Fixed', answer: 'Gone.', proof: ['src/ledger.rs:1-2'] }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
+    // No line can be cited among lines that do not exist, so a fix that only removes the finding's line is not shown.
+    ['a fix that only removes the finding\'s line', merged, { sinceHead: [{ ...SINCE_HEAD, patch: '@@ -1,2 +1,1 @@\n pub struct Ledger;\n-impl Ledger {}' }], files: [{ ...FILE, patch: '@@ -1,2 +1,1 @@\n pub struct Ledger;\n-impl Ledger {}' }] }, '#7 only removes `src/ledger.rs:2`, and the check needs a line #7 put in its place'],
+    ['a fix without proof', merged, { answer: JSON.stringify({ outcome: 'Fixed', answer: 'Gone.' }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
+    ['an answer that cannot be read', merged, { answer: 'Fixed, trust me.' }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
+  ])('confirms nothing for %s', async (_name, other, options, why) => {
+    const { sources } = setup(other, options);
+    expect(await checkFixedElsewhere(7, sources)).toEqual({ why });
+  });
+
+  it('confirms nothing for this PR itself, for a finding tied to no file, or without tools, before it reads GitHub', async () => {
+    const { sources, ask } = setup(merged);
+    const { checkout: _checkout, ...withoutTools } = sources;
+    expect(await checkFixedElsewhere(7, withoutTools)).toEqual({ why: 'this reply runs without repository tools' });
+    expect(sources.octokit.rest.pulls.get).not.toHaveBeenCalled();
+    expect(await checkFixedElsewhere(1, sources)).toEqual({ why: 'it names this pull request' });
+    expect(await checkFixedElsewhere(7, { ...sources, file: '' })).toEqual({ why: 'this finding is not tied to a file' });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('says what was confirmed, or why not', () => {
+    const checked = checkReply(JSON.stringify({ outcome: 'FixedElsewhere', answer: 'You name #7.', fixed_in: 7 }), 'Fixed in #7.', { relatedNames: [], repo: 'acme/ledger' });
+
+    expect(fixedElsewhereText(checked, { pr: 7, base: 'main', answer: 'The ledger now checks the key.' }))
+      .toBe('Confirmed: #7, merged into `main`, replaced the cited line. The ledger now checks the key. This PR\'s own code still has the defect, so this thread stays as it is. Update this branch with `main`, and the next review checks the fix here.');
+    expect(fixedElsewhereText(checked, { why: '#7 is not merged yet', retry: 'once #7 is merged into `main`' }))
+      .toBe('Unverified. You name #7. I could not check #7 yet: #7 is not merged yet. This thread stays as it is. Reply again once #7 is merged into `main`.');
+    expect(fixedElsewhereText(checked, { why: '#7 is closed without being merged' }))
+      .toBe('Unverified. You name #7. I could not confirm that #7 fixes this finding: #7 is closed without being merged. A maintainer should decide and resolve this thread.');
   });
 });
