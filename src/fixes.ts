@@ -140,9 +140,9 @@ const oneLine = (value: unknown, max: number): string => (typeof value === 'stri
 function listedFix(entry: unknown, changed: ChangedFiles): ListedFix | undefined {
   if (!entry || typeof entry !== 'object') return undefined;
   const { lines, problem } = entry as Record<string, unknown>;
-  // Capped before the ranges are cut to the diff, so a reply with many ranges costs no more than one with the most kept.
+  // Only the listed ranges are capped. The runs they are cut into are bounded by the lines the diff changes, and all stay.
   const at = Array.isArray(lines) ? [...new Set(lines.filter((l): l is string => typeof l === 'string').map(l => repoLocation(l.replace(/`/g, ''))))].slice(0, MAX_FIX_LOCATIONS) : [];
-  const kept = [...new Set(at.flatMap(location => clipToChanges(location, changed)))].slice(0, MAX_FIX_LOCATIONS);
+  const kept = [...new Set(at.flatMap(location => clipToChanges(location, changed)))];
   const said = oneLine(problem, MAX_PROBLEM_CHARS);
   return kept.length > 0 && said ? { at: kept, problem: said } : undefined;
 }
