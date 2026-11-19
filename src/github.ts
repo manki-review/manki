@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
+import { posix } from 'path';
 
 import * as core from '@actions/core';
 import * as github from '@actions/github';
@@ -8,7 +9,7 @@ import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
 import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
-import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern, repoPath } from './diff';
+import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -1635,7 +1636,7 @@ function hasDotSegment(path: string): boolean {
  * URL or one that leaves the repository, so a comparison with a repository path never matches on its spelling.
  */
 function plainRepoPath(path: string): string | undefined {
-  const normal = repoPath(path);
+  const normal = posix.normalize(path.trim());
   return LINKABLE_PATH_RE.test(normal) && !hasDotSegment(normal) ? normal : undefined;
 }
 

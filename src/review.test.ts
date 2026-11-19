@@ -213,6 +213,9 @@ describe('parseFindings', () => {
     expect(parseFindings(reply, 'R', undefined)[0].evidence).toEqual({ checks: [`\`${__filename}:4\` reads the row`, 'no location here'], proof: ['src/a.ts:1', '/src/b.ts:2', `${__filename}:3`] });
     expect(parseFindings(JSON.stringify([{ title: 'Absolute', file: __filename, line: 1, description: 'd' }]), 'R', checkout)[0].file).toBe('src/review.test.ts');
     expect(parseFindings(JSON.stringify([{ title: 'No file', description: 'd' }]), 'R', undefined)[0].file).toBe('');
+    // Git allows a backslash in a file name, so `src\x.ts` stays that file in the finding, its proof and its evidence.
+    const [backslash] = parseFindings(JSON.stringify([{ title: 'Backslash', file: 'src\\x.ts', line: 2, description: 'd', proof: ['src\\x.ts:2'], evidence: ['src\\x.ts:2 reads it'] }]), 'R', checkout);
+    expect([backslash.file, backslash.evidence]).toEqual(['src\\x.ts', { checks: ['src\\x.ts:2 reads it'], proof: ['src\\x.ts:2'] }]);
   });
 
   it('reads the evidence, keeps only proof entries that start with a location, marks open leads not checked, reads a pre-existing mark with its reason, and keeps a rule only when its loaded file holds the quote', () => {

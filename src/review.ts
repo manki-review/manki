@@ -198,7 +198,7 @@ function fileOf(location: string): string {
 /** Splits a file a client reports as read into the `owner/name:` of a related repo, empty for the PR's own repo, and its path without `./`, `..` or a backslash. */
 export function readFileParts(file: string): { repo: string; path: string } {
   const [, repo = '', path] = /^([^/:]+\/[^/:]+:)?(.*)$/s.exec(file)!;
-  return { repo, path: repoPath(path) };
+  return { repo, path: repoPath(path.replace(/\\/g, '/')) };
 }
 
 /** Returns a file a client reports as read in the spelling of `listedFiles`. */

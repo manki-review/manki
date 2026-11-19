@@ -11,11 +11,12 @@ import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, Roun
 /**
  * Returns `path` as the path from the repository root, without `./` or `.` segments. An absolute path into the checkout
  * at `workspace`, under its own or its real path, loses that prefix. Any other absolute path stays as it is, since
- * nothing says which repository path it names. Symlinks are not followed, so the path stays the one the diff names.
+ * nothing says which repository path it names. Symlinks are not followed, and a backslash stays, since git allows one
+ * in a file name, so the path stays the one the diff names.
  */
 export function repoPath(path: string, workspace?: string): string {
   if (!path.trim()) return '';
-  const normal = posix.normalize(path.trim().replace(/\\/g, '/'));
+  const normal = posix.normalize(path.trim());
   const roots = workspace ? [workspace, realPathOf(workspace)].map(root => `${posix.normalize(root.replace(/\\/g, '/')).replace(/\/+$/, '')}/`) : [];
   const root = roots.find(prefix => normal.startsWith(prefix));
   return root ? normal.slice(root.length) : normal;
