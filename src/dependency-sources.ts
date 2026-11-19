@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join, posix } from 'path';
 import { rcompare, satisfies, valid } from 'semver';
 
@@ -130,6 +130,25 @@ function readManifest(root: string, path: string, budget: ReadBudget): string | 
     return readFileSync(absolute, 'utf8');
   } catch {
     return undefined;
+  }
+}
+
+/** The most bytes of a symlink's target that Manki reads. */
+const MAX_LINK_BYTES = 4096;
+
+/**
+ * Whether the symlink at `link`, relative to the checkout at `root`, points to one of `plainFiles`, the files git tracks
+ * there that are no symlink. A checkout with `core.symlinks=false` holds the target as the text of a plain file.
+ */
+function linksToPlainFile(root: string, link: string, plainFiles: ReadonlySet<string>): boolean {
+  try {
+    const absolute = join(root, link);
+    const stat = lstatSync(absolute);
+    if (!stat.isSymbolicLink() && stat.size > MAX_LINK_BYTES) return false;
+    const target = stat.isSymbolicLink() ? readlinkSync(absolute) : readFileSync(absolute, 'utf8');
+    return !posix.isAbsolute(target) && plainFiles.has(posix.normalize(posix.join(posix.dirname(link), target)));
+  } catch {
+    return false;
   }
 }
 
@@ -421,11 +440,16 @@ export function dependencyLoader(
   stateDir = dependencyState(stateDir);
   mkdirSync(stateDir, { recursive: true });
   const wanted = new Set(registries.flatMap(r => [...r.manifests, ...r.lockfiles, ...r.unreadInstallFiles]));
+  const isRead = (path: string) => wanted.has(posix.basename(path)) || registries.some(r => r.isConfigFile(path));
   // Only files git tracks count, since only those are the PR's.
   let listing: Promise<Listing> | undefined;
   const listed = (): Promise<Listing> => listing ??= trackedFiles(root).then((tracked): Listing => {
     if (!tracked) return { files: [], cut: 'Manki could not list the files of the checkout, so it cannot tell which code the PR runs' };
-    const files = tracked.filter(f => !f.symlink && (wanted.has(posix.basename(f.path)) || registries.some(r => r.isConfigFile(f.path)))).map(f => f.path);
+    // An install follows a symlink, which can hold a lockfile, a setting or a whole folder of them where Manki does not look.
+    const plainFiles = new Set(tracked.filter(f => !f.symlink).map(f => f.path));
+    const link = tracked.find(f => f.symlink && (isRead(f.path) || !linksToPlainFile(root, f.path, plainFiles)));
+    if (link) return { files: [], cut: `the checkout holds ${shown(link.path)} as a symlink, which Manki does not follow, so it cannot tell which code the PR runs` };
+    const files = [...plainFiles].filter(isRead);
     return files.length > maxListed
       ? { files, cut: `the checkout holds more than ${maxListed} lockfiles, manifests and settings files, the most Manki lists, so it cannot tell which code the PR runs` }
       : { files };
