@@ -48,7 +48,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundContext, buildRoundUsage, mergedDuplicateCount } from './round-context';
-import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { runScopeReader } from './scope';
@@ -6050,6 +6050,7 @@ describe('runReview', () => {
     const [laterCall] = jest.mocked(laterClients.judge.sendMessage).mock.calls;
     expect(laterCall).toEqual(firstCall);
     expect(laterCall[0]).toContain(`judge the code cold.\n\n${UNTRUSTED_CONTENT_RULE}\n\n${VERIFY_CLAIMS_RULE}\n`);
+    expect(laterCall[0]).toContain(`in \`howToFix\` the change that fixes it. ${ROOT_CAUSE_FIX_RULE} In \`evidence\``);
     const prompt = `${laterCall[0]}\n${laterCall[1]}`;
     for (const leaked of ['Prior round concern', 'PR claims it is safe', 'Already reviewed', 'Linked issue', 'inter-round delta', 'thread-only file', 'round 3', 'Round 3']) {
       expect(prompt).not.toContain(leaked);
