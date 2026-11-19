@@ -73,7 +73,7 @@ jest.mock('./auth', () => ({
   reportPrState: jest.fn().mockResolvedValue(undefined),
 }));
 
-jest.mock('./workspace', () => ({ fetchWorkspace: jest.fn() }));
+jest.mock('./workspace', () => ({ ...jest.requireActual('./workspace'), fetchWorkspace: jest.fn() }));
 
 jest.mock('./providers', () => ({
   buildAuthForProvider: jest.requireActual('./providers').buildAuthForProvider,
@@ -201,6 +201,7 @@ jest.mock('./github', () => ({
   wasEdited: jest.fn().mockResolvedValue(false),
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
+  fetchMergeBase: jest.requireActual('./github').fetchMergeBase,
   githubRepoFiles: jest.fn(() => ({ read: jest.fn().mockResolvedValue(null), list: jest.fn().mockResolvedValue([]) })),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
   editedKeys: jest.requireActual('./github').editedKeys,
@@ -969,6 +970,7 @@ describe('run', () => {
       // The PR's own config lists a repo the base branch does not.
       const configAt: Record<string, string> = { 'release-2': 'related_repos:\n  - repo: acme/reports\n    kind: consumer\n', abc123: 'related_repos:\n  - repo: evil/planted\n    kind: consumer\n' };
       jest.mocked(ghUtils.readConfigFile).mockImplementationOnce(async (_octokit, _owner, _repo, ref) => configAt[ref] ?? configAt.abc123);
+      const { exclude_paths: excludePaths } = jest.requireActual<typeof import('./config')>('./config').DEFAULT_CONFIG;
       jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.requireActual<typeof import('./config')>('./config').DEFAULT_CONFIG, closed_paths: ['bench/holdout/**'] });
 
       await run();
@@ -985,8 +987,16 @@ describe('run', () => {
       jest.mocked(diffModule.reviewableDiff).mockImplementationOnce((raw, exclude, closed) => ({ ...reviewable(raw, exclude, closed), closedPaths: [...closed ?? [], '/src/case.yml'] }));
       expect(await loadWorkspace()).toBe('/work/head');
       // The checkout the reply's tools read leaves out the paths the base branch's config closes, and the files the PR moves out of them.
-      expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app', ['bench/holdout/**', '/src/case.yml']);
+      expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app', ['bench/holdout/**', '/src/case.yml'], { sha: 'merge-base', excludePaths });
       expect(jest.mocked(diffModule.reviewableDiff)).toHaveBeenLastCalledWith(expect.anything(), [], ['bench/holdout/**']);
+      expect(mockCompareCommits).toHaveBeenLastCalledWith(expect.objectContaining({ base: 'release-2', head: 'abc123' }));
+
+      // A merge base GitHub cannot name leaves the head alone for the tools.
+      mockCompareCommits.mockRejectedValueOnce(new Error('API 500'));
+      jest.mocked(fetchWorkspace).mockResolvedValueOnce('/work/head');
+      expect(await loadWorkspace()).toBe('/work/head');
+      expect(fetchWorkspace).toHaveBeenLastCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app', ['bench/holdout/**'], undefined);
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Could not find the PR\'s merge base, so the tools read only the head'));
 
       // Without the PR's diff, Manki cannot tell which files the PR moved out of a closed path, so the reply gets no tools.
       jest.mocked(ghUtils.fetchPRDiff).mockRejectedValueOnce(new Error('API 500'));

@@ -4,6 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
+import { DEFAULT_CONFIG } from './config';
 import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
 import { REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { RETRY_HINT } from './review';
@@ -55,12 +56,13 @@ jest.mock('./providers', () => ({
   }),
 }));
 
-jest.mock('./workspace', () => ({ fetchWorkspace: jest.fn() }));
+jest.mock('./workspace', () => ({ ...jest.requireActual('./workspace'), fetchWorkspace: jest.fn() }));
 
 const OWNER = 'acme';
 const REPO = 'widgets';
 const PR_NUMBER = 42;
 const HEAD_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+const MERGE_BASE_SHA = '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c';
 const APP_LOGIN = 'manki-review[bot]';
 const ACTIONS_LOGIN = 'github-actions[bot]';
 const TOKEN_URL = 'https://token.test/token';
@@ -281,7 +283,7 @@ class FakeGitHub {
     if (method === 'GET' && route.startsWith('/compare/')) {
       const head = route.split('...').at(-1) ?? '';
       const commits = (this.pushedCommits[head] ?? [head]).map(sha => ({ sha, parents: [{ sha: 'parent' }] }));
-      return json({ status: 'ahead', total_commits: commits.length, commits, files: [] });
+      return json({ status: 'ahead', total_commits: commits.length, commits, files: [], merge_base_commit: { sha: MERGE_BASE_SHA } });
     }
     if (method === 'GET' && (match = route.match(/^\/commits\/(\w+)$/)) && headers.get('accept')?.includes('diff')) return text(this.commitDiffs[match[1]] ?? '');
     const config = this.configs[searchParams.get('ref') ?? ''];
@@ -690,7 +692,8 @@ describe('runFullReview end to end', () => {
 
     await reviewRound();
 
-    expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app', []);
+    // The merge base comes along for reads at the base, which refuse the default `exclude_paths`.
+    expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app', [], { sha: MERGE_BASE_SHA, excludePaths: DEFAULT_CONFIG.exclude_paths });
     // One finder on a PR in no floor class gets the normal budget.
     expect(mockLLM.tools).toEqual([['scope', { root: '/work/pr-head', steps: 10 }], ['reviewer', { root: '/work/pr-head', steps: 30 }], ['second_read', { root: '/work/pr-head', steps: 30 }]]);
 

@@ -8,6 +8,7 @@ import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { BASE_READS_FILE } from './workspace';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -1184,6 +1185,9 @@ describe('refuteBlockers', () => {
     const message = (title: string) => client.calls.find(([t]) => t === title)![2];
     const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
     expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, false]);
+    // The workspace holds no base, so the refuter is not sent to read one.
+    expect(client.messages[0][0]).toContain('does not show, read how this PR changed those lines with `git_history`, or answer unsettled.');
+    expect(client.messages[0][0]).not.toContain('`ref`');
     // A check that asks shows the PR's change to the cited files and names the other files the PR changes.
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
     expect(message('Pending blocker')).toContain('- **Other files this PR changes**');
@@ -1244,6 +1248,13 @@ describe('refuteBlockers', () => {
     writeFileSync(join(workspace, 'src', 'math.ts'), 'export function add(a: number, b: number) {\n  return a + b + 1;\n}\n');
     await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
     expect(again.calls).toHaveLength(3);
+
+    // A workspace that holds the base sends the refuter to read the changed file there.
+    mkdirSync(join(workspace, '.git'));
+    writeFileSync(join(workspace, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: [] }));
+    const withBase = fakeClient(replies, 'first-model');
+    await refuteBlockers(withBase, [finding('Same before')], { workspace, diff });
+    expect(withBase.messages[0][0]).toContain('does not show, read that file at the base with `read_file` and `ref` set to `base`, or how this PR changed those lines with `git_history`, or answer unsettled.');
   });
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {

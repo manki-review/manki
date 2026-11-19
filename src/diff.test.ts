@@ -445,6 +445,10 @@ describe('reviewableDiff', () => {
     const slash = 'diff --git a/holdout/y.ts "b/src/c\\\\d.ts"\nsimilarity index 100%\nrename from holdout/y.ts\nrename to "src/c\\\\d.ts"\n';
     const moved = reviewableDiff(`${braces}${slash}`, [], ['holdout']).closedPaths;
     expect(['src/{a,b}.ts', 'src/a.ts', 'src/c\\d.ts'].map(path => !!findClosedPattern(path, moved))).toEqual([true, false, true]);
+    // A file renamed into a closed path held the closed file's text at the base, so its old path is closed too, binaries included.
+    const movedIn = 'diff --git a/src/case.yml b/holdout/case.yml\nsimilarity index 100%\nrename from src/case.yml\nrename to holdout/case.yml\n';
+    const binaryIn = 'diff --git a/assets/a.bin b/holdout/a.bin\nsimilarity index 90%\nrename from assets/a.bin\nrename to holdout/a.bin\nindex 1111111..2222222 100644\nBinary files a/assets/a.bin and b/holdout/a.bin differ\n';
+    expect(reviewableDiff(`${movedIn}${binaryIn}`, [], ['holdout']).closedPaths).toEqual(['holdout', '/src/case.yml', '/assets/a.bin']);
     // Only the closed files make up the change, as when every file is excluded.
     expect(reviewableDiff(CLOSED_DIFF.replace(MULTI_FILE_DIFF, ''), [], ['holdout/**']).fullDiff.files).toEqual([]);
     expect(reviewableDiff(CLOSED_DIFF, ['src/b.ts'], [])).toEqual(reviewableDiff(CLOSED_DIFF, ['src/b.ts']));

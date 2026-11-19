@@ -4,14 +4,28 @@ import { devNull } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
 
+import * as core from '@actions/core';
+
 import { findClosedPattern } from './diff';
 import { makeScratchDir } from './tool-install';
-import { SYSTEM_ENV } from './utils';
+import { safeJsonParse, SYSTEM_ENV } from './utils';
 
 const execFileAsync = promisify(execFile);
 
 /** How many commits of history a workspace holds. */
 export const WORKSPACE_DEPTH = 500;
+
+/** The ref of a workspace that points at the PR's base commit, which `read_file` reads with `ref` set to `base`. */
+export const BASE_REF = 'refs/manki/base';
+
+/** The file in a workspace's `.git` that holds the `exclude_paths` a read at the base refuses. Without it nothing is read there. */
+export const BASE_READS_FILE = 'manki-base-reads.json';
+
+/** The commit a PR's diff starts from, and the `exclude_paths` the tools may not read there. */
+export interface WorkspaceBase {
+  sha: string;
+  excludePaths: readonly string[];
+}
 
 const GIT_TIMEOUT_MS = 300_000;
 // A local review reads a whole `git diff` before `exclude_paths` drops lockfiles and generated files.
@@ -44,9 +58,12 @@ export async function runGit(dir: string, args: string[], env = gitEnv()): Promi
 /**
  * Fetches commit `sha` of the repo at `url`, with `WORKSPACE_DEPTH` commits of history, into a new directory, checks
  * it out without the paths `closedPaths` closes and returns the directory. `token` authenticates the fetch only: it
- * reaches git through the environment, so it is never written to the repo's config or shown on a command line.
+ * reaches git through the environment, so it is never written to the repo's config or shown on a command line. With
+ * `base`, the workspace also holds that commit for reads at the base, by `addBase`.
  */
-export async function fetchWorkspace(url: string, sha: string, token?: string, closedPaths: readonly string[] = []): Promise<string> {
+export async function fetchWorkspace(
+  url: string, sha: string, token?: string, closedPaths: readonly string[] = [], base?: WorkspaceBase,
+): Promise<string> {
   const dir = makeScratchDir('repo');
   const git = (args: string[], env = gitEnv()) => runGit(dir, args, env);
   const auth: Record<string, string> = token ? { 'http.extraHeader': `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` } : {};
@@ -60,7 +77,21 @@ export async function fetchWorkspace(url: string, sha: string, token?: string, c
     rmSync(dir, { recursive: true, force: true });
     throw error;
   }
+  if (base) await addBase(dir, url, base, gitEnv(auth));
   return dir;
+}
+
+/**
+ * Returns the `exclude_paths` a read at the base of the workspace `dir` refuses, or `undefined` when it holds no base.
+ * One whose list cannot be read holds none, so no read at the base runs without that list.
+ */
+export function baseReadsOf(dir: string): string[] | undefined {
+  try {
+    const { excludePaths } = (safeJsonParse(readFileSync(join(dir, '.git', BASE_READS_FILE), 'utf8')) ?? {}) as Record<string, unknown>;
+    return Array.isArray(excludePaths) && excludePaths.every(p => typeof p === 'string') ? excludePaths : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The file in a checkout's `.git` that keeps the patterns `closePaths` removed, for the tool server. */
@@ -113,4 +144,22 @@ export function closedPathsOf(dir: string): string[] {
   const patterns: unknown = JSON.parse(readFileSync(file, 'utf8'));
   if (!Array.isArray(patterns) || !patterns.every(p => typeof p === 'string')) throw new Error(`${file} does not list the closed paths`);
   return patterns;
+}
+
+/**
+ * Points `BASE_REF` of the workspace `dir` at the base commit, then writes the `exclude_paths` a read there refuses.
+ * The base is usually in the history the workspace already holds, so it is fetched from `url` only when it is not, as
+ * that one commit. A base that cannot be had leaves the workspace without one, so the tools read only the head.
+ */
+async function addBase(dir: string, url: string, { sha, excludePaths }: WorkspaceBase, fetchEnv: NodeJS.ProcessEnv): Promise<void> {
+  try {
+    if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw new Error('it is no full commit id');
+    const held = await runGit(dir, ['cat-file', '-e', `${sha}^{commit}`]).then(() => true, () => false);
+    if (!held) await runGit(dir, ['fetch', '-q', '--no-tags', '--depth=1', url, sha], fetchEnv);
+    await runGit(dir, ['update-ref', BASE_REF, sha]);
+    // Written last, since `baseReadsOf` takes the file as the sign that the ref is set.
+    writeFileSync(join(dir, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths }));
+  } catch (error) {
+    core.warning(`Could not fetch the PR's base commit ${sha.slice(0, 7)}, so the tools read only the head: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }

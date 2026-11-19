@@ -16,6 +16,7 @@ import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } fro
 import { wrapUpNoted } from './tool-steps';
 import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
+import { baseReadsOf } from './workspace';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
 const REFUTE_STEPS = 15;
@@ -41,7 +42,9 @@ export const MAX_DOUBT_CHECKS = 8;
 
 type RefutationField = 'refutation' | 'pairRefutation';
 
-const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
+/** Returns the refuter's instructions. `readsBase` says the workspace holds the PR's base for `read_file` to read. */
+function refuteSystemPrompt(readsBase: boolean): string {
+  return `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
 The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade, or a blocker the judge dropped because of how code outside the diff behaves. Try to refute it, then follow the failure path from its trigger to the damage.
 
@@ -57,7 +60,7 @@ To refute it:
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
-- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does, or the change shown is cut, answer \`base\` unsettled. In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read how this PR changed those lines with \`git_history\`, or answer unsettled.
+- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does, or the change shown is cut, answer \`base\` unsettled. In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
 - **confirmed**: the failure path holds. Cite the lines that show the failure in \`proof\`.
@@ -72,6 +75,7 @@ When the message asks the question about the base, answer it in \`base\` the way
 Respond with ONLY a JSON object. Leave out \`premises\` when the message lists none, and \`base\` when it asks no question about the base:
 
 {"outcome": "disproved" | "confirmed" | "unsettled", "rule": "The general rule the finding relies on, in one sentence", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"], "premises": [{"outcome": "disproved" | "confirmed" | "unsettled", "reason": "One plain sentence on what decides this premise", "proof": ["file:line"]}], "base": {"outcome": "disproved" | "confirmed" | "unsettled", "reason": "One plain sentence on what decides it", "proof": ["file:line"]}}`;
+}
 
 /** Returns the SHA-256 over `files` in the workspace, each path with its content, or `undefined` when one cannot be read there. */
 export function codeDigest(workspace: string, files: readonly string[]): string | undefined {
@@ -702,6 +706,7 @@ export interface RefuteOptions {
  * refuter, or to the judge. With `roundEnd` it makes only the checks `doubtsToCheck` picks.
  */
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, roundEnd, rules, progress, excludedPaths }: RefuteOptions): Promise<Finding[]> {
+  const systemPrompt = refuteSystemPrompt(baseReadsOf(workspace) !== undefined);
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
@@ -715,7 +720,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     try {
       const refutation = await sendWithParseRetry(
         buildRefuteMessage(finding, usesOutsideDiff, outsideInput, diff, excludedPaths),
-        message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
+        message => refuter.sendMessage(systemPrompt, message, {
           ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
           ...(finding.reviewers.some(isSweepName) && { sweep: true as const }),
         }),

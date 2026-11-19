@@ -12,6 +12,7 @@ import { filesChangedByPush, runReview } from './review';
 import { GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { REACH_DOUBT } from './types';
 import type { Finding, ReviewResult, RoundOutcome, ThreadEvaluation } from './types';
+import { BASE_READS_FILE, BASE_REF, closedPathsOf } from './workspace';
 
 jest.mock('@actions/core');
 jest.mock('./providers', () => ({
@@ -74,11 +75,13 @@ describe('reviewLocal', () => {
   });
 
   it('reviews the change from the merge base on a workspace holding only the head, and records the round', async () => {
-    let workspaceSeen: { content: string; log: string } | undefined;
+    let workspaceSeen: { content: string; log: string; base: string; excluded: unknown } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
       workspaceSeen = {
         content: readFileSync(join(options.workspace!, 'src/a.ts'), 'utf-8'),
         log: git(options.workspace!, 'log', '--format=%H'),
+        base: git(options.workspace!, 'rev-parse', BASE_REF),
+        excluded: JSON.parse(readFileSync(join(options.workspace!, '.git', BASE_READS_FILE), 'utf8')),
       };
       const notes = ['Note one', 'Note two', 'Note three', 'Note four'].map(title => ({ ...finding, severity: 'note' as const, title }));
       return { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as RoundOutcome, summary: 'One blocker', findings: [{ ...finding }, ...notes], highlights: [], reviewComplete: true, agentNames: ['reviewer'] } as ReviewResult & { outcome: RoundOutcome };
@@ -102,6 +105,9 @@ describe('reviewLocal', () => {
     expect(options).not.toHaveProperty('relatedReposAsOf');
     expect(workspaceSeen?.content).toBe('const a = 1;\nconst b = 3;\n');
     expect(workspaceSeen?.log).not.toContain(later);
+    // The tools read the merge base the change is reviewed from, never excluded paths there.
+    expect(workspaceSeen?.base).toBe(base);
+    expect(workspaceSeen?.excluded).toEqual({ excludePaths: options.config.exclude_paths });
     expect(existsSync(options.workspace!)).toBe(false);
     expect(review.base).toBe(base);
     expect(review.head).toBe(head);
@@ -275,7 +281,7 @@ describe('reviewLocal', () => {
   }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
-    let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean; indexed: string; closed: boolean; patch: boolean } | undefined;
+    let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean; indexed: string; closed: boolean; patch: boolean; base: string } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
       const workspace = options.workspace!;
       workspaceSeen = {
@@ -283,6 +289,7 @@ describe('reviewLocal', () => {
         // Tools that list tracked files read the index, so it holds the symlink the patch adds and no closed file.
         indexed: git(workspace, 'ls-files', '-s', '--', 'docs/x.md', 'link').replace(/ [0-9a-f]+ /g, ' '),
         closed: existsSync(join(workspace, 'docs')), patch: readdirSync(join(workspace, '.git')).some(name => name.endsWith('.patch')),
+        base: git(workspace, 'rev-parse', BASE_REF),
       };
       return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
     });
@@ -300,7 +307,8 @@ describe('reviewLocal', () => {
 
     const options = jest.mocked(runReview).mock.calls[0][1];
     // The closed files the patch changes are deleted after it applies, and the patch file, which holds their lines, with them.
-    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true, indexed: '120000 0\tlink', closed: false, patch: false });
+    // The base of a patch is the commit it applies to.
+    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true, indexed: '120000 0\tlink', closed: false, patch: false, base: review.head });
     expect(options.workspace).not.toBe(repo);
     expect(existsSync(options.workspace!)).toBe(false);
     expect(options.rawDiff).not.toContain('docs/x.md');
@@ -309,18 +317,21 @@ describe('reviewLocal', () => {
     expect(review.base).toBe(review.head);
 
     // A file moved out of a closed path holds the closed file's text, so it is closed in the checkout and for every later read too.
+    // A file moved into one held that text at the base, so its old path is closed too.
     git(repo, 'checkout', '-q', '-b', 'moved', 'feature');
     git(repo, 'mv', 'docs/x.md', 'src/x.md');
+    git(repo, 'mv', 'guides/conventions.md', 'docs/conventions.md');
     commit(repo, 'Move the notes', { 'src/a.ts': 'const a = 1;\nconst b = 9;\n' });
     git(repo, 'checkout', '-q', 'main');
-    let movedSeen: boolean | undefined;
+    let movedSeen: { headCopy: boolean; toolsClose: string[] } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
-      movedSeen = existsSync(join(options.workspace!, 'src/x.md'));
+      movedSeen = { headCopy: existsSync(join(options.workspace!, 'src/x.md')), toolsClose: closedPathsOf(options.workspace!) };
       return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
     });
     await reviewLocal({ repoRoot: repo, base: 'feature', head: 'moved', config: { ...jest.requireActual('./config').DEFAULT_CONFIG, closed_paths: ['docs/**'] }, providerInputs: inputs });
-    expect(movedSeen).toBe(false);
-    expect(jest.mocked(runReview).mock.calls.at(-1)![1].config.closed_paths).toEqual(['docs/**', '/src/x.md']);
+    // The tool server refuses a read at the base by the list the checkout keeps, so it holds the old path too.
+    expect(movedSeen).toEqual({ headCopy: false, toolsClose: ['docs/**', '/guides/conventions.md', '/src/x.md'] });
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].config.closed_paths).toEqual(['docs/**', '/guides/conventions.md', '/src/x.md']);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('reads a symlinked config and instruction file at their targets, and no target outside the tree', async () => {

@@ -321,22 +321,26 @@ export function filterDiff(
 
 /**
  * Drops from `diff` every file `closedPaths` closes, binaries included, and lists them. A file renamed from a closed path
- * counts as closed, since its removed lines are the closed file's.
+ * counts as closed, since its removed lines are the closed file's. `renamedOpen` lists the open path of each rename into
+ * or out of a closed path.
  */
-function withoutClosed(diff: ParsedDiff, closedPaths: readonly string[]): { diff: ParsedDiff; closed: RoundDiffExcludedFile[]; movedOut: string[] } {
-  if (closedPaths.length === 0) return { diff, closed: [], movedOut: [] };
+function withoutClosed(diff: ParsedDiff, closedPaths: readonly string[]): { diff: ParsedDiff; closed: RoundDiffExcludedFile[]; renamedOpen: string[] } {
+  if (closedPaths.length === 0) return { diff, closed: [], renamedOpen: [] };
   const closed: RoundDiffExcludedFile[] = [];
-  const movedOut: string[] = [];
+  const renamedOpen = new Set<string>();
   const isOpen = (path: string, paths: unknown[]): boolean => {
-    const matchedPattern = paths.map(p => (typeof p === 'string' ? findClosedPattern(p, closedPaths) : undefined)).find(Boolean);
-    if (matchedPattern) closed.push({ path, matchedPattern, closed: true });
-    if (matchedPattern && !findClosedPattern(path, closedPaths)) movedOut.push(path);
+    const names = paths.filter((p): p is string => typeof p === 'string');
+    const matchedPattern = names.map(p => findClosedPattern(p, closedPaths)).find(Boolean);
+    if (matchedPattern) {
+      closed.push({ path, matchedPattern, closed: true });
+      for (const name of names) if (!findClosedPattern(name, closedPaths)) renamedOpen.add(name);
+    }
     return !matchedPattern;
   };
   const files = diff.files.filter(f => isOpen(f.path, [f.path, f.oldPath]));
   // A binary's header starts with the paths it was diffed from and to, `/dev/null` for an added or deleted file.
   const binarySkipped = diff.binarySkipped?.filter(b => isOpen(b.path, [b.path, ...(JSON.parse(b.header) as unknown[]).slice(0, 2).filter(p => p !== '/dev/null')]));
-  return { diff: { ...withFiles(diff, files), ...(binarySkipped && { binarySkipped }) }, closed, movedOut };
+  return { diff: { ...withFiles(diff, files), ...(binarySkipped && { binarySkipped }) }, closed, renamedOpen: [...renamedOpen] };
 }
 
 /** Returns `diff` with only `files`, and its totals counted again. */
@@ -372,15 +376,16 @@ export function closeRawDiff(rawDiff: string, closedPaths: readonly string[]): s
 /**
  * Parses a PR's raw diff and splits it into the files the review reads and the files `excludePaths` or `closedPaths`
  * leave out. A closed file is also left out of `fullDiff`, so no stage and no analyzer reads its lines. `closedPaths` in
- * the result also closes the head path of each file renamed out of a closed path, which holds the closed file's text.
+ * the result also closes the open path of each rename into or out of a closed path. The head path of a file renamed out
+ * holds the closed file's text, and the old path of a file renamed in holds it at the base.
  */
 export function reviewableDiff(
   rawDiff: string, excludePaths: string[], closedPaths: readonly string[] = [],
 ): { fullDiff: ParsedDiff; diff: ParsedDiff; excludedFiles: RoundDiffExcludedFile[]; rawDiff: string; closedPaths: string[] } {
-  const { diff: fullDiff, closed, movedOut } = withoutClosed(parsePRDiff(rawDiff), closedPaths);
+  const { diff: fullDiff, closed, renamedOpen } = withoutClosed(parsePRDiff(rawDiff), closedPaths);
   const { diff, excluded } = filterDiff(fullDiff, excludePaths);
   // `findClosedPattern` matches the path's normalized spelling, and braces would expand to other names unless escaped.
-  const withMoved = [...closedPaths, ...movedOut.map(path => `/${minimatch.escape(closedPathKey(path), { magicalBraces: true })}`)];
+  const withMoved = [...closedPaths, ...renamedOpen.map(path => `/${minimatch.escape(closedPathKey(path), { magicalBraces: true })}`)];
   return { fullDiff, diff, excludedFiles: [...closed, ...excluded], rawDiff: rebuildRawDiff(diff), closedPaths: withMoved };
 }
 

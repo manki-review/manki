@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
-import { isAbsolute, join, relative, resolve, sep } from 'path';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'path';
 import { promisify } from 'util';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -10,14 +10,14 @@ import { Minimatch } from 'minimatch';
 import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
-import { findClosedPattern } from './diff';
+import { findClosedPattern, findExcludePattern } from './diff';
 import { fenceText, MANKI_VERSION } from './github';
 import { relatedRepoLoader, RelatedRepoPending } from './related-repos';
 import { writableOnlyByUs } from './tool-install';
 import { claimStep, stepCheck } from './tool-steps';
 import { RelatedRepoTools } from './types';
 import { safeJsonParse } from './utils';
-import { closedPathsOf, gitEnv, WORKSPACE_DEPTH } from './workspace';
+import { BASE_REF, baseReadsOf, closedPathsOf, gitEnv, WORKSPACE_DEPTH } from './workspace';
 
 const execFileAsync = promisify(execFile);
 
@@ -237,11 +237,16 @@ export interface ReadFileArgs {
 }
 
 /** Returns lines `offset` to `offset + limit - 1` of the file, each prefixed with its number and a tab. */
-export async function readRepoFile(root: string, { path, offset = 1, limit = MAX_READ_LINES }: ReadFileArgs): Promise<string> {
+export async function readRepoFile(root: string, { path, offset, limit }: ReadFileArgs): Promise<string> {
   const target = resolveInRoot(root, path);
   if (!statSync(target.absolute).isFile()) throw new Error(`${path} is not a file`);
   const text = readText(target.absolute);
   if (text === undefined) throw new Error(`${path} is binary or over ${MAX_FILE_BYTES / 1024} KB`);
+  return numberedLines(text, { path, offset, limit });
+}
+
+/** Returns lines `offset` to `offset + limit - 1` of `text`, the content of `path`, each prefixed with its number and a tab. */
+function numberedLines(text: string, { path, offset = 1, limit = MAX_READ_LINES }: ReadFileArgs): string {
   const lines = text.split('\n');
   const last = Math.min(lines.length, offset - 1 + Math.min(limit, MAX_READ_LINES));
   const shown: string[] = [];
@@ -256,6 +261,38 @@ export async function readRepoFile(root: string, { path, offset = 1, limit = MAX
   }
   const more = end < lines.length ? `\n[${lines.length - end} more lines, read on with offset ${end + 1}]` : '';
   return capOutput((shown.join('\n') || `${path} has no line ${offset}.`) + more);
+}
+
+/** Returns `path` as a path from the repository root in git's form. Refuses one that leaves the root or names `.git`. */
+function treePath(path: string): string {
+  if (path.includes('\0')) throw new Error('the path holds a NUL character');
+  const normal = posix.normalize(path.replace(/\\/g, '/')).replace(/^(\.\/)+/, '').replace(/\/+$/, '');
+  if (posix.isAbsolute(normal) || normal === '..' || normal.startsWith('../')) throw new Error(`${path} is outside the repository`);
+  if (normal === '.' || normal === '') throw new Error(`${path} is not a file`);
+  if (normal.split('/')[0] === '.git') throw new Error(`${path} is in .git, which the tools do not read`);
+  return normal;
+}
+
+/**
+ * Returns lines `offset` to `offset + limit - 1` of the file `path` as it is at the PR's base commit, which
+ * `fetchWorkspace` put at `BASE_REF`, each prefixed with its number and a tab. It reads git's objects, never the
+ * checkout, so a symlink there is its text, as in the checkout. A path `excludePaths` matches is refused.
+ */
+async function readBaseFile(root: string, { path, offset, limit }: ReadFileArgs, excludePaths: readonly string[]): Promise<string> {
+  const file = treePath(path);
+  const pattern = findExcludePattern(file, [...excludePaths]);
+  if (pattern) throw new Error(`${path} matches ${pattern} in exclude_paths, so it is not read at the PR's base`);
+  const git = async (args: string[], maxBuffer = GIT_MAX_BUFFER): Promise<string> => (await execFileAsync('git', args, {
+    cwd: realpathSync(root), env: { ...gitEnv(), GIT_LITERAL_PATHSPECS: '1' }, timeout: GIT_TIMEOUT_MS, maxBuffer,
+  })).stdout;
+  const [entry] = (await git(['ls-tree', '-z', BASE_REF, '--', file])).split('\0');
+  const [, type, oid, listed] = entry.match(/^\d+ (\w+) ([0-9a-f]+)\t(.*)$/s) ?? [];
+  if (listed !== file) throw new Error(`${path} does not exist at the PR's base`);
+  if (type !== 'blob') throw new Error(`${path} is not a file at the PR's base`);
+  if (Number((await git(['cat-file', '-s', oid])).trim()) > MAX_FILE_BYTES) throw new Error(`${path} is over ${MAX_FILE_BYTES / 1024} KB at the PR's base`);
+  const text = await git(['cat-file', 'blob', oid], MAX_FILE_BYTES + 1);
+  if (text.slice(0, 8000).includes('\0')) throw new Error(`${path} is binary at the PR's base`);
+  return numberedLines(text, { path: file, offset, limit });
 }
 
 const MAX_GLOB_CHARS = 200;
@@ -571,17 +608,35 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
       throw new Error(`${repo} could not be fetched, so it cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     });
   };
-  if (fileTools || names.length > 0) {
+  const baseExcludes = baseReadsOf(root);
+  if (fileTools || names.length > 0 || baseExcludes) {
+    // A client with file tools of its own reads the head with those, so it names a related repo or the base here.
+    const ref = z.enum(['head', 'base']).optional().describe('`base` reads the file as it is at the PR\'s base commit, the code before this PR. Defaults to `head`.');
     server.registerTool('read_file', {
       description: 'Reads a text file of the repository, numbering each line.',
       inputSchema: {
         path: z.string().describe('File, relative to the repository root.'),
         offset: z.number().int().positive().optional().describe('First line to read. Defaults to 1.'),
         limit: z.number().int().positive().max(MAX_READ_LINES).optional().describe(`At most this many lines. Defaults to ${MAX_READ_LINES}.`),
-        ...repoArg(fileTools),
+        ...repoArg(fileTools || !!baseExcludes),
+        // Declared without a base too, since the schema would drop an undeclared `ref` and read the head instead.
+        ref,
       },
       annotations: READ_ONLY,
-    }, (args) => run(async () => readRepoFile(await rootOf(args), args), args));
+    }, (args) => run(async () => {
+      const { repo, ref: at } = args as { repo?: string; ref?: 'head' | 'base' };
+      if (at === 'base') {
+        if (!baseExcludes) throw new Error('This workspace holds no copy of the PR\'s base, so no file can be read there.');
+        if (repo) throw new Error('`ref` reads only the PR\'s own repository, so leave out `repo` to read the base.');
+        return readBaseFile(root, args, baseExcludes);
+      }
+      if (!fileTools && !repo) {
+        throw new Error(`Read the PR's head with your own file tools. This tool reads ${names.length > 0 ? 'a related repo named in `repo`, or ' : ''}the PR's base with \`ref\` set to \`base\`.`);
+      }
+      return readRepoFile(await rootOf(args), args);
+    }, args));
+  }
+  if (fileTools || names.length > 0) {
     server.registerTool('grep', {
       description: 'Finds the lines of the repository that contain a piece of text, and lists each as file:line. Matches plain text, not a regular expression.',
       inputSchema: {
