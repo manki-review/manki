@@ -864,8 +864,8 @@ function reviewHeading(routing: DashboardData['routing']): string {
   return `Review (${sanitizeMarkdown(route)})`;
 }
 
-const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', sweep: 'sweeps' };
-// `runReview` starts these four steps beside the finders in every round, the sweeps only after the judge.
+const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', sweep: 'sweeps', second_read: 'second reads' };
+// `runReview` starts these four steps beside the finders in every round, the second reads after the finders and the sweeps after the judge.
 const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern'];
 
 /**
@@ -970,7 +970,7 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
     }
   }
   if (data.phase !== 'complete') {
-    reviewLines.push(...[sideCheckLine(data.sideChecks, BESIDE_FINDERS), sideCheckLine(data.sideChecks, ['sweep'])].filter((line): line is string => !!line));
+    reviewLines.push(...[sideCheckLine(data.sideChecks, BESIDE_FINDERS), sideCheckLine(data.sideChecks, ['second_read']), sideCheckLine(data.sideChecks, ['sweep'])].filter((line): line is string => !!line));
   }
   const sameEffort = data.routing?.deeperSameEffort;
   if (sameEffort) {

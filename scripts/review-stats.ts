@@ -20,7 +20,7 @@ import type { LLMCall } from '../src/providers';
 import { findingPlace, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { readFileParts } from '../src/review';
 import { extractApprovalRecords } from '../src/review-record';
-import { isSweepName, outcomeOf, PRE_EXISTING_TAG, SEVERITY_ORDER } from '../src/types';
+import { isSecondReadName, isSweepName, outcomeOf, PRE_EXISTING_TAG, SEVERITY_ORDER } from '../src/types';
 import type { ApprovalRecord, FindingFingerprintEntry, Refutation, ReplyRecord, RoundContext, RoundSweep, TokenServiceCall } from '../src/types';
 import { aggregate, renderTable } from './fix-rate-report';
 import { githubToken, historyLines } from './review-history';
@@ -153,6 +153,7 @@ const DECISIONS = [
   'Findings recorded without posting (per reason and severity)',
   'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)',
   'Verdict reader per slice',
+  'Second reads (per round: reads run, blockers and warnings added, why they stopped)',
   'Approvals',
   'State check approvals',
   'Thread reply decisions',
@@ -404,7 +405,8 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
       // Keyed by the finder's name, so its fallback and second ask join it, and two finders on one model stay apart.
       const toolUse = new Map<string, { stat: FinderStats; steps?: number; files: Set<string> }>();
       for (const call of round.usage?.llmCalls ?? []) {
-        if (call.stage !== 'reviewer') continue;
+        // A second read is no finder, and the second-read tally counts it.
+        if (call.stage !== 'reviewer' || isSecondReadName(call.agent ?? '')) continue;
         // A fallback answers on another model, and a failed call names none, so the finder's own model keys the call.
         const stat = finder(stats, (call.agent && models.get(call.agent)) || call.model || call.agent || 'unknown');
         stat.toolSteps.push(call.toolSteps?.length ?? 0);
@@ -605,6 +607,10 @@ function tallyRound(stats: ReviewStats, round: RoundContext, numbered: boolean):
   if (round.slicing) {
     stats.slicesPerRound.push(round.slicing.files.length);
     for (const slice of round.slicing.reader ?? []) tally(stats, 'Verdict reader per slice', slice.verdict);
+  }
+  if (round.secondReads) {
+    const added = round.secondReads.reads.reduce((sum, read) => sum + (read.added ?? 0), 0);
+    tally(stats, 'Second reads (per round: reads run, blockers and warnings added, why they stopped)', `${round.secondReads.reads.length} run, ${added} added, ${round.secondReads.stop}`);
   }
   if (round.approval) tally(stats, 'Approvals', round.approval.held ? `held: ${round.approval.held}` : 'approved');
   if (round.diff?.changedSinceLastRound !== undefined) stats.changedSinceLastRound.push(round.diff.changedSinceLastRound);
