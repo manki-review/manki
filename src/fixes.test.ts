@@ -63,6 +63,11 @@ describe('listFixes', () => {
     const end = parsePRDiff('diff --git a/src/end.ts b/src/end.ts\n--- a/src/end.ts\n+++ b/src/end.ts\n@@ -1,3 +1,2 @@\n one\n two\n-three\n');
     const removal = fakeClient(() => JSON.stringify([{ lines: ['src/end.ts:2-3'], problem: 'The last line is wrong.' }]));
     expect((await listFixes(removal, rawDiff, end)).fixes).toEqual([{ at: ['src/end.ts:2'], problem: 'The last line is wrong.' }]);
+    // A file the change deletes has no line in the head, so no fix sits in it.
+    const gone = parsePRDiff('diff --git a/src/gone.ts b/src/gone.ts\ndeleted file mode 100644\n--- a/src/gone.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n');
+    expect(gone.files[0].changeType).toBe('deleted');
+    const deletion = fakeClient(() => JSON.stringify([{ lines: ['src/gone.ts:1-2'], problem: 'The old file was wrong.' }]));
+    expect((await listFixes(deletion, rawDiff, gone)).fixes).toEqual([]);
 
     // One range that holds six runs of changed lines keeps all six.
     const runs = parsePRDiff(`diff --git a/src/runs.ts b/src/runs.ts\n--- a/src/runs.ts\n+++ b/src/runs.ts\n@@ -1,11 +1,11 @@\n${Array.from({ length: 11 }, (_, i) => (i % 2 === 0 ? `-${i + 1}\n+${i + 1}b` : ` ${i + 1}`)).join('\n')}\n`);

@@ -196,7 +196,8 @@ export async function listFixes(client: LLMClient | undefined, rawDiff: string, 
       error => core.warning(`The list of fixes could not be used (${error}), asking once more`),
       'array',
     );
-    const changed: ChangedFiles = new Map(diff.files.map(f => {
+    // A deleted file has no line in the head to place a fix on.
+    const changed: ChangedFiles = new Map(diff.files.filter(f => f.changeType !== 'deleted').map(f => {
       const counts = changedNewLines(f);
       return [f.path, { counts, lines: [...counts.keys()].sort((a, b) => a - b) }];
     }));
