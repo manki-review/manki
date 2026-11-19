@@ -2233,15 +2233,15 @@ class ParsedFile {
     return this.lineageBases.get(scope.id());
   }
 
-  /**
-   * Whether field `decl` belongs to its type itself, not to an inline type or a function inside the type, such as the
-   * `{ a: number }` of a method's parameter. A family that names its fields itself, such as Python, places them already.
-   */
   /** Whether `node` is a function, named or not, so a declaration inside it is local to it. */
   private isFunction(node: SgNode): boolean {
     return this.rules.declarations[node.kind()] === 'function' || !!this.rules.functions?.includes(String(node.kind()));
   }
 
+  /**
+   * Whether field `decl` belongs to its type itself, not to an inline type or a function inside the type, such as the
+   * `{ a: number }` of a method's parameter. A family that names its fields itself, such as Python, places them already.
+   */
   private isOwnField(decl: Declaration): boolean {
     if (this.rules.fieldName) return true;
     for (let a = this.tree.parent(decl.node); a && nodeKey(a) !== decl.container; a = this.tree.parent(a)) {
