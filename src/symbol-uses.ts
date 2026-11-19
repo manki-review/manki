@@ -1575,6 +1575,8 @@ interface DeclarationView {
   signature: string;
   /** The whole declaration, unset when it was read by keyword from one line. */
   text?: () => string;
+  /** How far a declaration read by keyword is indented. */
+  indent?: number;
 }
 
 /**
@@ -1583,7 +1585,9 @@ interface DeclarationView {
  * and name, a method or field by its type's name too, between the base and the head. A declaration only the head holds is
  * added, one only the base holds is removed, one whose part before its body differs is a changed declaration, and one
  * whose body differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by
- * keyword from the removed and added lines. A parsed declaration local to a function is never named.
+ * keyword from the removed and added lines. A parsed declaration local to a function is never named. A file read by
+ * keyword cannot tell a local declaration apart, so its least indented declarations come first, and locals never push
+ * them past the cap of the map.
  */
 function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) => boolean): MappedChange[] {
   return files.filter(file => !skip(file.path)).flatMap(file => {
@@ -1592,14 +1596,15 @@ function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) =
     const parsed = (head || file.changeType === 'deleted') && (base || file.changeType === 'added');
     const before = parsed ? parsedViews(base, removedOldLines(file)) : keywordViews(file, removedOldLines(file));
     const after = parsed ? parsedViews(head, addedLines(file)) : keywordViews(file, addedLines(file));
-    const changes: MappedChange[] = [];
+    const changes: Array<{ mapped: MappedChange; indent: number }> = [];
     for (const key of new Set([...after.touched.keys(), ...before.touched.keys()])) {
       const [old, now] = [before.all.get(key), after.all.get(key)];
       const change = !old ? 'added' : !now ? 'removed' : old.signature !== now.signature ? 'declaration changed'
         : !now.text || !old.text || now.text() !== old.text() ? 'body changed' : undefined;
-      if (change) changes.push({ file: file.path, symbol: (now ?? old)!.label, change });
+      const view = (now ?? old)!;
+      if (change) changes.push({ mapped: { file: file.path, symbol: view.label, change }, indent: view.indent ?? 0 });
     }
-    return changes.sort((a, b) => CHANGE_RANK[a.change] - CHANGE_RANK[b.change]);
+    return changes.sort((a, b) => a.indent - b.indent || CHANGE_RANK[a.mapped.change] - CHANGE_RANK[b.mapped.change]).map(c => c.mapped);
   });
 }
 
@@ -1633,7 +1638,8 @@ function parsedViews(parsed: ParsedFile | undefined, changed: { has(line: number
 function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
   const all = new Map<string, DeclarationView>();
   for (const { name, kind, line } of keywordDeclarations(file, lines)) {
-    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(lines.get(line)!) });
+    const text = lines.get(line)!;
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), indent: text.length - text.trimStart().length });
   }
   return { all, touched: all };
 }
