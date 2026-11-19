@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 
 import { fenceText } from './github';
 import { extractJSON } from './json';
-import { newLineNumbers, repoLocation } from './diff';
+import { newLineNumbers, parsePRDiff, repoLocation } from './diff';
 import { checkEach, Checked, CheckOptions } from './pr-claims';
 import { LLMClient } from './providers';
 import { shownLines } from './refute';
@@ -26,6 +26,8 @@ const MAX_PROBLEM_CHARS = 300;
 const MAX_ANSWER_CHARS = 500;
 const MAX_WRITTEN_TITLE_CHARS = 160;
 const MAX_SKIP_REASON = 200;
+/** Lines between a thread's line and a line of a fix or its cited cause that still tie the fix to the thread. */
+const NEAR_THREAD_LINES = 5;
 const FIX_CHECK_NAME = 'Fix check';
 const STATUSES: ReadonlyArray<RoundFix['status']> = ['root_cause', 'workaround', 'unchecked'];
 
@@ -319,4 +321,41 @@ export async function runFixChecks(
 export function fixesRecord({ cut, skipped }: { cut?: number; skipped?: string }, checked: RoundFix[]): RoundFixes | undefined {
   if (!skipped && !cut && checked.length === 0) return undefined;
   return { ...(skipped && { skipped }), ...(cut && { cut }), ...(checked.length > 0 && { fixes: checked }) };
+}
+
+/**
+ * Returns the fixes of `checked` that a check found to be a workaround and that the push changed: each with a line the
+ * inter-round diff adds or removes. When that diff is unknown, every workaround counts, since nothing shows the push
+ * left it alone.
+ */
+export function pushedWorkarounds(checked: readonly RoundFix[], interRoundDiff: string | undefined): RoundFix[] {
+  const workarounds = checked.filter(fix => fix.status === 'workaround');
+  if (interRoundDiff === undefined) return workarounds;
+  const pushed = new Map(parsePRDiff(interRoundDiff).files.map(file => [file.path, [...changedNewLines(file).keys()]]));
+  return workarounds.filter(fix => fix.at.some(range => {
+    const { file, start, end } = parseLocation(range)!;
+    return (pushed.get(file) ?? []).some(line => line >= start && line <= end);
+  }));
+}
+
+/**
+ * Whether `fix` is about the finding of a thread on `file` and `line`: a line of the fix, or a line its check cited as
+ * the cause or the path that still fails, sits within `NEAR_THREAD_LINES` of it.
+ */
+export function concernsThread({ at, proof = [] }: RoundFix, { file, line }: { file: string; line: number }): boolean {
+  return [...at, ...proof].some(location => {
+    const cited = parseLocation(location);
+    return !!cited && cited.file === file && line >= cited.start - NEAR_THREAD_LINES && line <= cited.end + NEAR_THREAD_LINES;
+  });
+}
+
+/** Returns what still goes wrong after `fix`, a workaround, as a thread it keeps open says it: the problem, its cause and what still fails, with the lines the check cited. */
+export function workaroundRemaining({ problem, cause, stillFails, proof, relatedProof }: RoundFix): string {
+  const cited = [...(proof ?? []), ...(relatedProof ?? [])].map(at => `\`${at}\``).join(', ');
+  return [
+    `The fix hides the symptom and leaves its cause as it was. The problem: ${problem}`,
+    ...(cause ? [`It comes from: ${cause}`] : []),
+    ...(stillFails ? [`Still fails: ${stillFails}`] : []),
+    ...(cited ? [`See ${cited}.`] : []),
+  ].join(' ');
 }

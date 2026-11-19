@@ -29,6 +29,7 @@ import {
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
   FINDER_TOOLS_TIMEOUT_MS,
+  WORKAROUND_REASON,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
@@ -47,7 +48,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundContext, buildRoundUsage, mergedDuplicateCount } from './round-context';
-import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { runScopeReader } from './scope';
@@ -3442,14 +3443,14 @@ describe('runReview', () => {
       status: 'workaround', actsAt: 'symptom', cause: '`rate` divides without checking `count`.', stillFails: 'Every other caller of `rate`.', proof: ['src/rate.ts:2'],
       finding: { severity: 'warning', title: 'The guard hides a division by zero in `rate`', file: 'src/report.ts', line: 3, description: '`rate` still divides by zero for other callers.', howToFix: 'Check `count` in `rate`.', proof: ['src/rate.ts:2'] },
     };
-    const fixClients = (planner?: object): ReviewClients & { dedup: LLMClient } => {
+    const fixClients = (planner?: object, answer: object = workaround): ReviewClients & { dedup: LLMClient } => {
       const clients = {
         ...makeClients(),
         dedup: { sendMessage: jest.fn(async (system: string) => ({ content: listing(system) ? JSON.stringify([{ lines: ['src/report.ts:3'], problem: 'A count of zero divides by zero.' }]) : '[]' })) } as unknown as LLMClient,
         ...(planner && { planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify(planner) }) } as unknown as LLMClient }),
       };
       Object.assign(clients.reviewer, { repoTools: true });
-      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: isFixCheck(system) ? JSON.stringify(workaround) : '[]' }));
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: isFixCheck(system) ? JSON.stringify(answer) : '[]' }));
       return clients;
     };
     const { root, diff } = gitWorkspace({ 'src/rate.ts': rate, 'src/report.ts': report('') }, { 'src/report.ts': report('  if (count === 0) return 0;\n') });
@@ -3472,6 +3473,45 @@ describe('runReview', () => {
       expect(jest.mocked(retrying.reviewer.sendMessage).mock.calls.filter(([system]) => isFixCheck(system))).toEqual([]);
       expect(retried.fixes?.fixes?.map(f => [f.status, f.reused])).toEqual([['workaround', true]]);
       expect(mockedRunJudgeAgent.mock.calls.at(-1)![2].findings).toEqual([expect.objectContaining({ title: workaround.finding.title, reviewers: ['Fix check 1'] })]);
+
+      // A thread the judge finds fixed stays open as partly fixed when the push changed a fix the check found to be a
+      // workaround at the thread's finding, or when nothing shows what the push changed.
+      const addressed: ThreadEvaluation = { threadId: 'T1', status: 'addressed', reason: 'The guard is in place.' };
+      const prior = buildPriorRound(1, [makePriorWarningFinding({ fingerprint: { file: 'src/report.ts', lineStart: 3, lineEnd: 3, slug: 'old-issue' } })]);
+      const pushTo = (line: number) => `diff --git a/src/report.ts b/src/report.ts\n--- a/src/report.ts\n+++ b/src/report.ts\n@@ -${line} +${line} @@\n-old\n+new\n`;
+      const keep = (findings: Finding[]) => findings;
+      const evaluated = async (interRoundDiff: string | undefined, thread: Partial<OpenThread> = {}, answer: object = workaround, judged = keep, reader?: object) => {
+        mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: judged(input.findings), summary: 'ok', threadEvaluations: [addressed] }));
+        const followClients = fixClients(undefined, answer);
+        if (reader) jest.mocked(followClients.judge.sendMessage).mockResolvedValue({ content: JSON.stringify(reader) });
+        const followUp = await runReview(followClients, {
+          config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext, isFollowUp: true,
+          openThreads: [makePriorOpenThread({ file: 'src/report.ts', line: 3, ...thread })], previousFindings: [], priorRounds: [prior], interRoundDiff, headSha: 'sha2',
+        });
+        return followUp.threadEvaluations;
+      };
+      const partly = [{
+        threadId: 'T1', status: 'partly_addressed', reason: WORKAROUND_REASON, grade: 'warning',
+        remaining: 'The fix hides the symptom and leaves its cause as it was. The problem: A count of zero divides by zero. It comes from: `rate` divides without checking `count`. Still fails: Every other caller of `rate`. See `src/rate.ts:2`.',
+      }];
+      expect(await evaluated(pushTo(3))).toEqual(partly);
+      expect(await evaluated(undefined)).toEqual(partly);
+      // A thread near a line the check cited as the cause is tied to the fix too.
+      expect(await evaluated(pushTo(3), { file: 'src/rate.ts', line: 4 })).toEqual(partly);
+      // A push that left the workaround alone, a thread away from the fix and its cause, and a fix the check found to remove the cause leave the judge's call.
+      expect(await evaluated(pushTo(1))).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), { line: 40, evidenceFiles: ['src/rate.ts'] })).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), { file: 'src/other.ts' })).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), {}, { status: 'root_cause', actsAt: 'cause', cause: 'The guard sits in the only caller.', proof: ['src/report.ts:3'] })).toEqual([addressed]);
+      // So does a workaround whose finding the judge drops or grades a note, or that a check disproved.
+      const disproved: Refutation = { outcome: 'disproved', reason: 'Every caller checks `count`.', files: ['src/report.ts'], codeDigest: 'd' };
+      expect(await evaluated(pushTo(3), {}, workaround, () => [])).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), {}, workaround, findings => findings.map(f => ({ ...f, severity: 'note' as const })))).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), {}, workaround, findings => findings.map(f => ({ ...f, refutation: disproved })))).toEqual([addressed]);
+      // A workaround whose finding stands keeps the thread open after the verdict reader's blockers too, even when no cited line proves the finding and the review leaves it out.
+      const unproven = (findings: Finding[]) => findings.map(f => ({ ...f, evidence: { checks: [], proof: [] } }));
+      const readerBlocker = { verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/rate.ts', line: 2, title: '`rate` divides by zero', description: 'd' }], summary: 's', whatThisDoes: '', whatToTest: '' };
+      expect(await evaluated(pushTo(3), {}, workaround, unproven, readerBlocker)).toEqual(partly);
     } finally {
       for (const dir of [root, docs.root]) rmSync(dir, { recursive: true, force: true });
     }
@@ -6024,6 +6064,7 @@ describe('runReview', () => {
     const [laterCall] = jest.mocked(laterClients.judge.sendMessage).mock.calls;
     expect(laterCall).toEqual(firstCall);
     expect(laterCall[0]).toContain(`judge the code cold.\n\n${UNTRUSTED_CONTENT_RULE}\n\n${VERIFY_CLAIMS_RULE}\n`);
+    expect(laterCall[0]).toContain(`in \`howToFix\` the change that fixes it. ${ROOT_CAUSE_FIX_RULE} In \`evidence\``);
     const prompt = `${laterCall[0]}\n${laterCall[1]}`;
     for (const leaked of ['Prior round concern', 'PR claims it is safe', 'Already reviewed', 'Linked issue', 'inter-round delta', 'thread-only file', 'round 3', 'Round 3']) {
       expect(prompt).not.toContain(leaked);

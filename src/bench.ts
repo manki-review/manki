@@ -11,7 +11,7 @@ import { isFixCheck } from './fixes';
 import { isClaimCheck } from './pr-claims';
 import { cutLegacyCommands, estimateCostUsd, hasAnyProviderCredentials, parseModelSpec, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
-import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
+import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import {
   CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, leftOutUnproven,
@@ -518,9 +518,10 @@ interface ThreadOutcome {
   status: ThreadEvaluation['status'] | 'none';
   /**
    * Set when the judge found the thread fixed and `confirmFixes` kept it open: `named` when a blocker of the round names
-   * the thread again, `unconfirmed` when the push changed none of the thread's files.
+   * the thread again, `unconfirmed` when the push changed none of the thread's files, `workaround` when a fix check
+   * found that the push only hides the symptom.
    */
-  keptOpenBy?: 'named' | 'unconfirmed';
+  keptOpenBy?: 'named' | 'unconfirmed' | 'workaround';
   /** The grade a partial fix leaves the thread at. */
   grade?: FindingSeverity;
   /** The grades of the round's findings posted under the thread, in the order of the review. */
@@ -860,6 +861,7 @@ function threadOutcomes(benchCase: BenchCase, review: LocalReview): ThreadOutcom
   return benchCase.priorRound!.findings.filter(f => f.thread === 'open').map(({ id }): ThreadOutcome => {
     const evaluation = review.result.threadEvaluations?.find(e => e.threadId === id);
     const keptOpenBy = evaluation?.reason === NAMED_AGAIN_REASON ? 'named' as const
+      : evaluation?.reason === WORKAROUND_REASON ? 'workaround' as const
       : evaluation?.status === 'uncertain' && evaluation.reason.endsWith(UNCONFIRMED_FIX_ENDING) ? 'unconfirmed' as const : undefined;
     const under = raisedFindings(review).filter(f => f.threadId === id).map(f => f.severity);
     return { id, status: evaluation?.status ?? 'none', ...(keptOpenBy && { keptOpenBy }), ...(evaluation?.grade && { grade: evaluation.grade }), ...(under.length > 0 && { findings: under }) };

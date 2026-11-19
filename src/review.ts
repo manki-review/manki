@@ -17,12 +17,12 @@ import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
-import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
-import { fixesRecord, listFixes, runFixChecks } from './fixes';
+import { concernsThread, fixesRecord, listFixes, pushedWorkarounds, runFixChecks, workaroundRemaining } from './fixes';
 import { citedBy, runSweeps, sharesCitedLine, startsSweep } from './sweep';
 import { confirmDoubt, placeScopeWarning, runScopeReader, scopeWarnings } from './scope';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
@@ -2139,12 +2139,17 @@ export async function runReview(
   finalFindings = finalFindings.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   const priorBlockers = collectPriorBlockers(sortedPriorRounds);
   const pushChangedFiles = filesChangedByPush(interRoundDiff);
+  const pushWorkarounds = pushedWorkarounds(fixChecks.record?.fixes ?? [], interRoundDiff);
+  // A workaround keeps a thread open only while its finding stands: kept by the judge as a warning or a blocker, and not
+  // disproved. Read once before any step hides a warning, so every grading of the threads in the round counts the same ones.
+  const standingWorkarounds = pushWorkarounds.filter(fix => finalFindings.some(f =>
+    f.reviewers.includes(fix.reviewer) && (f.severity === 'blocker' || f.severity === 'warning') && !disproof(f)));
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   // Unlinked before the threads are graded, so the grades, the fold and the verdict all see the finding on its own.
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads);
   finalFindings = finalFindings.map(guard);
-  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
   if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
   const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
@@ -2156,7 +2161,7 @@ export async function runReview(
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   if (stopped) return incompleteAfterJudge(stopped);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
-  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
   const proven = hideUnprovenWarnings(finalFindings, config.review?.rules);
   finalFindings = proven.posted;
@@ -2229,7 +2234,7 @@ export async function runReview(
       // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
       const readerFindings = hideUnprovenWarnings(folded.blockers.map(guard).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), config.review?.rules, () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
-      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
       if (readerFindings.some(f => f.severity === 'blocker')) {
         outcome = 'ADDRESS_FIRST';
@@ -2723,7 +2728,7 @@ Example of one finding:
 }
 \`\`\`
 
-\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case. Check that the fix removes every failure the description names. When it removes only part, say in \`howToFix\` which failure it leaves. When the finding lists several cases or places, \`howToFix\` covers every one of them. Propose the fix for the root cause of the problem, never another patch for its symptom: when your evidence shows where the problem starts, the fix goes there. Never advise repeating the PR's own handling on another path when one change at the root cause covers every path.
+\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case. Check that the fix removes every failure the description names. When it removes only part, say in \`howToFix\` which failure it leaves. When the finding lists several cases or places, \`howToFix\` covers every one of them. ${ROOT_CAUSE_FIX_RULE}
 
 ## Evidence
 
@@ -3477,6 +3482,9 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
 /** The reason `confirmFixes` gives a thread it keeps open because a blocker of the round names it again. */
 export const NAMED_AGAIN_REASON = 'This round names the same blocker again.';
 
+/** How the reason ends that `confirmFixes` gives a thread it keeps open because a fix check found that the push only hides the symptom. */
+export const WORKAROUND_REASON = 'A fix check found that the push only hides the symptom, so the thread stays open.';
+
 /** How the reason ends that `confirmFixes` gives a guarded thread it keeps open because the push changed none of its files. */
 export const UNCONFIRMED_FIX_ENDING = ', so the fix is not confirmed.';
 
@@ -3484,13 +3492,15 @@ export const UNCONFIRMED_FIX_ENDING = ', so the fix is not confirmed.';
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
  * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A guarded thread counts as
  * fixed only when the push changed its file or a file its finding cited, so a judge reading unchanged code cannot clear
- * it. The judge's cell stays as `cell` only when it gives that grade, and as `judgeCell` otherwise.
+ * it. A thread one of `workarounds` concerns is only partly fixed, since a fix check found that the push hides the
+ * symptom there. The judge's cell stays as `cell` only when it gives that grade, and as `judgeCell` otherwise.
  */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,
   openThreadIndex: Map<string, OpenThread>,
   namedThreadIds: Set<string>,
   pushChangedFiles: ReadonlySet<string>,
+  workarounds: readonly RoundFix[],
 ): ThreadEvaluation[] | undefined {
   const confirm = (e: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
     if (e.status !== 'addressed') return e;
@@ -3498,6 +3508,10 @@ function confirmFixes(
     if (thread && guardedThreadStaysOpen(thread, pushChangedFiles)) {
       const why = thread.file ? `The push did not change ${[thread.file, ...(thread.evidenceFiles ?? [])].map(f => `\`${f}\``).join(' or ')}` : 'This thread is not tied to a file, which only a person can clear';
       return { ...e, status: 'uncertain', reason: `${why}${UNCONFIRMED_FIX_ENDING}` };
+    }
+    const workaround = thread?.file ? workarounds.find(fix => concernsThread(fix, thread)) : undefined;
+    if (workaround) {
+      return { threadId: e.threadId, status: 'partly_addressed', reason: WORKAROUND_REASON, remaining: workaroundRemaining(workaround) };
     }
     return e;
   };

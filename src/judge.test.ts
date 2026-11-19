@@ -502,6 +502,9 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains.');
     expect(prompt).toContain("and `row` and `column` to the Severity Table cell that remaining damage earns by the rules above. Manki works out the thread's grade from the cell. When the remaining damage is the same as before, state a cell that gives the thread's own grade. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. On the `wrong` row Manki grades what remains in the `normal` column whatever column you state, since nothing checks a `rare` claim on a thread.");
     expect(prompt).toContain('"status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain"');
+    // A push that only works around the reported case keeps the thread open, but only on a cited cause or a named failing input.
+    expect(prompt).toContain('does it fix the root cause the concern named, or is it a hacky workaround for the reported case?');
+    expect(prompt).toContain('Mark a workaround `partly_addressed`, never `addressed`, and in `remaining` cite the `file:line` of the code that causes the problem or name the input or path that still fails. When you can do neither, decide by the rules above.');
     // The judge has no field for a grade of its own on a thread either.
     expect(prompt.slice(prompt.indexOf('"threadEvaluations"'), prompt.indexOf('## Open Thread Evaluation'))).not.toContain('"grade"');
   });

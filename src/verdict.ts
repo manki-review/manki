@@ -6,7 +6,7 @@ import { repoPath } from './diff';
 import { howToFixOf, parseEvidence } from './review';
 import { Finding, TestGuide, VERDICT_READER_NAME, VerdictReport } from './types';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_BLOCKER_TITLE_LENGTH = 100;
 const MAX_TEST_STEPS = 8;
@@ -28,7 +28,7 @@ ${VERIFY_CLAIMS_RULE}
 
 CI builds the change and runs its tests separately, so whether it compiles and its tests pass is not yours to establish. Never withhold READY for want of that evidence. A defect you can see by reading the code is still a blocker. A commit message is never a blocker.
 
-Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. For each blocker give \`file\` as shown in the diff, \`line\` on the new side of the diff, the defect in one plain line as \`title\`, in \`description\` what goes wrong in practice, and in \`howToFix\` the change that fixes it. In \`evidence\`, list what you read and what it showed, one short line each that starts with its \`file:line\` and quotes the key code it refers to in backticks. When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`. In \`proof\`, list the \`file:line\` of each line that shows the failure. Set \`buildClaim\` to true on a blocker whose claim is that the code fails to compile, type-check or pass its tests, and false on all others.
+Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. For each blocker give \`file\` as shown in the diff, \`line\` on the new side of the diff, the defect in one plain line as \`title\`, in \`description\` what goes wrong in practice, and in \`howToFix\` the change that fixes it. ${ROOT_CAUSE_FIX_RULE} In \`evidence\`, list what you read and what it showed, one short line each that starts with its \`file:line\` and quotes the key code it refers to in backticks. When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`. In \`proof\`, list the \`file:line\` of each line that shows the failure. Set \`buildClaim\` to true on a blocker whose claim is that the code fails to compile, type-check or pass its tests, and false on all others.
 
 Also write two things for the pull request:
 - whatThisDoes: one or two sentences a non-specialist can follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.

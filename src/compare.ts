@@ -11,7 +11,7 @@ import { isUsableElement, parseFindings } from './review';
 import { AddedPiece, CodeExcerpt, PLAIN_FILE_NAME, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
 import { CheckProgress, EffortLevel, Finding, ParsedDiff, PATTERN_ANSWERS, RelatedRepoKind, RelatedRepoTools, RoundComparison } from './types';
 import { digestOf, mapWithConcurrency, sendWithParseRetry } from './utils';
-import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_FIELD_QUESTIONS = 6;
 const MAX_IMPLEMENTATION_QUESTIONS = 6;
@@ -39,7 +39,8 @@ ${SEVERITY_RULES}
 - Put each defect on the line that needs the fix, in the changed code where you can.
 - When the answer is no, or the code already handles the case, respond with [].
 - ${CLAIMS_MISSING_RULE}
-- ${PRE_EXISTING_RULE}${tools ? `
+- ${PRE_EXISTING_RULE}
+- ${ROOT_CAUSE_FIX_RULE}${tools ? `
 - You can read the repository with read-only tools. Check the code your answer rests on before you report it.` : ''}
 - ${UNTRUSTED_CONTENT_RULE}
 - ${VERIFY_CLAIMS_RULE}
@@ -59,6 +60,7 @@ ${SEVERITY_RULES}
 - When the answer is no, when the code on both sides agrees, or when you could not open the counterpart, respond with [].
 - ${CLAIMS_MISSING_RULE}
 - ${PRE_EXISTING_RULE}
+- ${ROOT_CAUSE_FIX_RULE}
 - You can read the repository and the related repos with read-only tools. Check the code your answer rests on before you report it.
 - ${RELATED_REPO_TRUST_RULE}
 - ${UNTRUSTED_CONTENT_RULE}
