@@ -61,6 +61,8 @@ export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspa
   return { repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }), ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }) };
 }
 
+const MAX_LOCKFILES = 50;
+
 /**
  * Returns `repos` with the `ref` of each `dependency` repo that names none set to the commit that the lockfiles of the
  * checkout at `workspace` lock for it, and how each such `ref` was chosen. A repo that no lockfile locks, or that two
@@ -76,12 +78,14 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   let unread: string | undefined;
   const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...LOCKFILE_NAMES.map(name => `:(glob)**/${name}`)], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
   if (listed.code !== 0) unread = 'the lockfiles of the checkout could not be listed';
-  // Each entry is `<mode> <object> <stage>\t<path>`, and mode `120000` is a symlink.
-  const entries = listed.code === 0 ? listed.stdout.split('\0').filter(Boolean).map(entry => entry.split('\t')) : [];
-  const files = entries.filter(([meta]) => !meta.startsWith('120000 ')).map(([, file]) => file)
+  // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, and mode `120000` is a symlink.
+  const entries = listed.code === 0 ? listed.stdout.split('\0').filter(Boolean) : [];
+  const files = entries.filter(entry => !entry.startsWith('120000 ')).map(entry => entry.slice(entry.indexOf('\t') + 1))
     .filter(f => f && !f.split('/').some(part => part === 'node_modules' || part === 'target'));
+  // A lockfile past the cap may lock another commit, so it counts as one that could not be read.
+  if (files.length > MAX_LOCKFILES) unread ??= `the checkout holds ${files.length} lockfiles, more than the ${MAX_LOCKFILES} a round reads`;
   let budget = MAX_LOCKFILES_TOTAL_BYTES;
-  for (const file of files) {
+  for (const file of unread ? [] : files) {
     let commits: Map<string, Set<string>>;
     try {
       const path = join(workspace, file);
