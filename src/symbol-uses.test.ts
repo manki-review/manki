@@ -626,6 +626,7 @@ describe('listUsesOutsideDiff', () => {
       'cmd/rates.swift': `func build() {\n${Array.from({ length: 7 }, (_, i) => `    const k${i} = 1\n`).join('')}}\nfunc legacy() {}\n`,
       'conf/app.yml': 'server:\n  pool:\n    idle_timeout: 30\n',
       'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 1;\n}\n',
+      'src/panel.ts': 'export class Panel {\n  render = () => {\n    const View = class {\n      size = 1;\n    };\n    return View;\n  };\n}\n',
       'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n}\n',
       'src/ids.rs': 'pub type Id = u8;\n',
       'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: number) {}\n}\n',
@@ -647,6 +648,7 @@ describe('listUsesOutsideDiff', () => {
       'src/printer.ts': 'export class Printer {\n  show(x: { balance: number }) {}\n}\n',
       'cmd/rates.swift': 'func build() {\n}\n',
       'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 2;\n}\n',
+      'src/panel.ts': 'export class Panel {\n  render = () => {\n    const View = class {\n      size = 2;\n    };\n    return View;\n  };\n}\n',
       'conf/app.yml': `server:\n  pool:\n${Array.from({ length: 6 }, (_, i) => `new_key${i}: 1\n`).join('')}`,
       'src/ids.rs': 'pub type Id = u16;\n',
     });
@@ -701,6 +703,9 @@ describe('listUsesOutsideDiff', () => {
         // type, are never named.
         { file: 'src/outer.ts', symbol: 'function outer', change: 'body changed' },
         { file: 'src/outer.ts', symbol: 'constant run', change: 'added' },
+        // A field of a class expression inside an arrow function is local to that function, so only `render` is named.
+        { file: 'src/panel.ts', symbol: 'type Panel', change: 'body changed' },
+        { file: 'src/panel.ts', symbol: 'field Panel.render', change: 'body changed' },
         // A field of an inline parameter type is no field of the class around it.
         { file: 'src/printer.ts', symbol: 'function Printer.show', change: 'declaration changed' },
         { file: 'src/printer.ts', symbol: 'type Printer', change: 'body changed' },

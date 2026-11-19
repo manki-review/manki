@@ -1957,7 +1957,7 @@ class ParsedFile {
     const container = at >= 0 ? ancestors[at] : undefined;
     // A member is local only when its type is, so a field Python assigns in `__init__` is not.
     const from = kind === 'field' || kind === 'variant' ? at : -1;
-    const local = ancestors.some((a, i) => i > from && (this.rules.declarations[a.kind()] === 'function' || !!this.rules.functions?.includes(String(a.kind()))));
+    const local = ancestors.some((a, i) => i > from && this.isFunction(a));
     const { line: start, column: startColumn } = this.leadingStart(node);
     return {
       node, name, kind, start, startColumn, headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
@@ -2233,10 +2233,15 @@ class ParsedFile {
    * Whether field `decl` belongs to its type itself, not to an inline type or a function inside the type, such as the
    * `{ a: number }` of a method's parameter. A family that names its fields itself, such as Python, places them already.
    */
+  /** Whether `node` is a function, named or not, so a declaration inside it is local to it. */
+  private isFunction(node: SgNode): boolean {
+    return this.rules.declarations[node.kind()] === 'function' || !!this.rules.functions?.includes(String(node.kind()));
+  }
+
   private isOwnField(decl: Declaration): boolean {
     if (this.rules.fieldName) return true;
     for (let a = this.tree.parent(decl.node); a && nodeKey(a) !== decl.container; a = this.tree.parent(a)) {
-      if (this.rules.declarations[a.kind()] === 'function') return false;
+      if (this.isFunction(a)) return false;
       if (INLINE_TYPES.has(String(a.kind())) && nodeKey(this.tree.parent(a) ?? a) !== decl.container) return false;
     }
     return true;
