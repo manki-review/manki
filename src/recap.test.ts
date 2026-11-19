@@ -813,6 +813,8 @@ describe('fetchRecapState', () => {
               body: 'Fixed, done.',
               author: { login: 'developer' },
             },
+            // The answer to a fix in another PR settles nothing, but it is still Manki's answer in the thread.
+            { body: 'Confirmed: #7, merged into `main`, replaced the cited line.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
           ],
         },
       }),
@@ -881,7 +883,7 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
     // The commit a thread was posted on still holds the code it named after the thread goes outdated.
     expect(state.previousFindings.map(f => f.originalCommit)).toEqual(['c0ffee', undefined, undefined, undefined, undefined, undefined]);
-    expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
+    expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual(['Confirmed: #7, merged into `main`, replaced the cited line.', '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
     // A severity comes from the first comment only, and no reply marker raises it, not even a pasted one.
     expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'warning', 'blocker', 'blocker', 'blocker']);
     // A security thread keeps a recorded lower grade too, which `threadBlocks` never lets lower it.
@@ -1011,6 +1013,23 @@ describe('fetchRecapState', () => {
     };
     expect(await backed(LAST_PAGE)).toEqual([['auto-resolved', true]]);
     expect(await backed({ hasNextPage: true, endCursor: 'c1' })).toEqual([['replied', false]]);
+  });
+
+  it('carries the fix claim of Manki\'s own answer on a blocker the PR author dismissed, and none from a thread not read in full', async () => {
+    const claim = (login: string, body = 'Unverified. You name #7.\n\n<!-- manki -->\n<!-- manki-fix-claim:7:confirmed -->') => ({ body, author: { login } });
+    const override = async (reply: ReturnType<typeof claim>, pageInfo: { hasNextPage: boolean; endCursor: string | null } = LAST_PAGE) => {
+      const nodes = [...makeThread().comments.nodes, reply];
+      const octokit = mockOctokit([makeThread({ id: 'tc', isResolved: true, resolvedBy: { login: 'author' }, comments: { pageInfo, nodes } })]);
+      Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'maintain', role_name: 'maintain', user: { type: 'User' } } })) } });
+      return (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain')).previousFindings[0].securityOverride;
+    };
+
+    expect(await override(claim('manki-review[bot]'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 7, status: 'confirmed' } });
+    // The marker counts only in Manki's own reply. A person's reply that names another pull request is a claim Manki did not check.
+    expect(await override(claim('author'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 7, status: 'unchecked' } });
+    expect(await override(claim('reader', 'Fixed in https://github.com/owner/repo/pull/12, see `#13` and #1.'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 12, status: 'unchecked' } });
+    // A later answer may be missing, so the thread names no claim.
+    expect(await override(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false });
   });
 
   it('populates lineStart from startLine when present for multi-line annotations', async () => {

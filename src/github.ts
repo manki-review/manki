@@ -13,7 +13,7 @@ import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern 
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
-import type { PreviousFinding } from './recap';
+import type { FixClaim, PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { extractApprovalRecords, formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
@@ -2330,7 +2330,7 @@ export async function postReview(
     const stillOpen = [...restatements].filter(([id]) => !priorThreads.has(id)).map(([id, texts]) =>
       [formatTraceEntry(existingThreads.find(t => t.threadId === id)!), ...texts].join('\n\n'));
     const overrides = event === 'APPROVE' && formatSecurityOverrides(existingThreads.flatMap(t =>
-      t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login, role: t.securityOverride.role }] : []));
+      t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, ...t.securityOverride }] : []));
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
@@ -2958,17 +2958,24 @@ function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: s
 
 /**
  * Returns the guarded findings a PR author dismissed on their own PR as a list, or null when there are none. The heading
- * names the author and the role that allowed it. Every entry carries the same two, since both are the PR author's.
+ * names the author and the role that allowed it. Every entry carries the same two, since both are the PR author's. A
+ * finding whose thread holds Manki's confirmation of a fix in another pull request is listed apart, with that pull request.
  */
-function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threadUrl?: string; login: string; role: AuthorClearRole }>): string | null {
+function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threadUrl?: string; login: string; role: AuthorClearRole; fixClaim?: FixClaim }>): string | null {
   if (overrides.length === 0) return null;
   const [{ login, role }] = overrides;
-  const items = overrides.map(o => {
+  const item = (o: typeof overrides[number]) => {
     const title = sanitizeMarkdown(o.title || '(untitled)');
     const url = safeThreadUrl(o.threadUrl);
     return `- ${url ? `[${title}](${url})` : title}`;
-  });
-  return `**Findings dismissed by the PR author** \`@${login}\` (\`${role}\` role):\n\n${items.join('\n')}`;
+  };
+  const confirmed = overrides.filter(o => o.fixClaim?.status === 'confirmed');
+  const other = overrides.filter(o => o.fixClaim?.status !== 'confirmed');
+  const by = `**Findings dismissed by the PR author** \`@${login}\` (\`${role}\` role)`;
+  return [
+    other.length > 0 && `${by}:\n\n${other.map(item).join('\n')}`,
+    confirmed.length > 0 && `${by} **as fixed in another PR.** In a reply, Manki confirmed that the PR named replaced the cited line on the default branch.\n\n${confirmed.map(o => `${item(o)}: #${o.fixClaim!.pr}`).join('\n')}`,
+  ].filter(Boolean).join('\n\n');
 }
 
 function formatLabelled(label: string, text: string): string {

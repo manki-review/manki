@@ -503,6 +503,59 @@ export function removedOldLines(file: DiffFile): Map<number, string> {
   return removed;
 }
 
+/** Returns the line of the old file that `line` of the new file was, or `undefined` when the diff adds that line. */
+export function oldLineOf(file: DiffFile, line: number): number | undefined {
+  let shift = 0;
+  for (const hunk of file.hunks) {
+    // A side with no lines names the line before the hunk, not its first line.
+    let [oldLine, newLine] = [hunk.oldStart + (hunk.oldLines === 0 ? 1 : 0), hunk.newStart + (hunk.newLines === 0 ? 1 : 0)];
+    if (line < newLine) break;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-')) {
+        oldLine++;
+        continue;
+      }
+      if (newLine === line) return content.startsWith('+') ? undefined : oldLine;
+      if (!content.startsWith('+')) oldLine++;
+      newLine++;
+    }
+    shift = oldLine - newLine;
+  }
+  return line + shift;
+}
+
+/**
+ * Returns the lines of the new file that the run of changed lines removing `oldLine` puts in its place, as the first
+ * line and the last one, or `undefined` when the diff keeps that line. The last line is one before the first when the
+ * run only removes lines.
+ */
+export function replacementOf(file: DiffFile, oldLine: number): [number, number] | undefined {
+  for (const hunk of file.hunks) {
+    let [oldAt, newAt] = [hunk.oldStart, hunk.newStart];
+    let run: { first: number; removes: boolean; added: number } | undefined;
+    for (const content of [...hunk.content.split('\n'), ' ']) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-') || content.startsWith('+')) {
+        run ??= { first: newAt, removes: false, added: 0 };
+        if (content.startsWith('-')) {
+          if (oldAt === oldLine) run.removes = true;
+          oldAt++;
+        } else {
+          run.added++;
+          newAt++;
+        }
+        continue;
+      }
+      if (run?.removes) return [run.first, run.first + run.added - 1];
+      run = undefined;
+      oldAt++;
+      newAt++;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Check if a line number, or any line from `line` to `end`, is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.

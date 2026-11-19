@@ -2587,8 +2587,8 @@ async function handleReviewCommentInteraction(): Promise<void> {
     }
     const headSha: string | undefined = payload.pull_request?.head?.sha;
     const baseRef: string | undefined = payload.pull_request?.base?.ref;
-    const loadWorkspace = async () => {
-      if (!headSha || !baseRef) return undefined;
+    const loadWorkspace = async (commit = headSha) => {
+      if (!commit || !baseRef) return undefined;
       let closedPaths = config.closed_paths ?? [];
       try {
         // The open path of a file the PR renames into or out of a closed path holds the closed file's text at the base or the head.
@@ -2597,7 +2597,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
         core.warning(`Could not read the PR's diff to find the files it moves into or out of a closed path, so the reply runs without tools: ${failureReason(error)}`);
         return undefined;
       }
-      return fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha, baseRef }, [client], config.exclude_paths, closedPaths);
+      return fetchToolWorkspace({ octokit, owner, repo, commitSha: commit, baseRef }, [client], config.exclude_paths, closedPaths);
     };
     await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config, closedUnknown);
   }

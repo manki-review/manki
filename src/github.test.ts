@@ -2330,12 +2330,18 @@ describe('postReview body lead', () => {
       thread('Token leaks into logs', 'r1', { login: 'owner', via: 'resolve', role: 'admin', announced: false }),
       thread('Cleared by a maintainer', 'r2'),
       thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', role: 'admin', announced: true }),
+      // A claim Manki did not confirm, or did not check, keeps the finding in the plain list.
+      thread('Lock held too long', 'r4', { login: 'owner', via: 'resolve', role: 'admin', announced: true, fixClaim: { pr: 8, status: 'unconfirmed' } }),
+      thread('Cache never expires', 'r6', { login: 'owner', via: 'resolve', role: 'admin', announced: true, fixClaim: { pr: 9, status: 'unchecked' } }),
+      thread('Lock never released', 'r5', { login: 'owner', via: 'resolve', role: 'admin', announced: true, fixClaim: { pr: 7, status: 'confirmed' } }),
     ];
     const list = '**Findings dismissed by the PR author** `@owner` (`admin` role):\n\n- [Token leaks into logs](https://github.com/o/r/pull/1#r1)\n'
-      + '- [Secret in the URL](https://github.com/o/r/pull/1#r3)';
+      + '- [Secret in the URL](https://github.com/o/r/pull/1#r3)\n- [Lock held too long](https://github.com/o/r/pull/1#r4)\n- [Cache never expires](https://github.com/o/r/pull/1#r6)';
+    const elsewhere = '**Findings dismissed by the PR author** `@owner` (`admin` role) **as fixed in another PR.** In a reply, Manki confirmed that the PR named replaced the cited line on the default branch.\n\n'
+      + '- [Lock never released](https://github.com/o/r/pull/1#r5): #7';
 
     const approved = await postedBody(ready, threads);
-    expect(approved.body).toContain(list);
+    expect(approved.body).toContain(`${list}\n\n${elsewhere}`);
     expect(approved.body.split('\n')).toContain('- [Secret in the URL](https://github.com/o/r/pull/1#r3)');
     expect((await postedBody(ready, [thread('Cleared by a maintainer', 'r2')])).body).not.toContain('dismissed by the PR author');
     const blocked = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] }, threads);
