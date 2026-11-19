@@ -1017,12 +1017,13 @@ describe('fetchRecapState', () => {
 
   it('carries the fix claim of Manki\'s own answer on a blocker the PR author dismissed, and none from a thread not read in full', async () => {
     const claim = (login: string, body = 'Unverified. You name #7.\n\n<!-- manki -->\n<!-- manki-fix-claim:7:confirmed -->') => ({ body, author: { login } });
-    const override = async (reply: ReturnType<typeof claim>, pageInfo: { hasNextPage: boolean; endCursor: string | null } = LAST_PAGE) => {
+    const cleared = async (reply: ReturnType<typeof claim>, pageInfo: { hasNextPage: boolean; endCursor: string | null } = LAST_PAGE) => {
       const nodes = [...makeThread().comments.nodes, reply];
       const octokit = mockOctokit([makeThread({ id: 'tc', isResolved: true, resolvedBy: { login: 'author' }, comments: { pageInfo, nodes } })]);
       Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'maintain', role_name: 'maintain', user: { type: 'User' } } })) } });
-      return (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain')).previousFindings[0].securityOverride;
+      return (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain')).previousFindings[0];
     };
+    const override = async (...args: Parameters<typeof cleared>) => (await cleared(...args)).securityOverride;
 
     expect(await override(claim('manki-review[bot]'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 7, status: 'confirmed' } });
     // The marker counts only in Manki's own reply. A person's reply that names another pull request is a claim Manki did not check.
@@ -1030,6 +1031,16 @@ describe('fetchRecapState', () => {
     expect(await override(claim('reader', 'Fixed in https://github.com/owner/repo/pull/12, see `#13` and #1.'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 12, status: 'unchecked' } });
     // A later answer may be missing, so the thread names no claim.
     expect(await override(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false });
+
+    // The PR author's clearing with a role settles the thread without a fix, unless an answer of Manki's confirmed one.
+    // Only a thread read in full says so, and names the claim on the finding too.
+    const settled = async (...args: Parameters<typeof cleared>) => {
+      const f = await cleared(...args);
+      return [f.decidedWithoutFix ?? false, f.fixClaim];
+    };
+    expect(await settled(claim('manki-review[bot]'))).toEqual([true, { pr: 7, status: 'confirmed' }]);
+    expect(await settled(claim('manki-review[bot]', `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`))).toEqual([false, undefined]);
+    expect(await settled(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toEqual([false, undefined]);
   });
 
   it('populates lineStart from startLine when present for multi-line annotations', async () => {

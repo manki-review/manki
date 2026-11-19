@@ -5132,11 +5132,11 @@ describe('runReview', () => {
 
     // Nobody claims a fix by replying in the thread, nor does the PR author by resolving it, which leaves a blocker
     // thread open. Each still requests changes, and none pauses automatic review. That holds for a dismissal on a
-    // security thread too, when the PR author or someone without write access wrote it, for the author's "Fixed." on a
-    // thread graded below blocker since, and for a maintainer's reply that does not agree.
+    // security thread too, whoever wrote it, for the author's "Fixed." on a thread graded below blocker since, and for
+    // a maintainer's reply that does not agree.
     const dismissed = { isSecurity: true, authorReplyText: '@manki dismiss' };
     const notCleared: Partial<PreviousFinding>[] = [
-      { ...dismissed, authorReplyLogin: 'author' }, { ...dismissed, authorReplyLogin: 'reader' },
+      { ...dismissed, authorReplyLogin: 'author' }, { ...dismissed, authorReplyLogin: 'reader' }, { ...dismissed, authorReplyLogin: 'maintainer', authorReplyMayClear: true },
       { recordedGrade: 'warning', authorReplyText: 'Fixed.', authorReplyLogin: 'author' },
       { isSecurity: true, authorReplyText: 'This still leaks the token.', authorReplyLogin: 'maintainer', authorReplyMayClear: true },
     ];
@@ -5150,10 +5150,10 @@ describe('runReview', () => {
 
     // A thread that counts as resolved, as when a maintainer other than the author resolved it, is a fix claim. Its
     // blocker is posted again, since no open thread carries it. So is a thread Manki resolved for a maintainer, which
-    // is how a maintainer's answer or dismissal clears a thread the PR author had resolved.
+    // is how a maintainer's answer clears a thread the PR author had resolved.
     // With the open threads unknown, only the status says so. A security thread cleared that way keeps the status
     // `replied` and stays among the open threads, so the reply of someone who may clear it says so.
-    const clearedSecurity = { ...thread('replied'), ...dismissed, authorReplyLogin: 'maintainer', authorReplyMayClear: true };
+    const clearedSecurity = { ...thread('replied'), isSecurity: true, authorReplyText: 'Fixed.', authorReplyLogin: 'maintainer', authorReplyMayClear: true };
     for (const [openThreads, previous] of [[[], thread('auto-resolved')], [null, thread('auto-resolved')], [[openThread], clearedSecurity], [null, clearedSecurity]] as const) {
       const cleared = await runOn(makeClients(RAISED), 'sha2', openThreads && [...openThreads], [previous]);
       expect([cleared.outcome, cleared.needsHuman?.cause, cleared.fixClaimedThreadIds]).toEqual(['NOT_CONVERGING', 'repeated', ['T1']]);
@@ -5182,17 +5182,14 @@ describe('runReview', () => {
     expect(samePush.outcome).toBe('ADDRESS_FIRST');
     expect(samePush.needsHuman).toBeUndefined();
 
-    // A fix was tried only when a push may have changed the code the blocker cites. A thread its author dismissed, or
-    // answered as fixed in another PR, with no push to that code since, was settled by a decision: no pause, also when
-    // a finder raises the blocker again from another file.
+    // A fix was tried only when a push may have changed the code the blocker cites. A resolved thread with no push to
+    // that code since was settled by a decision: no pause, also when a finder raises the blocker again from another file.
     const push = (file: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -10 +10 @@\n-old\n+new\n`;
-    const elsewhere = { ...thread('resolved'), authorReplyText: 'Fixed in #12, which is stacked on this PR.', authorReplyLogin: 'maintainer' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, file: 'src/other.ts' }], summary: 'Still broken.' });
-    for (const [previous, interRoundDiff] of [[thread('resolved'), ''], [elsewhere, push('src/other.ts')]] as const) {
-      const decided = await runOn(makeClients(RAISED), 'sha2', [], [previous], [prior], interRoundDiff);
-      expect([decided.outcome, decided.needsHuman, decided.fixClaimedThreadIds]).toEqual(['ADDRESS_FIRST', undefined, ['T1']]);
-      expect(decided.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', file: 'src/other.ts' })]);
-    }
+    const decided = await runOn(makeClients(RAISED), 'sha2', [], [thread('resolved')], [prior], '');
+    expect([decided.outcome, decided.needsHuman, decided.fixClaimedThreadIds]).toEqual(['ADDRESS_FIRST', undefined, ['T1']]);
+    expect(decided.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', file: 'src/other.ts' })]);
+
     // A real fix that came back still pauses: a push to the blocker's file, to a file its finding cited or its thread
     // links, or a push in a round whose record shows no empty diff or is missing.
     const citing: RoundContext = { ...prior, findings: { ...prior.findings, entries: [{ ...prior.findings.entries[0], evidence: { checks: [], proof: ['src/caller.ts:4'] } }] } };
@@ -5212,6 +5209,45 @@ describe('runReview', () => {
     const quiet = await runOn(makeClients(RAISED), 'sha3', [], [thread('resolved')], [prior, quietRound(2, 'empty')], '');
     expect([quiet.outcome, quiet.needsHuman]).toEqual(['ADDRESS_FIRST', undefined]);
 
+    // A thread settled without a fix claims none, so its blocker found again pauses nothing, also after a push to its
+    // file: a dismissal or an answer that accepted no fix, the PR author's clearing with a role, a reply naming another
+    // PR as the fix, and a dismiss command. Found again in another file, the blocker is posted as a new one.
+    const override = { login: 'author', via: 'resolve', role: 'admin', announced: true } as const;
+    const settledWithoutFix: Array<[string, PreviousFinding]> = [
+      ['decided', { ...thread('resolved'), decidedWithoutFix: true }],
+      ['cleared with a role', { ...thread('resolved'), isSecurity: true, securityOverride: override }],
+      ['fixed elsewhere', { ...thread('resolved'), authorReplyText: 'Fixed in #12, which is stacked on this PR.', authorReplyLogin: 'maintainer', fixClaim: { pr: 12, status: 'unchecked' } }],
+      ['dismissed', { ...thread('auto-resolved'), authorReplyText: '@manki dismiss', authorReplyLogin: 'maintainer' }],
+    ];
+    for (const [why, previous] of settledWithoutFix) {
+      const waived = await runOn(makeClients(RAISED), 'sha4', [], [previous], [prior], push('src/x.ts'));
+      expect([why, waived.outcome, waived.needsHuman, waived.fixClaimedThreadIds]).toEqual([why, 'ADDRESS_FIRST', undefined, []]);
+      expect(waived.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', file: 'src/other.ts' })]);
+    }
+    // A fix an earlier round confirmed is still claimed, whatever settled the thread later.
+    const confirmedThenWaived = await runOn(makeClients(RAISED), 'sha4', [], [settledWithoutFix[1][1]], [prior, { ...buildPriorRound(2, []), judge: { summary: 'Fixed.', threadEvaluations: [{ threadId: 'T1', status: 'addressed', reason: 'The check is in place.' }] } }], push('src/x.ts'));
+    expect([confirmedThenWaived.outcome, confirmedThenWaived.fixClaimedThreadIds]).toEqual(['NOT_CONVERGING', ['T1']]);
+
+    // The PR author cleared a security blocker with a role, a push changed its file, and the judge names it again under
+    // a new title in that file. Dedup drops a repeat of a thread settled without a fix there, so the round drops it too:
+    // it neither pauses nor lists it under "Needs a human".
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, tags: ['security'] }], summary: 'Still broken.' });
+    const replay = await runOn(makeClients(RAISED), 'sha4', [], [{ ...settledWithoutFix[1][1], decidedWithoutFix: true }], [prior], push('src/x.ts'));
+    expect([replay.outcome, replay.needsHuman, replay.fixClaimedThreadIds, replay.findings]).toEqual(['READY', undefined, [], []]);
+    expect(replay.duplicateMatches).toEqual([{ droppedTitle: 'Same bug, new words', matchedTitle: 'Old issue', matchType: 'llm' }]);
+    // Only a thread `decidedWithoutFix` drops it, which needs every comment read, and an `auto-resolved` one only while
+    // no push changed its code. Any other is kept and blocks, and still pauses nothing.
+    const kept: Array<[string, PreviousFinding]> = [
+      ['cleared with a role', settledWithoutFix[1][1]],
+      ['fixed elsewhere', settledWithoutFix[2][1]],
+      ['decided by Manki, then a push', { ...thread('auto-resolved'), decidedWithoutFix: true }],
+    ];
+    for (const [why, previous] of kept) {
+      const blocking = await runOn(makeClients(RAISED), 'sha4', [], [previous], [prior], push('src/x.ts'));
+      expect([why, blocking.outcome, blocking.needsHuman, blocking.findings.map(f => f.title)]).toEqual([why, 'ADDRESS_FIRST', undefined, ['Same bug, new words']]);
+    }
+    const unchanged = await runOn(makeClients(RAISED), 'sha4', [], [{ ...thread('auto-resolved'), decidedWithoutFix: true }], [prior], '');
+    expect([unchanged.outcome, unchanged.findings]).toEqual(['READY', []]);
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, sameAs: undefined }], summary: 'New bug.' });
     const unrelated = await runOn(makeClients(RAISED), 'sha2', [], [thread('resolved')]);
     expect(unrelated.outcome).toBe('ADDRESS_FIRST');

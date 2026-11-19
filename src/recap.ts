@@ -233,6 +233,14 @@ function fixClaimOf(
 }
 
 /**
+ * Whether the thread of `f` was settled in a way that claims no fix in this PR: it is `decidedWithoutFix`, the PR author
+ * cleared it with a role, a reply named another pull request, or the latest reply is a dismiss command.
+ */
+function settledWithoutFix(f: PreviousFinding): boolean {
+  return !!f.decidedWithoutFix || !!f.securityOverride || !!f.fixClaim || DISMISS_COMMAND_RE.test(f.authorReplyText ?? '');
+}
+
+/**
  * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
  * A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its severity and partly-fixed grade.
  */
@@ -441,10 +449,13 @@ interface PreviousFinding extends FindingMetadata {
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
   fixed?: boolean;
   /**
-   * Settled without a fix: Manki accepted an answer that accepted no fix, as its reply record says, or someone with write
-   * access posted a dismiss command. No reply of Manki's accepted or confirmed a fix, and no round's judge found it fixed.
+   * Settled without a fix: Manki accepted an answer that accepted no fix, as its reply record says, someone with write
+   * access posted a dismiss command, or the PR author cleared it with a role `author_clear_role` allows. No reply of
+   * Manki's accepted or confirmed a fix, and no round's judge found it fixed.
    */
   decidedWithoutFix?: boolean;
+  /** The pull request other than this one that a reply in the thread named, by `fixClaimOf`. */
+  fixClaim?: FixClaim;
   threadId?: string;
   threadUrl?: string;
   /** Slug from the thread's `<!-- manki:<severity>:<slug> -->` marker. */
@@ -729,7 +740,8 @@ async function fetchRecapState(
       ...(t.gradeUnknown && { gradeUnknown: true }),
       status,
       ...(facts.addressed && status !== 'open' && status !== 'replied' && { fixed: true }),
-      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && (t.settlement.decidedByAnswer || facts.writerDismissed) && { decidedWithoutFix: true }),
+      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && (t.settlement.decidedByAnswer || facts.writerDismissed || securityOverride) && { decidedWithoutFix: true }),
+      ...(t.fixClaim && { fixClaim: t.fixClaim }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -1549,4 +1561,30 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+/**
+ * Drops each finding that names a thread `decidedWithoutFix` through `sameAs`, in that thread's own file, as dedup drops
+ * a repeat that `staysWaived`. `threadOf` returns the thread of a `sameAs` key.
+ */
+function dropWaivedRestatements(
+  findings: Finding[],
+  previousFindings: PreviousFinding[],
+  threadOf: (key: string) => string | undefined,
+  mayHaveChanged: (prev: PreviousFinding, finding: Finding) => boolean,
+): { unique: Finding[]; duplicates: DuplicateMatch[] } {
+  const waived = previousFindings.filter(f => f.decidedWithoutFix && (f.status === 'resolved' || f.status === 'auto-resolved'));
+  const unique: Finding[] = [];
+  const duplicates: DuplicateMatch[] = [];
+  for (const finding of findings) {
+    const threadId = finding.sameAs && threadOf(finding.sameAs);
+    const prev = threadId ? waived.find(f => f.threadId === threadId && f.file === finding.file) : undefined;
+    if (prev && staysWaived(prev, finding, mayHaveChanged)) {
+      core.info(`"${finding.title}" restates "${prev.title}", which was settled without a fix, in its own file, so it is dropped`);
+      duplicates.push({ finding, matchedTitle: prev.title, matchType: 'llm' });
+    } else {
+      unique.push(finding);
+    }
+  }
+  return { unique, duplicates };
+}
+
+export { BOT_PREFIX_PATTERN, dropWaivedRestatements, settledWithoutFix, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
