@@ -1249,9 +1249,10 @@ describe('refuteBlockers', () => {
     // Without a base, the refuter is not sent to read one.
     expect(client.messages.at(-1)![0]).toContain('does not show, read how this PR changed those lines with `git_history`, or answer unsettled.');
     expect(client.messages.at(-1)![0]).not.toContain('`ref`');
+    expect(client.messages.at(-1)![0]).toContain('When it does, or the change shown is cut, answer `base` unsettled.');
 
-    // A change the message leaves out looks the same at the base, so an answer under a cut list of changed files, or
-    // under a cut change to the cited file, stays open.
+    // A change the message leaves out looks the same at the base, so an answer under a cut list of changed files stays
+    // open. The refuter reads a cited file at the base itself, so a cut change to it leaves the answer as it is.
     const paths = (n: number) => Array.from({ length: n }, (_, i) => `gen/file${i}.ts`);
     const [named] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, excludedPaths: paths(49) });
     const [cut] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, excludedPaths: paths(50) });
@@ -1261,7 +1262,8 @@ describe('refuteBlockers', () => {
     });
     const [shortChange] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff: longChange(10) });
     const [cutChange] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff: longChange(1000) });
-    expect([named, cut, shortChange, cutChange].map(f => f.refutation?.base?.outcome)).toEqual(['disproved', 'unsettled', 'disproved', 'unsettled']);
+    expect([named, cut, shortChange, cutChange].map(f => f.refutation?.base?.outcome)).toEqual(['disproved', 'unsettled', 'disproved', 'disproved']);
+    expect(client.messages.at(-1)![0]).toContain('When it does, answer `base` unsettled. When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.');
 
     // A warning reuses its stored check without the answer about the base, so no stale answer makes it pre-existing.
     const stored = (refutation: Refutation) => [{ findings: { entries: [{ title: 'Same before', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation }] }, judge: {} }] as unknown as RoundContext[];
