@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
 
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RoundContext } from './types';
-import { BotIdentity, CodeLinks, reviewedCommit, titleToSlug } from './github';
+import { BotIdentity, CodeLinks, gitBlobSha, reviewedCommit, titleToSlug } from './github';
 import { parsePRDiff } from './diff';
 import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 
@@ -273,6 +273,15 @@ function legacyFindingToFingerprintEntry(f: LegacyHandoverFindingFixture): Findi
     ...(f.suggestedFix !== undefined && { suggestedFix: f.suggestedFix }),
     title: f.title,
   };
+}
+
+/**
+ * Returns the contents API's answer for a file holding `content`. With `link`, the path is a symlink whose text is
+ * `link` and whose target holds `content`: GitHub answers it with the target's content and the link's own blob id.
+ */
+export function contentAnswer(content: string | Buffer, link?: string): { type: 'file'; sha: string; content: string; encoding: 'base64'; size: number } {
+  const sha = gitBlobSha(Buffer.from(link ?? content));
+  return { type: 'file', sha, content: Buffer.from(content).toString('base64'), encoding: 'base64', size: Buffer.byteLength(content) };
 }
 
 /** The identity a run without custom App credentials resolves to. */

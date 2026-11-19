@@ -1,4 +1,9 @@
+import { Minimatch } from 'minimatch';
+
 import {
+  closeRawDiff,
+  diffSections,
+  findClosedPattern,
   addCodeContext,
   changeDigest,
   onlyCommitChanging,
@@ -17,6 +22,7 @@ import {
   MAX_SLICE_CHARS,
   rebuildRawDiff,
   listedFilesDiff,
+  reviewableDiff,
   tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
@@ -124,6 +130,30 @@ index 1111111..2222222 100644
 @@ -1 +1 @@
 -{"version":3}
 +{"version":3,"mappings":"${'A'.repeat(200000)}"}
+${MULTI_FILE_DIFF}`;
+
+// A changed closed file, a file renamed out of the closed folder and a closed binary, each holding the marker, then two open files.
+const CLOSED_DIFF = `diff --git a/holdout/case.yml b/holdout/case.yml
+index 1111111..2222222 100644
+--- a/holdout/case.yml
++++ b/holdout/case.yml
+@@ -1 +1 @@
+-old hold-out marker
++new hold-out marker
+diff --git a/holdout/moved.ts b/src/moved.ts
+similarity index 50%
+rename from holdout/moved.ts
+rename to src/moved.ts
+index 3333333..4444444 100644
+--- a/holdout/moved.ts
++++ b/src/moved.ts
+@@ -1,2 +1,2 @@
+-const x = 'hold-out marker';
++const x = 'open';
+ export { x };
+diff --git a/holdout/hold-out marker.bin b/holdout/hold-out marker.bin
+index 5555555..6666666 100644
+Binary files a/holdout/hold-out marker.bin and b/holdout/hold-out marker.bin differ
 ${MULTI_FILE_DIFF}`;
 
 // -- Tests --
@@ -389,6 +419,205 @@ describe('filterDiff', () => {
   });
 });
 
+describe('reviewableDiff', () => {
+  it('leaves every file the closed paths close out of the full diff too, lists each, and changes nothing without them', () => {
+    const closed = { matchedPattern: 'holdout', closed: true };
+    const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(CLOSED_DIFF, ['src/b.ts'], ['holdout']);
+    expect(JSON.stringify([fullDiff, diff, rawDiff])).not.toContain('marker');
+    expect([fullDiff.files.map(f => f.path), fullDiff.binarySkipped, diff.files.map(f => f.path)]).toEqual([['src/a.ts', 'src/b.ts'], [], ['src/a.ts']]);
+    expect([diff.totalAdditions, diff.totalDeletions]).toEqual([1, 0]);
+    expect(excludedFiles).toEqual([
+      { path: 'holdout/case.yml', ...closed },
+      { path: 'src/moved.ts', ...closed },
+      { path: 'holdout/hold-out marker.bin', ...closed },
+      { path: 'src/b.ts', matchedPattern: 'src/b.ts' },
+    ]);
+    // A file renamed out of a closed path holds the closed file's text at the head, so its head path is closed too, and only that path.
+    const { closedPaths } = reviewableDiff(CLOSED_DIFF, ['src/b.ts'], ['holdout']);
+    expect(closedPaths).toEqual(['holdout', '/src/moved.ts']);
+    expect(['src/moved.ts', 'src/moved.tsx', 'lib/src/moved.ts'].map(path => findClosedPattern(path, closedPaths))).toEqual(['/src/moved.ts', undefined, undefined]);
+    const oddName = 'diff --git a/holdout/a[1]*.ts b/src/a[1]*.ts\nsimilarity index 100%\nrename from holdout/a[1]*.ts\nrename to src/a[1]*.ts\n';
+    const odd = reviewableDiff(oddName, [], ['holdout']).closedPaths;
+    expect(odd).toEqual(['holdout', '/src/a\\[1\\]\\*.ts']);
+    expect(['src/a[1]*.ts', 'src/a1x.ts'].map(path => findClosedPattern(path, odd))).toEqual([odd[1], undefined]);
+    // Braces stay literal, and a backslash in a name matches as the `/` `findClosedPattern` reads it as.
+    const braces = 'diff --git a/holdout/x.ts b/src/{a,b}.ts\nsimilarity index 100%\nrename from holdout/x.ts\nrename to src/{a,b}.ts\n';
+    const slash = 'diff --git a/holdout/y.ts "b/src/c\\\\d.ts"\nsimilarity index 100%\nrename from holdout/y.ts\nrename to "src/c\\\\d.ts"\n';
+    const moved = reviewableDiff(`${braces}${slash}`, [], ['holdout']).closedPaths;
+    expect(['src/{a,b}.ts', 'src/a.ts', 'src/c\\d.ts'].map(path => !!findClosedPattern(path, moved))).toEqual([true, false, true]);
+    // Only the closed files make up the change, as when every file is excluded.
+    expect(reviewableDiff(CLOSED_DIFF.replace(MULTI_FILE_DIFF, ''), [], ['holdout/**']).fullDiff.files).toEqual([]);
+    expect(reviewableDiff(CLOSED_DIFF, ['src/b.ts'], [])).toEqual(reviewableDiff(CLOSED_DIFF, ['src/b.ts']));
+    expect(reviewableDiff(CLOSED_DIFF, [], []).rawDiff).toContain('new hold-out marker');
+    // The `/dev/null` side of an added or deleted binary is no path, so it closes nothing.
+    const deletedBinary = 'diff --git a/app.jar b/app.jar\ndeleted file mode 100644\nindex abcdef1..0000000\nBinary files a/app.jar and /dev/null differ\n';
+    const binaries = reviewableDiff(`${BINARY_FILE_DIFF}${deletedBinary}${CLOSED_DIFF}`, [], ['holdout']);
+    expect(binaries.fullDiff.binarySkipped?.map(b => b.path)).toEqual(['assets/logo.png', 'app.jar']);
+    expect(binaries.excludedFiles.map(f => f.path)).toEqual(['holdout/case.yml', 'src/moved.ts', 'holdout/hold-out marker.bin']);
+  });
+
+  it('reads each path git quoted as the real name, so a closed pattern with a non-ASCII character closes the file', () => {
+    // As `git diff` writes them: a name with a non-ASCII byte, a quote or a backslash is quoted, with C escapes.
+    const quoted = [
+      'diff --git "a/h\\303\\266ldout/caf\\303\\251.md" "b/h\\303\\266ldout/caf\\303\\251.md"',
+      'index b3c6b97..1f5f959 100644',
+      '--- "a/h\\303\\266ldout/caf\\303\\251.md"',
+      '+++ "b/h\\303\\266ldout/caf\\303\\251.md"',
+      '@@ -1 +1 @@',
+      '-secret one',
+      '+secret one changed',
+      'diff --git "a/h\\303\\266ldout/t\\"q.md" "b/docs/t\\"q.md"',
+      'similarity index 50%',
+      'rename from "h\\303\\266ldout/t\\"q.md"',
+      'rename to "docs/t\\"q.md"',
+      'index 1111111..2222222 100644',
+      '--- "a/h\\303\\266ldout/t\\"q.md"',
+      '+++ "b/docs/t\\"q.md"',
+      '@@ -1,2 +1,2 @@',
+      ' secret two',
+      '-line',
+      '+line changed',
+      'diff --git "a/h\\303\\266ldout/bin.dat" "b/docs/b\\303\\257n.dat"',
+      'similarity index 100%',
+      'rename from "h\\303\\266ldout/bin.dat"',
+      'rename to "docs/b\\303\\257n.dat"',
+      'diff --git "a/docs/na\\303\\257ve\\ta\\\\b.md" "b/docs/na\\303\\257ve\\ta\\\\b.md"',
+      'new file mode 100644',
+      'index 0000000..3333333',
+      '--- /dev/null',
+      '+++ "b/docs/na\\303\\257ve\\ta\\\\b.md"',
+      '@@ -0,0 +1 @@',
+      '+open text',
+      '',
+    ].join('\n');
+
+    const parsed = parsePRDiff(quoted);
+    expect(parsed.files.map(f => [f.path, f.oldPath])).toEqual([
+      ['höldout/café.md', undefined], ['docs/t"q.md', 'höldout/t"q.md'], ['docs/naïve\ta\\b.md', undefined],
+    ]);
+    expect(parsed.binarySkipped?.map(b => [b.path, JSON.parse(b.header).slice(0, 2)])).toEqual([['docs/bïn.dat', ['höldout/bin.dat', 'docs/bïn.dat']]]);
+    // A rebuilt diff quotes the names again, and reads back as the same paths.
+    expect(parsePRDiff(rebuildRawDiff(parsed)).files.map(f => [f.path, f.oldPath])).toEqual(parsed.files.map(f => [f.path, f.oldPath]));
+
+    const { fullDiff, excludedFiles, rawDiff, closedPaths } = reviewableDiff(quoted, [], ['höldout/**']);
+    expect(JSON.stringify([fullDiff, rawDiff])).not.toContain('secret');
+    expect([fullDiff.files.map(f => f.path), fullDiff.binarySkipped]).toEqual([['docs/naïve\ta\\b.md'], []]);
+    expect(excludedFiles.map(f => f.path)).toEqual(['höldout/café.md', 'docs/t"q.md', 'docs/bïn.dat']);
+    expect(['docs/t"q.md', 'docs/bïn.dat', 'docs/naïve\ta\\b.md'].map(path => !!findClosedPattern(path, closedPaths))).toEqual([true, true, false]);
+    expect(closeRawDiff(quoted, ['höldout/**'])).not.toContain('secret');
+  });
+
+  it.each([['a carriage return', '\r'], ['a line separator', '\u2028'], ['a paragraph separator', '\u2029']])('starts no file at %s before `diff --git` inside a changed line', (_label, separator) => {
+    const raw = [
+      'diff --git a/holdout/case.md b/holdout/case.md',
+      'index 1111111..2222222 100644',
+      '--- a/holdout/case.md',
+      '+++ b/holdout/case.md',
+      '@@ -1,1 +1,2 @@',
+      ' first',
+      `+line${separator}diff --git a/src/open.ts b/src/open.ts`,
+      '@@ -9,1 +10,2 @@',
+      ' ninth',
+      '+secret',
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 3333333..4444444 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    expect(diffSections(raw).map(text => text.split('\n', 1)[0])).toEqual(['diff --git a/holdout/case.md b/holdout/case.md', 'diff --git a/src/a.ts b/src/a.ts']);
+    const parsed = parsePRDiff(raw);
+    expect(parsed.files.map(f => [f.path, f.hunks.length])).toEqual([['holdout/case.md', 2], ['src/a.ts', 1]]);
+    expect(orderDiffSections(raw).map(section => section.path)).toEqual(['holdout/case.md', 'src/a.ts']);
+    const { fullDiff, rawDiff } = reviewableDiff(raw, [], ['holdout']);
+    expect(JSON.stringify([fullDiff, rawDiff])).not.toContain('secret');
+    expect(fullDiff.files.map(f => f.path)).toEqual(['src/a.ts']);
+    expect(closeRawDiff(raw, ['holdout'])).not.toContain('secret');
+  });
+
+  it('reads a name with a quote mark or a date in it as it is, so a file moved to it out of a closed path stays closed', () => {
+    // As `git diff` writes them: these names are not quoted, and a `+++` path with a space ends in a tab.
+    const raw = [
+      'diff --git a/holdout/case.md b/docs/case\'',
+      'similarity index 65%',
+      'rename from holdout/case.md',
+      'rename to docs/case\'',
+      'index 81976dd..e449626 100644',
+      '--- a/holdout/case.md',
+      '+++ b/docs/case\'',
+      '@@ -3,2 +3,2 @@ a',
+      ' secret',
+      '-e',
+      '+e changed',
+      'diff --git a/holdout/it\'s.md b/docs/it\'s.md',
+      'similarity index 100%',
+      'rename from holdout/it\'s.md',
+      'rename to docs/it\'s.md',
+      'diff --git a/holdout/b.dat b/docs/b\'',
+      'similarity index 100%',
+      'rename from holdout/b.dat',
+      'rename to docs/b\'',
+      'diff --git a/docs/note 2024-01-02 10:11:12 +0100\' b/docs/note 2024-01-02 10:11:12 +0100\'',
+      'new file mode 100644',
+      'index 0000000..3e75765',
+      '--- /dev/null',
+      '+++ b/docs/note 2024-01-02 10:11:12 +0100\'\t',
+      '@@ -0,0 +1 @@',
+      '+open text',
+      'diff --git a/docs/mode\' b/docs/mode\'',
+      'old mode 100644',
+      'new mode 100755',
+      '',
+    ].join('\n');
+
+    const parsed = parsePRDiff(raw);
+    expect(parsed.files.map(f => [f.path, f.oldPath])).toEqual([['docs/case\'', 'holdout/case.md'], ['docs/note 2024-01-02 10:11:12 +0100\'', undefined]]);
+    expect(parsed.binarySkipped?.map(b => [b.path, JSON.parse(b.header).slice(0, 2)])).toEqual([
+      ['docs/it\'s.md', ['holdout/it\'s.md', 'docs/it\'s.md']], ['docs/b\'', ['holdout/b.dat', 'docs/b\'']], ['docs/mode\'', ['docs/mode\'', 'docs/mode\'']],
+    ]);
+    expect(parsePRDiff(rebuildRawDiff(parsed)).files.map(f => [f.path, f.oldPath])).toEqual(parsed.files.map(f => [f.path, f.oldPath]));
+
+    const { fullDiff, excludedFiles, closedPaths } = reviewableDiff(raw, [], ['holdout']);
+    expect(JSON.stringify(fullDiff)).not.toContain('secret');
+    expect(excludedFiles.map(f => f.path)).toEqual(['docs/case\'', 'docs/it\'s.md', 'docs/b\'']);
+    expect(['docs/case\'', 'docs/case', 'docs/it\'s.md', 'docs/b\'', 'docs/mode\''].map(path => !!findClosedPattern(path, closedPaths))).toEqual([true, false, true, true, false]);
+  });
+});
+
+describe('findClosedPattern', () => {
+  it('compiles each pattern once, however many paths, folders and patterns it checks', () => {
+    const make = jest.spyOn(Minimatch.prototype, 'make');
+    try {
+      // More patterns than `minimatch` keeps compiled in its own cache, as a PR that moves many files out of a closed path gives.
+      const closed = [...Array.from({ length: 300 }, (_, i) => `/moved/compiled-once-${i}.ts`), 'compiled-once/**'];
+      for (let i = 0; i < 20; i++) expect(findClosedPattern(`src/deep/dir${i}/file${i}.ts`, closed)).toBeUndefined();
+      expect(findClosedPattern('compiled-once/a.ts', closed)).toBe('compiled-once/**');
+      expect(make).toHaveBeenCalledTimes(closed.length);
+    } finally {
+      make.mockRestore();
+    }
+  });
+
+  it('matches a path however it is spelled, and closes one that leaves the repository', () => {
+    const closed = ['secret/**', 'notes'];
+    for (const path of ['secret/x.md', './secret/x.md', 'secret//x.md', 'src/../secret/x.md', 'secret\\x.md', '.\\secret\\x.md', 'secret/./x.md', 'secret/sub/']) {
+      expect([path, findClosedPattern(path, closed)]).toEqual([path, 'secret/**']);
+    }
+    expect(findClosedPattern('./docs//notes/a.md', closed)).toBe('notes');
+    for (const path of ['../x.md', '..', 'src/../../x.md', '/etc/x', '\\x.md']) {
+      expect([path, findClosedPattern(path, closed)]).toEqual([path, 'secret/**']);
+    }
+    for (const path of ['src/x.md', './src/x.md', 'src/secret.md', 'secrets/x.md']) {
+      expect([path, findClosedPattern(path, closed)]).toEqual([path, undefined]);
+    }
+    expect(findClosedPattern('../x.md', [])).toBeUndefined();
+  });
+});
+
 describe('filterRawDiff', () => {
   it('removes excluded files and keeps the hunks of every other file', () => {
     const result = filterRawDiff(GENERATED_FIRST_DIFF, DEFAULT_CONFIG.exclude_paths);
@@ -401,6 +630,16 @@ describe('filterRawDiff', () => {
   it('returns an empty string for an empty diff or one with only excluded files', () => {
     expect(filterRawDiff('', DEFAULT_CONFIG.exclude_paths)).toBe('');
     expect(filterRawDiff(GENERATED_FIRST_DIFF, ['dist/**', 'src/**'])).toBe('');
+  });
+
+  it('removes a closed file even when it is kept from the exclusions', () => {
+    const result = filterRawDiff(CLOSED_DIFF, [], new Set(['holdout/case.yml']), ['holdout/**']);
+    expect(result).not.toContain('marker');
+    expect(result).toBe(filterRawDiff(MULTI_FILE_DIFF, []));
+    // `closeRawDiff` drops only the sections of closed files and keeps the others as they came, binaries included.
+    expect(closeRawDiff(CLOSED_DIFF, ['holdout/**'])).toBe(MULTI_FILE_DIFF);
+    expect(closeRawDiff(`${BINARY_FILE_DIFF}${CLOSED_DIFF}`, ['holdout/**'])).toBe(`${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`);
+    expect(closeRawDiff(CLOSED_DIFF, [])).toBe(CLOSED_DIFF);
   });
 });
 
@@ -642,9 +881,17 @@ describe('listedFilesDiff', () => {
     if ('previous_filename' in file) expect(raw).not.toContain(file.previous_filename);
   });
 
-  it('escapes the characters git escapes once a name is quoted, and leaves any other name as it is', () => {
-    expect(listedFilesDiff([{ filename: 't\tq"b\\c\u0001', status: 'modified' }]).split('\n')[0]).toBe('diff --git "a/t\\tq\\"b\\\\c\\001" "b/t\\tq\\"b\\\\c\\001"');
-    expect(listedFilesDiff([{ filename: 'dir/a "b".ts', status: 'modified' }]).split('\n')[0]).toBe('diff --git a/dir/a "b".ts b/dir/a "b".ts');
+  it('quotes a name as git does, escaping the characters git escapes, and reads each name back as it was', () => {
+    const names = ['t\tq"b\\c\u0001', 'dir/a "b".ts', 'dir/a\\tb.ts', 'dir/café.ts', 'dir/plain name.ts'];
+    const raw = listedFilesDiff(names.map(filename => ({ filename, status: 'modified' })));
+    expect(raw.split('\n').filter(l => l.startsWith('diff --git'))).toEqual([
+      'diff --git "a/t\\tq\\"b\\\\c\\001" "b/t\\tq\\"b\\\\c\\001"',
+      'diff --git "a/dir/a \\"b\\".ts" "b/dir/a \\"b\\".ts"',
+      'diff --git "a/dir/a\\\\tb.ts" "b/dir/a\\\\tb.ts"',
+      'diff --git a/dir/café.ts b/dir/café.ts',
+      'diff --git a/dir/plain name.ts b/dir/plain name.ts',
+    ]);
+    expect(parsePRDiff(raw).binarySkipped?.map(b => b.path)).toEqual(names);
   });
 
   it.each([

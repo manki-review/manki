@@ -589,7 +589,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
     const [withTools, without] = mockSpawn.mock.calls.map(call => call[1] as string[]);
     expect(withTools.join(' ')).toContain([
       `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
-      `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
+      `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15', '--closed-file', join(dirname(instructionsPath(withTools)), 'closed-calls')])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
       '-c mcp_servers.manki.required=true',
     ].join(' '));
@@ -648,7 +648,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       '-c', 'model_providers.manki.stream_max_retries=0',
       '-c', `mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
       // The tool server counts its steps in the call's own folder, so the server of a resumed run counts on.
-      '-c', `mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15', '--steps-dir', join(dirname(instructionsPath(args)), 'steps')])}`,
+      '-c', `mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15', '--steps-dir', join(dirname(instructionsPath(args)), 'steps'), '--closed-file', join(dirname(instructionsPath(args)), 'closed-calls')])}`,
       '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.manki.required=true',
       '-c', expect.stringMatching(/^mcp_servers\.manki\.env_vars=/),
@@ -862,13 +862,14 @@ describe('sendViaCLI (Codex CLI path)', () => {
     });
   });
 
-  it('reads back how often the tool server read each related repo, and passes no reads file without related repos', async () => {
+  it('reads back how often the tool server read each related repo and refused a closed path, and passes no reads file without related repos', async () => {
     setupSpawnMock(answered('[]'));
     const spawnFromHelper = mockSpawn.getMockImplementation()!;
     mockSpawn.mockImplementation((...spawnArgs: Parameters<typeof spawnFromHelper>) => {
       const serverArgs = JSON.parse((spawnArgs[1] as string[]).find(arg => arg.startsWith('mcp_servers.manki.args='))!.slice('mcp_servers.manki.args='.length)) as string[];
       const at = serverArgs.indexOf('--reads-file');
       if (at !== -1) writeFileSync(serverArgs[at + 1], JSON.stringify({ 'dashpay/dash': 2 }));
+      else writeFileSync(serverArgs[serverArgs.indexOf('--closed-file') + 1], '3');
       return spawnFromHelper(...spawnArgs);
     });
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
@@ -879,6 +880,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
 
     expect(withRelated.relatedReads).toEqual({ 'dashpay/dash': 2 });
     expect(withoutRelated.relatedReads).toBeUndefined();
+    expect([withRelated.closedCalls, withoutRelated.closedCalls]).toEqual([undefined, 3]);
     expect((mockSpawn.mock.calls[1][1] as string[]).join(' ')).not.toContain('--reads-file');
 
     // A call that fails still reports the reads it made, on its error.
@@ -887,10 +889,11 @@ describe('sendViaCLI (Codex CLI path)', () => {
     mockSpawn.mockImplementation((...spawnArgs: Parameters<typeof failingSpawn>) => {
       const serverArgs = JSON.parse((spawnArgs[1] as string[]).find(arg => arg.startsWith('mcp_servers.manki.args='))!.slice('mcp_servers.manki.args='.length)) as string[];
       writeFileSync(serverArgs[serverArgs.indexOf('--reads-file') + 1], JSON.stringify({ 'dashpay/dash': 4 }));
+      writeFileSync(serverArgs[serverArgs.indexOf('--closed-file') + 1], '1');
       return failingSpawn(...spawnArgs);
     });
     const failure = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } }).catch((error: unknown) => error);
-    expect(failure).toMatchObject({ message: expect.stringContaining('Codex CLI invocation failed'), relatedReads: { 'dashpay/dash': 4 } });
+    expect(failure).toMatchObject({ message: expect.stringContaining('Codex CLI invocation failed'), relatedReads: { 'dashpay/dash': 4 }, closedCalls: 1 });
   });
 
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {

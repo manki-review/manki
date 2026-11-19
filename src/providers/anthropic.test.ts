@@ -568,7 +568,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(hook[0].hooks[0].command.startsWith(`'${process.execPath}' '${process.argv[1]}' `)).toBe(true);
     expect(valueOf('--setting-sources')).toBe('');
     expect(mcpConfig!.mcpServers.manki).toEqual({
-      type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo', '--related-repos', JSON.stringify(related), '--reads-file', expect.stringMatching(/\/related-reads\.json$/)],
+      type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo', '--related-repos', JSON.stringify(related), '--reads-file', expect.stringMatching(/\/related-reads\.json$/), '--closed-file', expect.stringMatching(/\/closed-calls$/)],
       env: { CLAUDE_CODE_OAUTH_TOKEN: '', GITHUB_API_URL: 'https://ghe.example/api/v3' },
     });
     expect(Object.keys(mcpConfig!.mcpServers)).toEqual(['manki']);
@@ -618,10 +618,11 @@ describe('sendViaOAuth — error paths', () => {
       const cliArgs = args[1] as string[];
       const serverArgs = (JSON.parse(readFileSync(cliArgs[cliArgs.indexOf('--mcp-config') + 1], 'utf-8')) as { mcpServers: { manki: { args: string[] } } }).mcpServers.manki.args;
       writeFileSync(serverArgs[serverArgs.indexOf('--reads-file') + 1], JSON.stringify({ 'dashpay/platform': 2 }));
+      writeFileSync(serverArgs[serverArgs.indexOf('--closed-file') + 1], '2');
       return failingSpawn(...args);
     });
     const failure = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } }).catch((error: unknown) => error);
-    expect(failure).toMatchObject({ relatedReads: { 'dashpay/platform': 2 } });
+    expect(failure).toMatchObject({ relatedReads: { 'dashpay/platform': 2 }, closedCalls: 2 });
   });
 
   it('fails when the CLI uses all its turns before it answers', async () => {

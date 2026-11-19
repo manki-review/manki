@@ -1873,6 +1873,10 @@ describe('truncateDiff', () => {
     const kept = result.split('\n').filter(line => line.startsWith('+build/bundle.js:')).length;
     expect(kept).toBeGreaterThan(0);
     expect(result).toContain(`... (${5000 - kept} more lines in this file truncated)\n`);
+
+    // A `\r` before `diff --git` inside a changed line starts no file, so the large file is cut once.
+    const forged = huge.replace('+build/bundle.js:2500', '+build/bundle.js:2500\rdiff --git a/x b/x');
+    expect(truncateDiff(forged + small, 2000).match(/more lines in this file truncated/g)).toHaveLength(1);
   });
 
   it('splits the budget fairly so every large file keeps its header and first lines', () => {
@@ -9140,6 +9144,16 @@ describe('carryBodyWarnings', () => {
     const unread = await carry([first], withX(new Error('Server Error') as unknown as string[]));
     expect([unread.titles, unread.lines, unread.ended]).toEqual([all, [undefined, undefined, undefined], undefined]);
     expect(warning).toHaveBeenCalledWith('Failed to read src/x.ts, so the warnings carried on it stay listed: Error: Server Error');
+
+    // A warning whose file went unread when it was listed has no line to compare. It stays listed whatever its file reads
+    // now, gone included, and carried again from the round that carried it, until a finding of a round names it.
+    const blind = entry('Link target unchecked', 2, { unread: true }, 'src/link.ts');
+    const kept = await carry([round(1, [blind])], {});
+    expect([kept.titles, kept.lines, kept.ended]).toEqual([['Link target unchecked (round 1)'], [undefined], undefined]);
+    const again = await carry([round(1, [blind]), round(2, [], kept.result.carried)], { 'src/link.ts': ['changed();'] });
+    expect([again.titles, again.ended]).toEqual([['Link target unchecked (round 1)'], undefined]);
+    const named = await carry([round(1, [blind])], {}, { findings: [finding('Link target unchecked', 2, { file: 'src/link.ts' })] });
+    expect([named.titles, named.ended]).toEqual([undefined, ['restated']]);
   });
 
   it('ends a carried warning that a finding of the round names, and records how that finding ended', async () => {

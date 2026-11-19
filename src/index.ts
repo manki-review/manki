@@ -14,7 +14,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent, startedByCatchUp } from './dispatch';
-import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins, findClosedPattern } from './diff';
 import { handleBoxCommand, handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, mentionsMankiUser, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
@@ -32,7 +32,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes, tickedMessageBoxes, withMessageBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick, settleTickedBox, TickedMessage } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks } from './types';
+import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks, SkippedFile } from './types';
 import {
   fetchPRDiff,
   brokenConfig,
@@ -42,6 +42,7 @@ import {
   loadBaseConfig,
   readConfigFile,
   githubRepoFiles,
+  openRepoFiles,
   fetchRepoContext,
   formatUnreviewedNotice,
   fetchFileContents,
@@ -612,11 +613,12 @@ function eventBranch(ref: unknown, what: string): string {
 
 /**
  * Loads the base branch's config at `ref` for an event that runs no review round. `held` says that it could not be
- * read or loaded. The config is then `fallbackConfig`, and the event must approve nothing.
+ * read or loaded. The config is then `fallbackConfig`, and the event must approve nothing. `closedUnknown` is set as
+ * `loadBaseConfig` sets it.
  */
-async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<{ config: ReviewConfig; held: boolean }> {
-  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, ref, CONFIG_PATH), CONFIG_PATH, failureReason);
-  return { config, held: configFailed(source) };
+async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<{ config: ReviewConfig; held: boolean; closedUnknown?: string }> {
+  const { config, source, closedUnknown } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, ref, CONFIG_PATH), CONFIG_PATH, failureReason);
+  return { config, held: configFailed(source), ...(closedUnknown && { closedUnknown }) };
 }
 
 /**
@@ -969,7 +971,7 @@ async function stopLiveEdits(progress: RunProgress): Promise<void> {
  * changes are logged as applying after merge. A PR file that does not load gives a warning and `brokenHead`, which says
  * whether the PR changed it.
  */
-async function loadRunConfig(target: RunTarget): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean } }> {
+async function loadRunConfig(target: RunTarget): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean }; closedUnknown?: string }> {
   const { octokit, owner, repo, commitSha, baseRef } = target;
   let headContent: string | null | undefined;
   let headConfig: ReviewConfig | undefined;
@@ -979,13 +981,14 @@ async function loadRunConfig(target: RunTarget): Promise<{ config: ReviewConfig;
   } catch (error) {
     core.warning(`Could not read or load the PR's ${CONFIG_PATH}, this round uses the base branch's settings: ${failureReason(error)}`);
   }
-  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, CONFIG_PATH), CONFIG_PATH, failureReason);
-  if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, headContent) } };
+  const { config, source, closedUnknown } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, CONFIG_PATH), CONFIG_PATH, failureReason);
+  const unknown = closedUnknown ? { closedUnknown } : {};
+  if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, headContent) }, ...unknown };
   const changed = editedKeys(headConfig, { config, source });
   if (changed.length > 0) {
     core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${CONFIG_PATH}. The change applies after merge: this round uses the base branch's settings.`);
   }
-  return { config, reviewSource: source };
+  return { config, reviewSource: source, ...unknown };
 }
 
 /**
@@ -1103,20 +1106,19 @@ async function reusableAttempt(octokit: Octokit, recap: RecapState, commitSha: s
   return attempt;
 }
 
-/** Reads the PR's diff and splits it into the files the review reads and the files `exclude_paths` leaves out. */
+/** Reads the PR's diff and splits it into the files the review reads and the files `exclude_paths` or `closed_paths` leave out. */
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
-  return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths);
+  return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths, config.closed_paths);
 }
 
 /** Reads the package changes of the changed lockfiles Manki parses. A lockfile that can't be read stays unread. */
 async function collectLockfiles(target: RunTarget, fullDiff: ParsedDiff): Promise<LockfileDiff[]> {
   const { octokit, owner, repo, commitSha } = target;
   if (!fullDiff.files.some(f => isParsedLockfile(f.path))) return [];
-  const heads = await fetchLockfiles(octokit, { owner, repo, headSha: commitSha, fullDiff }, isParsedLockfile).catch((error: unknown) => {
-    core.warning(`Could not read the changed lockfiles, so no model reads them: ${error instanceof Error ? error.message : error}`);
-    return new Map<string, string>();
-  });
+  const skipped: SkippedFile[] = [];
+  const heads = await fetchLockfiles(octokit, { owner, repo, headSha: commitSha, fullDiff }, isParsedLockfile, skipped);
+  for (const { path, reason } of skipped) core.warning(`Could not read the changed lockfile ${path}, so no model reads it: ${reason}`);
   return readLockfileChanges(fullDiff, heads);
 }
 
@@ -1279,11 +1281,15 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
   }
 }
 
-/** Collects the open review threads with the code now at each, and the contents of the files the review reads. */
+/**
+ * Collects the open review threads with the code now at each, and the contents of the files the review reads. The code
+ * of a thread on a path `closedPaths` closes is never read, so the thread is marked unread.
+ */
 async function collectOpenThreads(
-  target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[], prAuthorLogin: string | undefined,
+  target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[], prAuthorLogin: string | undefined, closedPaths: readonly string[] = [],
 ): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string> }> {
   const { octokit, owner, repo, commitSha } = target;
+  const isClosed = (path: string | undefined): boolean => !!path && !!findClosedPattern(path, closedPaths);
   const baseOpenThreads = recap.previousFindings
     .filter((f): f is PreviousFinding & { threadId: string } =>
       (f.status === 'open' || f.status === 'replied') && f.threadId != null && f.threadId !== '')
@@ -1318,7 +1324,8 @@ async function collectOpenThreads(
     .filter(f => f.changeType !== 'deleted')
     .map(f => f.path);
   // A thread tied to no file has no code to fetch.
-  const threadFiles = baseOpenThreads.flatMap(t => (t.file ? [t.file] : []));
+  const threadFiles = baseOpenThreads.flatMap(t => (t.file && !isClosed(t.file) ? [t.file] : []));
+  const closedThreadFiles = baseOpenThreads.flatMap(t => (isClosed(t.file) ? [t.file] : []));
   const threadFilePaths = threadFiles.filter(p => !changedFilePaths.includes(p));
   // The prompts read a parsed lockfile's package list, never the file, so it stays out of the shared budget.
   // Only a thread on it reads the file, for its window.
@@ -1345,7 +1352,7 @@ async function collectOpenThreads(
   const postedAt = new Map(recap.previousFindings.flatMap(f => {
     const line = f.findingLine ?? f.originalLine;
     const outdated = f.detached || (!f.line && f.originalCommit);
-    return f.threadId && f.file && outdated && line ? [[f.threadId, { commit: f.originalCommit, line }] as const] : [];
+    return f.threadId && f.file && !isClosed(f.file) && outdated && line ? [[f.threadId, { commit: f.originalCommit, line }] as const] : [];
   }));
   const postedContents = new Map(await Promise.all([...new Set([...postedAt.values()].flatMap(p => p.commit ?? []))].map(async commit => {
     const files = [...new Set(baseOpenThreads.filter(t => postedAt.get(t.threadId)?.commit === commit).map(t => t.file))];
@@ -1388,7 +1395,7 @@ async function collectOpenThreads(
     };
   });
   const read = (path: string): boolean => [fileContents, lockfileContents].some(contents => contents?.has(path));
-  const unread = new Set([...filePaths, ...lockfileThreadPaths].filter(p => !notFound.has(p) && !read(p)));
+  const unread = new Set([...filePaths, ...lockfileThreadPaths, ...closedThreadFiles].filter(p => !notFound.has(p) && !read(p)));
   const openThreads = placed.map(t => (unread.has(t.file) ? { ...t, codeUnread: true } : t));
   return { openThreads, fileContents };
 }
@@ -1403,7 +1410,7 @@ async function collectRoundSignals(
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   const prBody = prContext?.body;
   const relatedWorkPromise = prContext
-    ? findRelatedWork(octokit, { owner, repo, prNumber, title: prContext.title, body: prContext.body, diff })
+    ? findRelatedWork(octokit, { owner, repo, prNumber, title: prContext.title, body: prContext.body, diff, closedPaths: config.closed_paths })
     : Promise.resolve(undefined);
   // A parsed lockfile stays in the diffs between rounds, so a push that changes it counts as a change.
   const parsedLockfiles = new Set(lockfiles.map(l => l.path));
@@ -1422,13 +1429,13 @@ async function collectRoundSignals(
   let linkedIssues;
   const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
     ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
-      .then(raw => filterRawDiff(raw, config.exclude_paths, parsedLockfiles))
+      .then(raw => filterRawDiff(raw, config.exclude_paths, parsedLockfiles, config.closed_paths))
     : Promise.resolve(undefined);
   // The base branch diffed against the prior commit gives the PR's own change then, without what a rebase brought in.
   const priorChangePromise: Promise<ParsedDiff | undefined> = !lastPriorSha || lastPriorSha === commitSha
     ? Promise.resolve(lastPriorSha ? reviewed : undefined)
     : fetchInterRoundDiff(octokit, owner, repo, baseRef, lastPriorSha)
-      .then(raw => filterDiff(parsePRDiff(raw), config.exclude_paths, parsedLockfiles).diff);
+      .then(raw => filterDiff(parsePRDiff(raw), config.exclude_paths, parsedLockfiles, config.closed_paths).diff);
   const linkedIssuesPromise = prBody
     ? fetchLinkedIssues(octokit, owner, repo, prBody)
     : Promise.resolve(undefined);
@@ -1471,14 +1478,16 @@ async function collectRoundSignals(
 }
 
 /**
- * Fetches the PR head for the repository tools when any of `clients` has them. Returns `undefined` when none has them,
- * or when the fetch fails, and the models then run without tools.
+ * Fetches the PR head for the repository tools when any of `clients` has them, without the paths `closedPaths` closes.
+ * Returns `undefined` when none has them, or when the fetch or the removal fails, and the models then run without tools.
  */
-async function fetchToolWorkspace({ octokit, owner, repo, commitSha }: Pick<RunTarget, 'octokit' | 'owner' | 'repo' | 'commitSha'>, clients: LLMClient[]): Promise<string | undefined> {
+async function fetchToolWorkspace(
+  { octokit, owner, repo, commitSha }: Pick<RunTarget, 'octokit' | 'owner' | 'repo' | 'commitSha'>, clients: LLMClient[], closedPaths: readonly string[] = [],
+): Promise<string | undefined> {
   if (!clients.some(client => client.repoTools)) return undefined;
   try {
     const { token } = await octokit.auth() as { token?: string };
-    return await fetchWorkspace(`${github.context.serverUrl}/${owner}/${repo}.git`, commitSha, token);
+    return await fetchWorkspace(`${github.context.serverUrl}/${owner}/${repo}.git`, commitSha, token, closedPaths);
   } catch (error) {
     core.warning(`Could not fetch the PR head for the repository tools, so the models run without them: ${sanitizeTokens(String(error))}`);
     return undefined;
@@ -1598,7 +1607,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildCo
   await stopLiveEdits(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
-  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true, rules: run.config.review?.rules });
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true, rules: run.config.review?.rules, closedPaths: run.config.closed_paths });
   await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: Date.now() - run.startTime }, undefined, progressSettings(run, run.progress, 'review incomplete'));
@@ -1874,6 +1883,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     draft: run.options.draft,
     autoApprove: run.config.auto_approve,
     rules: run.config.review?.rules,
+    closedPaths: run.config.closed_paths,
     configHold: run.configHold,
     memorySkip: run.memorySkip?.message,
     restart,
@@ -2081,7 +2091,8 @@ async function runFullReview(
   let checkReport: CheckReport | undefined;
 
   try {
-    const { config, reviewSource, brokenHead } = await loadRunConfig(target);
+    const { config: loaded, reviewSource, brokenHead, closedUnknown } = await loadRunConfig(target);
+    let config = loaded;
     if (await skipsRound(target, config, trigger, options, configFailed(reviewSource) || brokenHead !== undefined)) return;
 
     const { commentId, failed } = await postRunProgress(target, progress, options);
@@ -2090,6 +2101,13 @@ async function runFullReview(
     const recap = await loadRecap(target, config, progress, options);
     if (!recap) return;
     check = await startReviewCheck(octokit, owner, repo, commitSha);
+
+    if (closedUnknown) {
+      core.setFailed(`Review failed: ${closedUnknown}`);
+      checkReport = failedReport(closedUnknown);
+      await markProgressCommentFailed(octokit, owner, repo, commentId, 'Review', closedUnknown, progressSettings(target, progress, 'review failed'));
+      return;
+    }
 
     let built: ReturnType<typeof buildReviewClients>;
     try {
@@ -2113,7 +2131,9 @@ async function runFullReview(
       checkReport = await postTooBigNotice(target, progress, `**Too big to review** at \`${shortSha}\`: this PR changes ${error.changedFiles} files, and GitHub lists only ${error.listedFiles} of them, so Manki cannot read it. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
-    const { fullDiff, diff, excludedFiles, rawDiff } = collected;
+    const { fullDiff, diff, excludedFiles, rawDiff, closedPaths } = collected;
+    // Every later read of the head, the tools' checkout included, keeps out a file renamed out of a closed path too.
+    config = { ...config, closed_paths: closedPaths };
     const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
@@ -2164,7 +2184,7 @@ async function runFullReview(
     // Placed after the diff-size and empty-files guards so cold installs are skipped on paths that never invoke an LLM.
     await warmUpClients(clients);
 
-    const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
+    const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path), config.closed_paths);
     const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
@@ -2178,10 +2198,10 @@ async function runFullReview(
     const digest = changeDigest(fullDiff);
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
-    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin);
+    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin, config.closed_paths);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, prContext),
-      fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
+      fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])], config.closed_paths),
     ]);
 
     const run: ReviewRun = {
@@ -2266,7 +2286,7 @@ async function runFullReview(
     const replies = await replyInOpenThreads(run, result);
     // After the replies, so a note whose reply failed competes for a place like any other note.
     capNotes(result, recap.previousFindings, config.review?.notes);
-    await carryBodyWarnings(result, recap.priorRounds, githubRepoFiles(octokit, owner, repo, commitSha));
+    await carryBodyWarnings(result, recap.priorRounds, openRepoFiles(githubRepoFiles(octokit, owner, repo, commitSha), config.closed_paths ?? [], true));
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
@@ -2384,7 +2404,7 @@ async function handleInteraction(): Promise<void> {
   if (!prNumber) return;
 
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+  const { config, held, closedUnknown } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
@@ -2392,7 +2412,7 @@ async function handleInteraction(): Promise<void> {
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, prNumber);
 
-  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memory, config, held);
+  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memory, config, held, closedUnknown);
 }
 
 async function handleIssueInteraction(): Promise<void> {
@@ -2534,7 +2554,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
 
-  const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(payload.pull_request?.base?.ref, 'base branch'));
+  const { config, held, closedUnknown } = await loadEventConfig(octokit, owner, repo, eventBranch(payload.pull_request?.base?.ref, 'base branch'));
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
@@ -2556,8 +2576,19 @@ async function handleReviewCommentInteraction(): Promise<void> {
       return;
     }
     const headSha: string | undefined = payload.pull_request?.head?.sha;
-    const loadWorkspace = async () => headSha ? fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client]) : undefined;
-    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config);
+    const loadWorkspace = async () => {
+      if (!headSha) return undefined;
+      let closedPaths = config.closed_paths ?? [];
+      try {
+        // A file the PR renames out of a closed path holds the closed file's text at the head, so it is closed too.
+        if (closedPaths.length > 0) closedPaths = reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), [], closedPaths).closedPaths;
+      } catch (error) {
+        core.warning(`Could not read the PR's diff to find the files it moves out of a closed path, so the reply runs without tools: ${failureReason(error)}`);
+        return undefined;
+      }
+      return fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client], closedPaths);
+    };
+    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config, closedUnknown);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)

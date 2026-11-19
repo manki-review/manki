@@ -551,6 +551,25 @@ describe('handlePRComment', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringMatching(/^AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: \{"kind":"explain","prNumber":1,/) }),
     );
+
+    // A file the config closes is left out of the diff the model reads.
+    const other = 'diff --git a/src/other.ts b/src/other.ts\n--- a/src/other.ts\n+++ b/src/other.ts\n@@ -1 +1 @@\n-x\n+y';
+    jest.mocked(ghUtils.fetchPRDiff).mockResolvedValueOnce(`${await jest.mocked(ghUtils.fetchPRDiff).mock.results[0].value}\n${other}`);
+    await handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, { ...CONFIG, closed_paths: ['src/file.ts'] });
+    const prompt = jest.mocked(client.sendMessage).mock.calls[1][1];
+    expect(prompt).toContain('src/other.ts');
+    expect(prompt).not.toContain('src/file.ts');
+    expect(prompt).not.toContain('sessionToken');
+  });
+
+  it.each(['@manki explain the changes', '@manki why is this here?'])('answers %j with the note and asks no model when the closed paths are unknown', async (body) => {
+    setContext({ comment: { id: 42, body, user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const client = createMockClient();
+    await handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, CONFIG, true, 'The closed paths are unknown.');
+    expect(ghUtils.fetchPRDiff).not.toHaveBeenCalled();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment.mock.calls.map(([c]: [{ body: string }]) => c.body)).toEqual(['The closed paths are unknown.\n\n<!-- manki -->']);
   });
 
   it('answers an explain command on a PR with more files than GitHub lists without asking the model', async () => {
@@ -1314,6 +1333,24 @@ describe('handleReviewCommentReply', () => {
     expect(sentContext).toContain('## PR Changes Context');
     expect(sentContext).toContain('src/file.ts');
     expect(sentContext).not.toContain('src/other.ts');
+
+    // A file the config closes is left out of the diff the model reads, even when the thread is on it.
+    (ghUtils.fetchPRDiff as jest.Mock).mockResolvedValueOnce(`${fileDiff}\n${otherDiff}`);
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, { ...CONFIG, closed_paths: ['src/file.ts'] });
+    const closedContext = (client.sendMessage as jest.Mock).mock.calls[1][1] as string;
+    expect(closedContext).not.toContain('new line');
+    expect(closedContext).not.toContain('## PR Changes Context');
+
+    // A config that cannot say which paths it closes gets the note in the thread, before any read or model call.
+    jest.mocked(ghUtils.fetchPRDiff).mockClear();
+    const loadWorkspace = jest.fn();
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace, CONFIG, 'The closed paths are unknown.');
+    expect(ghUtils.fetchPRDiff).not.toHaveBeenCalled();
+    expect(loadWorkspace).not.toHaveBeenCalled();
+    expect(client.sendMessage).toHaveBeenCalledTimes(2);
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenLastCalledWith({
+      owner: 'test-owner', repo: 'test-repo', pull_number: 1, comment_id: 1, body: 'The closed paths are unknown.\n\n<!-- manki -->',
+    });
   });
 
   // The PR changes `src/file.ts`, so the answer's code is highlighted: its path, its file name and `opts.retries`.
@@ -2284,5 +2321,30 @@ describe('scopeDiffToFile', () => {
     expect(result).toContain('diff --git a/src/handler.ts b/src/handler.ts');
     expect(result).not.toContain('src/handler.test.ts');
     expect(result).not.toContain('src/utils.ts');
+  });
+
+  it('finds a file git wrote with a quoted name, by its real name before or after a rename', () => {
+    const quoted = [
+      'diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251 \\"v2\\".ts"',
+      'similarity index 90%',
+      'rename from "src/caf\\303\\251.ts"',
+      'rename to "src/caf\\303\\251 \\"v2\\".ts"',
+      '--- "a/src/caf\\303\\251.ts"',
+      '+++ "b/src/caf\\303\\251 \\"v2\\".ts"',
+      '@@ -1 +1 @@',
+      '-old',
+      '+renamed',
+      '',
+    ].join('\n');
+    const raw = `${multiFileDiff}\n${quoted}`;
+    for (const path of ['src/café "v2".ts', 'src/café.ts']) {
+      expect(scopeDiffToFile(raw, path)).toBe(quoted);
+    }
+    expect(scopeDiffToFile(raw, 'src/utils.ts')).not.toContain('café');
+
+    // A `\r` before `diff --git` inside a changed line starts no file, so the scoped diff keeps the file's later hunks.
+    const forged = multiFileDiff.replace('+  return 42;', '+  return 42;\rdiff --git a/src/fake.ts b/src/fake.ts\n@@ -9,1 +9,1 @@\n-later\n+hunk');
+    expect(scopeDiffToFile(forged, 'src/utils.ts')).toContain('+hunk');
+    expect(scopeDiffToFile(forged, 'src/fake.ts')).toBe('');
   });
 });

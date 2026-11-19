@@ -14,9 +14,9 @@ import type { PackageChange } from './lockfile';
 import { createOctokit, withDeadline } from './auth';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
-import { checkFindingClaims, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
+import { checkFindingClaims, collectStaticSignals, fetchLockfiles, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
 import { Finding, StaticSignal } from './types';
-import { paginateSinglePage } from './test-utils';
+import { contentAnswer, paginateSinglePage } from './test-utils';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -68,17 +68,30 @@ function annotation(path: string, line: number, message: string, level = 'failur
   return { path, start_line: line, end_line: line, annotation_level: level, title: 'no-unused-vars', message };
 }
 
-/** `configByRef` holds `.manki.yml` per ref, and `files` any other file keyed by `ref:path`. A directory lists the files under it, and `git.getTree` lists every file of a ref. */
-function makeOctokit(configByRef: Record<string, string> = {}, files: Record<string, string> = {}) {
+const FETCH_FAILS = 'fetch fails';
+
+/**
+ * `configByRef` holds `.manki.yml` per ref, and `files` any other file keyed by `ref:path`. A directory lists the files
+ * under it, `git.getTree` lists every file of a ref, and `git.getBlob` answers any file or link by its blob id. `links`
+ * holds symlinks keyed the same way, by their target path, which GitHub follows as it does: with the target's content
+ * under the link's own blob id. Above 1 MB, the contents API answers only the object media type, without content. A file
+ * holding `FETCH_FAILS` fails.
+ */
+function makeOctokit(configByRef: Record<string, string> = {}, files: Record<string, string | Buffer> = {}, links: Record<string, string> = {}) {
+  let blobs: Map<string, Buffer> | undefined;
   const rest = {
     repos: {
       getContent: jest.fn(async ({ ref, path, mediaType }: { ref: string; path: string; mediaType?: { format: string } }) => {
-        const content = path === '.manki.yml' ? configByRef[ref] : files[`${ref}:${path}`];
+        const target = links[`${ref}:${path}`];
+        const content = path === '.manki.yml' ? configByRef[ref] : files[`${ref}:${target ?? path}`];
         const children = Object.keys(files).filter(key => key.startsWith(`${ref}:${path}/`)).map(key => key.slice(ref.length + 1));
         if (content === undefined && children.length > 0) return { data: children.map(child => ({ type: 'file', path: child, name: basename(child) })) };
         if (content === undefined) throw Object.assign(new Error('Not Found'), { status: 404 });
-        if (mediaType?.format === 'raw') return { data: content };
-        return { data: { content: Buffer.from(content).toString('base64'), encoding: 'base64', size: content.length } };
+        if (content === FETCH_FAILS) throw Object.assign(new Error('Server Error'), { status: 500 });
+        const answer = { ...contentAnswer(content, target), path };
+        if (Buffer.byteLength(content) <= 1024 * 1024) return { data: answer };
+        if (mediaType?.format !== 'object') throw Object.assign(new Error('This API returns blobs up to 1 MB in size'), { status: 403 });
+        return { data: { ...answer, content: '', encoding: 'none' } };
       }),
     },
     checks: {
@@ -101,6 +114,12 @@ function makeOctokit(configByRef: Record<string, string> = {}, files: Record<str
       })),
     },
     git: {
+      getBlob: jest.fn(async ({ file_sha }: { file_sha: string }) => {
+        blobs ??= new Map([...Object.values(files), ...Object.values(links)].map(c => [githubModule.gitBlobSha(Buffer.from(c)), Buffer.from(c)]));
+        const blob = blobs.get(file_sha);
+        if (!blob) throw Object.assign(new Error('Not Found'), { status: 404 });
+        return { data: { sha: file_sha, size: blob.length, content: blob.toString('base64'), encoding: 'base64' } };
+      }),
       getTree: jest.fn(async ({ tree_sha }: { tree_sha: string }) => ({
         data: { tree: Object.keys(files).filter(key => key.startsWith(`${tree_sha}:`)).map(key => ({ type: 'blob', path: key.slice(tree_sha.length + 1) })), truncated: false },
       })),
@@ -310,6 +329,10 @@ describe('collectStaticSignals with analyzers and waits', () => {
     const headOn = makeOctokit({ main: ONLY_ANALYZERS, 'head-sha': `${ONLY_ANALYZERS}  analyzers: all\n` }, HEAD_FILES);
     expect(await collectStaticSignals(headOn, request(), runtime)).toEqual({ signals: [] });
     expect(runtime.loadAstGrep).toHaveBeenCalledTimes(1);
+
+    // A changed file that is a symlink is never read as its target, so nothing matches in the target's code.
+    const linked = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    ast_grep: true\n` }, { 'head-sha:hidden/case.ts': HEAD_FILES['head-sha:src/app.ts'] }, { 'head-sha:src/app.ts': 'hidden/case.ts' });
+    expect((await collectStaticSignals(linked, request(), runtime)).signals).toEqual([]);
   });
 
   it('runs the Rust rules on added lines without `ast_grep: true` when a `Cargo.toml` on the base branch sits above a changed Rust file, and never otherwise', async () => {
@@ -478,26 +501,59 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect(argAfter(args, '--config')).toMatch(/rules[/\\]osv-scanner\.toml$/);
       expect(existsSync(argAfter(args, '--config'))).toBe(true);
       expect(args).toEqual(expect.arrayContaining(['--no-resolve', '--no-call-analysis=all']));
-      expect(octokit.rest.repos.getContent).toHaveBeenCalledWith(expect.objectContaining({ ref: 'head-sha', path: 'package-lock.json', mediaType: { format: 'raw' } }));
+      expect(octokit.rest.repos.getContent).toHaveBeenCalledWith(expect.objectContaining({ ref: 'head-sha', path: 'package-lock.json', mediaType: { format: 'object' } }));
+
+      // A lockfile that is a symlink is never read as its target, also though GitHub follows it, and neither is a path
+      // GitHub answers as no file. Each is listed with the reason.
+      const { 'head-sha:package-lock.json': lockfile, ...others } = FILES;
+      const linked = makeOctokit({}, { ...others, 'head-sha:hidden/lock.json': lockfile }, { 'head-sha:package-lock.json': 'hidden/lock.json' });
+      const skipped: { path: string; reason: string }[] = [];
+      expect([...(await fetchLockfiles(linked, analyzerRequest(), undefined, skipped)).keys()]).toEqual(['web:v2/yarn.lock']);
+      const { 'head-sha:web:v2/yarn.lock': _yarn, ...withoutYarn } = FILES;
+      const asFolder = makeOctokit({}, { ...withoutYarn, 'head-sha:web:v2/yarn.lock/inner': 'x' });
+      expect((await fetchLockfiles(asFolder, analyzerRequest(), undefined, skipped)).size).toBe(1);
+      expect(skipped).toEqual([
+        { path: 'package-lock.json', reason: 'its blob is not the file GitHub answers for the path, as for a symlink, whose target is never read' },
+        { path: 'web:v2/yarn.lock', reason: 'GitHub answers it as a folder, not a file, as for a symlink, whose target is never read' },
+      ]);
+
+      // A lockfile is read from its exact bytes, so one that starts with a BOM or holds invalid UTF-8 is still read.
+      const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(lockfile)]);
+      const invalid = Buffer.concat([Buffer.from('# yarn lockfile v1\n'), Buffer.from([0xff, 0xfe]), Buffer.from('\n')]);
+      const odd = await fetchLockfiles(makeOctokit({}, { 'head-sha:package-lock.json': bom, 'head-sha:web:v2/yarn.lock': invalid }), analyzerRequest());
+      expect([...odd.entries()]).toEqual([['package-lock.json', lockfile], ['web:v2/yarn.lock', '# yarn lockfile v1\n\ufffd\ufffd\n']]);
     });
 
-    it('skips a lockfile over 10 MB and the lockfiles past 40 MB in all, and logs each one', async () => {
+    it('reads a lockfile over 1 MB, skips one over 10 MB, the lockfiles past 40 MB in all and one GitHub fails to answer, and logs each one', async () => {
       const MB = 1024 * 1024;
-      const sizes = { 'huge/package-lock.json': 11 * MB, 'a/package-lock.json': 9 * MB, 'b/package-lock.json': 9 * MB, 'c/package-lock.json': 9 * MB, 'd/package-lock.json': 9 * MB, 'e/package-lock.json': 9 * MB };
+      const sizes = { 'huge/package-lock.json': 11 * MB, 'a/package-lock.json': 9 * MB, 'b/package-lock.json': 9 * MB, 'fails/package-lock.json': 0, 'c/package-lock.json': 9 * MB, 'd/package-lock.json': 9 * MB, 'e/package-lock.json': 9 * MB };
       const diff = parsePRDiff(Object.keys(sizes).map(path => [
         `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,1 +1,2 @@', ' {', '+  "lockfileVersion": 3',
       ].join('\n')).join('\n') + '\n');
-      const files = Object.fromEntries(Object.entries(sizes).map(([path, size]) => [`head-sha:${path}`, 'x'.repeat(size)]));
+      const files = Object.fromEntries(Object.entries(sizes).map(([path, size]) => [`head-sha:${path}`, size ? 'x'.repeat(size) : FETCH_FAILS]));
       const octokit = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    dependencies: true\n` }, files);
       jest.mocked(runtime.runTool).mockImplementationOnce(async () => ({ code: 0, stdout: '{"results":[]}', stderr: '' }));
 
       const { record } = await collectStaticSignals(octokit, { ...request(), diff, fullDiff: diff }, runtime);
 
-      expect(record).toEqual({ analyzers: [{ analyzer: 'dependencies', status: 'ran', results: 0 }] });
+      // Each lockfile left out is listed in the record, and the ones after it are still read. One over the budget is
+      // never downloaded.
+      expect(record).toEqual({ analyzers: [{
+        analyzer: 'dependencies', status: 'ran', results: 0, skippedFiles: [
+          { path: 'huge/package-lock.json', reason: `${11 * MB} bytes is over the lockfile budget` },
+          { path: 'fails/package-lock.json', reason: 'could not fetch it: Server Error' },
+          { path: 'e/package-lock.json', reason: `${9 * MB} bytes is over the lockfile budget` },
+        ],
+      }] });
+      expect(octokit.rest.git.getBlob).toHaveBeenCalledTimes(4);
       const args = toolArgs('osv-scanner');
       expect(args.filter((_, i) => args[i - 1] === '-L')).toEqual(['0/package-lock.json', '1/package-lock.json', '2/package-lock.json', '3/package-lock.json']);
       const skipped = jest.mocked(core.info).mock.calls.map(([m]) => m).filter(m => m.includes('over the lockfile budget'));
       expect(skipped).toEqual([expect.stringContaining('huge/package-lock.json'), expect.stringContaining('e/package-lock.json')]);
+      // The record keeps the lockfiles left out when OSV-Scanner itself fails, too.
+      jest.mocked(runtime.runTool).mockImplementationOnce(async () => ({ code: 2, stdout: '', stderr: 'scan failed' }));
+      const failed = await collectStaticSignals(makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    dependencies: true\n` }, files), { ...request(), diff, fullDiff: diff }, runtime);
+      expect(failed.record?.analyzers).toEqual([expect.objectContaining({ analyzer: 'dependencies', status: 'skipped', skippedFiles: record?.analyzers?.[0].skippedFiles })]);
     });
 
     it('runs Semgrep rules only from the base branch with Opengrep, ignoring `nosemgrep`, and skips when the rules are missing', async () => {

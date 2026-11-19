@@ -10,7 +10,7 @@ import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
 import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
-import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
+import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -3615,17 +3615,18 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
   });
 }
 
-/** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself, each with a `citedLine`. */
+/** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself: each with a `citedLine`, or marked `unread`. */
 export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEntry[] {
   const last = priorRounds.at(-1);
-  return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId) : [];
+  return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => (e.citedLine || e.unread) && !e.threadId) : [];
 }
 
 /**
  * Sets `result.carried` to the `bodyWarnings` of `priorRounds`, so a warning does not vanish because no finder raised
  * it again. A warning leaves the list only for certain, and `result.carriedEnded` says why: a finding the judge graded
  * this round names its problem, kept or not, or the file at the head has fewer places reading like its `citedLine` than
- * when it was listed, or is gone, or the judge found it fixed (`result.carriedFixed`).
+ * when it was listed, or is gone, or the judge found it fixed (`result.carriedFixed`). An `unread` warning has no line
+ * to compare, so only the judge or a fix ends it, also when its file is gone.
  * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
  * pre-existing warning the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
@@ -3653,14 +3654,14 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   for (const entry of warnings) {
     const key = stringifyFindingFingerprint(entry.fingerprint);
     const { file } = entry.fingerprint;
-    const { hash, count } = entry.citedLine!;
     const lines = await linesOf(file);
-    const places = lines && placesReading(lines, hash);
+    // A warning whose file went unread when it was listed has no line to compare, so only the judge or a fix ends it.
+    const places = entry.citedLine && lines ? placesReading(lines, entry.citedLine.hash) : undefined;
     // Only a single place says where the warning is now. Without one, the line of the round that listed it stays the one compared.
     const currentLine = places?.length === 1 ? places[0] : undefined;
     const located: Located = { title: entry.title ?? '', file, line: currentLine ?? entry.fingerprint.lineStart, evidence: entry.evidence };
     const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
-    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < count ? 'line_changed' : fixed.has(key) ? 'fixed' : undefined);
+    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < entry.citedLine!.count ? 'line_changed' : fixed.has(key) ? 'fixed' : undefined);
     if (reason) {
       core.info(`No longer carrying the warning "${entry.title}" on ${file}:${located.line}: ${reason}`);
       ended.push({ key, reason });
@@ -3855,7 +3856,7 @@ export function stringifyFindingFingerprint(fp: FindingFingerprint): string {
  */
 export function truncateDiff(rawDiff: string, maxLength: number = MAX_SLICE_CHARS): string {
   if (rawDiff.length <= maxLength) return rawDiff;
-  const sections = rawDiff.split(/(?=^diff --git )/m);
+  const sections = diffSections(rawDiff);
   const order = sections.map((_, i) => i).sort((a, b) => sections[a].length - sections[b].length || a - b);
   const budgets: number[] = [];
   let remaining = maxLength;

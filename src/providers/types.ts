@@ -32,6 +32,8 @@ export interface LLMResponse {
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
   relatedReads?: Record<string, number>;
+  /** Tool calls Manki's tool server refused because they named a path the repository's `closed_paths` closes. Unset when none did. */
+  closedCalls?: number;
   /** The files the model's tool calls read, each once, relative to the repository root. Unset when it read none. */
   filesRead?: string[];
   /** The subscription usage limits the CLI reported for its account. Unset when it reported none. */
@@ -197,6 +199,8 @@ export interface LLMCall extends LLMUsage {
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
   relatedReads?: Record<string, number>;
+  /** Tool calls Manki's tool server refused because they named a path the repository's `closed_paths` closes. Unset when none did. */
+  closedCalls?: number;
   /** The files the call's tool calls read, each once, relative to the repository root. Unset when it read none. */
   filesRead?: string[];
   /**

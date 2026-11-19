@@ -5162,6 +5162,11 @@ describe('computeProvenanceMap', () => {
       originatingRound: 1,
       originatingTitle: 'Clamp future time',
     });
+
+    // A name git quotes matches the finding's file by its real name.
+    const quoted = buildDiff('src/café.ts', 42, [longFix]).replaceAll('a/src/café.ts', '"a/src/caf\\303\\251.ts"').replaceAll('b/src/café.ts', '"b/src/caf\\303\\251.ts"');
+    const onQuoted = [makeRound(1, [makeHandoverFinding({ suggestedFix: longFix, fingerprint: { file: 'src/café.ts', lineStart: 1, lineEnd: 1, slug: 'Clamp-future-time' } })])];
+    expect(computeProvenanceMap(onQuoted, quoted).map(e => [e.file, e.lineStart])).toEqual([['src/café.ts', 42]]);
   });
 
   it('matches when whitespace differs between suggestion and diff', () => {

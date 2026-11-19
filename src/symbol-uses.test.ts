@@ -12,6 +12,7 @@ import rust from '@ast-grep/lang-rust';
 import { parsePRDiff } from './diff';
 import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDiff, relatedQuestions, TEST_PATH, UsesOutsideDiff } from './symbol-uses';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
+import { closePaths } from './workspace';
 
 jest.mock('@actions/core');
 // Passes every read through, so a test can count the files a step reads.
@@ -26,10 +27,14 @@ const loadApi = async () => napi;
 
 type Files = Record<string, string>;
 
-/** Returns the uses section and its record for the change from `base` to `head`, and the milliseconds listing them took, removing the workspace afterwards. */
-async function timedUses(base: Files, head: Files, excludePaths: string[] = [], dependencyNames = false): Promise<{ uses: UsesOutsideDiff; ms: number }> {
+/**
+ * Returns the uses section and its record for the change from `base` to `head`, and the milliseconds listing them took,
+ * removing the workspace afterwards. The workspace is closed by `closedPaths` first, as a round's checkout is.
+ */
+async function timedUses(base: Files, head: Files, excludePaths: string[] = [], dependencyNames = false, closedPaths: string[] = []): Promise<{ uses: UsesOutsideDiff; ms: number }> {
   const { root, diff } = gitWorkspace(base, head);
   try {
+    await closePaths(root, closedPaths);
     const started = performance.now();
     const uses = await listUsesOutsideDiff(root, diff, { loadApi, excludePaths, dependencyNames });
     return { uses, ms: performance.now() - started };
@@ -437,18 +442,20 @@ describe('listUsesOutsideDiff', () => {
     expect(section).not.toContain('`MaxRetries` (');
   });
 
-  it('finds keyword declarations and config keys in files without a grammar, and skips excluded paths', async () => {
+  it('finds keyword declarations and config keys in files without a grammar, and skips excluded and closed paths', async () => {
     const { section } = await usesFor({
       'cmd/main.swift': 'import Foundation\n\nfunc main() {}\n',
       'cmd/use.swift': 'import Foundation\n\nvar fee = ComputeFee(2)\n',
       'dist/index.js': 'ComputeFee(3)\n',
+      'holdout/case.swift': 'var fee = ComputeFee(4) // hold-out marker\n',
       'manki.yml': 'review:\n  noise: low\n',
       'src/config.ts': 'export const lines = (c: Config) => c.slice_lines;\n',
     }, {
       'cmd/main.swift': 'import Foundation\n\nfunc main() {}\n\nfunc ComputeFee(n: Int) -> Int { return n }\n',
       'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n',
-    }, ['dist/**']);
+    }, ['dist/**'], false, ['holdout']);
 
+    expect(section).not.toContain('marker');
     expect(section).toContain('### `ComputeFee` (function)\n\n```\ndeclared at cmd/main.swift:5\ncmd/use.swift:3: var fee = ComputeFee(2)\n```');
     expect(section).toContain('### `slice_lines` (config key)\n\n```\ndeclared at manki.yml:3\nsrc/config.ts:1: export const lines = (c: Config) => c.slice_lines;\n```');
   });

@@ -10,7 +10,7 @@ import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { LockfileDiff, lockfileSignals, MAX_LOCKFILE_BYTES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
-import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
+import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, SkippedFile, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -144,9 +144,10 @@ export async function collectStaticSignals(
   }
   // A PR can change its own `exclude_paths`, so secrets are looked for in every changed file.
   if (analyzers.includes('secrets')) sources.push(['secrets', () => runGitleaks(fullDiff.files, runtime)]);
+  const skippedLockfiles: SkippedFile[] = [];
   if (analyzers.includes('dependencies')) {
     sources.push(['dependencies', async () => {
-      const vulnerabilities = await runOsvScanner(await fetchLockfiles(octokit, request), runtime);
+      const vulnerabilities = await runOsvScanner(await fetchLockfiles(octokit, request, isLockfile, skippedLockfiles), runtime);
       return placeVulnerabilities(vulnerabilities, fullDiff, 'osv-scanner', 'dependencies');
     }]);
   }
@@ -171,6 +172,7 @@ export async function collectStaticSignals(
 
   const files = new Map(diff.files.map(f => [f.path, f]));
   const allFiles = new Map(fullDiff.files.map(f => [f.path, f]));
+  const skippedOf = (source: string) => (source === 'dependencies' && skippedLockfiles.length > 0 ? { skippedFiles: skippedLockfiles } : {});
   const runs: RoundAnalyzerRun[] = [];
   const sourceRuns: RoundSignalSourceRun[] = [];
   const collected = await Promise.all(sources.map(async ([source, fetch]) => {
@@ -185,7 +187,7 @@ export async function collectStaticSignals(
         const added = onlyAdded || (source === 'ast_grep' && isRustFile(s.file));
         return file !== undefined && (added ? addedLines(file).has(s.line) : isLineInDiff(file, s.line));
       }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
-      if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
+      if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length, ...skippedOf(source) });
       else sourceRuns.push({ source: source as RoundSignalSourceRun['source'], status: 'ran', results: onDiff.length });
       return onDiff;
     } catch (error) {
@@ -196,7 +198,7 @@ export async function collectStaticSignals(
       } else {
         reason = logSkippedSource(source, error);
       }
-      if (analyzer) runs.push({ analyzer, status: 'skipped', reason });
+      if (analyzer) runs.push({ analyzer, status: 'skipped', reason, ...skippedOf(source) });
       else sourceRuns.push({ source: source as RoundSignalSourceRun['source'], status: 'skipped', reason });
       return [];
     }
@@ -369,22 +371,37 @@ async function waitForChecks(
 
 /**
  * Returns the changed lockfiles `keep` accepts at the PR head, within `MAX_LOCKFILE_BYTES` each and
- * `MAX_LOCKFILES_TOTAL_BYTES` in all. They are fetched raw, since the contents API sends no content above 1 MB.
+ * `MAX_LOCKFILES_TOTAL_BYTES` in all. Each is read as the blob the contents API names for its path, with the object
+ * media type, which answers files of up to 100 MB with their size. The blob holds the exact bytes and never follows a
+ * symlink. GitHub answers a symlink to a file with the target's size, which differs from the link's blob, so such a
+ * lockfile is skipped. Each lockfile left out is added to `skipped` with the reason.
  */
 export async function fetchLockfiles(
   octokit: Octokit, { owner, repo, headSha, fullDiff }: Pick<StaticSignalRequest, 'owner' | 'repo' | 'headSha' | 'fullDiff'>, keep = isLockfile,
+  skipped: SkippedFile[] = [],
 ): Promise<Map<string, string>> {
   const lockfiles = new Map<string, string>();
   let total = 0;
   for (const { path } of fullDiff.files.filter(f => f.changeType !== 'deleted' && keep(f.path))) {
-    const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'raw' } });
-    const content = data as unknown as string;
-    if (content.length > MAX_LOCKFILE_BYTES || total + content.length > MAX_LOCKFILES_TOTAL_BYTES) {
-      core.info(`Skipping ${path}: ${content.length} bytes is over the lockfile budget`);
+    const read = async (): Promise<{ content: string; size: number } | string> => {
+      const { data: entry } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'object' } });
+      if (Array.isArray(entry) || entry.type !== 'file') {
+        return `GitHub answers it as ${Array.isArray(entry) ? 'a folder' : `a ${entry.type}`}, not a file, as for a symlink, whose target is never read`;
+      }
+      if (entry.size > MAX_LOCKFILE_BYTES || total + entry.size > MAX_LOCKFILES_TOTAL_BYTES) return `${entry.size} bytes is over the lockfile budget`;
+      const { data: blob } = await octokit.rest.git.getBlob({ owner, repo, file_sha: entry.sha });
+      const bytes = Buffer.from(blob.content, blob.encoding === 'base64' ? 'base64' : 'utf-8');
+      if (bytes.length !== entry.size) return 'its blob is not the file GitHub answers for the path, as for a symlink, whose target is never read';
+      return { content: new TextDecoder().decode(bytes), size: entry.size };
+    };
+    const answer = await read().catch((error: unknown) => `could not fetch it: ${safeTruncate(error instanceof Error ? error.message : String(error), MAX_MESSAGE_CHARS)}`);
+    if (typeof answer === 'string') {
+      core.info(`Skipping ${path}: ${answer}`);
+      skipped.push({ path, reason: answer });
       continue;
     }
-    lockfiles.set(path, content);
-    total += content.length;
+    lockfiles.set(path, answer.content);
+    total += answer.size;
   }
   return lockfiles;
 }

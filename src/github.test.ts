@@ -1,11 +1,11 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, SideCheckState } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
+import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
 import { parsePRDiff } from './diff';
 import { extractReviewRecords, formatApprovalRecord, hasOwnMarker } from './review-record';
@@ -2124,13 +2124,13 @@ describe('postReview body lead', () => {
   it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, marks it so, and shows a conflict beside it', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
-    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'app.jar', header: '' }, { path: 'vendor/lib', header: '', kind: 'submodule' as const }] };
+    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }, { path: 'holdout/case.yml', matchedPattern: 'holdout/**', closed: true as const }], binary: [{ path: 'app.jar', header: '' }, { path: 'vendor/lib', header: '', kind: 'submodule' as const }] };
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
     // The verdict line says the approval is held, and the unread files get their own section.
-    expect(body).toMatch(/^\u2705 \*\*Approved, but a person must approve:\*\* no model read 3 of the changed files\.\n\n\*\*What this does:\*\*/u);
-    expect(body).toContain('---\n\n### Not read by any model · 3 files\n\nA person needs to look at these before the PR merges.\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change, an empty file or a diff too large for GitHub to show\n- `vendor/lib`: a submodule bump');
+    expect(body).toMatch(/^\u2705 \*\*Approved, but a person must approve:\*\* no model read 4 of the changed files\.\n\n\*\*What this does:\*\*/u);
+    expect(body).toContain('---\n\n### Not read by any model · 4 files\n\nA person needs to look at these before the PR merges.\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `holdout/case.yml`: matches `holdout/**` in `closed_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change, an empty file or a diff too large for GitHub to show\n- `vendor/lib`: a submodule bump');
     expect(body).toContain(approved.body.split('\n\n').find(p => p.startsWith('**What this does:**'))!);
     expect(body).not.toContain('**Approval held:**');
     expect(body).toContain('<!-- manki-held-for-person -->');
@@ -2141,7 +2141,7 @@ describe('postReview body lead', () => {
     expect(conflicting.approvalHeld).toBe('unread');
     expect(conflictBody.split('\n\n').slice(0, 2)).toEqual([
       '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `/manki review`.',
-      '\u2705 **Approved, but a person must approve:** no model read 3 of the changed files.',
+      '\u2705 **Approved, but a person must approve:** no model read 4 of the changed files.',
     ]);
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { skipped });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('<!-- manki-held-for-person -->');
@@ -2814,7 +2814,8 @@ describe('sanitizeMarkdown numeric entities', () => {
 });
 
 describe('fetchFileContents', () => {
-  function mockOctokit(files: Record<string, { content: string; size: number } | 'error'>) {
+  /** `link` makes the path a symlink with that text, which GitHub follows to a file holding `content`. */
+  function mockOctokit(files: Record<string, { content: string; size: number; link?: string } | { type: 'symlink'; target: string } | 'error'>) {
     return {
       rest: {
         repos: {
@@ -2824,18 +2825,24 @@ describe('fetchFileContents', () => {
             if (entry === 'error') {
               throw Object.assign(new Error(`Forbidden: ${path}`), { status: 403 });
             }
-            return {
-              data: {
-                content: Buffer.from(entry.content).toString('base64'),
-                encoding: 'base64',
-                size: entry.size,
-              },
-            };
+            if ('type' in entry) return { data: { ...entry, path, sha: 'f'.repeat(40) } };
+            return { data: { ...contentAnswer(entry.content, entry.link), size: entry.size } };
           }),
         },
       },
     } as unknown as Parameters<typeof fetchFileContents>[0];
   }
+
+  it('never reads a symlink as its target, in either shape the contents API answers one', async () => {
+    const octokit = mockOctokit({
+      'src/a.ts': { content: 'const a = 1;', size: 12 },
+      'src/linked.yml': { content: 'hidden: case', size: 12, link: '../bench/case.yml' },
+      'src/dir-link': { type: 'symlink', target: '../bench' },
+    });
+
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['src/a.ts', 'src/linked.yml', 'src/dir-link']);
+    expect([...result]).toEqual([['src/a.ts', 'const a = 1;']]);
+  });
 
   it('fetches file contents and returns a map', async () => {
     const octokit = mockOctokit({
@@ -3118,9 +3125,11 @@ describe('fetchLinkedIssues', () => {
 });
 
 describe('fetchRepoContext instruction files', () => {
+  /** `links` makes a path a symlink, by its text, which GitHub follows to the content `fileContents` holds for it. */
   function mockOctokit(
     treeEntries: Array<{ path: string; type: string }>,
     fileContents: Record<string, string>,
+    links: Record<string, string> = {},
   ) {
     return {
       rest: {
@@ -3135,17 +3144,23 @@ describe('fetchRepoContext instruction files', () => {
             const content = fileContents[path];
             if (content === undefined) throw Object.assign(new Error(`Not found: ${path}`), { status: 404 });
             if (content === 'FAIL') throw Object.assign(new Error('Server error'), { status: 500 });
-            return {
-              data: {
-                content: Buffer.from(content).toString('base64'),
-                encoding: 'base64',
-              },
-            };
+            return { data: contentAnswer(content, links[path]) };
           }),
         },
       },
     } as unknown as Parameters<typeof fetchRepoContext>[0];
   }
+
+  it('reads a symlinked instruction file at its target, and none at all while the config closes paths', async () => {
+    const files = { 'CLAUDE.md': 'Hidden case notes', 'AGENTS.md': 'Agent rules' };
+    const octokit = mockOctokit([{ path: 'CLAUDE.md', type: 'blob' }, { path: 'AGENTS.md', type: 'blob' }], files, { 'CLAUDE.md': 'bench/case.md' });
+
+    expect((await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [])).text).toContain('Hidden case notes');
+    // The link's target can be closed, so with closed paths a symlink reads as no file, and only the plain file is read.
+    const closed = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [], ['bench/**']);
+    expect(closed.text).not.toContain('Hidden case notes');
+    expect(closed.files.map(f => f.path)).toEqual(['AGENTS.md']);
+  });
 
   const baseTree = [
     { path: 'CLAUDE.md', type: 'blob' },
@@ -4483,6 +4498,27 @@ describe('fetchConfigFile', () => {
     await expect(fetchConfigFile(serverError, 'owner', 'repo', 'main', '.manki.yml')).resolves.toBeNull();
   });
 
+  it('reads a symlink as its target, or with `followSymlinks` off as a file that exists but is not read, in either shape the contents API answers one', async () => {
+    const answering = (data: object) => ({ rest: { repos: { getContent: jest.fn().mockResolvedValue({ data }) } } } as unknown as Parameters<typeof readConfigFile>[0]);
+    const followed = answering(contentAnswer('hidden: case', '../bench/case.yml'));
+    const linkOnly = answering({ type: 'symlink', target: '../bench', path: 'cfg', sha: 'f'.repeat(40) });
+    const plain = answering(contentAnswer('plain: file'));
+
+    await expect(readConfigFile(followed, 'owner', 'repo', 'main', 'cfg.yml')).resolves.toBe('hidden: case');
+    await expect(readConfigFile(followed, 'owner', 'repo', 'main', 'cfg.yml', false)).rejects.toThrow(UnreadFileError);
+    await expect(readConfigFile(linkOnly, 'owner', 'repo', 'main', 'cfg', false)).rejects.toThrow('cfg was not read');
+    await expect(readConfigFile(plain, 'owner', 'repo', 'main', 'cfg.yml', false)).resolves.toBe('plain: file');
+    // A file over 1 MB is unread too, while a directory and a missing path are no file.
+    await expect(readConfigFile(answering({ type: 'file', content: '', encoding: 'none', sha: 'e'.repeat(40) }), 'owner', 'repo', 'main', 'big.ts', false)).rejects.toThrow(UnreadFileError);
+    await expect(readConfigFile(answering([]), 'owner', 'repo', 'main', 'src', false)).resolves.toBeNull();
+
+    // Behind `openRepoFiles`, an unread file reads as no file, unless the caller must not take it for a deleted one.
+    const files = githubRepoFiles(linkOnly, 'owner', 'repo', 'main');
+    await expect(openRepoFiles(files, ['bench/**']).read('cfg')).resolves.toBeNull();
+    await expect(openRepoFiles(files, ['bench/**'], true).read('cfg')).rejects.toThrow(UnreadFileError);
+    await expect(openRepoFiles(files, ['bench/**'], true).read('bench/case.yml')).rejects.toThrow('bench/case.yml is closed by `closed_paths`');
+  });
+
   it('returns null when data has no content field', async () => {
     const mockOctokit = {
       rest: {
@@ -5531,13 +5567,14 @@ describe('postReview non-blocking findings', () => {
     return { verdict: 'APPROVE', summary: 'Summary', findings, highlights: [], reviewComplete: true, agentNames: [] };
   }
 
-  function makeOctokit(files: Record<string, string> = {}) {
+  /** `links` makes a path a symlink, by its text, which GitHub follows to the content `files` holds for it. */
+  function makeOctokit(files: Record<string, string> = {}, links: Record<string, string> = {}) {
     const createReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
     const createReviewComment = jest.fn();
     const updateReview = jest.fn().mockResolvedValue({ data: {} });
     const getContent = jest.fn(async ({ path }: { path: string }) => {
       if (!(path in files)) throw Object.assign(new Error('Not Found'), { status: 404 });
-      return { data: { content: Buffer.from(files[path]).toString('base64'), encoding: 'base64', size: files[path].length } };
+      return { data: contentAnswer(files[path], links[path]) };
     });
     const octokit = {
       rest: { pulls: { createReview, createReviewComment, updateReview }, repos: { getContent } },
@@ -5653,6 +5690,33 @@ describe('postReview non-blocking findings', () => {
     const many = Array.from({ length: 25 }, (_, i) => `src/f${i}.ts:1 is read`);
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([nonBlocking('note', 'Extract helper', 5, { evidence: { checks: many, proof: [] } })]), diff);
     expect(getContent).toHaveBeenCalledTimes(21);
+  });
+
+  it('reads, quotes and links no code of a file `closed_paths` closes, on a finding on it or citing it, nor of a symlink\'s target', async () => {
+    // `src/link.ts` is a symlink into the closed folder, which GitHub would answer with the target's lines. A model can
+    // spell the closed file's path other ways, which GitHub could answer too.
+    const hidden = 'hidden one\nhidden two\nhidden three\n';
+    const spellings = ['./secret/b.ts', 'secret//b.ts', 'src/../secret/b.ts', 'secret\\b.ts'];
+    const { octokit, createReview, getContent } = makeOctokit(
+      { 'src/a.ts': 'one\ntwo\nthree\nfour\nfive\n', 'secret/b.ts': hidden, 'src/link.ts': hidden, ...Object.fromEntries(spellings.map(p => [p, hidden])) },
+      { 'src/link.ts': '../secret/b.ts' },
+    );
+
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
+      nonBlocking('note', 'Cites it', 5, { evidence: { checks: ['secret/b.ts:2 holds the value', 'src/a.ts:3 reads it', 'src/link.ts:2 reads it too'], proof: [] } }),
+      { ...nonBlocking('note', 'On it', 2, { suggestedFix: 'hidden fixed();' }), file: 'secret/b.ts' },
+      { ...nonBlocking('note', 'On the link', 2, { suggestedFix: 'fixed();' }), file: 'src/link.ts' },
+      ...spellings.map(file => ({ ...nonBlocking('note', `On ${file}`, 2, { suggestedFix: 'hidden fixed();' }), file })),
+    ]), diff, undefined, undefined, { closedPaths: ['secret/**'] });
+
+    expect(getContent).not.toHaveBeenCalledWith(expect.objectContaining({ path: expect.stringMatching(/secret/) }));
+    expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts' }));
+    const posted = JSON.stringify(createReview.mock.calls[0][0]);
+    expect(posted).not.toMatch(/hidden (one|two|three)/);
+    expect(posted).not.toContain('```diff');
+    expect(posted).not.toMatch(/blob\/abc1234\/[^\s#\\]*secret/);
+    expect(posted).toContain('Holds the value\\n`secret/b.ts:1-2`');
+    expect(posted).toContain('https://github.com/owner/repo/blob/abc1234/src/a.ts#L2-L5');
   });
 
   it('posts a note on a changed line as a suggestion thread, lists the others in one collapsed section in the order given, and keeps a thread for a security finding', async () => {
@@ -6298,18 +6362,23 @@ describe('postReview non-blocking findings', () => {
     expect(await carriedBody(undefined)).not.toContain('Earlier warnings');
     // The record keeps a hash of the line a warning listed only in the body points at, with the lines around it, and how
     // many places of its file read the same, and the warning's description for a later judge. A line the file does not have gives none.
-    const recording = makeOctokit({ 'src/a.ts': 'load();\n  retry();\nend();\n\nload();\nretry();\nend();\n' });
+    const recording = makeOctokit({ 'src/a.ts': 'load();\n  retry();\nend();\n\nload();\nretry();\nend();\n', 'src/link.ts': '' }, { 'src/link.ts': 'a.ts' });
     const listed = [
       nonBlocking('warning', 'Listed before', 2, { origin: 'earlier', raisedIn: 1, tags: ['follow-up', 'pre-existing'] }), nonBlocking('warning', 'Past the end', 9, { origin: 'earlier', raisedIn: 1, tags: ['follow-up', 'pre-existing'] }),
       nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'] }), nonBlocking('note', 'Note', 1, { origin: 'new' }),
       nonBlocking('warning', 'On old code', 3, { origin: 'reviewed', tags: ['follow-up'] }),
+      nonBlocking('warning', 'On an unread file', 4, { origin: 'earlier', raisedIn: 1, tags: ['follow-up', 'pre-existing'], file: 'src/link.ts' }),
+      nonBlocking('warning', 'On a deleted file', 4, { origin: 'earlier', raisedIn: 1, tags: ['follow-up', 'pre-existing'], file: 'src/gone.ts' }),
     ];
     const entries = listed.map(f => makeFindingFingerprintEntry({ title: f.title, severity: f.severity, lineStart: f.line }));
     await postReview(recording.octokit, 'owner', 'repo', 1, 'sha', buildResult(listed), diff, makeContext({ findings: { count: listed.length, severityCounts: {}, entries } }), 1000);
     const record = JSON.parse(extractReviewRecords(recording.createReview.mock.calls[0][0].body).records[0]);
-    expect(record.findings.entries.map((e: FindingFingerprintEntry) => [e.posted, e.citedLine, e.description])).toEqual([
-      ['body', { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 2 }, 'It goes wrong. Second sentence. Third sentence.'], ['body', undefined, undefined],
-      ['thread', undefined, undefined], ['thread', undefined, undefined], ['thread', undefined, undefined],
+    // A warning on a file the round could not read, such as a symlink or a file over the size limit, is marked unread instead, so a later round still carries it.
+    // A file that is gone at the head was read, so its warning gets neither and a later round ends it.
+    expect(record.findings.entries.map((e: FindingFingerprintEntry) => [e.posted, e.citedLine, e.unread, e.description])).toEqual([
+      ['body', { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 2 }, undefined, 'It goes wrong. Second sentence. Third sentence.'], ['body', undefined, undefined, undefined],
+      ['thread', undefined, undefined, undefined], ['thread', undefined, undefined, undefined], ['thread', undefined, undefined, undefined],
+      ['body', undefined, true, 'It goes wrong. Second sentence. Third sentence.'], ['body', undefined, undefined, undefined],
     ]);
     // A security finding on unchanged code still blocks, and its header says where it sits.
     expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');

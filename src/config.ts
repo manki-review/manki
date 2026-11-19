@@ -26,6 +26,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   auto_approve: true,
   author_clear_role: 'maintain',
   exclude_paths: [...PACKAGE_LOCKFILES, 'dist/**', '*.generated.*'],
+  closed_paths: [],
   skip_labels: [],
   skip_authors: [],
   skip_branches: [],
@@ -67,6 +68,7 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'auto_approve',
   'author_clear_role',
   'exclude_paths',
+  'closed_paths',
   'skip_labels',
   'skip_authors',
   'skip_branches',
@@ -152,16 +154,20 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     }
   }
 
-  if ('exclude_paths' in config) {
-    if (!Array.isArray(config.exclude_paths)) {
-      errors.push('`exclude_paths` must be an array of strings');
-    } else {
-      for (let i = 0; i < config.exclude_paths.length; i++) {
-        if (typeof config.exclude_paths[i] !== 'string') {
-          errors.push(`\`exclude_paths[${i}]\` must be a string, got ${typeof config.exclude_paths[i]}`);
-        }
-      }
+  for (const key of ['exclude_paths', 'closed_paths']) {
+    if (!(key in config)) continue;
+    const patterns = config[key];
+    if (!Array.isArray(patterns)) {
+      errors.push(`\`${key}\` must be an array of strings`);
+      continue;
     }
+    patterns.forEach((pattern: unknown, i) => {
+      if (typeof pattern !== 'string') errors.push(`\`${key}[${i}]\` must be a string, got ${typeof pattern}`);
+      else if (key === 'closed_paths' && pattern.includes('\\')) errors.push(`\`closed_paths[${i}]\` holds a backslash: write the path with \`/\``);
+      else if (key === 'closed_paths' && closedPattern(pattern) === undefined) {
+        errors.push(`\`closed_paths[${i}]\` names no path in the repository: give a path or glob from the repository root, without \`..\``);
+      }
+    });
   }
 
   if ('models' in config) {
@@ -572,6 +578,7 @@ export function loadConfigFromContent(content: string, source = CONFIG_PATH): Re
   }
 
   const config = deepMerge(DEFAULT_CONFIG, parsed as Record<string, unknown>);
+  config.closed_paths = config.closed_paths?.map(pattern => closedPattern(pattern)!);
   const floorErrors = reviewFloorErrors(config);
   if (floorErrors.length > 0) {
     for (const error of floorErrors) core.error(error);
@@ -636,10 +643,48 @@ export function resolveFallbackModel(config: ReviewConfig, stageModel: string): 
 
 /**
  * Returns the defaults for a base branch config that could not be read or loaded. `author_clear_role` is `admin` in
- * them, the one role that may clear under every value the repository can have set.
+ * them, the one role that may clear under every value the repository can have set. `closedPaths` is what the file
+ * closes, as `readClosedPaths` reads it.
  */
-export function fallbackConfig(): ReviewConfig {
-  return { ...loadConfig(undefined), author_clear_role: 'admin' };
+export function fallbackConfig(closedPaths: string[] = []): ReviewConfig {
+  return { ...loadConfig(undefined), author_clear_role: 'admin', closed_paths: closedPaths };
+}
+
+/**
+ * Returns the `closed_paths` of a config file from its YAML alone, so a file that does not load still closes its paths.
+ * YAML that does not parse to a mapping closes nothing when its text never names `closed_paths`. Returns undefined when
+ * it does, and when `closed_paths` is set but is not a list of strings.
+ */
+export function readClosedPaths(content: string | null): string[] | undefined {
+  if (!content?.trim()) return [];
+  const unreadable = content.includes('closed_paths') ? undefined : [];
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(content);
+  } catch {
+    return unreadable;
+  }
+  if (parsed === null || parsed === undefined) return [];
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) return unreadable;
+  const closed = (parsed as Record<string, unknown>).closed_paths;
+  if (closed === undefined) return [];
+  if (!Array.isArray(closed) || !closed.every(p => typeof p === 'string')) return undefined;
+  const patterns = closed.map(closedPattern);
+  return patterns.every(p => p !== undefined) ? patterns : undefined;
+}
+
+/**
+ * Returns a `closed_paths` pattern in the spelling of the paths it is matched against: without doubled slashes or `.`
+ * segments, and with a trailing `/` read as every file in the folder. A pattern written with a slash matches from the
+ * repository root, so one left with a single segment keeps a leading `/`, which `findClosedPattern` reads as the root.
+ * Returns undefined for a pattern that names no path in the repository, such as an empty one, one with a `..` segment
+ * or one with a backslash.
+ */
+function closedPattern(pattern: string): string | undefined {
+  const parts = pattern.split('/').filter(part => part !== '' && part !== '.');
+  if (pattern.includes('\\') || parts.length === 0 || parts.some(part => part.trim() === '' || part === '..')) return undefined;
+  const path = parts.join('/') + (pattern.endsWith('/') ? '/**' : '');
+  return pattern.includes('/') && !path.includes('/') ? `/${path}` : path;
 }
 
 export function loadConfig(yamlContent: string | undefined, source?: string): ReviewConfig {

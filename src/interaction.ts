@@ -8,7 +8,7 @@ import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
-import { parsePRDiff } from './diff';
+import { closeRawDiff, diffSections, parsePRDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
@@ -421,7 +421,9 @@ async function answerOrSayWhy<T>(octokit: Octokit, owner: string, repo: string, 
  * its own look at that text. With `config`, a reply in a guarded thread the PR author resolved reopens the thread, and
  * the answer says why. A "Withdrawn." saves a learning in `memory` only once the thread is resolved, and the posted
  * answer is then edited to say so. On a merged or closed PR the reply is answered and nothing else happens. Throws when
- * the reply gets no answer, after saying so in a thread that is Manki's.
+ * the reply gets no answer, after saying so in a thread that is Manki's. The model reads no file the `closed_paths` of
+ * `config` closes: the diff leaves them out, and `loadWorkspace` checks out the head without them. With `closedUnknown`,
+ * the thread gets that note and no model is asked.
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
@@ -433,6 +435,7 @@ export async function handleReviewCommentReply(
   memory?: MemoryStore,
   loadWorkspace?: () => Promise<string | undefined>,
   config?: ReviewConfig,
+  closedUnknown?: string,
 ): Promise<void> {
   const payload = github.context.payload;
   const comment = payload.comment;
@@ -474,6 +477,10 @@ export async function handleReviewCommentReply(
     // Acknowledge the reply
     await reactToReviewComment(octokit, owner, repo, comment.id, 'eyes');
 
+    if (closedUnknown) {
+      await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: comment.id, body: withMarkers(closedUnknown, BOT_MARKER) });
+      return;
+    }
 
     const place = findingPlace(root.comment.body ?? '', root.comment.path, root.comment.line, root.comment.original_line);
     const filePath = place.file;
@@ -482,7 +489,7 @@ export async function handleReviewCommentReply(
     let codeTokens = new Set<string>();
     let diff: ParsedDiff | undefined;
     try {
-      const fullDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
+      const fullDiff = closeRawDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config?.closed_paths ?? []);
       diff = parsePRDiff(fullDiff);
       const scopedDiff = filePath ? scopeDiffToFile(fullDiff, filePath) : fullDiff;
       codeTokens = codeTokensFromDiff(parsePRDiff(scopedDiff));
@@ -620,7 +627,8 @@ export async function handleReviewCommentReply(
 
 /**
  * Handle `/manki` commands in PR comments. `configHeld` says that the base branch's config could not be read or loaded,
- * so `config` holds the defaults and `check` approves nothing.
+ * so `config` holds the defaults and `check` approves nothing. With `closedUnknown`, a command that asks a model is
+ * answered with that note instead.
  */
 export async function handlePRComment(
   octokit: Octokit,
@@ -632,6 +640,7 @@ export async function handlePRComment(
   memory?: MemoryStore,
   config?: ReviewConfig,
   configHeld = false,
+  closedUnknown?: string,
 ): Promise<void> {
   const payload = github.context.payload;
   const comment = payload.comment;
@@ -650,6 +659,10 @@ export async function handlePRComment(
   const command = parseCommand(body);
   const commentId = comment.id as number;
 
+  const postNote = async (note: string) => {
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: withMarkers(note, BOT_MARKER) });
+  };
+
   const prOnlyCommands = new Set(['check', 'explain']);
   if (prOnlyCommands.has(command.type) && !github.context.payload.issue?.pull_request) {
     await octokit.rest.issues.createComment({
@@ -664,8 +677,9 @@ export async function handlePRComment(
     case 'explain': {
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       if (!client) { core.warning('Claude client required for explain command'); return; }
+      if (closedUnknown) { await postNote(closedUnknown); return; }
       const topic = command.args.slice(0, 500).trim();
-      await answerOrSayWhy(octokit, owner, repo, issueNumber, () => handleExplain(octokit, client, owner, repo, issueNumber, topic));
+      await answerOrSayWhy(octokit, owner, repo, issueNumber, () => handleExplain(octokit, client, owner, repo, issueNumber, topic, config?.closed_paths ?? []));
       break;
     }
     case 'dismiss': {
@@ -695,6 +709,7 @@ export async function handlePRComment(
     default: {
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       if (!client) { core.warning('Claude client required for generic questions'); return; }
+      if (closedUnknown) { await postNote(closedUnknown); return; }
       // Strip the command prefix and truncate before forwarding to the LLM.
       const question = body.replace(/(?:@manki-review|@manki|\/manki)\s*/gi, '').trim().slice(0, 500);
       await answerOrSayWhy(octokit, owner, repo, issueNumber, () => handleGenericQuestion(octokit, client, owner, repo, issueNumber, question));
@@ -724,6 +739,7 @@ function parseCommand(body: string): ParsedCommand {
   return { type: 'generic', args: body };
 }
 
+/** Explains the PR from its diff, without the files `closedPaths` closes. */
 async function handleExplain(
   octokit: Octokit,
   client: LLMClient,
@@ -731,10 +747,11 @@ async function handleExplain(
   repo: string,
   prNumber: number,
   topic: string,
+  closedPaths: readonly string[],
 ): Promise<void> {
   let fetched: string;
   try {
-    fetched = await fetchPRDiff(octokit, owner, repo, prNumber);
+    fetched = closeRawDiff(await fetchPRDiff(octokit, owner, repo, prNumber), closedPaths);
   } catch (error) {
     if (!(error instanceof TooManyFilesError)) throw error;
     const body = `This PR changes ${error.changedFiles} files, and GitHub lists only ${error.listedFiles} of them, so Manki cannot read it to explain it. Split it into smaller PRs to get an explanation.`;
@@ -1159,21 +1176,12 @@ function buildReplyContext(
   return context;
 }
 
+/** Returns the sections of `fullDiff` whose file is at `filePath` before or after the change, or an empty string for none. */
 export function scopeDiffToFile(fullDiff: string, filePath: string): string {
-  const lines = fullDiff.split('\n');
-  const result: string[] = [];
-  let inTargetFile = false;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      inTargetFile = line.includes(` a/${filePath} `) || line.endsWith(` b/${filePath}`);
-    }
-    if (inTargetFile) {
-      result.push(line);
-    }
-  }
-
-  return result.length > 0 ? result.join('\n') : '';
+  return diffSections(fullDiff).filter(text => {
+    const { files, binarySkipped = [] } = parsePRDiff(text);
+    return [...files.flatMap(f => [f.path, f.oldPath]), ...binarySkipped.map(b => b.path)].includes(filePath);
+  }).join('');
 }
 
 /** Whether `body` holds one of Manki's markers. Anyone can write one, so this only tells which comments to leave unanswered. */

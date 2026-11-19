@@ -105,6 +105,7 @@ jest.mock('./config', () => {
     resolveModel,
     changedKeys: actual.changedKeys,
     fallbackConfig: actual.fallbackConfig,
+    readClosedPaths: actual.readClosedPaths,
     resolveFallbackModel: jest.fn().mockImplementation(actual.resolveFallbackModel),
   };
 });
@@ -122,10 +123,10 @@ jest.mock('./diff', () => {
     parsePRDiff,
     filterFilesWithAttribution,
     filterDiff,
-    reviewableDiff: jest.fn((rawDiff: string, excludePaths: string[]) => {
+    reviewableDiff: jest.fn((rawDiff: string, excludePaths: string[], closedPaths?: string[]) => {
       const fullDiff = parsePRDiff(rawDiff);
       const { diff, excluded } = filterDiff(fullDiff, excludePaths);
-      return { fullDiff, diff, excludedFiles: excluded, rawDiff: jest.requireActual('./diff').rebuildRawDiff(diff) };
+      return { fullDiff, diff, excludedFiles: excluded, rawDiff: jest.requireActual('./diff').rebuildRawDiff(diff), closedPaths };
     }),
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
     ownChangeSince: jest.fn((sinceLastRound: string) => sinceLastRound),
@@ -208,6 +209,7 @@ jest.mock('./github', () => ({
   capNotes: jest.requireActual('./github').capNotes,
   limitFallbackLines: jest.requireActual('./github').limitFallbackLines,
   cachedFileLines: jest.requireActual('./github').cachedFileLines,
+  openRepoFiles: jest.requireActual('./github').openRepoFiles,
   fetchRepoContext: jest.fn().mockResolvedValue({ text: '', files: [] }),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
@@ -880,7 +882,7 @@ describe('run', () => {
         jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(true);
         jest.mocked(issueTick.handleIssueBoxTick).mockResolvedValueOnce(resolved);
         jest.mocked(configModule.loadConfig).mockReturnValue(config(autoApprove));
-        if (unreadConfig) jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+        if (unreadConfig) jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up')).mockRejectedValueOnce(new Error('socket hang up'));
         await run();
         return jest.mocked(stateModule.checkAndAutoApprove).mock.calls;
       };
@@ -967,6 +969,7 @@ describe('run', () => {
       // The PR's own config lists a repo the base branch does not.
       const configAt: Record<string, string> = { 'release-2': 'related_repos:\n  - repo: acme/reports\n    kind: consumer\n', abc123: 'related_repos:\n  - repo: evil/planted\n    kind: consumer\n' };
       jest.mocked(ghUtils.readConfigFile).mockImplementationOnce(async (_octokit, _owner, _repo, ref) => configAt[ref] ?? configAt.abc123);
+      jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.requireActual<typeof import('./config')>('./config').DEFAULT_CONFIG, closed_paths: ['bench/holdout/**'] });
 
       await run();
 
@@ -978,8 +981,19 @@ describe('run', () => {
       expect(jest.mocked(ghUtils.readConfigFile).mock.calls.map(c => c[3])).toEqual(['release-2']);
       expect(jest.mocked(configModule.loadConfig).mock.calls.at(-1)?.[0]).toBe(configAt['release-2']);
       const loadWorkspace = call?.[7] as () => Promise<string | undefined>;
+      const reviewable = jest.mocked(diffModule.reviewableDiff).getMockImplementation()!;
+      jest.mocked(diffModule.reviewableDiff).mockImplementationOnce((raw, exclude, closed) => ({ ...reviewable(raw, exclude, closed), closedPaths: [...closed ?? [], '/src/case.yml'] }));
       expect(await loadWorkspace()).toBe('/work/head');
-      expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app');
+      // The checkout the reply's tools read leaves out the paths the base branch's config closes, and the files the PR moves out of them.
+      expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app', ['bench/holdout/**', '/src/case.yml']);
+      expect(jest.mocked(diffModule.reviewableDiff)).toHaveBeenLastCalledWith(expect.anything(), [], ['bench/holdout/**']);
+
+      // Without the PR's diff, Manki cannot tell which files the PR moved out of a closed path, so the reply gets no tools.
+      jest.mocked(ghUtils.fetchPRDiff).mockRejectedValueOnce(new Error('API 500'));
+      jest.mocked(fetchWorkspace).mockClear();
+      expect(await loadWorkspace()).toBeUndefined();
+      expect(fetchWorkspace).not.toHaveBeenCalled();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('so the reply runs without tools'));
     });
 
     it('routes command review comments to handleReviewCommentCommand', async () => {
@@ -1514,7 +1528,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     // So is a pause counted without the base branch's config.
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
     jest.mocked(recapModule.fetchRecapState).mockClear();
-    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('rate limited'));
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('rate limited')).mockRejectedValueOnce(new Error('rate limited'));
     expect(await command()).toEqual(answer());
     expect(recapModule.fetchRecapState).not.toHaveBeenCalled();
 
@@ -2707,21 +2721,68 @@ describe('runFullReview orchestration', () => {
     });
 
     it.each([
-      ['cannot be read', async () => { throw new Error('socket hang up'); }, 'Could not read .manki.yml on the base branch, using the defaults and no approval: socket hang up'],
-      ['is invalid YAML', async () => 'auto_approve: [\n', 'Could not load .manki.yml on the base branch, using the defaults and no approval: Invalid YAML'],
-      ['routes a floor class below the floor', async () => 'review:\n  routing:\n    data_contract: solo\n', 'routes the `data_contract` floor class to the `solo` group'],
-    ])('reviews with the defaults and no approval, never the PR\'s copy, when the base branch config %s', async (_label, base, warning) => {
-      configFiles('review:\n  routing:\n    data_contract: pair\n', base);
+      ['routes a floor class below the floor', 'review:\n  routing:\n    data_contract: solo\n', [], 'routes the `data_contract` floor class to the `solo` group'],
+      ['does not load but closes paths', 'closed_paths: ["bench/**"]\nmax_diff_lines: 0\n', ['bench/**'], '`max_diff_lines` must be a positive whole number'],
+      ['is invalid YAML that never names closed paths', 'auto_approve: [\n', [], 'Invalid YAML'],
+    ])('reviews with the defaults and no approval, never the PR\'s copy, when the base branch config %s', async (_label, base, closed, warning) => {
+      configFiles('review:\n  routing:\n    data_contract: pair\n', async () => base);
 
       await callRunFullReview();
 
-      // The defaults ask for `admin`, the one role that may clear under every value the base branch can hold.
-      expect(reviewedConfig()).toEqual(actualFallbackConfig());
+      // The defaults ask for `admin`, the one role that may clear under every value the base branch can hold. They
+      // keep the paths the file closes.
+      expect(reviewedConfig()).toEqual(actualFallbackConfig(closed));
       expect(jest.mocked(recapModule.fetchRecapState).mock.calls.map(call => call[6])).toEqual(['admin']);
       expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: 'base' }));
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining(warning));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    });
+
+    it('reads the base branch config once more when the first read fails, and reviews with it', async () => {
+      let reads = 0;
+      configFiles(null, async () => {
+        reads += 1;
+        if (reads === 1) throw new Error('socket hang up');
+        return 'max_diff_lines: 2000\n';
+      });
+
+      await callRunFullReview();
+
+      expect(reads).toBe(2);
+      expect(reviewedConfig()).toEqual(actualLoadConfig('max_diff_lines: 2000\n'));
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith('Could not read .manki.yml on the base branch, trying once more: socket hang up');
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    });
+
+    it('reviews with the defaults and holds nothing when the base branch has no config file', async () => {
+      configFiles(null, async () => null);
+
+      await callRunFullReview();
+
+      expect(reviewedConfig()).toEqual(actualLoadConfig(undefined));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: undefined }));
+      expect(jest.mocked(ghUtils.markProgressCommentFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    });
+
+    const failsClosed = 'names `closed_paths` but does not parse, or its `closed_paths` is not a list of paths';
+    it.each([
+      ['cannot be read twice', async () => { throw new Error('socket hang up'); }, 'could not be read'],
+      ['is invalid YAML that names closed paths', async () => 'closed_paths: [\n', failsClosed],
+      ['closes paths with no list', async () => 'closed_paths: bench\n', failsClosed],
+      ['closes a pattern that names no path', async () => 'closed_paths: ["../bench/**"]\n', failsClosed],
+    ])('ends the round before reading any code or asking a model when the base branch config %s', async (_label, base, why) => {
+      configFiles(null, base);
+
+      await callRunFullReview();
+
+      const note = `The base branch's \`.manki.yml\` ${why}, so Manki cannot tell which paths \`closed_paths\` keeps from every model, and reads no code until it is fixed.`;
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(`Review failed: ${note}`);
+      expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls.map(call => call.slice(1, 6))).toEqual([['test-owner', 'test-repo', expect.any(Number), 'Review', note]]);
+      expect(ghUtils.fetchPRDiff).not.toHaveBeenCalled();
+      expect(fetchWorkspace).not.toHaveBeenCalled();
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
     });
   });
 
@@ -2771,6 +2832,25 @@ describe('runFullReview orchestration', () => {
         view('review failed', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'again', 'deeper', 'draft']) }),
       );
       expect(authModule.reportPrState).not.toHaveBeenCalled();
+    });
+
+    it('marks the progress comment failed with the reason when the base config cannot say which paths it closes', async () => {
+      jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => {
+        if (ref === 'main') throw new Error('socket hang up');
+        return null;
+      });
+      try {
+        await runWith();
+      } finally {
+        jest.mocked(ghUtils.readConfigFile).mockResolvedValue(null);
+      }
+
+      const note = "The base branch's `.manki.yml` could not be read, so Manki cannot tell which paths `closed_paths` keeps from every model, and reads no code until it is fixed.";
+      // The run's own progress comment, not the older one that held the block, shows the reason and takes the block.
+      expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls).toEqual([[
+        expect.anything(), 'test-owner', 'test-repo', 1, 'Review', note, view('review failed', { lastReviewed: 'ddd2222' }),
+      ]]);
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
     });
 
     it('marks the failed progress comment of an earlier run on the same head superseded once its review starts, and keeps it', async () => {
@@ -2952,6 +3032,20 @@ describe('runFullReview orchestration', () => {
       expect(capped?.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Retry never ends', 'note_cap']]);
       expect(capped?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }, { key: 'src/app.ts:2:2:Retry-never-ends', reason: 'hidden_note' }]);
       expect(capped?.findings.carried).toBeUndefined();
+
+      // While paths are closed, the file is read without following a symlink, and a closed file is never read. Its warnings
+      // stay listed, since a file that cannot be read is not a file that is gone.
+      const defaults = jest.mocked(configModule.loadConfig)(undefined);
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...defaults, closed_paths: ['bench/**'] });
+      read.mockClear();
+      await runWith({ fullReview: true });
+      expect(read.mock.calls).toEqual([['src/app.ts', false]]);
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...defaults, closed_paths: ['src/**'] });
+      read.mockClear();
+      await runWith({ fullReview: true });
+      expect(read).not.toHaveBeenCalled();
+      const closed = jest.mocked(ghUtils.postReview).mock.calls[3][7];
+      expect(closed?.findings.carried?.map(e => e.title)).toEqual(['Queue has no limit', 'Retry never ends']);
     });
   });
 
@@ -4634,11 +4728,11 @@ describe('runFullReview orchestration', () => {
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
         needsHuman: { cause: 'repeated', blockers: [blocker] },
         llmCalls: [
-          call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true, relatedReads: { 'o/r': 3 } }),
+          call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true, relatedReads: { 'o/r': 3 }, closedCalls: 2 }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'security', relatedReads: { 'o/r': 1 } }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc', { limits: [limit] }),
           call('compare', 'dddddddddddd', { agent: 'Sibling field: utxos vs spent', relatedReads: { 'o/r': 2 } }),
-          call('judge', 'cccccccccccc', { agent: 'refute', relatedReads: { 'o/r': 4, 'o/s': 1 } }),
+          call('judge', 'cccccccccccc', { agent: 'refute', relatedReads: { 'o/r': 4, 'o/s': 1 }, closedCalls: 1 }),
         ],
         comparisons,
         prClaims,
@@ -4689,7 +4783,9 @@ describe('runFullReview orchestration', () => {
       expect(rc.sweeps).toEqual([{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note', status: 'cut' }]);
       expect(rc.secondReads).toEqual(secondReads);
       expect(rc.usage.perStage?.compare).toMatchObject({ calls: 1 });
-      expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
+      expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true, closedCalls: 2 });
+      // The calls refused for a closed path are counted for the round, each call keeping its own.
+      expect(rc.usage.closedCalls).toBe(3);
       expect(rc.usage.llmCalls?.[3]).not.toHaveProperty('limits');
       expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.limits).toEqual([limit]);
       expect(rc.memory).toMatchObject({
@@ -6001,18 +6097,34 @@ describe('runFullReview orchestration', () => {
       // A thread tied to no file has no code to fetch, at the head or on the commit it was posted on.
       { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
       { title: 'Outdated design issue', file: '', line: 0, originalLine: 1, originalCommit: 'c0ffee', severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile_old' },
+      // A thread on a closed path shows no code, now or as posted, and counts as unread.
+      { title: 'Issue in a closed case', file: 'bench/holdout/case.yml', line: 2, originalLine: 2, originalCommit: 'c0ffee', detached: true, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_closed' },
+      // So does one on a file the PR moved out of a closed path, which holds the closed file's text.
+      { title: 'Issue in a moved case', file: 'src/case.yml', line: 2, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_moved' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
       priorRounds: [],
     });
+    jest.mocked(configModule.loadConfig).mockReturnValue({ ...jest.mocked(configModule.loadConfig)(undefined), closed_paths: ['bench/holdout/**'] });
+    const reviewable = jest.mocked(diffModule.reviewableDiff).getMockImplementation()!;
+    jest.mocked(diffModule.reviewableDiff).mockImplementationOnce((raw, exclude, closed) => ({ ...reviewable(raw, exclude, closed), closedPaths: [...closed ?? [], '/src/case.yml'] }));
 
     await callRunFullReview();
 
+    const closedThreads = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads?.filter(t => ['PRRT_closed', 'PRRT_moved'].includes(t.threadId));
+    expect(closedThreads).toHaveLength(2);
+    for (const closedThread of closedThreads ?? []) {
+      expect(closedThread).toMatchObject({ currentCode: '(file content unavailable)', codeUnread: true });
+      expect(closedThread).not.toHaveProperty('postedCode');
+    }
+    // The review posts no code of the moved file either.
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.closedPaths).toEqual(['bench/holdout/**', '/src/case.yml']);
     expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledTimes(1);
     const fetchCall = jest.mocked(ghUtils.fetchFileContents).mock.calls[0];
     const requestedPaths = fetchCall[4];
     expect(requestedPaths).not.toContain('');
+    expect(requestedPaths).not.toContain('src/case.yml');
     expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads?.filter(t => !t.file).map(t => [t.threadId, t.line, t.currentCode])).toEqual([['PRRT_nofile', 1, ''], ['PRRT_nofile_old', 0, '']]);
     // Both files present, no duplicate of `src/app.ts`
     expect(requestedPaths).toContain('src/app.ts');
@@ -6498,7 +6610,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, exclude_paths: ['dist/**'], max_diff_lines: 10000,
+      auto_review: true, auto_approve: false, exclude_paths: ['dist/**'], closed_paths: ['bench/holdout/**'], max_diff_lines: 10000,
       instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
@@ -6574,11 +6686,12 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(superseded ? 1 : 0);
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(2);
-    expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**'], new Set());
+    expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**'], new Set(), ['bench/holdout/**']);
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
       ['dist/**'],
       new Set(),
+      ['bench/holdout/**'],
     );
     const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect(runReviewArgs.rawDiff).toBe(diffModule.rebuildRawDiff({ files: [testFile], totalAdditions: 10, totalDeletions: 5 }));
@@ -7721,10 +7834,10 @@ describe('runFullReview orchestration', () => {
       ['the PR\'s own', 'abc123'],
     ])('runs a normal round while %s config file does not load, so the round decides the hold', async (_label, brokenRef) => {
       seedPush('APPROVE', REBASED_DIFF);
-      jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => {
-        if (ref === brokenRef) throw new Error('socket hang up');
-        return null;
-      });
+      const plain = jest.mocked(configModule.loadConfig)(undefined);
+      const { loadConfig: actualLoadConfig } = jest.requireActual<typeof import('./config')>('./config');
+      jest.mocked(configModule.loadConfig).mockImplementation((content, source) => (content ? actualLoadConfig(content, source) : plain));
+      jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => (ref === brokenRef ? 'max_diff_lines: 0\n' : null));
 
       await callRunFullReview();
 
@@ -7967,17 +8080,20 @@ describe('handleInteraction', () => {
       undefined,          // memory (not enabled)
       expect.anything(),  // config
       false,              // the config was read
+      undefined,          // the config says which paths it closes
     );
 
     // A config that cannot be read reaches the command handler as held, so its check approves nothing.
     jest.mocked(interaction.handlePRComment).mockClear();
-    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up')).mockRejectedValueOnce(new Error('socket hang up'));
 
     await handleInteraction();
 
     const [call] = jest.mocked(interaction.handlePRComment).mock.calls;
     expect(call[7]?.author_clear_role).toBe('admin');
     expect(call[8]).toBe(true);
+    // Nor can it say which paths it closes, so the handler gets the note to post instead of asking a model.
+    expect(call[9]).toBe("The base branch's `.manki.yml` could not be read, so Manki cannot tell which paths `closed_paths` keeps from every model, and reads no code until it is fixed.");
   });
 
   it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
@@ -8346,7 +8462,7 @@ describe('handleReviewStateCheck', () => {
     jest.mocked(recapModule.fetchRecapState).mockClear();
     jest.mocked(stateModule.reopenAuthorResolvedThreads).mockClear();
     jest.mocked(stateModule.checkAndAutoApprove).mockClear();
-    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up')).mockRejectedValueOnce(new Error('socket hang up'));
 
     await handleReviewStateCheck();
 
@@ -8400,16 +8516,17 @@ describe('handleReviewCommentInteraction auto-approve', () => {
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 8, expect.objectContaining({ auto_approve: true }),
     );
 
-    // With a config that cannot be read, the reply is still answered, only an admin author clears a thread, and nothing is approved.
+    // With a config that cannot be read, the reply gets the note on the unknown closed paths, only an admin author clears a thread, and nothing is approved.
     jest.mocked(interaction.handleReviewCommentReply).mockClear();
     jest.mocked(stateModule.checkAndAutoApprove).mockClear();
-    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up')).mockRejectedValueOnce(new Error('socket hang up'));
 
     await handleReviewCommentInteraction();
 
     const [reply] = jest.mocked(interaction.handleReviewCommentReply).mock.calls;
     expect(reply[8]).toEqual(jest.requireActual<typeof import('./config')>('./config').fallbackConfig());
     expect(reply[8]?.author_clear_role).toBe('admin');
+    expect(reply[9]).toContain('could not be read, so Manki cannot tell which paths `closed_paths` keeps from every model');
     expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 

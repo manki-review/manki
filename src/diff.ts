@@ -1,20 +1,28 @@
 import { createHash } from 'crypto';
+import { posix } from 'path';
 
 import * as core from '@actions/core';
 import parseDiff from 'parse-diff';
-import { minimatch } from 'minimatch';
+import { minimatch, Minimatch } from 'minimatch';
 
 import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, canLeaveOut } from './types';
 
 /**
- * Parse a unified diff string into structured data.
+ * Parse a unified diff string into structured data. Each `diff --git` section is parsed on its own, and its paths come
+ * from `headerPaths`, since `parse-diff` drops a trailing quote from a name and keeps git's escapes.
  */
 export function parsePRDiff(rawDiff: string): ParsedDiff {
   if (!rawDiff.trim()) {
     return { files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [] };
   }
 
-  const parsed = parseDiff(rawDiff);
+  const parsed = diffSections(rawDiff).flatMap(section => {
+    const [first, ...rest] = parseDiff(section);
+    if (!first || !section.startsWith('diff --git ')) return first ? [first, ...rest] : [];
+    const { from, to } = headerPaths(section);
+    // `/dev/null` comes from a file mode line, which marks an added or deleted file.
+    return [{ ...first, from: first.from === '/dev/null' ? first.from : from ?? first.from, to: first.to === '/dev/null' ? first.to : to ?? first.to }, ...rest];
+  });
   let totalAdditions = 0;
   let totalDeletions = 0;
   const files: DiffFile[] = [];
@@ -57,9 +65,62 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
   return { files, totalAdditions, totalDeletions, binarySkipped };
 }
 
+/**
+ * Returns the file sections of a git diff, each from its `diff --git` line up to the next one, after any text before the
+ * first. A section starts only after `\n`, since a changed line can hold a `\r` or a Unicode line separator.
+ */
+export function diffSections(rawDiff: string): string[] {
+  return rawDiff.split(/(?<![^\n])(?=diff --git )/).filter(text => text.length > 0);
+}
+
 /** Returns the first of `excludePaths` that matches `path`, or `undefined` when none does. */
-export function findExcludePattern(path: string, excludePaths: string[]): string | undefined {
+export function findExcludePattern(path: string, excludePaths: readonly string[]): string | undefined {
   return excludePaths.find((pattern) => minimatch(path, pattern, { matchBase: true, dot: true }));
+}
+
+/**
+ * Returns the first of `closedPaths` that matches `path` or a folder above it, or `undefined` when none does. A pattern
+ * that names a folder closes every file in it. The path is normalized first, so `./a`, `a//b`, `a/./b` and `a\b` match
+ * as `a` and `a/b` do. A path that leaves the repository, such as `../x` or `/x`, cannot be checked, so it counts as
+ * closed by the first pattern.
+ */
+export function findClosedPattern(path: string, closedPaths: readonly string[]): string | undefined {
+  if (closedPaths.length === 0) return undefined;
+  const normalized = closedPathKey(path);
+  if (normalized === '..' || normalized.startsWith('../') || normalized.startsWith('/')) return closedPaths[0];
+  const parts = normalized.split('/');
+  for (let end = parts.length; end > 0; end--) {
+    // A path with a trailing slash names a folder, so `dir/**` closes the folder `dir` too.
+    const prefix = parts.slice(0, end).join('/');
+    const pattern = closedPaths.find(p => closes(prefix, p) || closes(`${prefix}/`, p));
+    if (pattern) return pattern;
+  }
+  return undefined;
+}
+
+/** Returns `path` as `findClosedPattern` matches it: with `/` for each `\`, and without `.` segments or extra slashes. */
+function closedPathKey(path: string): string {
+  return posix.normalize(path.replace(/\\/g, '/')).replace(/\/+$/, '');
+}
+
+/**
+ * Each `closed_paths` pattern compiled once. `findClosedPattern` runs for every prefix of every path of a tree, and
+ * `minimatch` keeps only the last 256 patterns compiled, which the folders moved out of closed paths can pass.
+ */
+const CLOSED_MATCHERS = new Map<string, Minimatch>();
+
+/**
+ * Whether the `closed_paths` pattern `pattern` matches `path`. A pattern with a leading `/` matches from the root only,
+ * and any other pattern without a slash matches a name at any depth. A leading `#` or `!` is part of the name.
+ */
+function closes(path: string, pattern: string): boolean {
+  let matcher = CLOSED_MATCHERS.get(pattern);
+  if (!matcher) {
+    const options = { dot: true, nocomment: true, nonegate: true };
+    matcher = pattern.startsWith('/') ? new Minimatch(pattern.slice(1), options) : new Minimatch(pattern, { ...options, matchBase: true });
+    CLOSED_MATCHERS.set(pattern, matcher);
+  }
+  return matcher.match(path);
 }
 
 /**
@@ -87,13 +148,60 @@ export function filterFilesWithAttribution(
 
 const isControlChar = (c: string): boolean => c < ' ' || c === '\u007f';
 const C_ESCAPES: Record<string, string> = { '\u0007': '\\a', '\b': '\\b', '\t': '\\t', '\n': '\\n', '\v': '\\v', '\f': '\\f', '\r': '\\r', '"': '\\"', '\\': '\\\\' };
+const C_UNESCAPES: Record<string, string> = Object.fromEntries(Object.entries(C_ESCAPES).map(([c, escape]) => [escape[1], c]));
 
 /**
- * Returns `prefix` and `path` as one diff header path. A path with a control character, such as a line break, is quoted
- * and escaped as git does, so it can never start a header line of its own.
+ * Returns a path as a git header line writes it, unquoted. Git quotes a path with a control character, a quote, a
+ * backslash or a non-ASCII byte, and writes C escapes in it, such as `\303\251` for `é`. The tab git adds after a `---`
+ * or `+++` path with a space is dropped.
+ */
+function unquotedPath(text: string): string {
+  const path = text.replace(/\t$/, '');
+  if (path.length < 2 || !path.startsWith('"') || !path.endsWith('"')) return path;
+  // Splitting on a capture group puts each escape at an odd index, without its backslash.
+  const parts = path.slice(1, -1).split(/\\([0-7]{3}|[abtnvfr"\\])/);
+  return Buffer.concat(parts.map((part, i) => (i % 2 === 0 ? Buffer.from(part) : /^[0-7]{3}$/.test(part) ? Buffer.from([parseInt(part, 8)]) : Buffer.from(C_UNESCAPES[part])))).toString('utf8');
+}
+
+/** The side prefixes `parse-diff` strips from a header path: git's `a/` and `b/`, and its mnemonic ones. */
+const SIDE_PREFIX = /^[abiwco12]\//;
+
+/** Returns a header line's path unquoted, without its side prefix when it has one, and `/dev/null` as it is. */
+function sidePath(text: string, prefixed: boolean): string {
+  const path = unquotedPath(text);
+  return prefixed && path !== '/dev/null' ? path.replace(SIDE_PREFIX, '') : path;
+}
+
+/**
+ * Returns the paths before and after the change from the header of `section`, one file's part of a git diff. They come
+ * from the lines that hold one path each: `rename` or `copy` lines first, then `---` and `+++`. Without those, as for a
+ * binary or a mode change, the `diff --git` line names one path twice, and it is read only when its halves match.
+ */
+function headerPaths(section: string): { from?: string; to?: string } {
+  const lines = section.split('\n');
+  const end = lines.findIndex(line => line.startsWith('@@') || line === 'GIT binary patch');
+  const header = end < 0 ? lines : lines.slice(0, end);
+  const value = (start: string) => header.find(line => line.startsWith(start))?.slice(start.length);
+  const both = value('diff --git ') ?? '';
+  const half = (both.length - 1) / 2;
+  const halves = Number.isInteger(half) && both[half] === ' ' ? [both.slice(0, half), both.slice(half + 1)].map(text => sidePath(text, true)) : [];
+  const same = halves.length === 2 && halves[0] === halves[1] ? halves[0] : undefined;
+  const side = (moved: string[], line: string): string | undefined => {
+    const named = moved.map(value).find(text => text !== undefined);
+    if (named !== undefined) return sidePath(named, false);
+    const text = value(line);
+    return text !== undefined ? sidePath(text, true) : same;
+  };
+  return { from: side(['rename from ', 'copy from '], '--- '), to: side(['rename to ', 'copy to '], '+++ ') };
+}
+
+/**
+ * Returns `prefix` and `path` as one diff header path. A path with a quote, a backslash or a control character such as a
+ * line break is quoted and escaped as git does. So it can never start a header line of its own, and `parsePRDiff` reads
+ * it back as it was.
  */
 function headerPath(prefix: string, path: string): string {
-  if (![...path].some(isControlChar)) return `${prefix}${path}`;
+  if (![...path].some(c => isControlChar(c) || c === '"' || c === '\\')) return `${prefix}${path}`;
   const escaped = [...path].map(c => C_ESCAPES[c] ?? (isControlChar(c) ? `\\${c.charCodeAt(0).toString(8).padStart(3, '0')}` : c)).join('');
   return `"${prefix}${escaped}"`;
 }
@@ -127,7 +235,7 @@ export interface DiffSection {
  * their order. Each text ends with a line break, so joining them gives a valid diff.
  */
 export function orderDiffSections(rawDiff: string, first: readonly string[] = []): DiffSection[] {
-  const sections = rawDiff.split(/(?=^diff --git )/m).filter(text => text.length > 0).map(text => {
+  const sections = diffSections(rawDiff).map(text => {
     const parsed = parsePRDiff(text);
     return { path: parsed.files[0]?.path ?? parsed.binarySkipped?.[0]?.path ?? '', text: text.endsWith('\n') ? text : `${text}\n` };
   });
@@ -197,35 +305,83 @@ export function listedFilesDiff(files: readonly ListedFile[]): string {
 }
 
 /**
- * Drops files matching `excludePaths` from a parsed diff and recomputes its totals.
+ * Drops the files `closedPaths` closes and those matching `excludePaths` from a parsed diff and recomputes its totals.
+ * A file in `keep` is dropped only when it is closed.
  */
 export function filterDiff(
   diff: ParsedDiff,
   excludePaths: string[],
   keep?: ReadonlySet<string>,
+  closedPaths: readonly string[] = [],
 ): { diff: ParsedDiff; excluded: RoundDiffExcludedFile[] } {
-  const { included, excluded } = filterFilesWithAttribution(diff.files, excludePaths, keep);
-  let totalAdditions = 0;
-  let totalDeletions = 0;
-  for (const file of included) {
-    totalAdditions += file.additions ?? 0;
-    totalDeletions += file.deletions ?? 0;
-  }
-  return { diff: { ...diff, files: included, totalAdditions, totalDeletions }, excluded };
+  const open = withoutClosed(diff, closedPaths);
+  const { included, excluded } = filterFilesWithAttribution(open.diff.files, excludePaths, keep);
+  return { diff: withFiles(open.diff, included), excluded: [...open.closed, ...excluded] };
 }
 
 /**
- * Removes files matching `excludePaths` from a raw unified diff.
+ * Drops from `diff` every file `closedPaths` closes, binaries included, and lists them. A file renamed from a closed path
+ * counts as closed, since its removed lines are the closed file's.
  */
-export function filterRawDiff(rawDiff: string, excludePaths: string[], keep?: ReadonlySet<string>): string {
-  return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths, keep).diff);
+function withoutClosed(diff: ParsedDiff, closedPaths: readonly string[]): { diff: ParsedDiff; closed: RoundDiffExcludedFile[]; movedOut: string[] } {
+  if (closedPaths.length === 0) return { diff, closed: [], movedOut: [] };
+  const closed: RoundDiffExcludedFile[] = [];
+  const movedOut: string[] = [];
+  const isOpen = (path: string, paths: unknown[]): boolean => {
+    const matchedPattern = paths.map(p => (typeof p === 'string' ? findClosedPattern(p, closedPaths) : undefined)).find(Boolean);
+    if (matchedPattern) closed.push({ path, matchedPattern, closed: true });
+    if (matchedPattern && !findClosedPattern(path, closedPaths)) movedOut.push(path);
+    return !matchedPattern;
+  };
+  const files = diff.files.filter(f => isOpen(f.path, [f.path, f.oldPath]));
+  // A binary's header starts with the paths it was diffed from and to, `/dev/null` for an added or deleted file.
+  const binarySkipped = diff.binarySkipped?.filter(b => isOpen(b.path, [b.path, ...(JSON.parse(b.header) as unknown[]).slice(0, 2).filter(p => p !== '/dev/null')]));
+  return { diff: { ...withFiles(diff, files), ...(binarySkipped && { binarySkipped }) }, closed, movedOut };
 }
 
-/** Parses a PR's raw diff and splits it into the files the review reads and the files `excludePaths` leaves out. */
-export function reviewableDiff(rawDiff: string, excludePaths: string[]): { fullDiff: ParsedDiff; diff: ParsedDiff; excludedFiles: RoundDiffExcludedFile[]; rawDiff: string } {
-  const fullDiff = parsePRDiff(rawDiff);
+/** Returns `diff` with only `files`, and its totals counted again. */
+function withFiles(diff: ParsedDiff, files: DiffFile[]): ParsedDiff {
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+  for (const file of files) {
+    totalAdditions += file.additions ?? 0;
+    totalDeletions += file.deletions ?? 0;
+  }
+  return { ...diff, files, totalAdditions, totalDeletions };
+}
+
+/**
+ * Removes the files `closedPaths` closes and those matching `excludePaths` from a raw unified diff.
+ */
+export function filterRawDiff(rawDiff: string, excludePaths: string[], keep?: ReadonlySet<string>, closedPaths: readonly string[] = []): string {
+  return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths, keep, closedPaths).diff);
+}
+
+/**
+ * Returns `rawDiff` without the sections of the files `closedPaths` closes. The other sections are kept as they came, so
+ * binaries, mode lines and hunk context stay. A section that holds no file is dropped too.
+ */
+export function closeRawDiff(rawDiff: string, closedPaths: readonly string[]): string {
+  if (closedPaths.length === 0) return rawDiff;
+  return diffSections(rawDiff).filter(text => {
+    const parsed = parsePRDiff(text);
+    return parsed.files.length + (parsed.binarySkipped?.length ?? 0) > 0 && withoutClosed(parsed, closedPaths).closed.length === 0;
+  }).join('');
+}
+
+/**
+ * Parses a PR's raw diff and splits it into the files the review reads and the files `excludePaths` or `closedPaths`
+ * leave out. A closed file is also left out of `fullDiff`, so no stage and no analyzer reads its lines. `closedPaths` in
+ * the result also closes the head path of each file renamed out of a closed path, which holds the closed file's text.
+ */
+export function reviewableDiff(
+  rawDiff: string, excludePaths: string[], closedPaths: readonly string[] = [],
+): { fullDiff: ParsedDiff; diff: ParsedDiff; excludedFiles: RoundDiffExcludedFile[]; rawDiff: string; closedPaths: string[] } {
+  const { diff: fullDiff, closed, movedOut } = withoutClosed(parsePRDiff(rawDiff), closedPaths);
   const { diff, excluded } = filterDiff(fullDiff, excludePaths);
-  return { fullDiff, diff, excludedFiles: excluded, rawDiff: rebuildRawDiff(diff) };
+  // `findClosedPattern` matches the path's normalized spelling, and braces would expand to other names unless escaped.
+  const withMoved = [...closedPaths, ...movedOut.map(path => `/${minimatch.escape(closedPathKey(path), { magicalBraces: true })}`)];
+  return { fullDiff, diff, excludedFiles: [...closed, ...excluded], rawDiff: rebuildRawDiff(diff), closedPaths: withMoved };
 }
 
 /** The change a file's diff makes, without hunk positions, so a rebase that moves it keeps it. */

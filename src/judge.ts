@@ -14,7 +14,7 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { addedLines, isLineInDiff, newLineNumbers, orderDiffSections, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { addedLines, isLineInDiff, newLineNumbers, orderDiffSections, parsePRDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
@@ -81,82 +81,18 @@ function normalizeForMatch(text: string): string {
  */
 function extractAddedLineBlocks(rawDiff: string): AddedLineBlock[] {
   const blocks: AddedLineBlock[] = [];
-  const lines = rawDiff.split('\n');
-
-  let currentFile: string | null = null;
-  let newLineNum = 0;
-  let inHunk = false;
-
-  let blockLines: string[] = [];
-  let blockStart = 0;
-
-  const flush = (): void => {
-    if (blockLines.length > 0 && currentFile) {
-      blocks.push({
-        file: currentFile,
-        lineStart: blockStart,
-        lineEnd: blockStart + blockLines.length - 1,
-        text: blockLines.join('\n'),
-      });
-    }
-    blockLines = [];
-  };
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git ')) {
-      flush();
-      inHunk = false;
-      // `diff --git a/path b/path` — take the `b/` path
-      const match = /^diff --git a\/.+? b\/(.+)$/.exec(line);
-      currentFile = match ? match[1] : null;
-      continue;
-    }
-
-    if (!inHunk && line.startsWith('+++ ')) {
-      // Alternative source of the file path, used when no `diff --git` header.
-      if (!currentFile) {
-        const m = /^\+\+\+ b\/(.+)$/.exec(line) ?? /^\+\+\+ (.+)$/.exec(line);
-        currentFile = m ? m[1] : null;
+  for (const file of parsePRDiff(rawDiff).files) {
+    let block: AddedLineBlock | undefined;
+    for (const [line, text] of addedLines(file)) {
+      if (block && line === block.lineEnd + 1) {
+        block.lineEnd = line;
+        block.text += `\n${text}`;
+      } else {
+        block = { file: file.path, lineStart: line, lineEnd: line, text };
+        blocks.push(block);
       }
-      continue;
     }
-
-    if (!inHunk && line.startsWith('--- ')) {
-      continue;
-    }
-
-    if (line.startsWith('@@ ')) {
-      flush();
-      inHunk = true;
-      const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-      newLineNum = match ? parseInt(match[1], 10) : 0;
-      continue;
-    }
-
-    if (!inHunk || !currentFile) continue;
-
-    if (line.startsWith('\\')) continue; // '\ No newline at end of file' — not a real line
-
-    if (line.startsWith('+')) {
-      if (blockLines.length === 0) blockStart = newLineNum;
-      blockLines.push(line.slice(1));
-      newLineNum++;
-      continue;
-    }
-
-    flush();
-
-    if (line.startsWith('-')) {
-      // Deletion: does not advance the new-line counter.
-      continue;
-    }
-
-    // Context line (leading space, or bare continuation) advances the counter.
-    newLineNum++;
   }
-
-  flush();
-
   return blocks;
 }
 

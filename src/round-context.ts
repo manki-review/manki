@@ -31,7 +31,7 @@ export interface RoundRecordInput {
   priorRoundCount: number;
   maxAutoRounds: number;
   diff: ParsedDiff;
-  /** `changeDigest` of the PR's full diff, excluded files included. */
+  /** `changeDigest` of the PR's full diff, excluded files included and closed files left out. */
   changeDigest: string;
   excludedFiles: RoundDiffExcludedFile[];
   openThreads: OpenThread[];
@@ -73,7 +73,10 @@ export function buildRoundRecap(recap: {
   };
 }
 
-/** Totals `calls`, per stage and per model, and keeps the calls. Only the newest reading of each usage limit is kept. */
+/**
+ * Totals `calls`, per stage and per model, and keeps the calls. Only the newest reading of each usage limit is kept.
+ * Counts the tool calls refused for a closed path when any was.
+ */
 export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
   const groups = (key: (call: LLMCall) => string | undefined): Record<string, RoundUsageStage> => {
     const byKey = new Map<string, LLMCall[]>();
@@ -84,10 +87,12 @@ export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
     return Object.fromEntries([...byKey].map(([k, group]) => [k, summarizeCalls(group)]));
   };
   const limits = latestLimits(calls);
+  const closedCalls = calls.reduce((sum, call) => sum + (call.closedCalls ?? 0), 0);
   return {
     ...summarizeCalls(calls),
     ...(calls.length > 0 && { perStage: groups(c => c.stage), perModel: groups(c => c.model), llmCalls: calls.map(({ limits: _limits, ...call }) => call) }),
     ...(limits.length > 0 && { limits }),
+    ...(closedCalls > 0 && { closedCalls }),
   };
 }
 

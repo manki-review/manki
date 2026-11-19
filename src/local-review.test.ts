@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -129,7 +129,7 @@ describe('reviewLocal', () => {
     jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
     expect((await reviewLocal({ repoRoot: repo, base: later, head: 'binary', providerInputs: inputs })).approvalHeld).toBe('unread');
     expect(jest.mocked(runReview).mock.calls.at(-1)![1].excludedPaths).toEqual([]);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews a follow-up round from an earlier round: its threads with the code now, its record, and the diff since', async () => {
     git(repo, 'checkout', '-q', 'feature');
@@ -185,11 +185,14 @@ describe('reviewLocal', () => {
       ['Outside the repo', undefined, 'warning', undefined, undefined],
     ]);
     // A warning without a thread was listed in the review body, so its entry holds the place it points at. `src/a.ts` has
-    // no line 3. A warning without a file has no place, and neither has one in a file that cannot be read.
-    expect(record.findings.entries.map(e => [e.posted, e.citedLine?.count]).slice(3)).toEqual([
-      [undefined, undefined], ['body', undefined], ['body', 1], ['body', 1], ['body', 1], ['body', 1], ['body', 1], ['body', undefined], ['body', undefined],
+    // no line 3. A warning without a file has no place. One in a file that cannot be read is marked unread, so it stays carried.
+    expect(record.findings.entries.map(e => [e.posted, e.citedLine?.count, e.unread]).slice(3)).toEqual([
+      [undefined, undefined, undefined], ['body', undefined, undefined], ['body', 1, undefined], ['body', 1, undefined], ['body', 1, undefined], ['body', 1, undefined], ['body', 1, undefined], ['body', undefined, undefined], ['body', undefined, true],
     ]);
-    expect(jest.mocked(core.warning).mock.calls.filter(([message]) => `${message}`.startsWith('Failed to read'))).toEqual([[expect.stringMatching(/^Failed to read \.\.\/outside\.ts, so its earlier warnings are not carried: /)]]);
+    expect(jest.mocked(core.warning).mock.calls.filter(([message]) => `${message}`.startsWith('Failed to read'))).toEqual([
+      [expect.stringMatching(/^Failed to read \.\.\/outside\.ts, so its earlier warnings are carried without their line: /)],
+      [expect.stringMatching(/^Failed to read \.\.\/outside\.ts, so the warnings carried on it stay listed: /)],
+    ]);
     // The earlier round's cell and doubts come back with its conditional grade, and an earlier finding without them has none.
     expect(record.findings.entries.map(e => [e.cell, e.doubts]).slice(3, 5)).toEqual([[undefined, undefined], [{ row: 'wrong', column: 'rare' }, [REACH_DOUBT]]]);
     // A note on code the earlier round reviewed, or one it listed, is left out as in a pull request round.
@@ -200,7 +203,8 @@ describe('reviewLocal', () => {
     expect(review.context.findings.count).toBe(6);
     // A warning the earlier round listed in its body is carried while the place it points at reads the same, with the
     // line that place is on now, whatever else the push changed in its file. One on a line the file does not have is not carried.
-    expect(review.result.carried?.map(e => [e.title, e.raisedIn, e.currentLine])).toEqual([['Tenth value is wrong', 1, 10], ['End runs late', 1, 6]]);
+    // One in a file that cannot be read stays carried without a line.
+    expect(review.result.carried?.map(e => [e.title, e.raisedIn, e.currentLine])).toEqual([['Tenth value is wrong', 1, 10], ['End runs late', 1, 6], ['Outside the repo', 1, undefined]]);
     expect(review.context.findings.carried).toEqual(review.result.carried);
     // An edited line ends its warning, in a file outside the diff too. So does a note that names it, which `review.notes` left out.
     expect(review.context.findings.carriedEnded).toEqual([
@@ -260,16 +264,25 @@ describe('reviewLocal', () => {
     expect(await read(['src/limits.ts', 'src/b.ts', '../outside.ts'])).toEqual([['src/limits.ts'], ['src/limits.ts'], true]);
     // Without cited files, as in a case written before they were recorded, only the thread's own file counts.
     expect(await read()).toEqual([undefined, undefined, false]);
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].openThreads![0].currentCode).toContain('retry(MAX);');
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].openThreads![0].codeUnread).toBeUndefined();
+
+    // The code of a thread on a file `closed_paths` closes is not read, so the judge is told it cannot see it.
+    const config = { ...jest.requireActual('./config').DEFAULT_CONFIG, closed_paths: ['src/b.ts'] };
+    await reviewLocal({ repoRoot: repo, base: later, head: fixed, earlier: { head: reviewed, findings: [thread] }, config, providerInputs: inputs });
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].openThreads![0].currentCode).not.toContain('retry(MAX);');
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].openThreads![0].codeUnread).toBe(true);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
-    let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean; indexed: string } | undefined;
+    let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean; indexed: string; closed: boolean; patch: boolean } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
       const workspace = options.workspace!;
       workspaceSeen = {
         content: readFileSync(join(workspace, 'src/a.ts'), 'utf-8'), env: existsSync(join(workspace, '.env')), linkIsFile: lstatSync(join(workspace, 'link')).isFile(),
-        // Tools that list tracked files read the index, so it holds the files and the symlink the patch adds.
+        // Tools that list tracked files read the index, so it holds the symlink the patch adds and no closed file.
         indexed: git(workspace, 'ls-files', '-s', '--', 'docs/x.md', 'link').replace(/ [0-9a-f]+ /g, ' '),
+        closed: existsSync(join(workspace, 'docs')), patch: readdirSync(join(workspace, '.git')).some(name => name.endsWith('.patch')),
       };
       return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
     });
@@ -281,18 +294,34 @@ describe('reviewLocal', () => {
     writeFileSync(join(repo, '.env'), 'SECRET=1\n');
 
     const review = await reviewLocal({
-      repoRoot: repo, base: 'main', head: 'HEAD', patch, config: { ...jest.requireActual('./config').DEFAULT_CONFIG, exclude_paths: [] },
+      repoRoot: repo, base: 'main', head: 'HEAD', patch, config: { ...jest.requireActual('./config').DEFAULT_CONFIG, exclude_paths: [], closed_paths: ['docs/**'] },
       title: 'My change', body: 'Why it changes', providerInputs: inputs,
     });
 
     const options = jest.mocked(runReview).mock.calls[0][1];
-    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true, indexed: '100644 0\tdocs/x.md\n120000 0\tlink' });
+    // The closed files the patch changes are deleted after it applies, and the patch file, which holds their lines, with them.
+    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true, indexed: '120000 0\tlink', closed: false, patch: false });
     expect(options.workspace).not.toBe(repo);
     expect(existsSync(options.workspace!)).toBe(false);
-    expect(options.rawDiff).toContain('docs/x.md');
+    expect(options.rawDiff).not.toContain('docs/x.md');
+    expect(options.excludedPaths).toEqual(['docs/x.md']);
     expect(options.prContext).toEqual({ title: 'My change', body: 'Why it changes', baseBranch: 'main' });
     expect(review.base).toBe(review.head);
-  });
+
+    // A file moved out of a closed path holds the closed file's text, so it is closed in the checkout and for every later read too.
+    git(repo, 'checkout', '-q', '-b', 'moved', 'feature');
+    git(repo, 'mv', 'docs/x.md', 'src/x.md');
+    commit(repo, 'Move the notes', { 'src/a.ts': 'const a = 1;\nconst b = 9;\n' });
+    git(repo, 'checkout', '-q', 'main');
+    let movedSeen: boolean | undefined;
+    jest.mocked(runReview).mockImplementation(async (_clients, options) => {
+      movedSeen = existsSync(join(options.workspace!, 'src/x.md'));
+      return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
+    });
+    await reviewLocal({ repoRoot: repo, base: 'feature', head: 'moved', config: { ...jest.requireActual('./config').DEFAULT_CONFIG, closed_paths: ['docs/**'] }, providerInputs: inputs });
+    expect(movedSeen).toBe(false);
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].config.closed_paths).toEqual(['docs/**', '/src/x.md']);
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('reads a symlinked config and instruction file at their targets, and no target outside the tree', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
@@ -312,7 +341,13 @@ describe('reviewLocal', () => {
     expect(options.config.exclude_paths).toContain('vendor/**');
     expect(options.repoContext).toContain('Linked rules.');
     expect(options.repoContext).not.toContain('CLAUDE.md');
-  });
+
+    // While the config closes paths, a symlink reads as no file, since its target could be closed.
+    jest.mocked(runReview).mockClear();
+    const config = { ...jest.requireActual('./config').DEFAULT_CONFIG, closed_paths: ['bench/**'] };
+    await reviewLocal({ repoRoot: repo, base: 'linked', head: 'linked-change', config, providerInputs: inputs });
+    expect(jest.mocked(runReview).mock.calls[0][1].repoContext ?? '').not.toContain('Linked rules.');
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews a change that only bumps an excluded lockfile through its package list, from a commit range and from a patch', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
@@ -339,18 +374,27 @@ describe('reviewLocal', () => {
     git(repo, 'checkout', '-q', '-b', 'huge', 'locked');
     commit(repo, 'Bump hex in a huge lockfile', { 'Cargo.lock': `# ${'x'.repeat(10 * 1024 * 1024)}\n${lock('0.4.3')}` });
     await expect(reviewLocal({ repoRoot: repo, base: 'locked', head: 'huge', providerInputs: inputs })).rejects.toThrow('Nothing to review');
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('refuses a patch that does not apply to the head', async () => {
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'HEAD', patch: git(repo, 'diff', 'feature~1', 'feature'), providerInputs: inputs }))
       .rejects.toThrow('The patch does not apply to');
     expect(runReview).not.toHaveBeenCalled();
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews with the defaults when the base config does not load, and with the base config and no approval when the change breaks it, as a pull request round does', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    // A base config whose YAML does not parse but names `closed_paths` cannot say which paths it closes, so the review stops before it reads any code.
+    git(repo, 'checkout', '-q', '-b', 'unparsable', base);
+    commit(repo, 'Break YAML', { '.manki.yml': 'closed_paths: [\n' });
+    git(repo, 'checkout', '-q', '-b', 'unparsable-fix');
+    commit(repo, 'Fix YAML', { '.manki.yml': 'exclude_paths: []\n', 'src/a.ts': 'const a = 2;\n' });
+    await expect(reviewLocal({ repoRoot: repo, base: 'unparsable', head: 'unparsable-fix', providerInputs: inputs }))
+      .rejects.toThrow("The base branch's `.manki.yml` names `closed_paths` but does not parse, or its `closed_paths` is not a list of paths");
+    expect(runReview).not.toHaveBeenCalled();
+
     git(repo, 'checkout', '-q', '-b', 'broken', base);
-    commit(repo, 'Break config', { '.manki.yml': 'exclude_paths: [\n' });
+    commit(repo, 'Break config', { '.manki.yml': 'closed_paths:\n  - "docs/**"\nmax_diff_lines: 0\n' });
     git(repo, 'checkout', '-q', '-b', 'fix');
     commit(repo, 'Fix config', { '.manki.yml': 'exclude_paths: []\n', 'src/a.ts': 'const a = 2;\n' });
 
@@ -361,12 +405,13 @@ describe('reviewLocal', () => {
     jest.mocked(runReview).mockResolvedValueOnce({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'One blocker', findings: [{ ...finding }], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
     expect((await reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', providerInputs: inputs })).approvalHeld).toBe(false);
 
-    expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual(jest.requireActual('./config').DEFAULT_CONFIG.exclude_paths);
+    // The defaults keep the paths the file closes.
+    expect(jest.mocked(runReview).mock.calls[0][1].config).toMatchObject({ exclude_paths: jest.requireActual('./config').DEFAULT_CONFIG.exclude_paths, closed_paths: ['docs/**'] });
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, using the defaults'));
     // The defaults that stand in for the broken base config are not what the change edits.
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));
-    await expect(reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', configOverrides: { max_diff_lines: 2000 }, providerInputs: inputs }))
-      .rejects.toThrow('Invalid YAML in .manki.yml');
+    await expect(reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', configOverrides: { exclude_paths: [] }, providerInputs: inputs }))
+      .rejects.toThrow('`max_diff_lines` must be');
 
     jest.mocked(runReview).mockClear();
     jest.mocked(core.warning).mockClear();
@@ -382,7 +427,7 @@ describe('reviewLocal', () => {
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringMatching(/^Could not load \.manki\.yml at the head, this review uses the base's settings: Invalid YAML/));
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));
 
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('holds a patch review whose patch leaves a config that does not load, read with the patch applied', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
@@ -416,7 +461,7 @@ describe('reviewLocal', () => {
     // A patch that does not apply cannot show what config it leaves, so it is refused without tools too.
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'main', patch: git(repo, 'diff', 'feature~1', 'feature'), providerInputs: noTools }))
       .rejects.toThrow('The patch does not apply to');
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('sets config overrides on top of the base config, and refuses overrides that make it invalid or name an unknown key before any model call', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
@@ -437,7 +482,7 @@ describe('reviewLocal', () => {
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { model: { reviewer: 'claude-opus-5-5' } }, providerInputs: inputs }))
       .rejects.toThrow('The config overrides name keys the config does not know: Unknown config key: "model"');
     expect(runReview).not.toHaveBeenCalled();
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('refuses a change with no reviewable files before any model call', async () => {
     git(repo, 'checkout', '-q', '-b', 'docs-only', base);
@@ -445,7 +490,7 @@ describe('reviewLocal', () => {
 
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'docs-only', providerInputs: inputs })).rejects.toThrow('no reviewable files');
     expect(runReview).not.toHaveBeenCalled();
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 });
 
 describe('overlayConfig', () => {
