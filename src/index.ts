@@ -24,7 +24,7 @@ import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, parseContextBlocks, PreviousFinding, pushTouchesThread, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
 import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, ROUND_TIME_MS, runReview, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
-import { buildRoundContext, RoundRecordInput } from './round-context';
+import { buildRoundContext, mergedDuplicateCount, RoundRecordInput } from './round-context';
 import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } from './run-diagnostics';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
@@ -1567,6 +1567,9 @@ async function reviewRound(
         if (event.judgeSkipped) dashboard.judgeSkipped = true;
         dashboard.staticDedupCount = event.staticDedupCount;
         dashboard.llmDedupCount = event.llmDedupCount;
+        dashboard.toolAlertCount = event.toolAlertCount;
+        dashboard.carriedLeadCount = event.carriedLeadCount;
+        dashboard.openLeadCount = event.openLeadCount;
       } else if (event.phase === 'graded' && event.graded) {
         dashboard.graded = { ...event.graded, durationMs: now - (dashboard.judgeStartedAt ?? now) };
       } else if (event.phase === 'refuter' && event.refuterCheck) {
@@ -1956,13 +1959,21 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   for (const { originalSeverity } of dropped) {
     droppedSeverities[originalSeverity] = (droppedSeverities[originalSeverity] ?? 0) + 1;
   }
+  const judgedKeys = new Set(allJudgedForDashboard.map(findingKey));
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',
     totalDurationMs,
     ...(result.routing && { routing: result.routing }),
+    // The sweeps and the checks after the judge run past the judging event, so the round's own counts replace the event's.
+    staticDedupCount: result.staticDedupCount ?? dashboard.staticDedupCount,
+    llmDedupCount: result.llmDedupCount ?? dashboard.llmDedupCount,
+    sweepRepeatCount: result.sweepRepeatCount,
+    openLeadCount: result.openLeads?.length ?? 0,
     keptCount: result.findings.length,
     droppedCount: dropped.length,
+    mergedCount: Math.max(0, mergedDuplicateCount(result)),
+    addedAfterJudgeCount: result.findings.filter(f => !judgedKeys.has(findingKey(f))).length,
     keptSeverities,
     droppedSeverities,
     ...(result.suppressionCount && { suppressionCount: result.suppressionCount }),

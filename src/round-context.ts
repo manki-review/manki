@@ -91,6 +91,13 @@ export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
   };
 }
 
+/** Returns how many findings the judge merged into another one: the findings sent to its calls, less the ones they returned. */
+export function mergedDuplicateCount(result: Pick<ReviewResult, 'rawFindingCount' | 'toolAlertCount' | 'staticDedupCount' | 'llmDedupCount' | 'allJudgedFindings'>): number {
+  const judged = result.allJudgedFindings?.length ?? 0;
+  if (judged === 0) return 0;
+  return (result.rawFindingCount ?? 0) + (result.toolAlertCount ?? 0) - (result.staticDedupCount ?? 0) - (result.llmDedupCount ?? 0) - judged;
+}
+
 /** Builds the `RoundContext` a review posts, which later rounds read back as their history. */
 export function buildRoundContext(input: RoundRecordInput, result: ReviewResult, durations: RoundDurations): RoundContext {
   const {
@@ -159,13 +166,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     if (!f.reviewerSeverity || f.reviewerSeverity === judgeGrade) continue;
     regrades[SEVERITY_ORDER.indexOf(judgeGrade) < SEVERITY_ORDER.indexOf(f.reviewerSeverity) ? 'up' : 'down']++;
   }
-  const mergedDuplicates = allJudged.length > 0
-    ? (result.rawFindingCount ?? 0)
-      + (result.toolAlertCount ?? 0)
-      - (result.staticDedupCount ?? 0)
-      - (result.llmDedupCount ?? 0)
-      - allJudged.length
-    : 0;
+  const mergedDuplicates = mergedDuplicateCount(result);
   const ownProposalDemotedCount = allJudged.filter(f => f.tags?.includes(OWN_PROPOSAL_TAG)).length;
   const contradictionDemotedCount = allJudged.filter(f => f.tags?.includes(CONTRADICTION_TAG)).length;
   const ratchetSuppressedCount = allJudged.filter(f => f.tags?.includes(RATCHET_SUPPRESSED_TAG)).length;
