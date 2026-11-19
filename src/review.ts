@@ -2088,8 +2088,8 @@ export async function runReview(
         continue;
       }
       core.info(`Scope reader: "${warning.title}" stays out, since its thread is settled and the PR title and description did not change`);
+      // Listed as a drop, but no repeat in `staticDedupCount`, since the warning was never among `rawFindingCount`.
       duplicateMatches.push({ droppedTitle: warning.title, matchedTitle: warning.title, matchType: 'exact' });
-      staticDedupCount++;
     }
     // Added after the round's suppression step, so it runs on them here, before a refuter call is spent on a dismissed doubt.
     const suppression = memory?.suppressions?.length ? applySuppressions(unique, memory.suppressions) : { kept: unique, suppressed: [] };

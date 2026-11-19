@@ -45,7 +45,7 @@ import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
-import { buildRoundContext, buildRoundUsage } from './round-context';
+import { buildRoundContext, buildRoundUsage, mergedDuplicateCount } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
@@ -3012,17 +3012,23 @@ describe('runReview', () => {
       const round = async (previousFindings: ReturnType<typeof settledBy>, current: RoundScope) => {
         jest.mocked(runScopeReader).mockResolvedValue(current);
         const clients = refutingClients('confirmed');
+        // A finder's note gives the judge something to grade, so the merged count is worked out.
+        jest.mocked(clients.reviewer.sendMessage).mockResolvedValue({ content: JSON.stringify([{ severity: 'note', title: 'Rename the flag', file: 'src/y.ts', line: 1, description: 'd' }]) });
         const result = await runReview(clients, { ...options, config, priorRounds, interRoundDiff: push, workspace: root, previousFindings });
-        return { posted: fromScope(result).map(f => [f.title, f.threadId, f.answeredIn?.threadId]), dropped: result.duplicateMatches?.map(d => d.droppedTitle), calls: refuterCalls(clients).length };
+        // A warning that stays out was never among the review's findings, so it counts as no repeat and leaves the merged count exact.
+        return {
+          posted: fromScope(result).map(f => [f.title, f.threadId, f.answeredIn?.threadId]), dropped: result.duplicateMatches?.map(d => d.droppedTitle), calls: refuterCalls(clients).length,
+          counts: [result.staticDedupCount, mergedDuplicateCount(result)],
+        };
       };
 
       for (const settled of [settledBy('auto-resolved', 'Withdrawn. The CLI calls it.'), settledBy('auto-resolved', 'Agreed. A follow-up issue tracks it.'), settledBy('resolved')]) {
         // Pushes that change the diff and the reader's wording leave it settled, and spend no refuter call.
         for (const current of [{ ...answer, doubt: 'Nothing reads the new flag.', proof: ['src/y.ts:1'] }, { ...answer, doubt: 'It repeats `src/y.ts`.' }]) {
-          expect(await round(settled, current)).toEqual({ posted: [], dropped: [doubtTitle, splitTitle], calls: 0 });
+          expect(await round(settled, current)).toEqual({ posted: [], dropped: [doubtTitle, splitTitle], calls: 0, counts: [0, 0] });
         }
         // A new PR title or description reopens each thread with the round's warning, and posts no second thread.
-        expect(await round(settled, { ...answer, purpose: 'purpose-2' })).toEqual({ posted: [[doubtTitle, undefined, 'T8'], [splitTitle, undefined, 'T9']], dropped: undefined, calls: 1 });
+        expect(await round(settled, { ...answer, purpose: 'purpose-2' })).toEqual({ posted: [[doubtTitle, undefined, 'T8'], [splitTitle, undefined, 'T9']], dropped: undefined, calls: 1, counts: [0, 0] });
       }
     }, GIT_TEST_TIMEOUT_MS);
 
