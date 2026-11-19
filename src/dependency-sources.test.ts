@@ -8,7 +8,7 @@ import { cratesIo } from './registries/crates';
 import { npmRegistry } from './registries/npm';
 import { Registry } from './registries/types';
 import { fetchedRelatedRepos } from './related-repos';
-import { FakeRegistry, fakeRegistry, sha256Hex, sha512Integrity, tarGz } from './test-utils';
+import { FakeRegistry, fakeRegistry, git, sha256Hex, sha512Integrity, tarGz } from './test-utils';
 
 const crate = (version: string) => tarGz([{ name: `demo-${version}/src/lib.rs`, data: `pub const VERSION: &str = "${version}";\n` }]);
 const CRATES = { '1.2.0': crate('1.2.0'), '1.2.5': crate('1.2.5'), '2.0.0': crate('2.0.0') };
@@ -86,6 +86,8 @@ describe('dependencyLoader', () => {
       writeFileSync(join(repo, path), text);
     }
     mkdirSync(repo, { recursive: true });
+    git(repo, 'init', '-q');
+    git(repo, 'add', '-A');
     return { repo, stateDir, load: dependencyLoader(repo, stateDir, { registries, ...options }) };
   }
 
@@ -533,17 +535,25 @@ describe('dependencyLoader', () => {
     const total = round({ 'a/Cargo.lock': '[[package]]\nname = "other"\nversion = "1.0.0"\n'.repeat(4), 'b/Cargo.lock': lock }, { maxManifestTotalBytes: lock.length + 50 });
     await expect(total.load('crates.io/demo')).rejects.toThrow('Manki could not read b/Cargo.lock, which can lock it');
 
-    // Installed packages are never entered, and files that are no lockfile or manifest take no place in the listing.
-    const installed = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`node_modules/x/f${i}.js`, '']));
+    // Installed packages and build output are never listed, and files that are no lockfile or manifest take no place in the listing.
+    const installed = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`node_modules/x${i}/package.json`, '{}']));
     const apps = Object.fromEntries(Array.from({ length: 3 }, (_, i) => [`apps/f${i}.txt`, '']));
-    const listed = round({ ...installed, ...apps, 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/left-pad': { version: '1.2.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz', integrity: sha512Integrity(PAD) } } }) }, { listLimits: { maxFiles: 1, maxWalked: 8 } });
+    const listed = round({ ...installed, ...apps, 'target/Cargo.lock': lock, 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/left-pad': { version: '1.2.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz', integrity: sha512Integrity(PAD) } } }) }, { maxListed: 1 });
     expect((await listed.load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
-    // A walk cut short may have missed a lockfile or setting, so it refuses every package, also one a listed lockfile locks.
-    const cut = round({ ...apps, 'package-lock.json': '{}' }, { listLimits: { maxWalked: 3 } });
-    await expect(cut.load('npm/left-pad')).rejects.toThrow('Manki does not read npm/left-pad: Manki stopped listing the checkout after 3 files and folders, the most it visits, so it cannot tell which code the PR runs.');
-    expect(dependencyOutcomes(cut.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', status: 'refused' })]);
-    const many = round({ 'a/Cargo.lock': lock, 'b/Cargo.lock': lock }, { listLimits: { maxFiles: 1 } });
+    // A listing past its cap may have missed a lockfile or setting, so it refuses every package, also one a listed lockfile locks.
+    const many = round({ 'a/Cargo.lock': lock, 'b/Cargo.lock': lock }, { maxListed: 1 });
     await expect(many.load('crates.io/demo@1.2.0')).rejects.toThrow('the checkout holds more than 1 lockfiles, manifests and settings files, the most Manki lists');
+    expect(dependencyOutcomes(many.stateDir)).toEqual([expect.objectContaining({ package: 'crates.io/demo', status: 'refused' })]);
+    // Past the lockfiles Manki reads of a checkout, one it does not read may lock the package.
+    const locks = round(Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`m${i}/Cargo.lock`, lock])));
+    await expect(locks.load('crates.io/demo')).rejects.toThrow('Manki does not read crates.io/demo: the checkout holds 51 lockfiles, more than the 50 Manki reads.');
+    // Only the files git tracks are the PR's, and a checkout git cannot list refuses every package.
+    const untracked = round({});
+    writeFileSync(join(untracked.repo, 'Cargo.lock'), lock);
+    await expect(untracked.load('crates.io/demo')).rejects.toThrow('is not a dependency');
+    rmSync(join(untracked.repo, '.git'), { recursive: true });
+    const unlisted = dependencyLoader(untracked.repo, untracked.stateDir, { registries });
+    await expect(unlisted('crates.io/demo')).rejects.toThrow('Manki does not read crates.io/demo: Manki could not list the files of the checkout');
   });
 });
 

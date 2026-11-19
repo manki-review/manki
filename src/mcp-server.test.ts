@@ -490,6 +490,8 @@ describe('Manki tool server', () => {
     mkdirSync(depRepo);
     const archive = tarGz([{ name: 'demo-1.0.0/src/lib.rs', data: 'pub fn parse() -> u8 {\n    panic!("out of range")\n}\n' }]);
     writeFileSync(join(depRepo, 'Cargo.lock'), `[[package]]\nname = "demo"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${sha256Hex(archive)}"\n`);
+    git(depRepo, 'init', '-q');
+    git(depRepo, 'add', '-A');
     const registry = await fakeRegistry({ '/crates/demo/demo-1.0.0.crate': archive });
     const stateDir = join(base, 'dep-state');
     mkdirSync(stateDir);

@@ -1,17 +1,17 @@
 import * as core from '@actions/core';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join, posix } from 'path';
 import { rcompare, satisfies, valid } from 'semver';
 
 import { ArchiveLimits, extractTarGz } from './archive';
-import { lockedPackages } from './lockfile';
-import { ListOptions, listFiles, resolveInRoot } from './mcp-server';
+import { lockedPackages, MAX_LOCKFILE_BYTES, MAX_LOCKFILES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
+import { resolveInRoot } from './mcp-server';
 import { cratesIo } from './registries/crates';
 import { npmRegistry } from './registries/npm';
 import { shown } from './registries/shown';
 import { PublishedVersion, Registry, RegistryConfig, RegistryFetch } from './registries/types';
-import { DEPENDENCY_STATE, FETCH_TIMEOUT_MS, fetchOutcome, RelatedRepoPending, RetryableFetch, sharedCheckout, WAIT_SLACK_MS, writeMarker } from './related-repos';
+import { DEPENDENCY_STATE, FETCH_TIMEOUT_MS, fetchOutcome, RelatedRepoPending, RetryableFetch, sharedCheckout, trackedFiles, WAIT_SLACK_MS, writeMarker } from './related-repos';
 import { claimStep, STALE_TIMEOUT_MS } from './tool-steps';
 import { fetchWhole, matchesIntegrity } from './tool-install';
 import { RoundDependencySource } from './types';
@@ -24,15 +24,8 @@ export const REGISTRIES: readonly Registry[] = [cratesIo(), npmRegistry()];
 
 /** The most bytes of a package archive as downloaded. `extractTarGz` caps what it unpacks to. */
 const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
-/** The most bytes of a lockfile or manifest Manki reads for a package's version. A lockfile can run to several MB. */
-const MAX_MANIFEST_BYTES = 20 * 1024 * 1024;
-/** The most bytes of lockfiles, manifests and registry settings one call reads in all. */
-const MAX_MANIFEST_TOTAL_BYTES = 100 * 1024 * 1024;
-/** The most lockfiles, manifests and settings files the walk of the checkout lists, and the most files and folders it visits. */
+/** The most lockfiles, manifests and settings files of the checkout Manki lists. */
 const MAX_LISTED = 20_000;
-const MAX_WALKED = 200_000;
-/** Folders of installed packages or build output, whose lockfiles and manifests are not the PR's own. */
-const SKIPPED_FOLDERS = new Set(['node_modules', 'target', '.git']);
 const SRI_ALGORITHMS = ['sha512', 'sha384', 'sha256', 'sha1'];
 
 /** A package version the PR uses, and where that version comes from. */
@@ -53,7 +46,7 @@ interface Resolved {
   hostAssumed?: true;
 }
 
-/** The lockfiles, manifests and settings of the checkout, and why the walk that listed them stopped early, if it did. */
+/** The lockfiles, manifests and settings of the checkout, and why Manki cannot tell which code the PR runs from them, if it cannot. */
 interface Listing {
   files: readonly string[];
   cut?: string;
@@ -204,6 +197,8 @@ async function resolveDependency(
   }
   const unreadIn = (dir: string, below = false) => unreadInstall.find(f => within(dir, posix.dirname(f)) || (below && within(posix.dirname(f), dir)));
   const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)));
+  // A lockfile past the cap may lock the package too, so the listing cannot settle it.
+  if (lockfiles.length > MAX_LOCKFILES) refuse(`the checkout holds ${lockfiles.length} lockfiles, more than the ${MAX_LOCKFILES} Manki reads`);
   const locked = lockfiles.flatMap(file => {
     const text = read(file, 'lock it');
     return certain(file, text, () => lockedPackages(file, text), []).filter(p => registry.sameName(p.name, name)).map(p => ({ ...p, file }));
@@ -397,8 +392,8 @@ export interface DependencyLoaderOptions {
   /** The most bytes of one lockfile, manifest or registry setting, and of all those one call reads. */
   maxManifestBytes?: number;
   maxManifestTotalBytes?: number;
-  /** What the walk of the checkout for lockfiles and manifests may keep and visit. */
-  listLimits?: Pick<ListOptions, 'maxFiles' | 'maxWalked'>;
+  /** The most lockfiles, manifests and settings files of the checkout Manki lists. */
+  maxListed?: number;
 }
 
 /** A package a tool call reads, with the note that tells the model which version it is and where that comes from. */
@@ -419,32 +414,30 @@ export function dependencyLoader(
   root: string, stateDir: string,
   {
     registries = REGISTRIES, timeoutMs = FETCH_TIMEOUT_MS, callLimitMs = STALE_TIMEOUT_MS, maxPackages = MAX_PACKAGES_PER_ROUND, maxArchiveBytes = MAX_ARCHIVE_BYTES,
-    archiveLimits = {}, maxManifestBytes = MAX_MANIFEST_BYTES, maxManifestTotalBytes = MAX_MANIFEST_TOTAL_BYTES, listLimits = {},
+    archiveLimits = {}, maxManifestBytes = MAX_LOCKFILE_BYTES, maxManifestTotalBytes = MAX_LOCKFILES_TOTAL_BYTES, maxListed = MAX_LISTED,
   }: DependencyLoaderOptions = {},
 ): (spec: string) => Promise<DependencyCheckout> {
   // A folder of its own, so a package's markers never meet a related repository's of the same name.
   stateDir = dependencyState(stateDir);
   mkdirSync(stateDir, { recursive: true });
   const wanted = new Set(registries.flatMap(r => [...r.manifests, ...r.lockfiles, ...r.unreadInstallFiles]));
-  const { maxFiles = MAX_LISTED, maxWalked = MAX_WALKED } = listLimits;
-  let listing: Listing | undefined;
-  const listed = (): Listing => {
-    if (listing) return listing;
-    const { files, cut } = listFiles(realpathSync(root), resolveInRoot(root, '.'), {
-      maxFiles, maxWalked, skipFolders: SKIPPED_FOLDERS, keep: (file, path) => wanted.has(file) || registries.some(r => r.isConfigFile(path)),
-    });
-    const why = files.length >= maxFiles
-      ? `the checkout holds more than ${maxFiles} lockfiles, manifests and settings files, the most Manki lists, so it cannot tell which code the PR runs`
-      : `Manki stopped listing the checkout after ${maxWalked} files and folders, the most it visits, so it cannot tell which code the PR runs`;
-    return (listing = { files, ...(cut && { cut: why }) });
-  };
+  // Only files git tracks count, since only those are the PR's.
+  let listing: Promise<Listing> | undefined;
+  const listed = (): Promise<Listing> => listing ??= trackedFiles(root).then((tracked): Listing => {
+    if (!tracked) return { files: [], cut: 'Manki could not list the files of the checkout, so it cannot tell which code the PR runs' };
+    const files = tracked.filter(f => !f.symlink && (wanted.has(posix.basename(f.path)) || registries.some(r => r.isConfigFile(f.path)))).map(f => f.path);
+    return files.length > maxListed
+      ? { files, cut: `the checkout holds more than ${maxListed} lockfiles, manifests and settings files, the most Manki lists, so it cannot tell which code the PR runs` }
+      : { files };
+  });
   // A resolution reads every lockfile and manifest and can fetch a version list, so the round does it once per name.
   const resolutions = join(stateDir, 'resolutions');
   const resolving = new Map<string, Promise<Resolved>>();
   const resolve = (spec: string, registry: Registry, name: string, version: string | undefined): Promise<Resolved> => {
     const cached = join(resolutions, `${encodeURIComponent(spec)}.json`);
     if (existsSync(cached)) return Promise.resolve({ ...(JSON.parse(readFileSync(cached, 'utf8')) as Omit<Resolved, 'registry'>), registry });
-    const pending = resolving.get(spec) ?? resolveDependency(root, listed(), registry, name, version, registryFetch(registry, timeoutMs), { each: maxManifestBytes, left: maxManifestTotalBytes })
+    const pending = resolving.get(spec) ?? listed()
+      .then(listing => resolveDependency(root, listing, registry, name, version, registryFetch(registry, timeoutMs), { each: maxManifestBytes, left: maxManifestTotalBytes }))
       .then(resolved => {
         const { registry: _registry, ...kept } = resolved;
         mkdirSync(resolutions, { recursive: true });
