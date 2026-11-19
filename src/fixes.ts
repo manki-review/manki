@@ -16,6 +16,8 @@ import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './wri
 const LIST_TIMEOUT_MS = 90_000;
 /** Fixes a listing keeps, so no diff can start more records than this. */
 const MAX_LISTED_FIXES = 10;
+/** Entries of a listing's reply that are read, so a long reply costs no more than this many. */
+const MAX_READ_FIXES = MAX_LISTED_FIXES * 4;
 /** Fixes checked in one round, the largest first. */
 const MAX_FIX_CHECKS = 4;
 const MAX_FIX_LOCATIONS = 5;
@@ -74,13 +76,16 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 
 ${WRITING_RULES}`;
 
+/** Each changed file of a diff by its path, with the changed lines `changedNewLines` gives for it. */
+type ChangedFiles = Map<string, Map<number, number>>;
+
 /**
  * Returns each line of the new file that `file` adds, or where the new file goes on after a removed line, with how many
  * lines the diff adds or removes there.
  */
-function changedNewLines(file: DiffFile | undefined): Map<number, number> {
+function changedNewLines(file: DiffFile): Map<number, number> {
   const changed = new Map<number, number>();
-  for (const hunk of file?.hunks ?? []) {
+  for (const hunk of file.hunks) {
     const numbers = newLineNumbers(hunk);
     const contents = hunk.content.split('\n');
     // Walked from the end, so a removed line, which has no number of its own, counts at the next line the new file holds.
@@ -94,13 +99,13 @@ function changedNewLines(file: DiffFile | undefined): Map<number, number> {
   return changed;
 }
 
-/** Returns how many lines `at` adds or removes in `diff`, counting a line that two ranges share once. */
-function changedLines(diff: ParsedDiff, at: readonly string[]): number {
+/** Returns how many lines `at` adds or removes in `changed`, counting a line that two ranges share once. */
+function changedLines(changed: ChangedFiles, at: readonly string[]): number {
   let count = 0;
   const seen = new Set<string>();
   for (const location of at) {
     const { file, start, end } = parseLocation(location)!;
-    for (const [line, changes] of changedNewLines(diff.files.find(f => f.path === file))) {
+    for (const [line, changes] of changed.get(file) ?? []) {
       if (line < start || line > end || seen.has(`${file}:${line}`)) continue;
       seen.add(`${file}:${line}`);
       count += changes;
@@ -109,20 +114,20 @@ function changedLines(diff: ParsedDiff, at: readonly string[]): number {
   return count;
 }
 
-/** Returns the runs of changed lines of `diff` inside the range `location`, as `path:start-end` locations. */
-function clipToChanges(location: string, diff: ParsedDiff): string[] {
+/** Returns the runs of changed lines of `changed` inside the range `location`, as `path:start-end` locations. */
+function clipToChanges(location: string, changed: ChangedFiles): string[] {
   const range = parseLocation(location);
   // The listing reads the diff alone, so a path with a leading slash can only name the diff's file of that path.
-  const file = range && diff.files.find(f => f.path === range.file || `/${f.path}` === range.file);
-  if (!range || !file) return [];
-  const lines = [...changedNewLines(file).keys()].filter(l => l >= range.start && l <= range.end).sort((a, b) => a - b);
+  const path = range && [range.file, range.file.replace(/^\//, '')].find(p => changed.has(p));
+  if (!range || !path) return [];
+  const lines = [...changed.get(path)!.keys()].filter(l => l >= range.start && l <= range.end).sort((a, b) => a - b);
   const runs: Array<[number, number]> = [];
   for (const line of lines) {
     const last = runs.at(-1);
     if (last && line === last[1] + 1) last[1] = line;
     else runs.push([line, line]);
   }
-  return runs.map(([start, end]) => `${file.path}:${start === end ? start : `${start}-${end}`}`);
+  return runs.map(([start, end]) => `${path}:${start === end ? start : `${start}-${end}`}`);
 }
 
 /** Returns `value` as one line of at most `max` characters, or an empty string when it is no string. */
@@ -132,21 +137,22 @@ const oneLine = (value: unknown, max: number): string => (typeof value === 'stri
  * Reads one listed fix, with each range cut to the lines `diff` changes in it, so a check never counts an unchanged line
  * as part of the fix. Returns `undefined` when no changed line is left or the fix names no problem.
  */
-function listedFix(entry: unknown, diff: ParsedDiff): ListedFix | undefined {
+function listedFix(entry: unknown, changed: ChangedFiles): ListedFix | undefined {
   if (!entry || typeof entry !== 'object') return undefined;
   const { lines, problem } = entry as Record<string, unknown>;
   // Capped before the ranges are cut to the diff, so a reply with many ranges costs no more than one with the most kept.
   const at = Array.isArray(lines) ? [...new Set(lines.filter((l): l is string => typeof l === 'string').map(l => repoLocation(l.replace(/`/g, ''))))].slice(0, MAX_FIX_LOCATIONS) : [];
-  const kept = [...new Set(at.flatMap(location => clipToChanges(location, diff)))].slice(0, MAX_FIX_LOCATIONS);
+  const kept = [...new Set(at.flatMap(location => clipToChanges(location, changed)))].slice(0, MAX_FIX_LOCATIONS);
   const said = oneLine(problem, MAX_PROBLEM_CHARS);
   return kept.length > 0 && said ? { at: kept, problem: said } : undefined;
 }
 
 /**
  * Asks the model for the fixes in `rawDiff`, and returns at most `MAX_LISTED_FIXES` of them, the most changed lines
- * first. `cut` counts the ones over that cap. A fix keeps only the changed lines of `diff` its ranges cover, and one
- * with none left is dropped. The call sees the diff alone, never the PR text. A call that fails, or a reply that cannot
- * be used, gives no fixes and says why in `skipped`.
+ * first. Only the first `MAX_READ_FIXES` entries of the reply are read, and `cut` counts the fixes over the cap and the
+ * entries past them. A fix keeps only the changed lines of `diff` its ranges cover, and one with none left is dropped.
+ * The call sees the diff alone, never the PR text. A call that fails, or a reply that cannot be used, gives no fixes and
+ * says why in `skipped`.
  */
 export async function listFixes(client: LLMClient | undefined, rawDiff: string, diff: ParsedDiff): Promise<{ fixes: ListedFix[]; cut?: number; skipped?: string }> {
   if (!client) return { fixes: [], skipped: 'no model is set up for it' };
@@ -163,11 +169,12 @@ export async function listFixes(client: LLMClient | undefined, rawDiff: string, 
       error => core.warning(`The list of fixes could not be used (${error}), asking once more`),
       'array',
     );
-    const found = listed.flatMap(entry => listedFix(entry, diff) ?? []);
-    const fixes = found.map((fix, i) => ({ fix, i, size: changedLines(diff, fix.at) }))
+    const changed: ChangedFiles = new Map(diff.files.map(f => [f.path, changedNewLines(f)]));
+    const found = listed.slice(0, MAX_READ_FIXES).flatMap(entry => listedFix(entry, changed) ?? []);
+    const fixes = found.map((fix, i) => ({ fix, i, size: changedLines(changed, fix.at) }))
       .sort((a, b) => b.size - a.size || a.i - b.i)
       .map(({ fix }) => fix);
-    const cut = fixes.length - MAX_LISTED_FIXES;
+    const cut = Math.max(0, fixes.length - MAX_LISTED_FIXES) + Math.max(0, listed.length - MAX_READ_FIXES);
     if (fixes.length > 0) core.info(`The change holds ${fixes.length} fix(es) to check${cut > 0 ? `, ${cut} cut by the cap` : ''}`);
     return { fixes: fixes.slice(0, MAX_LISTED_FIXES), ...(cut > 0 && { cut }) };
   } catch (error) {

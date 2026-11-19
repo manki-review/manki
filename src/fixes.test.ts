@@ -66,12 +66,18 @@ describe('listFixes', () => {
     expect((await listFixes(removal, rawDiff, end)).fixes).toEqual([{ at: ['src/end.ts:2'], problem: 'The last line is wrong.' }]);
   });
 
-  it('keeps ten fixes and counts the rest, and cuts a problem to 300 characters', async () => {
+  it('keeps ten fixes, reads forty entries and counts the rest, and cuts a problem to 300 characters', async () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ lines: ['src/report.ts:3'], problem: `Problem ${i + 1} ${'x'.repeat(400)}` }));
     const result = await listFixes(fakeClient(() => JSON.stringify(many)), rawDiff, diff);
     expect(result.fixes).toHaveLength(10);
     expect(result.cut).toBe(2);
     expect(result.fixes[0].problem).toBe(`Problem 1 ${'x'.repeat(290)}...`);
+
+    // Only the first 40 entries are read, so a larger fix after them is counted and never ranked first.
+    const long = [...Array.from({ length: 40 }, (_, i) => ({ lines: ['src/report.ts:3'], problem: `Small ${i + 1}` })), { lines: ['src/load.ts:3-5'], problem: 'Past the read.' }];
+    const read = await listFixes(fakeClient(() => JSON.stringify(long)), rawDiff, diff);
+    expect(read.fixes.map(f => f.problem)).toEqual(Array.from({ length: 10 }, (_, i) => `Small ${i + 1}`));
+    expect(read.cut).toBe(31);
   });
 
   it('lists no fix and says why when no model is set up, the call fails or its reply cannot be used twice', async () => {
