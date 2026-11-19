@@ -389,7 +389,7 @@ export const TEST_LINKS: CodeLinks = {
 export interface TarEntry {
   name: string;
   data?: string | Buffer;
-  type?: '0' | '1' | '2' | '3' | '5' | 'x' | 'g' | 'L';
+  type?: '0' | '1' | '2' | '3' | '5' | '7' | 'x' | 'g' | 'L' | 'K';
   linkname?: string;
   size?: number;
   gnu?: true;
