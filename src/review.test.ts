@@ -220,8 +220,12 @@ describe('parseFindings', () => {
       mkdirSync(join(linked, 'src'));
       writeFileSync(join(linked, 'src', 'a.ts'), 'a\n');
       symlinkSync('src', join(linked, 'lib'));
-      const [throughLink, noFile] = parseFindings(JSON.stringify([{ title: 'Linked', file: 'lib/a.ts', line: 1, description: 'd' }, { title: 'No file', description: 'd' }]), 'R', linked);
-      expect([throughLink.file, noFile.file]).toEqual(['src/a.ts', '']);
+      // A symlink file a PR adds or changes is a file of the diff, so a finding on it is never moved to its target.
+      symlinkSync('a.ts', join(linked, 'src', 'link.ts'));
+      const [throughLink, noFile, onLink] = parseFindings(JSON.stringify([
+        { title: 'Linked', file: 'lib/a.ts', line: 1, description: 'd' }, { title: 'No file', description: 'd' }, { title: 'On the link', file: 'lib/link.ts', line: 1, description: 'd' },
+      ]), 'R', linked);
+      expect([throughLink.file, noFile.file, onLink.file]).toEqual(['src/a.ts', '', 'src/link.ts']);
     } finally {
       rmSync(linked, { recursive: true, force: true });
     }

@@ -381,12 +381,12 @@ function parsePatternAnswer(
   if (!answer) throw new Error(`the answer is ${JSON.stringify(parsed.answer)}, not one of ${PATTERN_ANSWERS.join(', ')}`);
   const addedBy = (changed: ParsedDiff) => new Map(changed.files.map(f => [f.path, [...addedLines(f).keys()]]));
   const [reviewed, added] = [addedBy(diff), addedBy(fullDiff)];
-  const adds = (lines: Map<string, number[]>, file: string, start: number, end: number) => !!lines.get(realRepoPath(workspace, file))?.some(line => line >= start && line <= end);
+  const adds = (lines: Map<string, number[]>, file: string, start: number, end: number) => !!lines.get(realRepoPath(workspace, file, true))?.some(line => line >= start && line <= end);
   const existing = (proof: unknown) => {
     const places: Array<{ file: string; real: string; start: number; end: number }> = [];
     for (const location of shownLines(proof, workspace).proof) {
       const [file, [start, end]] = [locationFile(location), locationLines(location)];
-      const real = realRepoPath(workspace, file);
+      const real = realRepoPath(workspace, file, true);
       if (adds(added, file, start, end) || places.some(p => p.real === real && p.start <= end && start <= p.end)) continue;
       places.push({ file, real, start, end });
     }

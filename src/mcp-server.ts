@@ -58,12 +58,19 @@ interface RepoPath {
 
 /**
  * Returns the path from `root` of the file `path` names, with symlinks followed, so a link and its target compare equal.
- * Returns `path` when `root` is unset or `path` names no file inside it.
+ * With `keepName`, only the symlinks in its directories are followed and the file name stays. A path a diff names then
+ * stays as it is, also for a symlink the diff changes, since git never lists a path through a linked directory. Returns
+ * `path` when `root` is unset or `path` names nothing inside it.
  */
-export function realRepoPath(root: string | undefined, path: string): string {
+export function realRepoPath(root: string | undefined, path: string, keepName = false): string {
   if (!root) return path;
+  const normal = posix.normalize(path.replace(/\\/g, '/'));
+  const name = posix.basename(normal);
+  if (keepName && ['', '.', '..'].includes(name)) return path;
   try {
-    return resolveInRoot(root, path).relative;
+    if (!keepName) return resolveInRoot(root, path).relative;
+    const dir = resolveInRoot(root, posix.dirname(normal)).relative;
+    return dir === '.' ? name : `${dir}/${name}`;
   } catch {
     return path;
   }

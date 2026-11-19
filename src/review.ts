@@ -2929,8 +2929,8 @@ export function parseFindings(responseText: string, reviewerName: string, worksp
     return {
       severity: validateSeverity(f.severity),
       title: String(f.title || 'Untitled finding'),
-      // A path through a symlink names the diff's file only once it is followed.
-      file: file && realRepoPath(workspace, file),
+      // A path through a linked directory names the diff's file only once that link is followed.
+      file: file && realRepoPath(workspace, file, true),
       line: Number(f.line) || 0,
       description: String(f.description || leadDescription || ''),
       suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,

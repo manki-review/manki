@@ -191,13 +191,13 @@ function checkMessage({ at, problem }: ListedFix, rawDiff: string): string {
 
 /**
  * Whether every line `location` cites is inside a range of `at`. Both name their file by the path from the repository
- * root at `workspace`, and a symlink and its target are one file.
+ * root at `workspace`, and a path through a linked directory is the same file as its real path.
  */
 function insideFix(location: string, at: readonly string[], workspace: string): boolean {
   const cited = parseLocation(location);
   if (!cited) return false;
-  const file = realRepoPath(workspace, cited.file);
-  const ranges = at.flatMap(range => parseLocation(range) ?? []).filter(fix => realRepoPath(workspace, fix.file) === file);
+  const file = realRepoPath(workspace, cited.file, true);
+  const ranges = at.flatMap(range => parseLocation(range) ?? []).filter(fix => realRepoPath(workspace, fix.file, true) === file);
   for (let line = cited.start; line <= cited.end; line++) if (!ranges.some(fix => line >= fix.start && line <= fix.end)) return false;
   return true;
 }
