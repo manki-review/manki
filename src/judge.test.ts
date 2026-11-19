@@ -4833,6 +4833,9 @@ describe('mapJudgedToFindings', () => {
       [0, 'warning', [doubt, harm], 'warning', undefined, ['Second read 1', 'TestReviewer']],
       [0, 'warning', [doubt], 'blocker', undefined, ['Second read 1', 'TestReviewer']],
     ]);
+    // A read-only survivor takes the finder copy's grade path too, so only a finder's blocker leaves a step down from blocker.
+    expect([readFiled('blocker', 'warning', false), readFiled('warning', 'blocker', false), readFiled('blocker', 'warning', true), readFiled('warning', 'blocker', true)]
+      .map(([f]) => f.gradePath?.some(step => step.from === 'blocker') ?? false)).toEqual([true, false, false, true]);
     const [byRead] = mapJudgedToFindings([proven('Rows lost on retry', { severity: 'blocker', ...read })], [{ id: 1, title: 'Rows lost on retry', ...consequence }]);
     expect([byRead.severity, byRead.doubts, byRead.reviewerSeverity]).toEqual(['warning', [doubt], 'blocker']);
     expect(warnSpy).toHaveBeenCalledTimes(2);

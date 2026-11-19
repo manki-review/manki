@@ -1012,7 +1012,8 @@ export async function runReview(
   const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths, dependencyNames: config.related_repos?.some(r => r.kind === 'dependency'), fullDiff: options.fullDiff });
   const modelFallbacks: RoundModelFallback[] = [];
   // The clients that reached a limit this round in any stage, with a fallback model or without one.
-  const limitedClients = new Set<LLMClient>();
+  // A second read is an extra, so any limit this round, on any model or account, leaves it out.
+  let limitReached = false;
   // How many finders of the round read on each model: on their own, on a fallback a refusal moved them to, or on one a
   // limit holds for them. A count, so giving back what a limit held never frees a model another finder still reads on.
   const readingModels = new Map<string, number>();
@@ -1045,16 +1046,16 @@ export async function runReview(
   // Every call ends by `until`, and a fallback gets only what the failed call left of that.
   const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined, until = deadline): LLMClient => {
     const label = { stage, ...(agent && { agent }) };
-    // A limit on either side marks that model, so a second read passes it over.
-    const noteLimit = (model: LLMClient, recorded: LLMClient): LLMClient => ({
+    // A limit on either side counts, also one the fallback takes over from.
+    const noteLimit = (recorded: LLMClient): LLMClient => ({
       ...recorded,
       sendMessage: (...args) => recorded.sendMessage(...args).catch((error: unknown) => {
-        if (error instanceof QuotaError) limitedClients.add(model);
+        if (error instanceof QuotaError) limitReached = true;
         throw error;
       }),
     });
-    const recordedFallback = fallback && noteLimit(fallback.client, recordCalls(fallback.client, { ...label, fallback: true }, llmCalls));
-    const noted = noteLimit(client, recordCalls(client, label, llmCalls));
+    const recordedFallback = fallback && noteLimit(recordCalls(fallback.client, { ...label, fallback: true }, llmCalls));
+    const noted = noteLimit(recordCalls(client, label, llmCalls));
     return withSignal(withModelFallback(noted, recordedFallback, (error) => {
       const limit = error instanceof QuotaError;
       const unreachable = error instanceof UnreachableError;
@@ -1728,7 +1729,7 @@ export async function runReview(
     core.info(`Kept the ${keptReads.record.reads.length} second reads of the last attempt`);
   } else if (readers.length > 0 && getsSecondReads(diff, rawDiff, priorRounds, interRoundDiff)) {
     // A model that reached a limit or was refused this round would most likely fail again, after its provider's waits.
-    const usable = readers.filter(f => !limitedClients.has(pickReviewerClient(clients, f.model).client) && !modelFallbacks.some(m => m.stage === 'reviewer' && m.agent === f.name));
+    const usable = limitReached ? [] : readers.filter(f => !modelFallbacks.some(m => m.stage === 'reviewer' && m.agent === f.name));
     recorded.secondReads = usable.length > 0 ? await readAgain(usable) : { reads: [], stop: 'no_reader' };
     core.info(`Second reads: ${recorded.secondReads.reads.length} ran, stopped on ${recorded.secondReads.stop}`);
     if (recorded.secondReads.reads.length > 0) await checkpoint?.();

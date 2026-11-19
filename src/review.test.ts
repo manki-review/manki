@@ -7716,8 +7716,8 @@ describe('runReview', () => {
     expect(complete.modelFallbacks).toEqual([moved]);
     expect([primary.mock.calls.length, gpt.mock.calls.length]).toEqual([1, 1]);
     expect(complete.llmCalls?.filter(c => c.agent === sonnet).map(c => [c.failed, c.fallback])).toEqual([[true, undefined], [undefined, true]]);
-    // The second read skips the model at its limit.
-    expect(complete.secondReads?.reads.map(r => r.finder)).toEqual([opus]);
+    // A round where any call reached a limit reads nothing again.
+    expect(complete.secondReads).toEqual({ reads: [], stop: 'no_reader' });
 
     // The verdict reader moves the same way, on the judge's fallback.
     jest.mocked(clients.judge.sendMessage).mockRejectedValue(limit);

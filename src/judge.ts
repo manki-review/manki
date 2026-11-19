@@ -2187,11 +2187,12 @@ function foldDuplicates(findings: Finding[], roots: number[], staysPreExisting?:
  * the check of its consequence. A copy only second reads reported changes no finder's grade, and a survivor only they
  * reported takes the grades of a finder's copy.
  */
-function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 'reviewerSeverity' | 'lowestReviewerSeverity'> {
+function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 'reviewerSeverity' | 'lowestReviewerSeverity' | 'gradePath'> {
   if (bySecondReadsOnly(copy) && !bySecondReadsOnly(survivor)) return {};
+  // A finder's copy replaces every grade a read-only survivor holds, its grade path included, since a path step down from blocker makes it count as a blocker if true.
   if (bySecondReadsOnly(survivor) && !bySecondReadsOnly(copy)) {
     const [highest, lowest] = [finderGrade(copy), finderGrade(copy, 'lowest')];
-    return { reviewerSeverity: highest, lowestReviewerSeverity: lowest !== highest ? lowest : undefined };
+    return { reviewerSeverity: highest, lowestReviewerSeverity: lowest !== highest ? lowest : undefined, gradePath: copy.gradePath };
   }
   const rank = (grade: FindingSeverity): number => SEVERITY_ORDER.indexOf(grade);
   const own = finderGrade(survivor);
