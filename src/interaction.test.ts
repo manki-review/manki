@@ -24,6 +24,7 @@ jest.mock('@actions/core', () => ({
   warning: jest.fn(),
   debug: jest.fn(),
   getInput: jest.fn(),
+  getIDToken: jest.fn(),
 }));
 
 jest.mock('@actions/github', () => ({
@@ -38,6 +39,21 @@ jest.mock('./auth', () => ({
   ...jest.requireActual('./auth'),
   tokenServiceCalls: jest.fn().mockReturnValue([]),
 }));
+
+/**
+ * Lets `hasWriteAccess` ask GitHub and the token service's allow list for real in a dispatched run, with `ally` (user
+ * id 31) holding only read access, and returns the client whose lookup answers so. The allow list says `allowed`.
+ */
+function withAllowList(octokit: ReturnType<typeof createMockOctokit>, allowed: boolean): ReturnType<typeof createMockOctokit> {
+  jest.mocked(ghUtils.hasWriteAccess).mockImplementation(jest.requireActual<typeof ghUtils>('./github').hasWriteAccess);
+  process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+  jest.mocked(core.getIDToken).mockResolvedValue('oidc-token');
+  global.fetch = jest.fn(async () => Response.json({ allowed })) as jest.Mock;
+  Object.assign(octokit.rest, {
+    repos: { getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: 'read', role_name: 'read', user: { type: 'User', id: 31, login: 'ally' } } }) },
+  });
+  return octokit;
+}
 
 jest.mock('./memory', () => ({
   writeSuppression: jest.fn().mockResolvedValue(undefined),
@@ -68,7 +84,7 @@ jest.mock('./github', () => ({
   TooManyFilesError: jest.requireActual('./github').TooManyFilesError,
   fetchPRDiff: jest.fn().mockResolvedValue('diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -9,2 +9,3 @@\n context\n+  log(opts.retries, sessionToken);\n context'),
   authorClearRole: jest.fn().mockResolvedValue(undefined),
-  hasWriteAccess: jest.fn(async (_octokit: unknown, _owner: string, _repo: string, login: string) => login !== 'reader'),
+  hasWriteAccess: jest.fn(),
 }));
 
 jest.mock('./review', () => ({
@@ -479,10 +495,20 @@ function setContext(overrides: Record<string, any> = {}) {
   ctx.actor = 'test-user';
 }
 
+const realFetch = global.fetch;
+
 beforeEach(() => {
   jest.clearAllMocks();
+  global.fetch = realFetch;
+  jest.mocked(ghUtils.hasWriteAccess).mockImplementation(async (_octokit, _owner, _repo, login) => login !== 'reader');
+  delete process.env.GITHUB_EVENT_NAME;
   setContext();
 });
+
+/** The bodies this test posted to the token service's `/access`. */
+const accessQuestions = () => jest.mocked(global.fetch).mock.calls
+  .filter(([url]) => String(url).endsWith('/access'))
+  .map(([, init]) => JSON.parse(String(init?.body)) as unknown);
 
 describe('handlePRComment', () => {
   it('returns early when comment is missing', async () => {
@@ -728,6 +754,15 @@ describe('isLLMAccessAllowed', () => {
     });
     expect(await allowed()).toBe(expected);
     expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
+  });
+
+  it('lets an account without write access start Manki once a maintainer allowed it, and not after the allow list refuses it', async () => {
+    setContext({ comment: { id: 42, body: '@manki review', user: { login: 'ally' }, author_association: 'NONE' }, sender: { login: 'ally' } });
+    for (const allowed of [true, false]) {
+      const octokit = withAllowList(createMockOctokit(), allowed);
+      expect(await isLLMAccessAllowed(octokit as unknown as Parameters<typeof isLLMAccessAllowed>[0], 'test-owner', 'test-repo')).toBe(allowed);
+      expect(accessQuestions()).toEqual([{ owner: 'test-owner', repo: 'test-repo', user_id: 31 }]);
+    }
   });
 
   it('checks only the editor on an edit of another user\'s comment', async () => {
@@ -1058,6 +1093,29 @@ describe('handleReviewCommentReply', () => {
     expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
     expect(body.endsWith(`\n${REOPENED_MARKER}`)).toBe(noted);
     expect(jest.mocked(state.reopenThread).mock.calls).toEqual(authorResolved || (resolved && reason) ? [[octokit, 'PRRT_this']] : []);
+  });
+
+  it.each([true, false])('settles a finding on the reply of an account a maintainer allowed, which the allow list answers with %s', async allowed => {
+    setContext({
+      comment: { id: 1, body: 'Done in the follow-up.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'NONE' },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: 'ally' },
+    });
+    const octokit = withAllowList(createMockOctokit(), allowed);
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Agreed. Deferring it to the follow-up is fine.') });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'This' }]);
+    jest.mocked(state.resolveReviewThread).mockClear();
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(allowed ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Agreed', thread: allowed ? 'resolves' : 'no_permission' }]);
+    expect(accessQuestions()).toEqual([{ owner: 'test-owner', repo: 'test-repo', user_id: 31 }]);
+    // Being allowed is never a role, so the PR author's clearing role is not asked for it.
+    expect(ghUtils.authorClearRole).not.toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'ally', expect.anything());
   });
 
   it('settles a warning of the scope reader like any warning: the PR author\'s reason why the change is needed resolves its thread', async () => {

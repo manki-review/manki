@@ -6,6 +6,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
+import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
 import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
@@ -61,9 +62,12 @@ interface RepoAccess {
   role?: string;
   /** Whether GitHub reports the account's type as `User`. A bot, an organisation and an answer without a type are no person. */
   person: boolean;
+  /** The account's user id, which the token service's allow list knows it by. */
+  userId?: number;
 }
 
 const permissionLookups = new WeakMap<Octokit, Map<string, Promise<RepoAccess>>>();
+const allowListLookups = new WeakMap<Octokit, Map<string, Promise<boolean>>>();
 
 /** Returns the answer `cache` holds for `octokit` under `key`, and asks `lookup` for it the first time. */
 function cachedPerClient<T>(cache: WeakMap<Octokit, Map<string, Promise<T>>>, octokit: Octokit, key: string, lookup: () => Promise<T>): Promise<T> {
@@ -89,7 +93,11 @@ function repoPermission(octokit: Octokit, owner: string, repo: string, login: st
   return cachedPerClient(permissionLookups, octokit, `${owner}/${repo}/${login.toLowerCase()}`, async () => {
     try {
       const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
-      return { permission: data.permission, ...(typeof data.role_name === 'string' && { role: data.role_name }), person: data.user?.type === 'User' };
+      const userId = data.user?.id;
+      return {
+        permission: data.permission, ...(typeof data.role_name === 'string' && { role: data.role_name }), person: data.user?.type === 'User',
+        ...(typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0 && { userId }),
+      };
     } catch (error) {
       core.warning(`Could not read the repo permission of ${login}, treating it as none: ${error}`);
       return { permission: 'none', person: false };
@@ -110,10 +118,15 @@ async function authorClearRole(octokit: Octokit, owner: string, repo: string, lo
   return held >= AUTHOR_CLEAR_ROLES.indexOf(needed) ? AUTHOR_CLEAR_ROLES[held] : undefined;
 }
 
-/** Whether `login` is a person who can push to the repo. A `maintain` role reads as `write`. A bot never counts, whatever its permission. */
+/**
+ * Whether `login` is a person who can push to the repo, or one a maintainer put on the token service's allow list for
+ * it. A `maintain` role reads as `write`. A bot never counts, whatever its permission.
+ */
 async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
-  const { permission, person } = await repoPermission(octokit, owner, repo, login);
-  return person && ['admin', 'write'].includes(permission);
+  const { permission, person, userId } = await repoPermission(octokit, owner, repo, login);
+  if (!person) return false;
+  if (['admin', 'write'].includes(permission)) return true;
+  return userId !== undefined && await cachedPerClient(allowListLookups, octokit, `${owner}/${repo}/${userId}`, () => isAllowedAccount(owner, repo, userId));
 }
 
 const BOT_MARKER = '<!-- manki-bot -->';
