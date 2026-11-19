@@ -8,7 +8,7 @@ import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
-import { COMMENT_MARKER, ownMarker } from './utils';
+import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -195,8 +195,9 @@ function fixClaimMarker({ pr, status }: FixClaim): string {
 }
 
 /**
- * A pull request a reply in a thread named as carrying the fix. `confirmed`: Manki confirmed that it replaced the cited
- * line. `unconfirmed`: Manki checked and could not confirm it. `unchecked`: no answer of Manki checked it.
+ * A pull request a reply in a thread named, maybe as carrying the fix. `confirmed`: Manki confirmed that it replaced the
+ * cited line. `unconfirmed`: Manki checked and could not confirm it. `unchecked`: no answer of Manki checked it, so the
+ * reply may only mention it.
  */
 interface FixClaim {
   pr: number;
@@ -209,7 +210,7 @@ interface FixClaim {
  */
 function namedPullRequests(text: string, repo: string): number[] {
   const plain = withoutCode(text);
-  const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegExp(repo);
   const named = [...plain.matchAll(new RegExp(`(?<![\\w&/#])#(\\d{1,9})\\b|/${escaped}/pull/(\\d{1,9})\\b`, 'gi'))].map(m => Number(m[1] ?? m[2]));
   return [...new Set(named)];
 }

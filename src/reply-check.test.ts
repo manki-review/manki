@@ -239,6 +239,8 @@ describe('checkReply', () => {
     // Another repository's pull request, a number in code, one the reply does not name, and one without the repository all name none.
     for (const n of [61, 77, 43, '42']) expect(fixedIn(n).fixedIn).toBeUndefined();
     expect(fixedIn(42, sources).fixedIn).toBeUndefined();
+    // The PR's own number never fixes its finding elsewhere.
+    expect(fixedIn(42, { ...sources, repo, pr: 42 }).fixedIn).toBeUndefined();
     // Any other outcome names none, whatever `fixed_in` says.
     expect(checkReply(JSON.stringify({ outcome: 'Fixed', answer: 'Done.', fixed_in: 42 }), reply, { ...sources, repo }).fixedIn).toBeUndefined();
   });

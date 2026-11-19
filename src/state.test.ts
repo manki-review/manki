@@ -1229,8 +1229,8 @@ describe('checkAndAutoApprove', () => {
     expect(notes).toEqual([
       `${dismissed} A reply here named #7 as the fix, and Manki confirmed that #7 replaced the cited line on the default branch.`,
       `${dismissed} A reply here named #8 as the fix. Manki could not confirm that #8 fixes this finding.`,
-      `${dismissed} A reply here named #9 as the fix. Manki did not check it.`,
-      `${dismissed} A reply here named #12 as the fix. Manki did not check it.`,
+      `${dismissed} A reply here names #9. Manki did not check whether it fixes this finding.`,
+      `${dismissed} A reply here names #12. Manki did not check whether it fixes this finding.`,
       dismissed,
     ]);
     const body: string = createReviewMock.mock.calls[0][0].body;

@@ -544,7 +544,7 @@ export async function handleReviewCommentReply(
     const findingBody = root.comment.body ?? '';
     const relatedNames = config?.related_repos?.map(r => r.repo) ?? [];
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
-    const checked = checkReply(response.content, comment.body ?? '', { workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}` });
+    const checked = checkReply(response.content, comment.body ?? '', { workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber });
     const evidenceFiles = parseFindingData(findingBody)?.evidenceFiles;
     const line = currentFindingLine(place);
     // Without the thread, nothing below reopens it, resolves it or says when it clears.

@@ -370,10 +370,14 @@ async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean
   }
 }
 
-/** Says which pull request a reply in the thread named as the fix, and whether Manki confirmed it. */
+/**
+ * Says which pull request a reply in the thread named, and whether Manki confirmed it as the fix. Only Manki's check
+ * reads a reply as naming the fix, so an unchecked one only names the pull request.
+ */
 function fixClaimLine({ pr, status }: FixClaim): string {
   if (status === 'confirmed') return `A reply here named #${pr} as the fix, and Manki confirmed that #${pr} replaced the cited line on the default branch.`;
-  return `A reply here named #${pr} as the fix. ${status === 'unconfirmed' ? `Manki could not confirm that #${pr} fixes this finding.` : 'Manki did not check it.'}`;
+  if (status === 'unconfirmed') return `A reply here named #${pr} as the fix. Manki could not confirm that #${pr} fixes this finding.`;
+  return `A reply here names #${pr}. Manki did not check whether it fixes this finding.`;
 }
 
 /**

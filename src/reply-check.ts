@@ -43,6 +43,8 @@ export interface ReplySources {
   description?: string;
   /** The PR's repository as `owner/name`. Without it, a reply names no pull request that fixes the finding. */
   repo?: string;
+  /** The PR's own number, which never fixes its finding elsewhere. */
+  pr?: number;
 }
 
 /** What Manki's own look at the PR description showed: the text it holds, or the text it does not hold in any letter case. */
@@ -232,7 +234,7 @@ export function checkReply(content: string, developerReply: string, sources: Rep
   const { own } = shownPlaces(parsed.proof, sources);
   const unproven = own.length === 0 && (outcome === 'Withdrawn' || (outcome === 'Fixed' && citesRelated(parsed.proof, sources.relatedNames)));
   // Only a pull request the developer's own words name is checked, so the model cannot pick one.
-  const fixedIn = outcome === 'FixedElsewhere' && sources.repo && typeof parsed.fixed_in === 'number' && namedPullRequests(developerReply, sources.repo).includes(parsed.fixed_in)
+  const fixedIn = outcome === 'FixedElsewhere' && sources.repo && typeof parsed.fixed_in === 'number' && parsed.fixed_in !== sources.pr && namedPullRequests(developerReply, sources.repo).includes(parsed.fixed_in)
     ? parsed.fixed_in : undefined;
   // A fix in another pull request stays unconfirmed until `checkFixedElsewhere` confirms it.
   const settled: AnswerOutcome = unproven || outcome === 'FixedElsewhere' ? 'Unverified' : outcome;
