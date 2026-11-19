@@ -509,7 +509,7 @@ describe('Manki tool server', () => {
       expect(await call(claude, 'read_file', { dependency: 'crates.io/other', path: 'x' })).toEqual({ text: expect.stringContaining('is not a dependency'), isError: true });
       expect(await call(claude, 'read_file', { dependency: 'crates.io/demo', path: join(depRepo, 'Cargo.lock') })).toEqual({ text: expect.stringContaining('is outside the repository'), isError: true });
       // An empty `dependency` names none, as an empty `repo` does, so the call reads the PR's repository.
-      expect(await call(claude, 'read_file', { dependency: '', path: 'Cargo.lock' })).toEqual({ text: expect.stringContaining('1\t[[package]]'), isError: false });
+      expect(await call(claude, 'grep', { dependency: '', text: 'name = "demo"' })).toEqual({ text: 'Cargo.lock:2: name = "demo"', isError: false });
       // Each call that read the package counts under its name and version, a refused path too.
       expect(JSON.parse(readFileSync(readsFile, 'utf8'))).toEqual({ 'crates.io/demo@1.0.0': 3 });
       expect(registry.requests).toEqual(['/crates/demo/demo-1.0.0.crate']);
