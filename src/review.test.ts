@@ -6732,6 +6732,18 @@ describe('runReview', () => {
     expect(related.llmDedupCount).toBe(0);
     expect(related.relatedWork).toEqual({ items: [{ ...relatedWork.items[0], relation: 'duplicate', reason: 'Same fix.' }] });
     expect(related.llmCalls?.filter(c => c.stage === 'related')).toHaveLength(1);
+
+    // An open issue a person with write access opened is matched to the findings once they are graded, on the dedup
+    // model. The finding this PR introduces keeps its grade, and the round still blocks.
+    jest.mocked(clients.dedup!.sendMessage).mockImplementation(async (system: string) => ({
+      content: JSON.stringify(system.startsWith('You match the findings') ? [{ finding: 1, candidate: 1 }] : [{ index: 1, relation: 'overlapping', reason: 'Same bug.' }]),
+    }));
+    const tracking = { items: [{ kind: 'issue' as const, number: 17, title: 'A bug in a.ts', excerpt: '', author: 'maintainer', byWriter: true as const }] };
+    mockedRunJudgeAgent.mockResolvedValueOnce({ findings: [{ severity: 'blocker', title: 'A bug', file: 'src/a.ts', line: 10, description: 'Bug.', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:10'] } }], summary: 'One bug.' });
+    const tracked = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', prContext, relatedWork: tracking });
+    expect(tracked.findings.map(f => [f.title, f.severity, f.trackedIn])).toEqual([['A bug', 'blocker', { kind: 'issue', number: 17 }]]);
+    expect(tracked.outcome).toBe('ADDRESS_FIRST');
+    expect(tracked.llmCalls?.filter(c => c.stage === 'related')).toHaveLength(2);
   });
 
   it('returns reviewComplete false when judge fails', async () => {

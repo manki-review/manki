@@ -11,7 +11,7 @@ import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, Refutat
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
-import { classifyRelatedWork } from './related-work';
+import { classifyRelatedWork, linkTrackingIssues } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
@@ -2281,6 +2281,8 @@ export async function runReview(
 
   const leads = recordLeads([...current, ...carried].filter(f => f.lead), listedLeads, allJudgedFindings ?? [], finalFindings, round);
   const relatedWork = await relatedWorkPromise;
+  // The link is only shown, so the match runs once the grades are final and changes none of them.
+  if (clients.dedup) finalFindings = await linkTrackingIssues(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'related'), finalFindings, relatedWork);
 
   return {
     verdict,

@@ -431,6 +431,8 @@ export interface Finding {
   preExistingCheck?: PreExistingCheck;
   /** The rule of an instruction file the reviewer says the change breaks. Only a `confirmed` one counts in the grade. */
   rule?: RuleMark;
+  /** The open issue or PR of related work that describes this finding, which the review shows with it. It changes nothing else. */
+  trackedIn?: Pick<RelatedItem, 'kind' | 'number'>;
 }
 
 /**
@@ -520,6 +522,10 @@ export interface RelatedItem {
   /** For a PR, how many of its files the PR under review changes too. */
   sharedFiles?: number;
   draft?: boolean;
+  /** The login that opened it. */
+  author?: string;
+  /** Set when `hasWriteAccess` confirms that a person who can push to the repository opened it. Only such an item tracks a finding. */
+  byWriter?: true;
   /** Unset until the dedup model classified it, and when the classification failed. */
   relation?: RelatedRelation;
   /** The dedup model's one line of reasoning. */
