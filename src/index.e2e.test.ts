@@ -56,7 +56,7 @@ jest.mock('./providers', () => ({
   }),
 }));
 
-jest.mock('./workspace', () => ({ fetchWorkspace: jest.fn() }));
+jest.mock('./workspace', () => ({ ...jest.requireActual('./workspace'), fetchWorkspace: jest.fn() }));
 
 const OWNER = 'acme';
 const REPO = 'widgets';

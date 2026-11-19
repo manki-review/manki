@@ -73,7 +73,7 @@ jest.mock('./auth', () => ({
   reportPrState: jest.fn().mockResolvedValue(undefined),
 }));
 
-jest.mock('./workspace', () => ({ fetchWorkspace: jest.fn() }));
+jest.mock('./workspace', () => ({ ...jest.requireActual('./workspace'), fetchWorkspace: jest.fn() }));
 
 jest.mock('./providers', () => ({
   buildAuthForProvider: jest.requireActual('./providers').buildAuthForProvider,
