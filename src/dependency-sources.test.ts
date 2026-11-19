@@ -61,6 +61,7 @@ describe('dependencyLoader', () => {
       '/npm/tagged/-/tagged-2.0.0.tgz': PAD,
       '/npm/renamed': JSON.stringify({ name: 'other`pad', versions: { '1.0.0': { dist: { integrity: sha512Integrity(PAD) } } } }),
       '/npm/moved/-/moved-1.0.0.tgz': { redirect: '/npm/left-pad/-/left-pad-1.2.0.tgz' },
+      '/npm/flaky/-/flaky-1.0.0.tgz': { failFirst: 503, body: PAD },
       // A scoped name is one path segment in the version list's URL, and two in the archive's.
       '/npm/@corp%2fpad': JSON.stringify({ name: '@corp/pad', versions: { '1.0.0': { dist: { integrity: sha512Integrity(PAD) } } } }),
       '/npm/@corp/pad/-/pad-1.0.0.tgz': PAD,
@@ -510,9 +511,18 @@ describe('dependencyLoader', () => {
     await expect(small.load('crates.io/demo')).rejects.toThrow('is larger than');
     expect(dependencyOutcomes(small.stateDir)).toEqual([expect.objectContaining({ status: 'failed', reason: expect.stringContaining('is larger than') })]);
 
-    const movedLock = JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/moved': { version: '1.0.0', resolved: 'https://registry.npmjs.org/moved/-/moved-1.0.0.tgz', integrity: sha512Integrity(PAD) } } });
-    await expect(round({ 'package-lock.json': movedLock }).load('npm/moved')).rejects.toThrow('could not be fetched');
+    const lockOf = (name: string) => ({ 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { [`node_modules/${name}`]: { version: '1.0.0', resolved: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`, integrity: sha512Integrity(PAD) } } }) });
+    const moved = round(lockOf('moved'));
+    await expect(moved.load('npm/moved')).rejects.toThrow('could not be fetched, so it cannot be read: download of');
     expect(server.requests).toEqual(['/dl/crates/demo/demo-1.2.0.crate', '/npm/moved/-/moved-1.0.0.tgz']);
+    // A redirect is refused for the round, while a registry error that may pass leaves the package to a later call.
+    await expect(moved.load('npm/moved')).rejects.toThrow('failed with HTTP 302');
+    expect(server.requests).toHaveLength(2);
+    const flaky = round(lockOf('flaky'));
+    await expect(flaky.load('npm/flaky')).rejects.toThrow('failed with HTTP 503');
+    expect(dependencyOutcomes(flaky.stateDir)).toEqual([expect.objectContaining({ package: 'npm/flaky@1.0.0', status: 'failed', reason: expect.stringContaining('failed with HTTP 503, and no later call fetched it') })]);
+    expect((await flaky.load('npm/flaky')).key).toBe('npm/flaky@1.0.0');
+    expect(dependencyOutcomes(flaky.stateDir)).toEqual([expect.objectContaining({ package: 'npm/flaky@1.0.0', status: 'fetched' })]);
 
     const elsewhere = { ...registries[0], archiveUrl: () => 'http://127.0.0.2:1/demo.crate' };
     await expect(round(lock, { registries: [elsewhere] }).load('crates.io/demo')).rejects.toThrow('http://127.0.0.2:1/demo.crate is not on a host of crates.io');

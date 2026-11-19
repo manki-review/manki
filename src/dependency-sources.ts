@@ -13,7 +13,7 @@ import { shown } from './registries/shown';
 import { PublishedVersion, Registry, RegistryConfig, RegistryFetch } from './registries/types';
 import { DEPENDENCY_STATE, FETCH_TIMEOUT_MS, fetchOutcome, RelatedRepoPending, RetryableFetch, sharedCheckout, trackedFiles, WAIT_SLACK_MS, writeMarker } from './related-repos';
 import { claimStep, STALE_TIMEOUT_MS } from './tool-steps';
-import { fetchWhole, matchesIntegrity } from './tool-install';
+import { fetchWhole, matchesIntegrity, TransientDownloadError } from './tool-install';
 import { RoundDependencySource } from './types';
 
 /** How many packages one round may fetch, over all its tool calls. */
@@ -508,8 +508,8 @@ export function dependencyLoader(
         try {
           return { dir: await fetchPackage(resolved, stateDir, registryFetch(registry, timeoutMs, deadline), marker, maxArchiveBytes, archiveLimits), commit: '' };
         } catch (error) {
-          // Running out of time says nothing about the package, so a later call may try again.
-          throw deadline.aborted ? new RetryableFetch(error instanceof Error ? error.message : String(error)) : error;
+          // Running out of time, or a registry error that may pass, says nothing about the package, so a later call may try again.
+          throw deadline.aborted || error instanceof TransientDownloadError ? new RetryableFetch(error instanceof Error ? error.message : String(error)) : error;
         }
       });
     } catch (error) {

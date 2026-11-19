@@ -30,7 +30,7 @@ export interface PinnedDownload {
 }
 
 /** A download failure another try may not hit: no connection, a stalled transfer, or a 408, 429 or 5xx answer. */
-class TransientDownloadError extends Error {}
+export class TransientDownloadError extends Error {}
 
 /**
  * A download failure every try of this run would hit again: a digest that differs from the pinned one, a status such
@@ -104,7 +104,7 @@ export async function fetchWhole(url: string, deadline: AbortSignal, { maxBytes,
   let status: number;
   moved();
   try {
-    const response = await fetch(url, { signal: AbortSignal.any([stall.signal, deadline]), ...(noRedirects && { redirect: 'error' as const }), ...(headers && { headers }) });
+    const response = await fetch(url, { signal: AbortSignal.any([stall.signal, deadline]), ...(noRedirects && { redirect: 'manual' as const }), ...(headers && { headers }) });
     if (response.ok) {
       const chunks: Uint8Array[] = [];
       let bytes = 0;

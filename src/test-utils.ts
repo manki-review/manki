@@ -435,14 +435,16 @@ export interface FakeRegistry {
 }
 
 /** What a `FakeRegistry` answers for a path: a body, a redirect, headers and then nothing more, or a body after a delay. */
-type FakeAnswer = Buffer | string | { redirect: string } | { hang: true } | { delayMs: number; body: Buffer | string };
+type FakeAnswer = Buffer | string | { redirect: string } | { hang: true } | { delayMs: number; body: Buffer | string } | { failFirst: number; body: Buffer | string };
 
 /**
  * Starts a `FakeRegistry` that answers each path of `routes` with its `FakeAnswer`, and any other path with 404. The
- * paths are matched as requested, still percent-encoded, so a test sees how a client encodes a name.
+ * paths are matched as requested, still percent-encoded, so a test sees how a client encodes a name. A `failFirst`
+ * answer fails the first request of its path with that status, and serves its body after.
  */
 export async function fakeRegistry(routes: Record<string, FakeAnswer>): Promise<FakeRegistry> {
   const requests: string[] = [];
+  const failed = new Set<string>();
   const server = createServer((request, response) => {
     const path = request.url ?? '';
     requests.push(path);
@@ -451,6 +453,9 @@ export async function fakeRegistry(routes: Record<string, FakeAnswer>): Promise<
       response.writeHead(404).end();
     } else if (typeof answer === 'object' && 'hang' in answer) {
       response.writeHead(200).write('{');
+    } else if (typeof answer === 'object' && 'failFirst' in answer) {
+      response.writeHead(failed.has(path) ? 200 : answer.failFirst).end(failed.has(path) ? answer.body : undefined);
+      failed.add(path);
     } else if (typeof answer === 'object' && 'delayMs' in answer) {
       setTimeout(() => response.writeHead(200).end(answer.body), answer.delayMs);
     } else if (typeof answer === 'object' && !Buffer.isBuffer(answer)) {
