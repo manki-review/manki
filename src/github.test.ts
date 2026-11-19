@@ -3455,7 +3455,7 @@ describe('buildDashboard', () => {
     // The verdict reader keeps its time once it ended, and a sweep, which runs on the judge's kept findings, gets a line under the judge.
     const sweeping = buildDashboard({ ...reviewed, ...graded, sideChecks: { ...side(3, 2, 1, 238_000), sweep: { total: 2, ended: 1, findings: 0, startedAt: 560_000 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 } }, 700_000);
     expect(sweeping).toContain(lines(sideDone, '', '**Judge**'));
-    expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> ⏳ Sweeps: 1 of 2 done', '> verdict reader: read the diff (47s)'));
+    expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> sweeps: 1 of 2 done', '> verdict reader: read the diff (47s)'));
     // A second read after the finders gets a line of its own, after the side checks.
     const reading = (read: SideCheckState) => buildDashboard({ ...started, agentProgress: [claudeDone, gptDone], sideChecks: { ...side(3, 2, 1, 238_000), second_read: read } }, 470_000);
     expect(reading({ total: 1, ended: 0, findings: 0, startedAt: 452_000 })).toContain(lines(sideDone, '> ⏳ Second reads: 0 of 1 done'));
@@ -3669,8 +3669,8 @@ describe('buildDashboard', () => {
       '> kept: 1 blocker · 2 warnings',
       '> dropped: 1 suggestion',
       '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 dropped as a repeat of an earlier resolved finding',
-      '> ✅ Sweeps: 1 of 1 done, 2 findings (30s)',
-      '> 1 sweep finding already judged this round, 1 sweep finding dropped as repeats of earlier resolved findings',
+      '> sweeps: 1 of 1 done, 2 findings (30s)',
+      '> 1 sweep finding already judged this round, 1 sweep finding dropped as a repeat of an earlier resolved finding',
       '> not finished checking: 1 lead',
       '> added after the judge: 1 finding',
     ));

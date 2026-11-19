@@ -921,14 +921,20 @@ function beforeJudge(data: DashboardData): string {
   ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural)).join(', ');
 }
 
-/** The sweeps' line, which runs on the findings the judge kept, and how many of its findings were dropped as repeats. */
+/**
+ * The sweeps' line, such as `sweeps: 1 of 2 done`, written like the other lines under the judge since the sweeps run on
+ * the findings it kept. A second line counts the sweep findings dropped as repeats.
+ */
 function sweepLines(data: DashboardData): string[] {
-  const line = sideCheckLine(data.sideChecks, ['sweep']);
-  if (!line) return [];
+  const sweep = data.sideChecks?.sweep;
+  if (!sweep || sweep.total === 0) return [];
+  const found = sweep.findings > 0 ? `, ${countOf(sweep.findings, 'finding')}` : '';
+  const took = sweep.endedAt === undefined ? '' : ` (${formatDuration(sweep.endedAt - sweep.startedAt)})`;
+  const line = `${INDENT}sweeps: ${sweep.ended} of ${sweep.total} done${found}${took}`;
   const drops = ([
-    [data.sweepRepeatCount ?? 0, 'already judged this round'],
-    [data.sweepDedupCount ?? 0, 'dropped as repeats of earlier resolved findings'],
-  ] as const).filter(([count]) => count > 0).map(([count, what]) => `${countOf(count, 'sweep finding', 'sweep findings')} ${what}`);
+    [data.sweepRepeatCount ?? 0, 'sweep finding already judged this round', 'sweep findings already judged this round'],
+    [data.sweepDedupCount ?? 0, 'sweep finding dropped as a repeat of an earlier resolved finding', 'sweep findings dropped as repeats of earlier resolved findings'],
+  ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural));
   return [line, ...(drops.length > 0 ? [`${INDENT}${drops.join(', ')}`] : [])];
 }
 
