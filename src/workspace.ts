@@ -8,7 +8,7 @@ import * as core from '@actions/core';
 
 import { findClosedPattern } from './diff';
 import { makeScratchDir } from './tool-install';
-import { SYSTEM_ENV } from './utils';
+import { safeJsonParse, SYSTEM_ENV } from './utils';
 
 const execFileAsync = promisify(execFile);
 
@@ -81,6 +81,19 @@ export async function fetchWorkspace(
   return dir;
 }
 
+/**
+ * Returns the `exclude_paths` a read at the base of the workspace `dir` refuses, or `undefined` when it holds no base.
+ * One whose list cannot be read holds none, so no read at the base runs without that list.
+ */
+export function baseReadsOf(dir: string): string[] | undefined {
+  try {
+    const { excludePaths } = (safeJsonParse(readFileSync(join(dir, '.git', BASE_READS_FILE), 'utf8')) ?? {}) as Record<string, unknown>;
+    return Array.isArray(excludePaths) && excludePaths.every(p => typeof p === 'string') ? excludePaths : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The file in a checkout's `.git` that keeps the patterns `closePaths` removed, for the tool server. */
 const CLOSED_PATHS_FILE = 'manki-closed-paths.json';
 
@@ -134,7 +147,7 @@ export function closedPathsOf(dir: string): string[] {
 }
 
 /**
- * Points `BASE_REF` of the workspace `dir` at the base commit, after writing the `exclude_paths` a read there refuses.
+ * Points `BASE_REF` of the workspace `dir` at the base commit, then writes the `exclude_paths` a read there refuses.
  * The base is usually in the history the workspace already holds, so it is fetched from `url` only when it is not, as
  * that one commit. A base that cannot be had leaves the workspace without one, so the tools read only the head.
  */
@@ -143,9 +156,9 @@ async function addBase(dir: string, url: string, { sha, excludePaths }: Workspac
     if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw new Error('it is no full commit id');
     const held = await runGit(dir, ['cat-file', '-e', `${sha}^{commit}`]).then(() => true, () => false);
     if (!held) await runGit(dir, ['fetch', '-q', '--no-tags', '--depth=1', url, sha], fetchEnv);
-    // Written before the ref, so no read at the base runs without the paths it must refuse.
-    writeFileSync(join(dir, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths }));
     await runGit(dir, ['update-ref', BASE_REF, sha]);
+    // Written last, since `baseReadsOf` takes the file as the sign that the ref is set.
+    writeFileSync(join(dir, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths }));
   } catch (error) {
     core.warning(`Could not fetch the PR's base commit ${sha.slice(0, 7)}, so the tools read only the head: ${error instanceof Error ? error.message : String(error)}`);
   }

@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
 import { isAbsolute, join, posix, relative, resolve, sep } from 'path';
@@ -17,7 +17,7 @@ import { writableOnlyByUs } from './tool-install';
 import { claimStep, stepCheck } from './tool-steps';
 import { RelatedRepoTools } from './types';
 import { safeJsonParse } from './utils';
-import { BASE_READS_FILE, BASE_REF, closedPathsOf, gitEnv, WORKSPACE_DEPTH } from './workspace';
+import { BASE_REF, baseReadsOf, closedPathsOf, gitEnv, WORKSPACE_DEPTH } from './workspace';
 
 const execFileAsync = promisify(execFile);
 
@@ -261,21 +261,6 @@ function numberedLines(text: string, { path, offset = 1, limit = MAX_READ_LINES 
   }
   const more = end < lines.length ? `\n[${lines.length - end} more lines, read on with offset ${end + 1}]` : '';
   return capOutput((shown.join('\n') || `${path} has no line ${offset}.`) + more);
-}
-
-/**
- * Returns the `exclude_paths` a read at the base of the workspace `root` refuses, or `undefined` when the workspace has
- * no base to read. One whose list of paths cannot be read has none, so no read at the base runs without it.
- */
-function baseReadExcludes(root: string): string[] | undefined {
-  try {
-    const realRoot = realpathSync(root);
-    execFileSync('git', ['rev-parse', '-q', '--verify', `${BASE_REF}^{commit}`], { cwd: realRoot, env: gitEnv(), stdio: 'ignore', timeout: GIT_TIMEOUT_MS });
-    const { excludePaths } = (safeJsonParse(readFileSync(join(realRoot, '.git', BASE_READS_FILE), 'utf8')) ?? {}) as Record<string, unknown>;
-    return Array.isArray(excludePaths) && excludePaths.every(p => typeof p === 'string') ? excludePaths : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Returns `path` as a path from the repository root in git's form. Refuses one that leaves the root or names `.git`. */
@@ -623,7 +608,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
       throw new Error(`${repo} could not be fetched, so it cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     });
   };
-  const baseExcludes = baseReadExcludes(root);
+  const baseExcludes = baseReadsOf(root);
   if (fileTools || names.length > 0 || baseExcludes) {
     // A client with file tools of its own reads the head with those, so it names a related repo or the base here.
     const ref = z.enum(['head', 'base']).optional().describe('`base` reads the file as it is at the PR\'s base commit, the code before this PR. Defaults to `head`.');

@@ -430,7 +430,10 @@ describe('Manki tool server', () => {
     await headOnly.close();
     writeFileSync(join(pr, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['*.lock'] }));
 
-    const claude = await connect(pr);
+    // The server learns of the base from that list alone, so it runs no git to start, even where no git can be found.
+    const path = process.env.PATH;
+    process.env.PATH = '';
+    const claude = await connect(pr).finally(() => { process.env.PATH = path; });
     const codex = await connect(pr, { fileTools: true, steps: 30 });
     try {
       const { tools } = await claude.listTools();
