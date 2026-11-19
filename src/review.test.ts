@@ -311,9 +311,12 @@ describe('parseFindings', () => {
       // Findings that are all unusable fail the reply as they do without unit lines, so the finder's retry asks again.
       expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer'))
         .toThrow(/^no element has a title or a description \(1 element\(s\), keys: severity, file, line\)$/);
-      // Any element with a string `unit` and no `title` is a unit line, whatever else it holds.
+      // An element with a string `unit` and nothing that makes it a finding is a unit line, whatever else it holds.
       const located = JSON.stringify([{ unit: 'U1', checked: 'Read it.', defect: 'none', severity: 'note', file: 'a.sh', line: 1, confidence: 'high' }]);
       expect([parseFindings(located, 'Reviewer'), parseUnitLines(located, units)]).toEqual([[], [{ unit: 'U1', checked: 'Read it.' }]]);
+      // An element with a `description` is a finding, also without a `title`, and naming a unit does not change that.
+      const described = JSON.stringify([{ unit: 'U1', description: 'The ban check runs after the grant.', severity: 'warning', file: 'a.sh', line: 1 }]);
+      expect([parseFindings(described, 'Reviewer').map(f => f.description), parseUnitLines(described, units)]).toEqual([['The ban check runs after the grant.'], []]);
       // An element with a `title` is a finding, so a malformed one that names a unit fails the reply.
       const malformed = { unit: 'U1', title: '', severity: 'warning', file: 'a.sh', line: 1 };
       expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer')).toThrow(/^no element has a title or a description \(1 element\(s\), keys: unit, title, severity, file, line\)$/);
@@ -2636,9 +2639,11 @@ describe('runReview', () => {
     const finding = (title: string) => ({ severity: 'note', title, file: 'src/gate.ts', line: 2, description: 'd' });
     const checkedU1 = { unit: 'U1', checked: 'Both returns.', defect: 'none' };
     const checkedU2 = { unit: 'U2', checked: 'A banned admin is refused.', defect: 'none' };
-    const run = async (first: object[], second: object[], change = { root, diff }, attempt?: RoundContext) => {
+    const run = async (first: object[], second: object[] | ((message: string) => object[]), change = { root, diff }, attempt?: RoundContext) => {
       const clients = makeClients();
-      const sendMessage = jest.fn(async (_system: string, message: string) => ({ content: JSON.stringify(message.includes(ASKED) ? second : first) }));
+      const sendMessage = jest.fn(async (_system: string, message: string) => ({
+        content: JSON.stringify(!message.includes(ASKED) ? first : typeof second === 'function' ? second(message) : second),
+      }));
       Object.assign(clients.reviewer, { sendMessage });
       mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
       const result = await runReview(clients, {
@@ -2703,6 +2708,13 @@ describe('runReview', () => {
       expect(both.again.filter(message => message.includes('without a line for the unit U1 of'))).toHaveLength(2);
       expect(both.again.filter(message => message.includes('without a line for the units U2, U3 of'))).toHaveLength(2);
       expect([...both.result.agentUnitLines!]).toEqual(both.result.agentNames.map(name => [name, ['U1', 'U2', 'U3'].map(unit => ({ unit, checked: 'Both sides of the check.' }))]));
+      // A slice whose ask fails keeps the first answer for its units, and the other slice's answer still counts.
+      const half = await run([], (message: string) => {
+        if (message.includes('without a line for the unit U1 of')) throw new Error('The call was refused');
+        return ['U2', 'U3'].map(lineFor);
+      }, twoSlices);
+      expect([half.result.outcome, half.again.length]).toEqual(['READY', 4]);
+      expect([...half.result.agentUnitLines!]).toEqual(half.result.agentNames.map(name => [name, [{ unit: 'U1' }, ...['U2', 'U3'].map(unit => ({ unit, checked: 'Both sides of the check.' }))]]));
 
       // A file split between slices: its units go to the call whose slice holds their lines.
       const split = await run([checkedU1, checkedU2], [], big);

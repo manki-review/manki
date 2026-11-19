@@ -290,11 +290,11 @@ function unitsSection(units: readonly ChangeUnit[]): string {
 
 const MAX_UNIT_LINE_CHARS = 200;
 
-/** Whether a reply element is a unit line: a string `unit` and no `title`. Any element with a `title` is a finding. */
+/** Whether a reply element is a unit line: a string `unit`, no `title`, and nothing else that makes it a finding, such as a `description`. */
 function isUnitLine(element: unknown): boolean {
   if (element === null || typeof element !== 'object' || Array.isArray(element)) return false;
   const f = element as Record<string, unknown>;
-  return typeof f.unit === 'string' && !('title' in f);
+  return typeof f.unit === 'string' && !('title' in f) && !isUsableElement(element);
 }
 
 /** Returns the lines of a finder reply for the `units` it was asked about. A line counts only when it says what was checked. */
@@ -1397,24 +1397,26 @@ export async function runReview(
     agentsAskedAgain.push(finder.name);
     const reasons = [...(asks.some(ask => ask.files.length > 0) ? [`opened none of the ${listed.length} listed files`] : []), ...(missing.length > 0 ? [`left ${missing.length} of its ${asked.length} units without a line`] : [])];
     core.info(`${finder.name} ${reasons.join(' and ')}, so it is asked once more${sliced ? ` on ${asks.length} of its ${slices.length} slices` : ''}`);
-    try {
-      const startedAt = Date.now();
-      const second = combinedResult(await mapWithConcurrency(asks, MAX_PARALLEL_SLICES, ask => runReviewerAgent(finderClients.get(finder.name)!, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues,
-        finderOptions(finder, askAgainNote(ask.files, ask.units.map(unit => unit.id), sliced), ask.index))), startedAt);
-      const usage = addUsage(first.usage, second.usage);
-      const latencyMs = first.latencyMs + second.latencyMs;
-      const unitLines = [...first.unitLines ?? [], ...second.unitLines ?? []];
-      if (!sliced && missing.length === 0) return { ...second, usage, latencyMs, unitLines };
-      // A repeat of a first finding reaches the judge as a second copy of one finder, which it folds like two slices' copies.
-      return {
-        findings: [...first.findings, ...second.findings], responseLength: first.responseLength + second.responseLength, usage, latencyMs,
-        ...(first.filesRead && { filesRead: [...new Set([...first.filesRead, ...(second.filesRead ?? [])])] }), unitLines,
-      };
-    } catch (error) {
-      core.warning(`${finder.name}: the second ask failed, so its first answer stays: ${recordWarning(finder.name, error)}`);
-      secondAskFailed.add(finder.name);
-      return first;
+    const startedAt = Date.now();
+    // Each slice's ask settles on its own, so one that fails keeps the answers of the others.
+    const settled = await mapWithConcurrency(asks, MAX_PARALLEL_SLICES, ask => runReviewerAgent(finderClients.get(finder.name)!, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues,
+      finderOptions(finder, askAgainNote(ask.files, ask.units.map(unit => unit.id), sliced), ask.index)).then(result => ({ result }), (error: unknown) => ({ error })));
+    const succeeded = settled.flatMap(s => ('result' in s ? [s.result] : []));
+    for (const s of settled) {
+      if ('error' in s) core.warning(`${finder.name}: ${sliced ? 'a second ask on a slice' : 'the second ask'} failed, so its first answer stays: ${recordWarning(finder.name, s.error)}`);
     }
+    if (succeeded.length < settled.length) secondAskFailed.add(finder.name);
+    if (succeeded.length === 0) return first;
+    const second = combinedResult(succeeded, startedAt);
+    const usage = addUsage(first.usage, second.usage);
+    const latencyMs = first.latencyMs + second.latencyMs;
+    const unitLines = [...first.unitLines ?? [], ...second.unitLines ?? []];
+    if (!sliced && missing.length === 0) return { ...second, usage, latencyMs, unitLines };
+    // A repeat of a first finding reaches the judge as a second copy of one finder, which it folds like two slices' copies.
+    return {
+      findings: [...first.findings, ...second.findings], responseLength: first.responseLength + second.responseLength, usage, latencyMs,
+      ...(first.filesRead && { filesRead: [...new Set([...first.filesRead, ...(second.filesRead ?? [])])] }), unitLines,
+    };
   };
   /** Runs `askOnceMore` and records the finder's line for each unit it answers for. */
   const askAgain = async (finder: Finder, first: AgentResult): Promise<AgentResult> => {
