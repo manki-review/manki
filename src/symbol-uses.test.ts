@@ -623,6 +623,7 @@ describe('listUsesOutsideDiff', () => {
       'src/job.py': 'class Job:\n    retries = 1\n\n    def __init__(self):\n        self.size = 1\n',
       'src/api.gen.ts': 'export function fetchUser() {}\n',
       'src/printer.ts': 'export class Printer {\n  show(x: { balance: bigint }) {}\n}\n',
+      'cmd/fees.swift': `func calc() {\n${Array.from({ length: 7 }, (_, i) => `    const f${i} = 1\n`).join('')}}\n`,
       'cmd/rates.swift': `func build() {\n${Array.from({ length: 7 }, (_, i) => `    const k${i} = 1\n`).join('')}}\nfunc rate() -> Int { return 1 }\n`,
       'conf/app.yml': 'server:\n  pool:\n    idle_timeout: 30\n',
       'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 1;\n}\n',
@@ -647,6 +648,7 @@ describe('listUsesOutsideDiff', () => {
       'src/api.gen.ts': 'export function fetchAccount() {}\n',
       'src/printer.ts': 'export class Printer {\n  show(x: { balance: number }) {}\n}\n',
       'cmd/rates.swift': 'func build() {\n}\nfunc rate() -> Int { return 2 }\n',
+      'cmd/fees.swift': `func calc() {\n${Array.from({ length: 7 }, (_, i) => `    const f${i} = 2\n`).join('')}}\nfunc waive() {}\n`,
       'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 2;\n}\n',
       'src/panel.ts': 'export class Panel {\n  render = () => {\n    const View = class {\n      size = 2;\n    };\n    return View;\n  };\n}\n',
       'conf/app.yml': `server:\n  pool:\n${Array.from({ length: 6 }, (_, i) => `new_key${i}: 1\n`).join('')}`,
@@ -661,10 +663,11 @@ describe('listUsesOutsideDiff', () => {
       expect(changes).toEqual([
         { file: 'cmd/fee.swift', symbol: 'function computeFee', change: 'declaration changed' },
         { file: 'cmd/fee.swift', symbol: 'function roundFee', change: 'added' },
-        // Without a grammar, a declaration is named whatever its indentation, except an indented constant on a removed line,
-        // which is a local variable. So the seven local constants `build` drops leave the change to `rate` in view, and the
-        // methods `clear` and `reset` are named. Removals come first in every file, and among changes of one kind the least
-        // indented.
+        // Without a grammar, a declaration is named whatever its indentation, except an indented constant, which is a local
+        // variable. So the seven local constants `calc` changes leave the added `waive` in view, those `build` drops leave the
+        // change to `rate` in view, and the methods `clear` and `reset` are named. Removals come first in every file, and
+        // among changes of one kind the least indented.
+        { file: 'cmd/fees.swift', symbol: 'function waive', change: 'added' },
         { file: 'cmd/rates.swift', symbol: 'function rate', change: 'body changed' },
         { file: 'cmd/shop.swift', symbol: 'function helper', change: 'removed' },
         { file: 'cmd/shop.swift', symbol: 'function clear', change: 'removed' },

@@ -1577,8 +1577,6 @@ interface DeclarationView {
   text?: () => string;
   /** How far a declaration read by keyword is indented. */
   indent?: number;
-  /** Whether it is a local variable read by keyword, an indented constant, whose removal is never named. */
-  local?: boolean;
 }
 
 /**
@@ -1588,8 +1586,8 @@ interface DeclarationView {
  * added, one only the base holds is removed, one whose part before its body differs is a changed declaration, and one
  * whose body differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by
  * keyword from the removed and added lines. A parsed declaration local to a function is never named. A file read by
- * keyword names every declaration except an indented constant on a removed line, which is a local variable, and among
- * its changes of one kind the least indented come first.
+ * keyword never names an indented constant, which is a local variable, and names every other declaration whatever its
+ * indent. Among its changes of one kind the least indented come first.
  */
 function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) => boolean): MappedChange[] {
   return files.filter(file => !skip(file.path)).flatMap(file => {
@@ -1604,7 +1602,7 @@ function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) =
       const change = !old ? 'added' : !now ? 'removed' : old.signature !== now.signature ? 'declaration changed'
         : !now.text || !old.text || now.text() !== old.text() ? 'body changed' : undefined;
       const view = (now ?? old)!;
-      if (change && !(change === 'removed' && old!.local)) changes.push({ mapped: { file: file.path, symbol: view.label, change }, indent: view.indent ?? 0 });
+      if (change) changes.push({ mapped: { file: file.path, symbol: view.label, change }, indent: view.indent ?? 0 });
     }
     return changes.sort((a, b) => CHANGE_RANK[a.mapped.change] - CHANGE_RANK[b.mapped.change] || a.indent - b.indent).map(c => c.mapped);
   });
@@ -1636,13 +1634,17 @@ function parsedViews(parsed: ParsedFile | undefined, changed: { has(line: number
   return { all, touched: new Map([...touched].map(key => [key, all.get(key)!])) };
 }
 
-/** Returns the declarations `lines` hold by keyword, each by kind and name, as both the whole side and its changed part. */
+/**
+ * Returns the declarations `lines` hold by keyword, each by kind and name, as both the whole side and its changed part.
+ * An indented constant is left out, since it is a local variable.
+ */
 function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
   const all = new Map<string, DeclarationView>();
   for (const { name, kind, line } of keywordDeclarations(file, lines)) {
     const text = lines.get(line)!;
     const indent = text.length - text.trimStart().length;
-    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), indent, local: kind === 'constant' && indent > 0 });
+    if (kind === 'constant' && indent > 0) continue;
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), indent });
   }
   return { all, touched: all };
 }
