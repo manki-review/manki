@@ -552,6 +552,13 @@ describe('handlePRComment', () => {
     const { body } = octokit.rest.issues.createComment.mock.calls[0][0] as { body: string };
     expect(body).toContain('| Command | What it does |\n|---|---|');
     expect(body).toContain('`@manki-review` works as the prefix too.');
+    // The token service answers the allow list commands, and the table says who may run each one.
+    expect(body).toContain([
+      '| `/manki allow @<login>` | Lets an account without write access use Manki in this repository. Needs the `maintain` or `admin` role |',
+      '| `/manki disallow @<login>` | Takes that back. Needs the `maintain` or `admin` role |',
+      '| `/manki allowed` | Lists the accounts allowed to use Manki here, for anyone with write access or on that list |',
+      '| `/manki help` | Shows this message |',
+    ].join('\n'));
     expect(body).not.toMatch(/@manki(?!-review)/);
     expect(body).not.toMatch(/\|[ \t]*\|/);
     expect(body).not.toMatch(/[\u2014\u2013]|\*\*Manki\*\*|\p{Extended_Pictographic}/u);
