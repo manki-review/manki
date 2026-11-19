@@ -6,7 +6,7 @@ import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV } from '../utils';
+import { cutLegacyCommands, isSecretName, registerSecret, safeJsonParse, sanitizeLogOutput, sanitizeTokens, SYSTEM_ENV } from '../utils';
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_DIR_FLAG, STEPS_FLAG } from '../mcp-server';
 import { trackCliProcess } from '../run-diagnostics';
 import { makeScratchDir } from '../tool-install';
@@ -15,26 +15,11 @@ import { RelatedRepoTools } from '../types';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 import { LLMResponse, QuotaError, RepoTools, SendMessageOptions, TimeoutError, UnreachableError } from './types';
 
-export { STALE_TIMEOUT_MS };
+export { cutLegacyCommands, sanitizeLogOutput, STALE_TIMEOUT_MS };
 export const HARD_TIMEOUT_MS = 1_200_000;
 const KILL_GRACE_MS = 5000;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 const REPLY_TAIL_CHARS = 2000;
-
-/** Cuts the older `##[name]` form of a workflow command, which a GitHub Actions runner reads anywhere in a line. */
-export function cutLegacyCommands(text: string): string {
-  return text.replace(/##\[[a-z].*$/gim, '[redacted-workflow-cmd]');
-}
-
-/**
- * Cuts the GitHub Actions workflow commands in `text`, so logging it runs none. A runner reads `::name::` only where it
- * starts a line after whitespace, and a bare `\r` ends a line as `\n` does. A control character counts as whitespace
- * here to stay on the safe side. `::` in the middle of a line, as in `std::fmt`, is kept. The prefix stops at every
- * line break `^` knows, so a long run of them takes linear time.
- */
-export function sanitizeLogOutput(text: string): string {
-  return cutLegacyCommands(text).replace(/^((?:(?![\r\n\u2028\u2029])[\s\p{Cc}])*)::[a-z].*$/gimu, '$1[redacted-workflow-cmd]');
-}
 
 /**
  * Extract a useful snippet from CLI stderr for error messages. CLIs (Codex,
