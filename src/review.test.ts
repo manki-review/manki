@@ -3475,12 +3475,13 @@ describe('runReview', () => {
       expect(mockedRunJudgeAgent.mock.calls.at(-1)![2].findings).toEqual([expect.objectContaining({ title: workaround.finding.title, reviewers: ['Fix check 1'] })]);
 
       // A thread the judge finds fixed stays open as partly fixed when the push changed a fix the check found to be a
-      // workaround in the thread's file or a file its finding cited, or when nothing shows what the push changed.
+      // workaround at the thread's finding, or when nothing shows what the push changed.
       const addressed: ThreadEvaluation = { threadId: 'T1', status: 'addressed', reason: 'The guard is in place.' };
       const prior = buildPriorRound(1, [makePriorWarningFinding({ fingerprint: { file: 'src/report.ts', lineStart: 3, lineEnd: 3, slug: 'old-issue' } })]);
       const pushTo = (line: number) => `diff --git a/src/report.ts b/src/report.ts\n--- a/src/report.ts\n+++ b/src/report.ts\n@@ -${line} +${line} @@\n-old\n+new\n`;
-      const evaluated = async (interRoundDiff: string | undefined, thread: Partial<OpenThread> = {}, answer: object = workaround) => {
-        mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok', threadEvaluations: [addressed] }));
+      const keep = (findings: Finding[]) => findings;
+      const evaluated = async (interRoundDiff: string | undefined, thread: Partial<OpenThread> = {}, answer: object = workaround, judged = keep) => {
+        mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: judged(input.findings), summary: 'ok', threadEvaluations: [addressed] }));
         const followUp = await runReview(fixClients(undefined, answer), {
           config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext, isFollowUp: true,
           openThreads: [makePriorOpenThread({ file: 'src/report.ts', line: 3, ...thread })], previousFindings: [], priorRounds: [prior], interRoundDiff, headSha: 'sha2',
@@ -3493,11 +3494,18 @@ describe('runReview', () => {
       }];
       expect(await evaluated(pushTo(3))).toEqual(partly);
       expect(await evaluated(undefined)).toEqual(partly);
-      expect(await evaluated(pushTo(3), { file: 'src/rate.ts', line: 2, evidenceFiles: ['src/report.ts'] })).toEqual(partly);
-      // A push that left the workaround alone, a thread in another file, and a fix the check found to remove the cause leave the judge's call.
+      // A thread near a line the check cited as the cause is tied to the fix too.
+      expect(await evaluated(pushTo(3), { file: 'src/rate.ts', line: 4 })).toEqual(partly);
+      // A push that left the workaround alone, a thread away from the fix and its cause, and a fix the check found to remove the cause leave the judge's call.
       expect(await evaluated(pushTo(1))).toEqual([addressed]);
-      expect(await evaluated(pushTo(3), { file: 'src/rate.ts', line: 2 })).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), { line: 40, evidenceFiles: ['src/rate.ts'] })).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), { file: 'src/other.ts' })).toEqual([addressed]);
       expect(await evaluated(pushTo(3), {}, { status: 'root_cause', actsAt: 'cause', cause: 'The guard sits in the only caller.', proof: ['src/report.ts:3'] })).toEqual([addressed]);
+      // So does a workaround whose finding the judge drops or grades a note, or that a check disproved.
+      const disproved: Refutation = { outcome: 'disproved', reason: 'Every caller checks `count`.', files: ['src/report.ts'], codeDigest: 'd' };
+      expect(await evaluated(pushTo(3), {}, workaround, () => [])).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), {}, workaround, findings => findings.map(f => ({ ...f, severity: 'note' as const })))).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), {}, workaround, findings => findings.map(f => ({ ...f, refutation: disproved })))).toEqual([addressed]);
     } finally {
       for (const dir of [root, docs.root]) rmSync(dir, { recursive: true, force: true });
     }

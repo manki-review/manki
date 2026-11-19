@@ -813,8 +813,8 @@ export interface RoundFix extends ListedFix {
   /**
    * `root_cause` when the check found that the fix changes the code that causes the problem, and `workaround` when the
    * cause stays as it was. Each stands only with a cited line that exists, and `workaround` only with one outside the
-   * fix. Every other end is `unchecked`. No stage is shown it. A `workaround` the push changed keeps an open thread
-   * in its file from closing (`pushedWorkarounds`).
+   * fix. Every other end is `unchecked`. No stage is shown it. A `workaround` the push changed, whose finding stands,
+   * keeps an open thread at its lines from closing (`pushedWorkarounds`, `concernsThread`).
    */
   status: 'root_cause' | 'workaround' | 'unchecked';
   /** Why the check gave no answer: as for `RoundPrClaim.call`, and `cut` when the cap on checks left the fix out. */

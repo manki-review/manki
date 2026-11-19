@@ -26,6 +26,8 @@ const MAX_PROBLEM_CHARS = 300;
 const MAX_ANSWER_CHARS = 500;
 const MAX_WRITTEN_TITLE_CHARS = 160;
 const MAX_SKIP_REASON = 200;
+/** Lines between a thread's line and a line of a fix or its cited cause that still tie the fix to the thread. */
+const NEAR_THREAD_LINES = 5;
 const FIX_CHECK_NAME = 'Fix check';
 const STATUSES: ReadonlyArray<RoundFix['status']> = ['root_cause', 'workaround', 'unchecked'];
 
@@ -334,6 +336,17 @@ export function pushedWorkarounds(checked: readonly RoundFix[], interRoundDiff: 
     const { file, start, end } = parseLocation(range)!;
     return (pushed.get(file) ?? []).some(line => line >= start && line <= end);
   }));
+}
+
+/**
+ * Whether `fix` is about the finding of a thread on `file` and `line`: a line of the fix, or a line its check cited as
+ * the cause or the path that still fails, sits within `NEAR_THREAD_LINES` of it.
+ */
+export function concernsThread({ at, proof = [] }: RoundFix, { file, line }: { file: string; line: number }): boolean {
+  return [...at, ...proof].some(location => {
+    const cited = parseLocation(location);
+    return !!cited && cited.file === file && line >= cited.start - NEAR_THREAD_LINES && line <= cited.end + NEAR_THREAD_LINES;
+  });
 }
 
 /** Returns what still goes wrong after `fix`, a workaround, as a thread it keeps open says it: the problem, its cause and what still fails, with the lines the check cited. */
