@@ -612,7 +612,7 @@ export interface UsesOutsideDiff {
   units?: ChangeUnit[];
   /** How many units `MAX_UNITS` left out. */
   unitsOverLimit?: number;
-  /** The declarations the change adds, changes or removes outside tests and docs, from `mappedChanges`. */
+  /** The declarations the change adds, changes or removes outside the files that add nothing, such as tests and docs, from `mappedChanges`. */
   changes?: MappedChange[];
 }
 
@@ -1062,7 +1062,7 @@ async function buildUsesSection(
   const allUnits = changeUnits(diff.files, declared, addsNothing);
   const units = allUnits.slice(0, MAX_UNITS);
   if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
-  const changes = mappedChanges(diff.files, parser);
+  const changes = mappedChanges(diff.files, parser, addsNothing);
   if (changes.length > 0) built.changes = changes;
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
@@ -1580,16 +1580,16 @@ interface DeclarationView {
 }
 
 /**
- * Returns the declarations each file of `files` adds, removes or changes outside tests and docs, per file in diff order,
- * and in each file the changes most likely to break other code first. Each declaration is matched by kind and name, a
- * method or field by its type's name too, between the base and the head. A declaration only the head holds is added, one
- * only the base holds is removed, one whose part before its body differs is a changed declaration, and one whose body
- * differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by keyword from
- * the removed and added lines. A declaration local to a function is never named. Among those read by keyword, an indented
- * removed one counts as local.
+ * Returns the declarations each file of `files` adds, removes or changes, per file in diff order, and in each file the
+ * changes most likely to break other code first. A file `skip` holds for names none. Each declaration is matched by kind
+ * and name, a method or field by its type's name too, between the base and the head. A declaration only the head holds is
+ * added, one only the base holds is removed, one whose part before its body differs is a changed declaration, and one
+ * whose body differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by
+ * keyword from the removed and added lines. A declaration local to a function is never named. Among those read by
+ * keyword, an indented removed one counts as local, unless it is a config key.
  */
-function mappedChanges(files: DiffFile[], parser: Parser): MappedChange[] {
-  return files.filter(file => !TEST_PATH.test(file.path) && !DOC_FILE.test(file.path)).flatMap(file => {
+function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) => boolean): MappedChange[] {
+  return files.filter(file => !skip(file.path)).flatMap(file => {
     const head = file.changeType === 'deleted' ? undefined : parser.parse(file.path);
     const base = file.changeType === 'added' ? undefined : parser.parseBase(file);
     const parsed = (head || file.changeType === 'deleted') && (base || file.changeType === 'added');

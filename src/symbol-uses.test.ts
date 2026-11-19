@@ -608,7 +608,7 @@ describe('listUsesOutsideDiff', () => {
     expect(listedUnder(ranked.finderSection, 'headerLimit')).toEqual(['src/z_last.ts:1', 'src/a_stub.ts:2']);
   });
 
-  it('maps what the change adds, removes or changes in each file outside tests and docs, removals first, with or without a grammar', async () => {
+  it('maps what the change adds, removes or changes in each file outside tests, docs and generated files, removals first, with or without a grammar', async () => {
     const config = (field: string, body: string, rest: string) => `export interface Config {\n  ${field}\n}\n\n/** Reads the config. */\nexport function parseConfig(text: string): Config {\n  return ${body};\n}\n\n${rest}`;
     const { root, diff } = gitWorkspace({
       'src/config.ts': config('limit: number;', '{ limit: Number(text) }', 'export function oldHelper(): number {\n  const local = 1;\n  return local;\n}\n\nexport const MAX_SIZE = 10;\n'),
@@ -621,6 +621,7 @@ describe('listUsesOutsideDiff', () => {
       'cmd/shop.swift': 'func helper() {}\nfunc total() -> Int { return 1 }\nfunc outer() {\n    func inner() {}\n    struct Local {}\n}\n',
       'src/outer.ts': 'export function outer() {\n  function gone() {}\n  class Gone {\n    size = 1;\n  }\n  return 1;\n}\n',
       'src/job.py': 'class Job:\n    retries = 1\n\n    def __init__(self):\n        self.size = 1\n',
+      'src/api.gen.ts': 'export function fetchUser() {}\n',
       'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n}\n',
       'src/ids.rs': 'pub type Id = u8;\n',
       'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: number) {}\n}\n',
@@ -638,6 +639,7 @@ describe('listUsesOutsideDiff', () => {
       'src/hooks.go': 'package hooks\n\nvar Handle = func() {\n\ttype event struct{ ID int }\n}\n',
       'src/job.py': 'class Job:\n    retries = 2\n\n    def __init__(self):\n        self.size = 1\n        self.cost = 2\n\n    def run(self):\n        def step():\n            pass\n',
       'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n\tB int\n}\n',
+      'src/api.gen.ts': 'export function fetchAccount() {}\n',
       'src/ids.rs': 'pub type Id = u16;\n',
     });
     const deleted = parsePRDiff('diff --git a/src/legacy.ts b/src/legacy.ts\ndeleted file mode 100644\n--- a/src/legacy.ts\n+++ /dev/null\n@@ -1,4 +0,0 @@\n-export function legacyParse(): void {\n-  const indented = 2;\n-}\n-const TOP_LEVEL = 1;').files;
