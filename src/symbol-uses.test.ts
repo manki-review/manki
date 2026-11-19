@@ -615,6 +615,126 @@ describe('listUsesOutsideDiff', () => {
     expect(listedUnder(ranked.finderSection, 'headerLimit')).toEqual(['src/z_last.ts:1', 'src/a_stub.ts:2']);
   });
 
+  it('maps what the change adds, removes or changes in each file outside tests, docs and generated files, removals first, with or without a grammar', async () => {
+    const config = (field: string, body: string, rest: string) => `export interface Config {\n  ${field}\n}\n\n/** Reads the config. */\nexport function parseConfig(text: string): Config {\n  return ${body};\n}\n\n${rest}`;
+    const { root, diff } = gitWorkspace({
+      'src/config.ts': config('limit: number;', '{ limit: Number(text) }', 'export function oldHelper(): number {\n  const local = 1;\n  return local;\n}\n\nexport const MAX_SIZE = 10;\n'),
+      'src/config.test.ts': "it('parses', () => expect(parseConfig('1').limit).toBe(1));\n",
+      'docs/config.md': '# Config\n',
+      'cmd/fee.swift': 'func computeFee(n: Int) -> Int { return n }\n',
+      'manki.yml': 'review:\n  noise: low\n  old_limit: 2\n  max_rounds: 3\n',
+      'src/shapes.ts': 'export function area() {\n  return 1;\n}\n\nexport function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 1;\n  }\n}\n\n/** A square. */\nexport class Square {\n  draw() {\n    return 1;\n  }\n}\n\nexport const scale = (n: number) => n;\n',
+      'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n',
+      'cmd/shop.swift': 'func helper() {}\nfunc total() -> Int { return 1 }\nclass Cart {\n    func clear() {}\n}\n',
+      'src/outer.ts': 'export function outer() {\n  function gone() {}\n  class Gone {\n    size = 1;\n  }\n  return 1;\n}\n',
+      'src/job.py': 'class Job:\n    retries = 1\n\n    def __init__(self):\n        self.size = 1\n',
+      'src/api.gen.ts': 'export function fetchUser() {}\n',
+      'src/printer.ts': 'export class Printer {\n  show(x: { balance: bigint }) {}\n}\n',
+      'cmd/fees.swift': `func calc() {\n${Array.from({ length: 7 }, (_, i) => `    const f${i} = 1\n`).join('')}}\n`,
+      'cmd/rates.swift': `func build() {\n${Array.from({ length: 7 }, (_, i) => `    const k${i} = 1\n`).join('')}}\nfunc rate() -> Int { return 1 }\n`,
+      'conf/app.yml': 'server:\n  pool:\n    idle_timeout: 30\n',
+      'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 1;\n}\n',
+      'src/panel.ts': 'export class Panel {\n  render = () => {\n    const View = class {\n      size = 1;\n    };\n    return View;\n  };\n}\n',
+      'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n}\n',
+      'src/ids.rs': 'pub type Id = u8;\n',
+      'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: number) {}\n}\n',
+    }, {
+      'src/config.ts': config('limit: number | null;', "text ? { limit: Number(text) } : { limit: null }", 'export function newHelper(): number {\n  return 2;\n}\n'),
+      'src/config.test.ts': "it('parses', () => expect(parseConfig('').limit).toBeNull());\n\nfunction fixture() {}\n",
+      'docs/config.md': '# Config\n\ntype Config = the settings\n',
+      'cmd/fee.swift': 'func computeFee(n: Int, rate: Int) -> Int { return n * rate }\n\nfunc roundFee(n: Int) -> Int { return n }\n',
+      'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n  max_rounds: 4\n',
+      'src/shapes.ts': 'export function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 2;\n  }\n}\n\n/** A square, drawn from its corner. */\nexport class Square {\n  draw() {\n    return 2;\n  }\n}\n\nexport const scale = (n: number) => n * 2;\n',
+      'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n',
+      'cmd/shop.swift': 'func total() -> Int { return 2 }\nclass Cart {\n    func reset() {}\n}\n',
+      'src/outer.ts': 'export function outer() {\n  function inner() {}\n  class Local {\n    size = 1;\n  }\n  return 2;\n}\n\nexport const run = () => {\n  function step() {}\n};\n',
+      'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: string) {}\n}\n',
+      'src/hooks.go': 'package hooks\n\nvar Handle = func() {\n\ttype event struct{ ID int }\n}\n',
+      'src/job.py': 'class Job:\n    retries = 2\n\n    def __init__(self):\n        self.size = 1\n        self.cost = 2\n\n    def run(self):\n        def step():\n            pass\n',
+      'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n\tB int\n}\n',
+      'src/api.gen.ts': 'export function fetchAccount() {}\n',
+      'src/printer.ts': 'export class Printer {\n  show(x: { balance: number }) {}\n}\n',
+      'cmd/rates.swift': 'func build() {\n}\nfunc rate() -> Int { return 2 }\n',
+      'cmd/fees.swift': `func calc() {\n${Array.from({ length: 7 }, (_, i) => `    const f${i} = 2\n`).join('')}}\nfunc waive() {}\n`,
+      'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 2;\n}\n',
+      'src/panel.ts': 'export class Panel {\n  render = () => {\n    const View = class {\n      size = 2;\n    };\n    return View;\n  };\n}\n',
+      'conf/app.yml': `server:\n  pool:\n${Array.from({ length: 6 }, (_, i) => `new_key${i}: 1\n`).join('')}`,
+      'src/ids.rs': 'pub type Id = u16;\n',
+    });
+    const deleted = parsePRDiff('diff --git a/src/legacy.ts b/src/legacy.ts\ndeleted file mode 100644\n--- a/src/legacy.ts\n+++ /dev/null\n@@ -1,4 +0,0 @@\n-export function legacyParse(): void {\n-  const indented = 2;\n-}\n-const TOP_LEVEL = 1;').files;
+    try {
+      const { changes } = await listUsesOutsideDiff(root, { ...diff, files: [...diff.files, ...deleted] }, { loadApi });
+      // Each declaration is labeled by comparing its namesake on both sides, so `perimeter`, below the removed `area`, is
+      // not listed, a changed doc changes the declaration, and a one-line declaration whose body alone changes is a changed
+      // body. A method is named with its type.
+      expect(changes).toEqual([
+        { file: 'cmd/fee.swift', symbol: 'function computeFee', change: 'declaration changed' },
+        { file: 'cmd/fee.swift', symbol: 'function roundFee', change: 'added' },
+        // Without a grammar, a declaration is named whatever its indentation, except an indented constant, which is a local
+        // variable. So the seven local constants `calc` changes leave the added `waive` in view, those `build` drops leave the
+        // change to `rate` in view, and the methods `clear` and `reset` are named. Removals come first in every file, and
+        // among changes of one kind the least indented.
+        { file: 'cmd/fees.swift', symbol: 'function waive', change: 'added' },
+        { file: 'cmd/rates.swift', symbol: 'function rate', change: 'body changed' },
+        { file: 'cmd/shop.swift', symbol: 'function helper', change: 'removed' },
+        { file: 'cmd/shop.swift', symbol: 'function clear', change: 'removed' },
+        { file: 'cmd/shop.swift', symbol: 'function total', change: 'body changed' },
+        { file: 'cmd/shop.swift', symbol: 'function reset', change: 'added' },
+        // A removed config key four levels deep comes before six added top-level keys, so the cap of the map keeps it.
+        { file: 'conf/app.yml', symbol: 'config key idle_timeout', change: 'removed' },
+        ...Array.from({ length: 6 }, (_, i) => ({ file: 'conf/app.yml', symbol: `config key new_key${i}`, change: 'added' })),
+        // A removed config key is mapped, however deep it is nested.
+        { file: 'manki.yml', symbol: 'config key old_limit', change: 'removed' },
+        // A config key, a Go type, a Rust type alias and a Python class attribute keep their declaration when their value changes.
+        { file: 'manki.yml', symbol: 'config key max_rounds', change: 'body changed' },
+        { file: 'manki.yml', symbol: 'config key slice_lines', change: 'added' },
+        // A getter and its setter count as one declaration, so a change to the setter alone is mapped too.
+        { file: 'src/box.ts', symbol: 'function Box.size', change: 'declaration changed' },
+        { file: 'src/box.ts', symbol: 'type Box', change: 'body changed' },
+        // The removed lines declare `oldHelper` and `MAX_SIZE`, never the indented `local`.
+        { file: 'src/config.ts', symbol: 'function oldHelper', change: 'removed' },
+        { file: 'src/config.ts', symbol: 'constant MAX_SIZE', change: 'removed' },
+        { file: 'src/config.ts', symbol: 'field Config.limit', change: 'declaration changed' },
+        { file: 'src/config.ts', symbol: 'type Config', change: 'body changed' },
+        { file: 'src/config.ts', symbol: 'function parseConfig', change: 'body changed' },
+        { file: 'src/config.ts', symbol: 'function newHelper', change: 'added' },
+        { file: 'src/engine.rs', symbol: 'function Engine.run', change: 'body changed' },
+        { file: 'src/engine.rs', symbol: 'function Motor.run', change: 'body changed' },
+        { file: 'src/ids.rs', symbol: 'type Id', change: 'body changed' },
+        // A field assigned in `__init__` belongs to its class, while a function inside a function is local.
+        { file: 'src/job.py', symbol: 'type Job', change: 'body changed' },
+        { file: 'src/job.py', symbol: 'field Job.retries', change: 'body changed' },
+        { file: 'src/job.py', symbol: 'function Job.__init__', change: 'body changed' },
+        { file: 'src/job.py', symbol: 'field Job.cost', change: 'added' },
+        { file: 'src/job.py', symbol: 'function Job.run', change: 'added' },
+        // A constant in an `impl` block is named with its type, so the `MAX` of `A` and that of `B` stay apart.
+        { file: 'src/limits.rs', symbol: 'constant B.MAX', change: 'body changed' },
+        // A function or type declared in a function, an arrow function or a Go function literal, and the fields of such a
+        // type, are never named.
+        { file: 'src/outer.ts', symbol: 'function outer', change: 'body changed' },
+        { file: 'src/outer.ts', symbol: 'constant run', change: 'added' },
+        // A field of a class expression inside an arrow function is local to that function, so only `render` is named.
+        { file: 'src/panel.ts', symbol: 'type Panel', change: 'body changed' },
+        { file: 'src/panel.ts', symbol: 'field Panel.render', change: 'body changed' },
+        // A field of an inline parameter type is no field of the class around it.
+        { file: 'src/printer.ts', symbol: 'function Printer.show', change: 'declaration changed' },
+        { file: 'src/printer.ts', symbol: 'type Printer', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'function area', change: 'removed' },
+        { file: 'src/shapes.ts', symbol: 'type Square', change: 'declaration changed' },
+        { file: 'src/shapes.ts', symbol: 'type Circle', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'function Circle.draw', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'function Square.draw', change: 'body changed' },
+        { file: 'src/shapes.ts', symbol: 'constant scale', change: 'body changed' },
+        { file: 'src/store.go', symbol: 'type Store', change: 'body changed' },
+        { file: 'src/store.go', symbol: 'field Store.B', change: 'added' },
+        { file: 'src/legacy.ts', symbol: 'function legacyParse', change: 'removed' },
+        { file: 'src/legacy.ts', symbol: 'constant TOP_LEVEL', change: 'removed' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
@@ -1082,6 +1202,12 @@ ${body}	return true
     const methods = (n: number) => `export class ${'C'.repeat(7 * n)} {\n${Array.from({ length: n }, (_, i) => `  m${i}() {}\n`).join('')}}\n`;
     await usesInLinearTime(n => [{ 'src/methods.ts': 'export const c = 0;\n' }, { 'src/methods.ts': methods(n) }], 8_000, { smaller: 500 });
 
+    // A class of many methods on one line whose bodies all change: the map of the change names each method with its
+    // class, and compares each from its own start on the line.
+    const inlineClass = (n: number, value: number) => `export class Inline { ${Array.from({ length: n }, (_, i) => `m${i}() { return ${value}; }`).join(' ')} }\n`;
+    const mapped = await usesInLinearTime(n => [{ 'src/inline.ts': inlineClass(n, 1) }, { 'src/inline.ts': inlineClass(n, 2) }], 8_000, { smaller: 500 });
+    expect(mapped.changes).toEqual([{ file: 'src/inline.ts', symbol: 'type Inline', change: 'body changed' }, ...Array.from({ length: 8_000 }, (_, i) => ({ file: 'src/inline.ts', symbol: `function Inline.m${i}`, change: 'body changed' }))]);
+
     // Many assignments in a Python method with a long name: the name is not read to tell whether the method is `__init__`.
     const assigned = (n: number, x: number) => `class A:\n    def ${'m'.repeat(37 * n)}(self):\n${Array.from({ length: n }, (_, i) => `        self.a${i} = 1\n`).join('')}x = ${x}\n`;
     await usesInLinearTime(n => [{ 'src/assigned.py': assigned(n, 1) }, { 'src/assigned.py': assigned(n, 2) }], 16_000, { smaller: 1_000 });
@@ -1188,15 +1314,17 @@ ${body}	return true
       // A failed search leaves its reason in the round record, which tells it from a change with nothing to list.
       expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
+      const changes = [{ file: 'src/a.rs', symbol: 'function compute_total', change: 'body changed' }];
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({
-        ...NOTHING, referenceNames: ['compute_total'], units: [{ id: 'U1', kind: 'function', file: 'src/a.rs', start: 1, end: 1, name: 'compute_total' }],
+        ...NOTHING, referenceNames: ['compute_total'], units: [{ id: 'U1', kind: 'function', file: 'src/a.rs', start: 1, end: 1, name: 'compute_total' }], changes,
       });
       expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons, 0 added pieces and 1 units$/));
-      // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name.
+      // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name,
+      // and the map of the change built before the search is kept.
       rmSync(join(root, '.git'), { recursive: true, force: true });
       mkdirSync(join(root, '.git'));
       const broken = await listUsesOutsideDiff(root, diff, { loadApi });
-      expect(broken).toEqual({ ...NOTHING, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
+      expect(broken).toEqual({ ...NOTHING, changes, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
       expect(core.warning).toHaveBeenLastCalledWith(`Skipped the list of uses outside the diff: ${broken.record?.failed}`);
       // A `git grep` that a signal ends leaves no exit code, and the reason names the signal.
       const bin = mkdtempSync(join(tmpdir(), 'manki-bin-'));

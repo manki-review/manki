@@ -13,7 +13,7 @@ import { resolveInRoot } from './mcp-server';
 import { GUIDE_FILES } from './related-repos';
 import { LISTED_FILES_TO_OPEN } from './tool-steps';
 import { ClaimTerms, DiffFile, DiffHunk, NameTranslation, ParsedDiff, RELATED_REPO_KINDS, RelatedCheckout, RelatedRepoKind, RoundClaimTerms, RoundNameTranslation, RoundReferenceUse, RoundUses, RoundUsesSymbol } from './types';
-import { escapeRegExp } from './utils';
+import { appendTo, escapeRegExp } from './utils';
 import { gitEnv } from './workspace';
 
 const execFileAsync = promisify(execFile);
@@ -210,6 +210,10 @@ interface FamilyRules {
   names?: (node: SgNode) => SgNode[];
   /** Whether a node is a module of tests, whose code is never compared. */
   testModule?: (node: SgNode) => boolean;
+  /** Functions that declare no name, such as a TypeScript arrow function. A declaration inside one is local to it. */
+  functions?: string[];
+  /** The field holding the body or value of a declaration node that has no `body` or `value` field, such as `type` on a Go `type_spec`. */
+  bodies?: Record<string, string>;
 }
 
 const RULES: Record<Family, FamilyRules> = {
@@ -229,6 +233,8 @@ const RULES: Record<Family, FamilyRules> = {
     owners: { impl_item: { type: 'type', trait: 'trait' } },
     selfName: () => 'self',
     testModule: node => node.kind() === 'mod_item' && /^tests?$/.test(node.field('name')?.text() ?? ''),
+    functions: ['closure_expression'],
+    bodies: { type_item: 'type' },
   },
   typescript: {
     declarations: {
@@ -253,6 +259,7 @@ const RULES: Record<Family, FamilyRules> = {
         'class', 'class_declaration', 'abstract_class_declaration',
       ],
     },
+    functions: ['arrow_function', 'function_expression', 'generator_function'],
     // A class names its bases in `extends` and `implements` clauses, an interface in one `extends` clause, and a type
     // alias anywhere in its value, such as `Base & { extra: number }`.
     bases: scope => scope.kind() === 'type_alias_declaration'
@@ -282,6 +289,7 @@ const RULES: Record<Family, FamilyRules> = {
     },
     bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
+    bodies: { assignment: 'right' },
     valueType: node => {
       const value = node.field('right');
       if (value?.kind() !== 'call') return value ? PYTHON_LITERALS[value.kind()] : undefined;
@@ -315,6 +323,8 @@ const RULES: Record<Family, FamilyRules> = {
       },
     },
     names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
+    functions: ['func_literal'],
+    bodies: { type_spec: 'type' },
   },
 };
 
@@ -454,6 +464,8 @@ interface Declaration {
   kind: SymbolKind;
   /** First line, counting the comments and attributes above it. */
   start: number;
+  /** The column on `start` where the declaration or the first of those comments and attributes begins. */
+  startColumn: number;
   /** Last line of the signature or header, before the body. */
   headerEnd: number;
   end: number;
@@ -464,6 +476,8 @@ interface Declaration {
   shape: boolean;
   /** Whether it is test code, such as a `#[test]` function or one inside `#[cfg(test)]`. */
   test: boolean;
+  /** Whether it is declared inside a function, or is a member of a type declared there, so no other file can use it. */
+  local: boolean;
 }
 
 interface Hit {
@@ -598,6 +612,16 @@ export interface UsesOutsideDiff {
   units?: ChangeUnit[];
   /** How many units `MAX_UNITS` left out. */
   unitsOverLimit?: number;
+  /** The declarations the change adds, changes or removes outside the files that add nothing, such as tests and docs, from `mappedChanges`. */
+  changes?: MappedChange[];
+}
+
+/** A declaration the change adds, changes or removes, as the map of the change names it to a reader of one slice. */
+export interface MappedChange {
+  file: string;
+  /** The kind and name, such as `function parseConfig` or `field Config.timeout`. */
+  symbol: string;
+  change: 'removed' | 'declaration changed' | 'body changed' | 'added';
 }
 
 export interface UsesOptions {
@@ -626,16 +650,18 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
     core.info('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     return { ...NO_SECTION, siblings: NO_SIBLINGS };
   }
+  // The map of the change is built before the search for uses, so a failed search keeps it.
+  const built: Pick<UsesOutsideDiff, 'changes'> = {};
   try {
     const started = Date.now();
-    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff);
+    const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi, forDependency, fullDiff, built);
     const { fields, implementations } = uses.siblings;
     core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons, ${uses.pieces?.length ?? 0} added pieces and ${uses.units?.length ?? 0} units`);
     return uses;
   } catch (error) {
     const failed = (error instanceof Error ? error.message : String(error)).slice(0, MAX_FAILURE_CHARS);
     core.warning(`Skipped the list of uses outside the diff: ${failed}`);
-    return { ...NO_SECTION, record: { failed }, siblings: NO_SIBLINGS };
+    return { ...NO_SECTION, ...built, record: { failed }, siblings: NO_SIBLINGS };
   }
 }
 
@@ -965,6 +991,7 @@ function formatRelatedUses(
 
 async function buildUsesSection(
   workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>, forDependency: boolean, fullDiff: ParsedDiff,
+  built: Pick<UsesOutsideDiff, 'changes'>,
 ): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
@@ -1035,6 +1062,8 @@ async function buildUsesSection(
   const allUnits = changeUnits(diff.files, declared, addsNothing);
   const units = allUnits.slice(0, MAX_UNITS);
   if (allUnits.length > MAX_UNITS) core.info(`The change has ${allUnits.length} units, so the last ${allUnits.length - MAX_UNITS} are not listed`);
+  const changes = mappedChanges(diff.files, parser, addsNothing);
+  if (changes.length > 0) built.changes = changes;
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -1062,6 +1091,7 @@ async function buildUsesSection(
   const nothing = {
     ...NO_SECTION, ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }), ...(pieces.length > 0 && { pieces }),
     ...(units.length > 0 && { units }), ...(allUnits.length > units.length && { unitsOverLimit: allUnits.length - units.length }),
+    ...(changes.length > 0 && { changes }),
   };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
@@ -1535,6 +1565,109 @@ function unitCode(lines: string[]): string {
   return shown.join('\n');
 }
 
+const CHANGE_RANK: Record<MappedChange['change'], number> = { 'removed': 0, 'declaration changed': 1, 'body changed': 2, 'added': 3 };
+
+/** A declaration on one side of the diff, as `mappedChanges` compares it with its namesake on the other side. */
+interface DeclarationView {
+  /** The kind and name, such as `function Renderer.render`. */
+  label: string;
+  /** The declaration before its body or value, with its whitespace collapsed. */
+  signature: string;
+  /** The whole declaration, unset when it was read by keyword from one line. */
+  text?: () => string;
+  /** How far a declaration read by keyword is indented. */
+  indent?: number;
+}
+
+/**
+ * Returns the declarations each file of `files` adds, removes or changes, per file in diff order, and in each file the
+ * changes most likely to break other code first. A file `skip` holds for names none. Each declaration is matched by kind
+ * and name, a method or field by its type's name too, between the base and the head. A declaration only the head holds is
+ * added, one only the base holds is removed, one whose part before its body differs is a changed declaration, and one
+ * whose body differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by
+ * keyword from the removed and added lines. A parsed declaration local to a function is never named. A file read by
+ * keyword never names an indented constant, which is a local variable, and names every other declaration whatever its
+ * indent. Among its changes of one kind the least indented come first.
+ */
+function mappedChanges(files: DiffFile[], parser: Parser, skip: (file: string) => boolean): MappedChange[] {
+  return files.filter(file => !skip(file.path)).flatMap(file => {
+    const head = file.changeType === 'deleted' ? undefined : parser.parse(file.path);
+    const base = file.changeType === 'added' ? undefined : parser.parseBase(file);
+    const parsed = (head || file.changeType === 'deleted') && (base || file.changeType === 'added');
+    const before = parsed ? parsedViews(base, removedOldLines(file)) : keywordViews(file, removedOldLines(file));
+    const after = parsed ? parsedViews(head, addedLines(file)) : keywordViews(file, addedLines(file));
+    const changes: Array<{ mapped: MappedChange; indent: number }> = [];
+    for (const key of new Set([...after.touched.keys(), ...before.touched.keys()])) {
+      const [old, now] = [before.all.get(key), after.all.get(key)];
+      const change = !old ? 'added' : !now ? 'removed' : old.signature !== now.signature ? 'declaration changed'
+        : !now.text || !old.text || now.text() !== old.text() ? 'body changed' : undefined;
+      const view = (now ?? old)!;
+      if (change) changes.push({ mapped: { file: file.path, symbol: view.label, change }, indent: view.indent ?? 0 });
+    }
+    return changes.sort((a, b) => CHANGE_RANK[a.mapped.change] - CHANGE_RANK[b.mapped.change] || a.indent - b.indent).map(c => c.mapped);
+  });
+}
+
+/**
+ * Returns the declarations of a parsed side outside tests and functions, each by kind and name, and those of them whose
+ * lines hold one of `changed`. Namesakes, such as a getter and its setter, count as one declaration made of them all.
+ */
+function parsedViews(parsed: ParsedFile | undefined, changed: { has(line: number): boolean }): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
+  const namesakes = new Map<string, { label: string; decls: Declaration[] }>();
+  const touched = new Set<string>();
+  for (const decl of parsed?.declarations ?? []) {
+    const name = decl.test ? undefined : parsed!.mappedName(decl);
+    if (!name) continue;
+    const key = `${decl.kind} ${name}`;
+    const known = namesakes.get(key);
+    if (known) known.decls.push(decl);
+    else namesakes.set(key, { label: `${KIND_LABEL[decl.kind]} ${name}`, decls: [decl] });
+    for (let line = decl.start; line <= decl.end; line++) {
+      if (!changed.has(line)) continue;
+      touched.add(key);
+      break;
+    }
+  }
+  const all = new Map([...namesakes].map(([key, { label, decls }]) => [key, {
+    label, signature: decls.map(d => parsed!.headerText(d).replace(/\s+/g, ' ').trim()).join('\n'), text: () => decls.map(d => d.node.text()).join('\n'),
+  }]));
+  return { all, touched: new Map([...touched].map(key => [key, all.get(key)!])) };
+}
+
+/**
+ * Returns the declarations `lines` hold by keyword, each by kind and name, as both the whole side and its changed part.
+ * An indented constant is left out, since it is a local variable.
+ */
+function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
+  const all = new Map<string, DeclarationView>();
+  for (const { name, kind, line } of keywordDeclarations(file, lines)) {
+    const text = lines.get(line)!;
+    const indent = text.length - text.trimStart().length;
+    if (kind === 'constant' && indent > 0) continue;
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), indent });
+  }
+  return { all, touched: all };
+}
+
+/**
+ * Returns the declaration on `line` before the first `{` or `=` outside brackets, with its whitespace collapsed, so a
+ * change inside the body or value of a one-line declaration leaves it the same.
+ */
+function signatureOf(line: string): string {
+  let depth = 0;
+  let end = line.length;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth--;
+    else if (depth === 0 && (c === '{' || (c === '=' && !'=!<>'.includes(line[i - 1] ?? '') && !'=>'.includes(line[i + 1] ?? '')))) {
+      end = i;
+      break;
+    }
+  }
+  return line.slice(0, end).replace(/\s+/g, ' ').trim();
+}
+
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
 export function declaredNames(diff: ParsedDiff): string[] {
   return [...new Set(diff.files.flatMap(file => keywordDeclarations(file)).map(s => s.name).filter(name => isSearchable(name)))];
@@ -1554,6 +1687,7 @@ class Parser {
   baseSkipped = 0;
   private baseFiles = 0;
   private baseBytes = 0;
+  private readonly baseCache = new Map<string, ParsedFile | undefined>();
 
   /** `reliedOn` asks for the names each changed file calls or reads outside tests. */
   constructor(private readonly workspace: string, private readonly api?: AstGrepApi, private readonly reliedOn = false) {}
@@ -1590,6 +1724,11 @@ class Parser {
    * here, the budget is spent or the diff does not match the head.
    */
   parseBase(file: DiffFile): ParsedFile | undefined {
+    if (!this.baseCache.has(file.path)) this.baseCache.set(file.path, this.loadBase(file));
+    return this.baseCache.get(file.path);
+  }
+
+  private loadBase(file: DiffFile): ParsedFile | undefined {
     const language = languageOf(file.path);
     if (!language || !this.api) return undefined;
     try {
@@ -1633,12 +1772,6 @@ class Parser {
 function namedSibling(tree: Tree, node: SgNode, side: 'prev' | 'next'): SgNode | undefined {
   for (let sibling = tree[side](node); sibling; sibling = tree[side](sibling)) if (sibling.isNamed()) return sibling;
   return undefined;
-}
-
-function appendTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
-  const list = map.get(key);
-  if (list) list.push(value);
-  else map.set(key, [value]);
 }
 
 /**
@@ -1713,6 +1846,8 @@ class ParsedFile {
   /** Each lookup of an item in a collection field on a touched line, outside tests. */
   readonly lookups: Lookup[];
   private readonly byKey = new Map<string, Declaration>();
+  /** The type each of `methods` is declared on, and that of any other declaration in a block of `rules.owners` but in no type, such as a constant in a Rust `impl`. */
+  private readonly owners: Map<Declaration, string>;
   private readonly members = new Map<string, Declaration[]>();
   private readonly fieldsByLine = new Map<number, Declaration[]>();
   /** Each field a type declares itself, as `Type.field`, and the `key` of each such field. */
@@ -1760,6 +1895,12 @@ class ParsedFile {
       if (decl.kind === 'type' || decl.kind === 'variant') this.typesByName.set(decl.name, this.typesByName.has(decl.name) ? undefined : decl);
     }
     this.methods = this.findMethods();
+    this.owners = new Map(this.methods.map(m => [m.decl, m.owner]));
+    for (const decl of this.declarations) {
+      if (decl.kind === 'function' || decl.container || this.rules.receiver) continue;
+      const { owner } = this.scopeOf(decl.node);
+      if (owner && TYPE_PATH.test(owner)) this.owners.set(decl, owner);
+    }
     const selfMethods = this.methods.filter(m => m.self);
     const methodNodes = new Set(selfMethods.map(m => m.decl.node.id()));
     const { kinds: rebinders = [], byParameter } = rules.rebinds ?? {};
@@ -1788,6 +1929,27 @@ class ParsedFile {
     this.scopes.clear();
   }
 
+  /**
+   * Returns the name the map of the change shows for `decl`: `Type.name` for a member of a type, and nothing for a
+   * declaration local to a function or a field no type declares itself, such as one of an inline parameter type.
+   */
+  mappedName(decl: Declaration): string | undefined {
+    if (decl.local || (decl.kind === 'field' && !this.ownFieldKeys.has(decl.key))) return undefined;
+    const owner = this.owners.get(decl) ?? (decl.container && this.byKey.get(decl.container)?.name);
+    return owner ? `${owner}.${decl.name}` : decl.name;
+  }
+
+  /** Returns the source of `decl` before its body or value, from its doc and attributes on. */
+  headerText(decl: Declaration): string {
+    const field = this.rules.bodies?.[decl.node.kind()];
+    const body = decl.node.field('body') ?? decl.node.field('value') ?? (field ? decl.node.field(field) : null);
+    const end = body?.range().start ?? decl.node.range().end;
+    const lines = this.lines.slice(decl.start - 1, end.line + 1);
+    lines[lines.length - 1] = lines[lines.length - 1].slice(0, end.column);
+    lines[0] = lines[0].slice(decl.startColumn);
+    return lines.join('\n');
+  }
+
   /** `named` picks one of the names of a node that declares several. */
   private declaration(node: SgNode, named?: SgNode): Declaration | undefined {
     const kind = node.kind() === 'property_identifier' ? 'variant' : this.rules.declarations[node.kind()];
@@ -1796,10 +1958,16 @@ class ParsedFile {
     if (node.kind() === 'variable_declarator' && !isTopLevelConstant(node, this.tree)) return undefined;
     const body = node.field('body') ?? node.field('value');
     const end = node.range().end.line + 1;
-    const container = this.tree.ancestors(node).find(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
+    const ancestors = this.tree.ancestors(node);
+    const at = ancestors.findIndex(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
+    const container = at >= 0 ? ancestors[at] : undefined;
+    // A member is local only when its type is, so a field Python assigns in `__init__` is not.
+    const from = kind === 'field' || kind === 'variant' ? at : -1;
+    const local = ancestors.some((a, i) => i > from && this.isFunction(a));
+    const { line: start, column: startColumn } = this.leadingStart(node);
     return {
-      node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
-      shape: this.rules.shapes.includes(String(node.kind())), test: this.inTestCode(node), ...(container && { container: nodeKey(container) }),
+      node, name, kind, start, startColumn, headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
+      shape: this.rules.shapes.includes(String(node.kind())), test: this.inTestCode(node), local, ...(container && { container: nodeKey(container) }),
     };
   }
 
@@ -1810,16 +1978,18 @@ class ParsedFile {
     return this.groups.get(key) === 1;
   }
 
-  private leadingStart(node: SgNode): number {
+  /** Returns where `node` begins with the wrappers, comments and attributes that belong to it, as a line and a column. */
+  private leadingStart(node: SgNode): { line: number; column: number } {
     let anchor = node;
     // A grouped declaration such as Go's `const ( ... )` wraps several, so the comments above it belong to none of them.
     const wraps = (parent: SgNode) => WRAPPERS.includes(String(parent.kind())) && this.holdsOne(parent, String(anchor.kind()));
     for (let parent = this.tree.parent(node); parent && wraps(parent); parent = this.tree.parent(parent)) anchor = parent;
-    let start = lineOf(anchor);
-    for (let prev = this.tree.prev(anchor); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= start - 1; prev = this.tree.prev(prev)) {
-      start = lineOf(prev);
+    let first = anchor;
+    for (let prev = this.tree.prev(anchor); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= lineOf(first) - 1; prev = this.tree.prev(prev)) {
+      first = prev;
     }
-    return start;
+    const { line, column } = first.range().start;
+    return { line: line + 1, column };
   }
 
   /** `skip` leaves out the reads it holds for. */
@@ -2065,6 +2235,11 @@ class ParsedFile {
     return this.lineageBases.get(scope.id());
   }
 
+  /** Whether `node` is a function, named or not, so a declaration inside it is local to it. */
+  private isFunction(node: SgNode): boolean {
+    return this.rules.declarations[node.kind()] === 'function' || !!this.rules.functions?.includes(String(node.kind()));
+  }
+
   /**
    * Whether field `decl` belongs to its type itself, not to an inline type or a function inside the type, such as the
    * `{ a: number }` of a method's parameter. A family that names its fields itself, such as Python, places them already.
@@ -2072,7 +2247,7 @@ class ParsedFile {
   private isOwnField(decl: Declaration): boolean {
     if (this.rules.fieldName) return true;
     for (let a = this.tree.parent(decl.node); a && nodeKey(a) !== decl.container; a = this.tree.parent(a)) {
-      if (this.rules.declarations[a.kind()] === 'function') return false;
+      if (this.isFunction(a)) return false;
       if (INLINE_TYPES.has(String(a.kind())) && nodeKey(this.tree.parent(a) ?? a) !== decl.container) return false;
     }
     return true;
