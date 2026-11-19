@@ -3467,14 +3467,15 @@ describe('buildDashboard', () => {
     ];
     for (const [second, data, expected] of steps) expect(buildDashboard(data, second * 1000)).toBe(expected);
 
-    // The verdict reader keeps its time once it ended, and a sweep after the judge gets a line of its own.
+    // The verdict reader keeps its time once it ended, and a sweep, which runs on the judge's kept findings, gets a line under the judge.
     const sweeping = buildDashboard({ ...reviewed, ...graded, sideChecks: { ...side(3, 2, 1, 238_000), sweep: { total: 2, ended: 1, findings: 0, startedAt: 560_000 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 } }, 700_000);
-    expect(sweeping).toContain(lines(sideDone, '> ⏳ Sweeps: 1 of 2 done'));
-    // A second read after the finders gets a line of its own, between the side checks and the sweeps.
+    expect(sweeping).toContain(lines(sideDone, '', '**Judge**'));
+    expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> sweeps: 1 of 2 done', '> verdict reader: read the diff (47s)'));
+    // A second read after the finders gets a line of its own, after the side checks.
     const reading = (read: SideCheckState) => buildDashboard({ ...started, agentProgress: [claudeDone, gptDone], sideChecks: { ...side(3, 2, 1, 238_000), second_read: read } }, 470_000);
     expect(reading({ total: 1, ended: 0, findings: 0, startedAt: 452_000 })).toContain(lines(sideDone, '> ⏳ Second reads: 0 of 1 done'));
     expect(reading({ total: 2, ended: 2, findings: 1, startedAt: 440_000, endedAt: 465_000 })).toContain(lines(sideDone, '> ✅ Second reads: 2 of 2 done, 1 finding (25s)'));
-    expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> verdict reader: read the diff (47s)'));
+
     // The findings the judge folded into another one are counted too, so the graded line adds up.
     expect(buildDashboard({ ...reviewed, graded: { kept: 4, dropped: 2, merged: 2, durationMs: 86_000 } }, 560_000))
       .toContain('> graded 8 findings: 4 kept · 2 dropped · 2 merged (1m 26s)'.replace('> ', INDENT));
@@ -3666,21 +3667,25 @@ describe('buildDashboard', () => {
       '> dropped: 2 suggestions',
       '> before the judge: 1 tool alert added',
     ));
-    // The sweeps' findings count in the review too. Here 5 found, plus 1 tool alert and 1 carried lead, less 1 repeat, 1
-    // sweep finding judged already and 1 lead not finished checking, plus 1 added after the judge, make 3 kept, 1 dropped and 1 merged.
+    // The sweeps run on the kept findings, so their findings show under the judge. Here 3 found, plus 1 tool alert and 1
+    // carried lead, less 1 repeat and 1 lead not finished checking, plus 2 sweep findings less 1 judged already, plus 1
+    // added after the judge, make 3 kept, 1 dropped and 1 merged. A sweep finding that repeats an earlier resolved finding
+    // counts among the round's repeats but shows under the sweeps, so here 2 are recorded and 1 shows before the judge.
     const everything = buildDashboard({
       ...finished,
       sideChecks: { ...finished.sideChecks, sweep: { total: 1, ended: 1, findings: 2, startedAt: 420_000, endedAt: 450_000 } },
-      carriedLeadCount: 1, staticDedupCount: 1, llmDedupCount: 0, sweepRepeatCount: 1, openLeadCount: 1,
+      carriedLeadCount: 1, staticDedupCount: 2, llmDedupCount: 0, sweepRepeatCount: 1, sweepDedupCount: 1, openLeadCount: 1,
       keptCount: 3, droppedCount: 1, mergedCount: 1, addedAfterJudgeCount: 1, keptSeverities: { blocker: 1, warning: 2 }, droppedSeverities: { note: 1 },
     });
-    expect(everything).toContain(lines('**Review (behavior · full):** 5 findings'));
-    expect(everything).toContain(lines('> ✅ Second reads: 1 of 1 done, 1 finding (40s)', '> ✅ Sweeps: 1 of 1 done, 2 findings (30s)', ''));
+    expect(everything).toContain(lines('**Review (behavior · full):** 3 findings'));
+    expect(everything).toContain(lines('> ✅ Second reads: 1 of 1 done, 1 finding (40s)', ''));
     expect(everything).toContain(lines(
       '**Judge:** 3 kept · 1 dropped · 1 merged (2m 59s)',
       '> kept: 1 blocker · 2 warnings',
       '> dropped: 1 suggestion',
-      '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 dropped as a repeat of an earlier resolved finding, 1 sweep finding already judged',
+      '> before the judge: 1 tool alert added, 1 lead carried over from the last round, 1 dropped as a repeat of an earlier resolved finding',
+      '> sweeps: 1 of 1 done, 2 findings (30s)',
+      '> 1 sweep finding already judged this round, 1 sweep finding dropped as a repeat of an earlier resolved finding',
       '> not finished checking: 1 lead',
       '> added after the judge: 1 finding',
     ));

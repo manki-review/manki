@@ -1946,6 +1946,7 @@ export async function runReview(
   let sweepRaw: Finding[] = [];
   // The sweep's findings left out before its judge call, since the round judged the same problem already.
   let sweepRepeatCount = 0;
+  let sweepDedupCount = 0;
   // The verdict reader's blockers, which only a round that ends before it checks them records as raw findings.
   let readerRaw: Finding[] = [];
   // The sweep and the checks at the round's end change what the judge's call recorded, so a round that ends incomplete after it records these as they then are.
@@ -1988,6 +1989,7 @@ export async function runReview(
       for (const d of [...statics.duplicates, ...llm.duplicates]) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
       staticDedupCount += statics.duplicates.length;
       llmDedupCount += llm.duplicates.length;
+      sweepDedupCount = statics.duplicates.length + llm.duplicates.length;
       fresh = llm.unique;
     }
     if (stopped) return incompleteAfterJudge(stopped);
@@ -2275,6 +2277,7 @@ export async function runReview(
     rawFindingCount: checkedFindings.length + sweepRaw.length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     ...(sweepRepeatCount > 0 && { sweepRepeatCount }),
+    ...(sweepDedupCount > 0 && { sweepDedupCount }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
     rawFindings: [...allFindings, ...sweepRaw],

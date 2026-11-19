@@ -935,7 +935,7 @@ function reviewHeading(routing: DashboardData['routing']): string {
 }
 
 const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', sweep: 'sweeps', second_read: 'second reads' };
-// `runReview` starts these four steps beside the finders in every round, the second reads after the finders and the sweeps after the judge.
+// `runReview` starts these four steps beside the finders in every round, the second reads after the finders and the sweeps after the judge, so the sweeps show under the judge.
 const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern'];
 
 /**
@@ -971,6 +971,7 @@ function judgeLiveLines(data: DashboardData, now: number): string[] {
   return [
     graded && `${INDENT}graded ${countOf(graded.kept + graded.dropped + graded.merged, 'finding')}: ${graded.kept} kept · ${graded.dropped} dropped${graded.merged ? ` · ${graded.merged} merged` : ''} (${formatDuration(graded.durationMs)})`,
     refuterLine(data.refuter),
+    ...sweepLines(data),
     reader && `${INDENT}verdict reader: ${reader.durationMs === undefined ? `reading the diff · ${soFar(reader.startedAt, now)}` : `read the diff (${formatDuration(reader.durationMs)})`}`,
   ].filter((line): line is string => !!line);
 }
@@ -980,15 +981,31 @@ function judgeLiveLines(data: DashboardData, now: number): string[] {
  * added`. While the judge runs it names the open leads too, which the finished comment gives a line of their own.
  */
 function beforeJudge(data: DashboardData): string {
-  const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0);
+  const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0) - (data.sweepDedupCount ?? 0);
   const leads = data.phase === 'complete' ? 0 : data.openLeadCount ?? 0;
   return ([
     [data.toolAlertCount ?? 0, 'tool alert added', 'tool alerts added'],
     [data.carriedLeadCount ?? 0, 'lead carried over from the last round', 'leads carried over from the last round'],
     [leads, 'lead not finished checking', 'leads not finished checking'],
     [repeats, 'dropped as a repeat of an earlier resolved finding', 'dropped as repeats of earlier resolved findings'],
-    [data.sweepRepeatCount ?? 0, 'sweep finding already judged', 'sweep findings already judged'],
   ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural)).join(', ');
+}
+
+/**
+ * The sweeps' line, such as `sweeps: 1 of 2 done`, written like the other lines under the judge since the sweeps run on
+ * the findings it kept. A second line counts the sweep findings dropped as repeats.
+ */
+function sweepLines(data: DashboardData): string[] {
+  const sweep = data.sideChecks?.sweep;
+  if (!sweep || sweep.total === 0) return [];
+  const found = sweep.findings > 0 ? `, ${countOf(sweep.findings, 'finding')}` : '';
+  const took = sweep.endedAt === undefined ? '' : ` (${formatDuration(sweep.endedAt - sweep.startedAt)})`;
+  const line = `${INDENT}sweeps: ${sweep.ended} of ${sweep.total} done${found}${took}`;
+  const drops = ([
+    [data.sweepRepeatCount ?? 0, 'sweep finding already judged this round', 'sweep findings already judged this round'],
+    [data.sweepDedupCount ?? 0, 'sweep finding dropped as a repeat of an earlier resolved finding', 'sweep findings dropped as repeats of earlier resolved findings'],
+  ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural));
+  return [line, ...(drops.length > 0 ? [`${INDENT}${drops.join(', ')}`] : [])];
 }
 
 /** The finished comment's lines on findings neither kept nor dropped, and on kept ones no judge call graded. */
@@ -1051,14 +1068,12 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
       reviewLines.push(`${INDENT}reviewing with ${data.agentCount} agents...`);
     }
   } else {
-    // `rawFindingCount` is counted before the judge, so the sweeps that run after it add their findings here.
-    const found = (data.rawFindingCount ?? 0) + (data.sideChecks?.sweep?.findings ?? 0);
-    reviewLines.push(`**${review}:** ${countOf(found, 'finding')}`);
+    reviewLines.push(`**${review}:** ${countOf(data.rawFindingCount ?? 0, 'finding')}`);
     if (hasAgentProgress) {
       reviewLines.push(renderAgentLines(agents, now));
     }
   }
-  reviewLines.push(...[sideCheckLine(data.sideChecks, BESIDE_FINDERS), sideCheckLine(data.sideChecks, ['second_read']), sideCheckLine(data.sideChecks, ['sweep'])].filter((line): line is string => !!line));
+  reviewLines.push(...[sideCheckLine(data.sideChecks, BESIDE_FINDERS), sideCheckLine(data.sideChecks, ['second_read'])].filter((line): line is string => !!line));
   const sameEffort = data.routing?.deeperSameEffort;
   if (sameEffort) {
     reviewLines.push(`${INDENT}_(the deeper review adds no effort for ${sameEffort.map(sanitizeMarkdown).join(', ')}: the model receives no more effort than without it)_`);
@@ -1096,7 +1111,7 @@ export function buildDashboard(data: DashboardData, now = Date.now()): string {
     }
     const drops = beforeJudge(data);
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
-    judgeLines.push(...afterJudgeLines(data));
+    judgeLines.push(...sweepLines(data), ...afterJudgeLines(data));
     if (data.suppressionCount) judgeLines.push(`${INDENT}suppressed by memory: ${data.suppressionCount}`);
     if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
       judgeLines.push(`${INDENT}suppressed: ${countOf(data.testNitSuppressedCount, 'test-only suggestion')} (round ≥2 throttle)`);

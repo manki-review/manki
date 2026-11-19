@@ -1250,6 +1250,8 @@ export interface ReviewResult {
   toolAlertCount?: number;
   /** Findings of the sweep left out of `rawFindingCount`, since the round judged the same problem already. */
   sweepRepeatCount?: number;
+  /** Findings of the sweep dropped as repeats of earlier resolved findings, a part of `staticDedupCount` and `llmDedupCount`. */
+  sweepDedupCount?: number;
   agentNames: string[];
   allJudgedFindings?: Finding[];
   rawFindings?: Finding[];
@@ -1926,8 +1928,10 @@ export interface DashboardData {
   carriedLeadCount?: number;
   /** Leads listed as not finished checking, neither kept nor dropped. */
   openLeadCount?: number;
-  /** Findings of the sweeps left out before the judge, since the round judged the same problem already. */
+  /** Findings of the sweeps left out, since the round judged the same problem already. */
   sweepRepeatCount?: number;
+  /** Findings of the sweeps dropped as repeats of earlier resolved findings, a part of `staticDedupCount` and `llmDedupCount`. */
+  sweepDedupCount?: number;
   keptCount?: number;
   droppedCount?: number;
   /** Findings the judge merged into another one. */
