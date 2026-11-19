@@ -65,32 +65,36 @@ interface RepoAccess {
 
 const permissionLookups = new WeakMap<Octokit, Map<string, Promise<RepoAccess>>>();
 
+/** Returns the answer `cache` holds for `octokit` under `key`, and asks `lookup` for it the first time. */
+function cachedPerClient<T>(cache: WeakMap<Octokit, Map<string, Promise<T>>>, octokit: Octokit, key: string, lookup: () => Promise<T>): Promise<T> {
+  let answers = cache.get(octokit);
+  if (!answers) {
+    answers = new Map();
+    cache.set(octokit, answers);
+  }
+  let answer = answers.get(key);
+  if (!answer) {
+    answer = lookup();
+    answers.set(key, answer);
+  }
+  return answer;
+}
+
 /**
  * Returns the repo access of `login`. `author_association` cannot tell, since an org member with read access shows
  * as `MEMBER` and a private org member with write access as `NONE`. Each client caches its answers, so a run asks
  * once per login. A failed lookup counts as `none` with no role, and as no person.
  */
 function repoPermission(octokit: Octokit, owner: string, repo: string, login: string): Promise<RepoAccess> {
-  let lookups = permissionLookups.get(octokit);
-  if (!lookups) {
-    lookups = new Map();
-    permissionLookups.set(octokit, lookups);
-  }
-  const key = `${owner}/${repo}/${login.toLowerCase()}`;
-  let lookup = lookups.get(key);
-  if (!lookup) {
-    lookup = (async () => {
-      try {
-        const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
-        return { permission: data.permission, ...(typeof data.role_name === 'string' && { role: data.role_name }), person: data.user?.type === 'User' };
-      } catch (error) {
-        core.warning(`Could not read the repo permission of ${login}, treating it as none: ${error}`);
-        return { permission: 'none', person: false };
-      }
-    })();
-    lookups.set(key, lookup);
-  }
-  return lookup;
+  return cachedPerClient(permissionLookups, octokit, `${owner}/${repo}/${login.toLowerCase()}`, async () => {
+    try {
+      const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
+      return { permission: data.permission, ...(typeof data.role_name === 'string' && { role: data.role_name }), person: data.user?.type === 'User' };
+    } catch (error) {
+      core.warning(`Could not read the repo permission of ${login}, treating it as none: ${error}`);
+      return { permission: 'none', person: false };
+    }
+  });
 }
 
 /**
