@@ -407,11 +407,13 @@ function text(data: string): Response {
   return new Response(data, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
 }
 
-type Stage = 'planner' | 'reviewer' | 'judge' | 'refute' | 'verdict' | 'dedup' | 'related' | 'claims' | 'claim_check' | 'scope';
+type Stage = 'planner' | 'reviewer' | 'second_read' | 'judge' | 'refute' | 'verdict' | 'dedup' | 'related' | 'claims' | 'claim_check' | 'scope';
 
 const READY_REPLIES: Record<Stage, string> = {
   planner: JSON.stringify({ trivial: false, subtle: true, paired: false, judgeEffort: 'low', prType: 'refactor', language: 'typescript' }),
   reviewer: '[]',
+  // A second read that finds nothing more than the finders.
+  second_read: '[]',
   judge: JSON.stringify({ summary: 'Nothing blocks merge.', findings: [] }),
   verdict: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'Ready to merge.', whatThisDoes: 'Keeps the sum in a variable before returning it.', whatToTest: { steps: ['Call `add(1, 2)`. Expect 3.'] } }),
   dedup: '[]',
@@ -429,7 +431,8 @@ const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
 };
 
 /**
- * An LLM client that answers each pipeline stage with a canned reply, picked by the stage's system prompt.
+ * An LLM client that answers each pipeline stage with a canned reply, picked by the stage's system prompt. A second read
+ * has the finder's system prompt, so its note in the user message picks it.
  * A call to the `hold` stage runs until `hold.until` settles. Every call rejects once its signal aborts.
  */
 class FakeLLM {
@@ -454,7 +457,8 @@ class FakeLLM {
         : system.startsWith('You check one statement') ? 'claim_check'
         : system.startsWith('You judge a pull request as a whole') ? 'scope'
           : system.includes('"judgeEffort"') ? 'planner'
-            : 'reviewer';
+            : user.includes('The reviewers of this round have raised the findings below so far') ? 'second_read'
+              : 'reviewer';
     this.calls.push(stage);
     this.asked[stage] = user;
     if (options?.repoTools) this.tools.push([stage, options.repoTools]);
@@ -615,8 +619,8 @@ describe('runFullReview end to end', () => {
       routing: { class: 'internal', classSource: 'triage', group: 'solo', groupSource: 'routing', configSource: 'builtin', reviewers: [expect.objectContaining({ effort: 'high' })] },
       judge: { skipped: 'nothing_to_judge', summary: 'No new problems found.' },
     });
-    // The claims of the PR text are listed while the planner runs, and this PR makes none. The finder found nothing, so no judge is called.
-    expect(mockLLM.calls).toEqual(['claims', 'planner', 'scope', 'reviewer', 'verdict']);
+    // The claims of the PR text are listed while the planner runs, and this PR makes none. The finder and its second read found nothing, so no judge is called.
+    expect(mockLLM.calls).toEqual(['claims', 'planner', 'scope', 'reviewer', 'second_read', 'verdict']);
     const progress = mockGitHub.comments.find(c => c.body.includes('**Judge'))?.body;
     expect(progress).toContain('**Judge:** skipped, nothing to judge');
     expect(progress).toContain('- Judge: skipped\n');
@@ -687,7 +691,7 @@ describe('runFullReview end to end', () => {
 
     expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app');
     // One finder on a PR in no floor class gets the normal budget.
-    expect(mockLLM.tools).toEqual([['scope', { root: '/work/pr-head', steps: 10 }], ['reviewer', { root: '/work/pr-head', steps: 30 }]]);
+    expect(mockLLM.tools).toEqual([['scope', { root: '/work/pr-head', steps: 10 }], ['reviewer', { root: '/work/pr-head', steps: 30 }], ['second_read', { root: '/work/pr-head', steps: 30 }]]);
 
     mockLLM.tools = [];
     jest.mocked(fetchWorkspace).mockRejectedValueOnce(new Error('fetch failed'));
@@ -1117,7 +1121,7 @@ describe('runFullReview end to end', () => {
 
   it.each([
     ['the finders run', 'reviewer', ['claims', 'planner', 'scope', 'reviewer']],
-    ['the verdict reader runs', 'verdict', ['claims', 'planner', 'scope', 'reviewer', 'verdict']],
+    ['the verdict reader runs', 'verdict', ['claims', 'planner', 'scope', 'reviewer', 'second_read', 'verdict']],
   ] as const)('posts no verdict and marks the progress comment superseded when a push lands while %s', async (_label, pushDuring, calls) => {
     mockLLM.onCall = stage => {
       if (stage === pushDuring) mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
@@ -1143,7 +1147,7 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     expect(mockLLM.aborted).toEqual(['verdict']);
-    expect(mockLLM.calls).toEqual(['claims', 'planner', 'scope', 'reviewer', 'verdict']);
+    expect(mockLLM.calls).toEqual(['claims', 'planner', 'scope', 'reviewer', 'second_read', 'verdict']);
     expect(core.setFailed).not.toHaveBeenCalled();
     expect(mockGitHub.reviews).toEqual([]);
     expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`. No verdict was posted');

@@ -55,6 +55,8 @@ describe('review stats', () => {
             toolSteps: [{ tool: 'Read', resultChars: 100 }, { tool: 'Read', resultChars: 300 }, { tool: 'Read' }, { tool: 'Read', resultChars: 200 }],
           },
           { ...call('claude-opus', 10), agent: 'Opus', stepBudget: 12, wrapUpNoted: true }, { ...call('j', 3), stage: 'judge' },
+          // A second read is no finder, so its call counts in no figure of finder tool use.
+          { ...call('claude-opus', 7), agent: 'Second read 1', stepBudget: 12, wrapUpNoted: true, filesRead: ['src/z.ts'] },
           // A fallback that answered for the Sonnet finder on another model still counts for that finder. A file both calls
           // read counts once, however each spells it. A file of a related repo counts apart from the share in the diff.
           {
@@ -402,6 +404,7 @@ describe('review stats', () => {
       memory: { loaded: { learnings: 4, suppressions: 2 }, suppressed: [{ title: 't', file: 'a', line: 1, severity: 'note', suppressionId: 'sup-1' }] },
       slicing: { files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
       approval: { held: 'conflict' },
+      secondReads: { reads: [{ reviewer: 'Second read 1', finder: 'f', status: 'answered', findings: 2, added: 1 }, { reviewer: 'Second read 2', finder: 'g', status: 'failed', error: 'e' }], stop: 'failed' },
       tokenService: [{ endpoint: 'token', status: 200, durationMs: 1 }, { endpoint: 'state', status: 429, error: 'Too many requests', durationMs: 1 }],
       relatedRepos: [
         { repo: 'dashpay/dash', ref: 'v23', status: 'fetched', durationMs: 900, reads: 5 },
@@ -454,6 +457,7 @@ describe('review stats', () => {
         'listed again, 1 round on': 1, 'ended, line_changed': 2, 'ended, judge_dropped': 1,
       },
       'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },
+      'Second reads (per round: reads run, blockers and warnings added, why they stopped)': { '2 run, 1 added, failed': 1 },
       Approvals: { 'held: conflict': 1 },
       'Thread reply decisions': { 'Fixed, stays_open': 1 },
       'State check approvals': { 'approved: all blocking threads are resolved': 1, 'held: conflict': 1 },

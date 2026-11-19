@@ -160,6 +160,7 @@ function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true,
         llmCalls: [
           { stage: 'reviewer', agent: 'finder-a', model: 'claude-sonnet-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }, { tool: 'Grep' }, { tool: 'mcp__manki__read_file' }], filesRead: ['src/a.rs', 'src/b.rs'] },
           { stage: 'reviewer', agent: 'finder-a', model: 'claude-sonnet-5-5', attempt: 2, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }], filesRead: ['src/b.rs', 'src/c.rs'] },
+          { stage: 'reviewer', agent: 'Second read 1', model: 'claude-sonnet-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }, { tool: 'Grep' }], filesRead: ['src/d.rs'] },
           { stage: 'judge', model: 'claude-opus-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }] },
         ],
       },
@@ -428,6 +429,7 @@ describe('scoreRun', () => {
     expect(score).toMatchObject({
       outcome: 'ADDRESS_FIRST', complete: true, mustCatchRecall: 0.5, weightedRecall: 3 / 5, verdictCorrect: true, falseBlockers: 1, unexpectedWarnings: 0, extraFindings: 1, duplicates: 1,
       finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, filesRead: 3, askedAgain: true, unitsNotCovered: 2 }],
+      secondReads: [{ name: 'Second read 1', model: 'claude-sonnet-5-5', toolSteps: 2, filesRead: 1 }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings.slice(1, 3)).toEqual([
@@ -941,7 +943,7 @@ describe('runBench and buildReport', () => {
     expect(summary).toContain('  K1 must blocker: 2/3, 1 partial\n');
     expect(summary).toContain('  run 2: FAILED: provider down\n');
     expect(summary).toContain('  run 4: INCOMPLETE: The review did not complete.\n');
-    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 unexpected warnings, 0 extra, 0 duplicates, files read finder-a 3 (asked again) (2 units not covered), $1.25\n');
+    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 unexpected warnings, 0 extra, 0 duplicates, files read finder-a 3 (asked again) (2 units not covered), by second reads Second read 1 1, $1.25\n');
     expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, at grade 33%, verdicts 67%.');
     expect(summary).not.toContain('Follow-up rounds');
     expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, unexpected warnings 0, extra findings 0, duplicates 0, cost $5.00.');
@@ -1070,7 +1072,7 @@ describe('runBench and buildReport', () => {
       expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
       expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
       // What became of the finders' findings shows as the item's id and fixed words, with the finders' names left out.
-      expect(printed().split('\nheld-1\n')[1]).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates, files read finder-a 3 (asked again) (2 units not covered), $1.25\n    found by a finder and missed by the review: K1 (dropped by the judge)\n');
+      expect(printed().split('\nheld-1\n')[1]).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates, files read finder-a 3 (asked again) (2 units not covered), by second reads Second read 1 1, $1.25\n    found by a finder and missed by the review: K1 (dropped by the judge)\n');
       expect(printed().split("\nFinders' findings: 1 of 2 must-catch items found by a finder, 0 found by the review. Missed by the review after a finder found it: dropped by the judge 1. Matcher cost of this scoring unknown, since a call has no known price.\n")).toHaveLength(3);
       expect(printed()).not.toContain(SECRET);
 

@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -651,7 +651,7 @@ For each finding, evaluate:
 
 ${agentCount >= 2 ? `## Finder Agreement
 
-Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\`, \`Reference check: ...\`, \`Consumer check: ...\`, \`Dependency check: ...\`, \`Pattern check: ...\`, \`Claim check N\` or \`Sweep N\` comes from a call asked about that spot, that counterpart in a related repo, that piece of new structure, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two.
+Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\`, \`Reference check: ...\`, \`Consumer check: ...\`, \`Dependency check: ...\`, \`Pattern check: ...\`, \`Claim check N\` or \`Sweep N\` comes from a call asked about that spot, that counterpart in a related repo, that piece of new structure, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two. Nor does a finding named \`Second read N\`: one finder's model read the change again after it was shown the titles of the round's findings, so its copy of a finding is no independent report.
 - **Both finders reported the defect** (one finding from each, which you mark as duplicates): strong evidence that it is real. Drop it only when you can say concretely why both are wrong.
 - **One finder reported it**: ordinary. The other finder's silence is not evidence against it.
 
@@ -1880,7 +1880,12 @@ export function mapJudgedToFindings(
   const roots = duplicateRoots(aligned);
   // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
   const groups = roots.map(root => mergeKey(original[root - 1]));
-  const copies = (i: number): Finding[] => original.filter((_, j) => groups[j] === groups[i]);
+  // A second read's copy is graded by no finder, so it counts only where no finder's copy is.
+  const copies = (i: number): Finding[] => {
+    const all = original.filter((_, j) => groups[j] === groups[i]);
+    const byFinders = all.filter(f => !bySecondReadsOnly(f));
+    return byFinders.length > 0 ? byFinders : all;
+  };
   const filedBlocker = (i: number): boolean => copies(i).every(f => finderGrade(f, 'lowest') === 'blocker');
   // A drop is checked when any finder filed a copy as a blocker, whichever copy the merge keeps.
   const dropCheckable = (i: number): boolean => dropsChecked && copies(i).some(f => finderGrade(f) === 'blocker');
@@ -2179,9 +2184,16 @@ function foldDuplicates(findings: Finding[], roots: number[], staysPreExisting?:
 /**
  * Returns the finder grades `survivor` takes when `copy` merges into it: the highest grade a finder gave either one,
  * when it is above the survivor's, and the lowest one, when the finders split. Only a blocker every finder filed skips
- * the check of its consequence.
+ * the check of its consequence. A copy only second reads reported changes no finder's grade, and a survivor only they
+ * reported takes the grades of a finder's copy.
  */
-function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 'reviewerSeverity' | 'lowestReviewerSeverity'> {
+function mergedFinderGrades(survivor: Finding, copy: Finding): Pick<Finding, 'reviewerSeverity' | 'lowestReviewerSeverity' | 'gradePath'> {
+  if (bySecondReadsOnly(copy) && !bySecondReadsOnly(survivor)) return {};
+  // A finder's copy replaces every grade a read-only survivor holds, its grade path included, since a path step down from blocker makes it count as a blocker if true.
+  if (bySecondReadsOnly(survivor) && !bySecondReadsOnly(copy)) {
+    const [highest, lowest] = [finderGrade(copy), finderGrade(copy, 'lowest')];
+    return { reviewerSeverity: highest, lowestReviewerSeverity: lowest !== highest ? lowest : undefined, gradePath: copy.gradePath };
+  }
   const rank = (grade: FindingSeverity): number => SEVERITY_ORDER.indexOf(grade);
   const own = finderGrade(survivor);
   const highest = rank(finderGrade(copy)) < rank(own) ? finderGrade(copy) : own;
@@ -2205,9 +2217,10 @@ function mergedDropCheck(survivor: Finding, copy: Finding): Pick<Finding, 'cell'
  * fix in words, what it cites and its `mergedDropCheck`. The survivor is a security finding when either one is.
  */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
+  const grades = mergedFinderGrades(survivor, copy);
   survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
   if (copy.tags?.includes(SECURITY_TAG)) Object.assign(survivor, asSecurity(survivor));
-  Object.assign(survivor, mergedFinderGrades(survivor, copy), mergedDropCheck(survivor, copy));
+  Object.assign(survivor, grades, mergedDropCheck(survivor, copy));
   survivor.sameAs ??= copy.sameAs;
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
@@ -2423,21 +2436,22 @@ const mergeKey = (f: Pick<Finding, 'title' | 'file'>): string => `${f.title}::${
 
 /**
  * Keeps the first finding per title and file, with the finder grades `mergedFinderGrades` gives, the `mergedDropCheck`
- * and the first rule a copy quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
+ * and the first rule a copy quotes. A finder's copy is kept over one only second reads reported. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
  * marked so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const kept = new Map<string, Finding>();
   for (const f of findings) {
     const key = mergeKey(f);
-    const first = kept.get(key);
-    if (!first) {
+    const earlier = kept.get(key);
+    if (!earlier) {
       kept.set(key, f);
       continue;
     }
+    const [first, copy] = bySecondReadsOnly(earlier) && !bySecondReadsOnly(f) ? [f, earlier] : [earlier, f];
     const { preExisting, ...unmarked } = first;
-    const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...mergedFinderGrades(first, f), ...mergedDropCheck(first, f), ...(f.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, f) });
+    const stays = preExisting && copy.preExisting && (!staysPreExisting || staysPreExisting(copy));
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...mergedFinderGrades(first, copy), ...mergedDropCheck(first, copy), ...(copy.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, copy) });
   }
   return [...kept.values()];
 }

@@ -4614,6 +4614,13 @@ describe('runFullReview orchestration', () => {
         ],
       };
       const scope = { topics: [{ name: 'Fix', files: ['src/app.ts'] }, { name: 'Rename', files: ['src/b.ts'] }], split: [{ name: 'Fix', files: ['src/app.ts'] }, { name: 'Rename', files: ['src/b.ts'] }], warned: true as const };
+      const secondReads = {
+        reads: [
+          { reviewer: 'Second read 1', finder: 'general', status: 'answered' as const, findings: 2, added: 1 },
+          { reviewer: 'Second read 2', finder: 'security', status: 'failed' as const, error: 'Codex CLI invocation failed' },
+        ],
+        stop: 'failed' as const,
+      };
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING' as const, summary: 'Paused',
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -4629,6 +4636,7 @@ describe('runFullReview orchestration', () => {
         prClaims,
         scope,
         sweeps: [{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker' as const, status: 'answered' as const, class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note' as const, status: 'cut' as const }],
+        secondReads,
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
         relatedWork: {
@@ -4671,6 +4679,7 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].changeDigest).toEqual(expect.stringMatching(/^[0-9a-f]{64}$/));
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].changeDigest).toBe(rc.diff.changeDigest);
       expect(rc.sweeps).toEqual([{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note', status: 'cut' }]);
+      expect(rc.secondReads).toEqual(secondReads);
       expect(rc.usage.perStage?.compare).toMatchObject({ calls: 1 });
       expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
       expect(rc.usage.llmCalls?.[3]).not.toHaveProperty('limits');

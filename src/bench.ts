@@ -13,7 +13,7 @@ import type { LLMClient, ProviderInputs } from './providers';
 import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
 import { buildLLMClient } from './review-clients';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecurityFinding, leftOutUnproven,
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, leftOutUnproven,
   migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
@@ -572,6 +572,8 @@ interface RunScore {
   /** Set on a complete run. A report from a ref that does not score the finders' findings has none. */
   raw?: RawScore;
   finders: FinderSteps[];
+  /** The tool use of each second read, apart from the finders'. Set only on a run with second reads. */
+  secondReads?: FinderSteps[];
   /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
   relatedRepos?: Array<Pick<RoundRelatedRepo, 'repo' | 'ref' | 'status' | 'commit' | 'asOf'>>;
   costUsd: number;
@@ -587,10 +589,11 @@ function severityCredit(given: FindingSeverity | undefined, expected: KeySeverit
   return low <= 0 ? 1 : low === 1 ? 0.5 : 0;
 }
 
-function finderSteps(review: LocalReview): FinderSteps[] {
+/** Returns the tool use of each finder, or of each second read with `secondReads`. */
+function finderSteps(review: LocalReview, secondReads = false): FinderSteps[] {
   const byName = new Map<string, { model?: string; toolSteps: number; files: Set<string> }>();
   for (const call of review.context.usage?.llmCalls ?? []) {
-    if (call.stage !== 'reviewer' || !call.agent) continue;
+    if (call.stage !== 'reviewer' || !call.agent || isSecondReadName(call.agent) !== secondReads) continue;
     const entry = byName.get(call.agent) ?? { toolSteps: 0, files: new Set<string>() };
     entry.model ??= call.model;
     entry.toolSteps += call.toolSteps?.length ?? 0;
@@ -884,8 +887,9 @@ function gradeRoute(f: Finding): GradeRoute {
 }
 
 /** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
-function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'findings' | 'finders' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'findings' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
+  const secondReads = finderSteps(review, true);
   const { outcome, verdictReason } = review.result;
   return {
     outcome,
@@ -896,6 +900,7 @@ function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore
       return { severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), route: gradeRoute(f), ...(foldedInto && { foldedInto }) };
     }),
     finders: finderSteps(review),
+    ...(secondReads.length > 0 && { secondReads }),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
     costUsd: usage.estimatedCostUsd ?? 0,
     inputTokens: usage.inputTokens ?? 0,
@@ -1715,9 +1720,10 @@ export function formatBenchSummary(report: BenchReport): string {
       }
       for (const [i, run] of c.runs.entries()) {
         const reads = run.finders.map(f => `${f.name} ${f.filesRead}${f.askedAgain ? ' (asked again)' : ''}${f.unitsNotCovered ? ` (${f.unitsNotCovered} units not covered)` : ''}`).join(', ') || 'none';
+        const readAgain = run.secondReads ? `, by second reads ${run.secondReads.map(f => `${f.name} ${f.filesRead}`).join(', ')}` : '';
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}`
-          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
+          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}${readAgain}, $${run.costUsd.toFixed(2)}`);
         const lost = run.complete ? run.raw?.caught.filter(caught => !caught.posted) ?? [] : [];
         if (run.complete && run.raw?.unscored) lines.push(`    the matcher failed on the finders' findings: ${shown ? oneLine(run.raw.error ?? 'no reason given') : 'the reason is in the report'}`);
         if (lost.length > 0) lines.push(`    found by a finder and missed by the review: ${lost.map(l => `${l.item} (${(l.exits ?? ['unknown']).map(exit => RAW_EXITS[exit]).join(', ')})`).join(', ')}`);

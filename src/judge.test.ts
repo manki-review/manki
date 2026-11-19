@@ -431,6 +431,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain("The other finder's silence is not evidence against it.");
     expect(prompt).toContain("Agreement never raises or protects a finding's severity.");
     expect(prompt).toContain('A finding named `Sibling field: ...`, `Sibling code: ...`, `Reference check: ...`, `Consumer check: ...`, `Dependency check: ...`, `Pattern check: ...`, `Claim check N` or `Sweep N` comes from a call asked about that spot, that counterpart in a related repo, that piece of new structure, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two.');
+    expect(prompt).toContain('Nor does a finding named `Second read N`: one finder\'s model read the change again after it was shown the titles of the round\'s findings, so its copy of a finding is no independent report.');
     expect(prompt).not.toContain('specialist');
 
     expect(buildJudgeSystemPrompt(makeConfig(), 1)).not.toContain('## Finder Agreement');
@@ -4819,6 +4820,24 @@ describe('mapJudgedToFindings', () => {
       [0, 'warning', [doubt, harm], 'blocker', 'warning'],
       [0, 'warning', [doubt], 'blocker', undefined],
     ]);
+    // A second read's copy changes no finder's grade, whichever copy the merge keeps. A finding only a read raised keeps its own grade.
+    const read = { reviewers: ['Second read 1'] };
+    const readFiled = (kept: Finding['severity'], copy: Finding['severity'], keptByRead: boolean) => mapJudgedToFindings(
+      [proven('Rows lost on retry', { severity: kept, ...(keptByRead && read) }), proven('Retry drops rows', { severity: copy, ...(!keptByRead && read) })],
+      [{ id: 1, title: 'Rows lost on retry', ...consequence }, { id: 2, title: 'Retry drops rows', ...consequence, duplicateOf: 1 }],
+    );
+    expect([readFiled('blocker', 'warning', false), readFiled('warning', 'blocker', false), readFiled('blocker', 'warning', true), readFiled('warning', 'blocker', true)]
+      .map(([f, ...rest]) => [rest.length, f.severity, f.doubts, f.reviewerSeverity, f.lowestReviewerSeverity, f.reviewers])).toEqual([
+      [0, 'warning', [doubt], 'blocker', undefined, ['TestReviewer', 'Second read 1']],
+      [0, 'warning', [doubt, harm], undefined, undefined, ['TestReviewer', 'Second read 1']],
+      [0, 'warning', [doubt, harm], 'warning', undefined, ['Second read 1', 'TestReviewer']],
+      [0, 'warning', [doubt], 'blocker', undefined, ['Second read 1', 'TestReviewer']],
+    ]);
+    // A read-only survivor takes the finder copy's grade path too, so only a finder's blocker leaves a step down from blocker.
+    expect([readFiled('blocker', 'warning', false), readFiled('warning', 'blocker', false), readFiled('blocker', 'warning', true), readFiled('warning', 'blocker', true)]
+      .map(([f]) => f.gradePath?.some(step => step.from === 'blocker') ?? false)).toEqual([true, false, false, true]);
+    const [byRead] = mapJudgedToFindings([proven('Rows lost on retry', { severity: 'blocker', ...read })], [{ id: 1, title: 'Rows lost on retry', ...consequence }]);
+    expect([byRead.severity, byRead.doubts, byRead.reviewerSeverity]).toEqual(['warning', [doubt], 'blocker']);
     expect(warnSpy).toHaveBeenCalledTimes(2);
     warnSpy.mockRestore();
   });
@@ -5468,6 +5487,14 @@ describe('deduplicateFindings', () => {
     expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0]).not.toHaveProperty('lowestReviewerSeverity');
     // A third copy keeps the lowest grade an earlier merge recorded.
     expect(deduplicateFindings([raised, capped, { ...findings[1], severity: 'warning' }])[0]).toMatchObject({ reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note' });
+    // A finder's copy is kept over a second read's in either order, and the read's grade changes none of the finder's.
+    const read: Finding = { ...findings[1], severity: 'blocker', reviewers: ['Second read 1'] };
+    for (const order of [[raised, read], [read, raised]]) {
+      const [kept] = deduplicateFindings(order);
+      expect(kept).toMatchObject({ line: 10, reviewers: ['R1'], severity: 'blocker', reviewerSeverity: 'note' });
+      expect(kept).not.toHaveProperty('lowestReviewerSeverity');
+    }
+    expect(deduplicateFindings([read, { ...read, severity: 'note' }])[0]).toMatchObject({ reviewers: ['Second read 1'], lowestReviewerSeverity: 'note' });
   });
 
   it('keeps findings with same title but different files', () => {

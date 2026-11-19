@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 
 import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
+import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, SideCheckState } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -3455,6 +3455,10 @@ describe('buildDashboard', () => {
     // The verdict reader keeps its time once it ended, and a sweep after the judge gets a line of its own.
     const sweeping = buildDashboard({ ...reviewed, ...graded, sideChecks: { ...side(3, 2, 1, 238_000), sweep: { total: 2, ended: 1, findings: 0, startedAt: 560_000 } }, verdictReader: { startedAt: 624_000, durationMs: 47_000 } }, 700_000);
     expect(sweeping).toContain(lines(sideDone, '> ⏳ Sweeps: 1 of 2 done'));
+    // A second read after the finders gets a line of its own, between the side checks and the sweeps.
+    const reading = (read: SideCheckState) => buildDashboard({ ...started, agentProgress: [claudeDone, gptDone], sideChecks: { ...side(3, 2, 1, 238_000), second_read: read } }, 470_000);
+    expect(reading({ total: 1, ended: 0, findings: 0, startedAt: 452_000 })).toContain(lines(sideDone, '> ⏳ Second reads: 0 of 1 done'));
+    expect(reading({ total: 2, ended: 2, findings: 1, startedAt: 440_000, endedAt: 465_000 })).toContain(lines(sideDone, '> ✅ Second reads: 2 of 2 done, 1 finding (25s)'));
     expect(sweeping).toContain(lines('> graded 8 findings: 5 kept · 3 dropped (1m 26s)', '> verdict reader: read the diff (47s)'));
     // The findings the judge folded into another one are counted too, so the graded line adds up.
     expect(buildDashboard({ ...reviewed, graded: { kept: 4, dropped: 2, merged: 2, durationMs: 86_000 } }, 560_000))

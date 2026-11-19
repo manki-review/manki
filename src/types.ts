@@ -200,6 +200,12 @@ export const SCOPE_SPLIT_TITLE = 'This PR mixes topics that belong in separate P
 export const sweepName = (n: number): string => `Sweep ${n}`;
 /** Whether `reviewer` is the name of a sweep. */
 export const isSweepName = (reviewer: string): boolean => /^Sweep \d+$/.test(reviewer);
+/** Returns the reviewer name of a round's second read number `n`, which its findings and calls carry. */
+export const secondReadName = (n: number): string => `Second read ${n}`;
+/** Whether `reviewer` is the name of a second read. */
+export const isSecondReadName = (reviewer: string): boolean => /^Second read \d+$/.test(reviewer);
+/** Whether only second reads reported `finding`, so no finder graded it. */
+export const bySecondReadsOnly = (finding: Pick<Finding, 'reviewers'>): boolean => finding.reviewers.length > 0 && finding.reviewers.every(isSecondReadName);
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
 
@@ -713,6 +719,34 @@ export interface RoundSweep {
   class?: string;
   /** The other places it reported, before dedup and the judge. */
   findings?: number;
+}
+
+/** One more read of the change by a finder's model after the finders, told the location and title of each finding so far. */
+export interface RoundSecondRead {
+  /** The reviewer name its findings carry, such as `Second read 1`, and the agent of its calls in `usage.llmCalls`. */
+  reviewer: string;
+  /** The finder whose model, effort and message it reused. */
+  finder: string;
+  status: 'answered' | 'failed';
+  /** The findings it reported, before dedup and the judge. */
+  findings?: number;
+  /** Of those, the blockers and warnings near no earlier finding of the round. Only these start another read. */
+  added?: number;
+  /** Why the call failed. */
+  error?: string;
+}
+
+/** The second reads of a round, and why no further read ran. */
+export interface RoundSecondReads {
+  reads: RoundSecondRead[];
+  /**
+   * `nothing_new` when the last read added no blocker or warning, `cap` when the most reads a round allows ran,
+   * `failed` when a read failed, `no_time` when the finders had less time left than a read starts with, and
+   * `no_reader` when every finder's model reached a limit or was refused this round.
+   */
+  stop: 'nothing_new' | 'cap' | 'failed' | 'no_time' | 'no_reader';
+  /** Set when the round kept the reads from `meta.reusedFrom` and did not read again. */
+  reused?: true;
 }
 
 /** A statement of the PR author that the change relies on, quoted word for word from the PR text. */
@@ -1260,6 +1294,8 @@ export interface ReviewResult {
   comparisons?: RoundComparison[];
   /** Each sweep the round's findings started, asked or cut. */
   sweeps?: RoundSweep[];
+  /** The reads of the change after the finders. Unset on a round that runs none. */
+  secondReads?: RoundSecondReads;
   /** The statements of the PR text the change relies on, each with how its check ended. */
   prClaims?: RoundPrClaims;
   /** Whether the PR is useful and covers one topic, by the scope reader. */
@@ -1830,7 +1866,7 @@ export interface AgentProgressEntry {
 }
 
 /** A step of calls that run beside the finders, or after the judge for the sweeps. */
-export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'pattern' | 'sweep';
+export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'pattern' | 'sweep' | 'second_read';
 
 /** Hears of the checks of one step as they run. */
 export interface CheckProgress<R> {
@@ -2007,6 +2043,8 @@ export interface RoundContext {
   comparisons?: RoundComparison[];
   /** Each sweep the round's findings started, asked or cut. */
   sweeps?: RoundSweep[];
+  /** The reads of the change after the finders. Unset on a round that runs none. */
+  secondReads?: RoundSecondReads;
   /** The statements of the PR text the change relies on, each with how its check ended. */
   prClaims?: RoundPrClaims;
   /** Whether the PR is useful and covers one topic, by the scope reader. */
