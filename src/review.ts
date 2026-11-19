@@ -9,6 +9,7 @@ import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetT
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
 import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
+import { realRepoPath } from './mcp-server';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -2918,13 +2919,15 @@ export function parseFindings(responseText: string, reviewerName: string, worksp
 
   return elements.filter(isUsableElement).map(f => {
     const evidence = parseEvidence(f, workspace);
+    const file = repoPath(String(f.file || ''), workspace);
     const lead = f.lead === true ? { checked: textOf(f.checked), left: textOf(f.left) } : undefined;
     // A lead the judge keeps is posted like a finding, so it needs a description even when the reviewer gave none.
     const leadDescription = lead && `A reviewer raised this as a suspicion it had not finished checking. It had checked: ${leadText(lead).checked}. Still to check: ${leadText(lead).left}.`;
     return {
       severity: validateSeverity(f.severity),
       title: String(f.title || 'Untitled finding'),
-      file: repoPath(String(f.file || ''), workspace),
+      // A path through a symlink names the diff's file only once it is followed.
+      file: file && realRepoPath(workspace, file),
       line: Number(f.line) || 0,
       description: String(f.description || leadDescription || ''),
       suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,

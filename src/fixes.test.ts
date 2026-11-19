@@ -149,6 +149,9 @@ describe('runFixChecks', () => {
       expect((await runFixChecks(() => linked, [guard], { rawDiff, workspace: root })).fixes).toEqual([
         { ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, proof: ['lib/report.ts:3'] },
       ]);
+      // A finding filed through the symlink sits on the diff's file.
+      const filed = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2'], { finding: { ...finding, file: 'lib/report.ts' } }));
+      expect((await runFixChecks(() => filed, [guard], { rawDiff, workspace: root })).findings[0]).toMatchObject({ file: 'src/report.ts', line: 3 });
     } finally {
       rmSync(join(root, 'lib'));
     }

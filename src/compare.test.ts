@@ -297,6 +297,7 @@ describe('runPatternChecks', () => {
           finding('Off the new code', ['src/charge.ts:2', 'src/cancel.ts:2'], { file: 'src/charge.ts' }),
           // A finder with tools can name the checkout by its absolute path, in the file and in the proof.
           finding('Absolute paths', [`${root}/src/charge.ts:2`, `${root}/src/cancel.ts:2`], { file: `${root}/src/refund.ts`, evidence: [`${root}/src/charge.ts:2 wraps the handler in \`withAuth\``] }),
+          finding('Filed through a link', ['src/charge.ts:2', 'src/cancel.ts:2'], { file: 'lib/refund.ts' }),
         ],
       };
     });
@@ -328,7 +329,7 @@ describe('runPatternChecks', () => {
     // Every path the PR controls sits inside a fence: outside the fences only Manki's own text and checked names remain.
     for (const { user } of client.calls) expect(user.replace(/^(`{3,})[^\n]*\n[\s\S]*?^\1$/gm, '')).not.toMatch(/src\/|AGENTS/);
 
-    expect(result.findings.map(f => `${f.title}: ${f.severity}`)).toEqual(['Two places: warning', 'A rule: warning', 'No cost: note', 'Absolute paths: warning']);
+    expect(result.findings.map(f => `${f.title}: ${f.severity}`)).toEqual(['Two places: warning', 'A rule: warning', 'No cost: note', 'Absolute paths: warning', 'Filed through a link: warning']);
     expect(result.findings[0]).toEqual(expect.objectContaining({
       reviewers: ['Pattern check: refund.ts'], description: 'The new handler skips `withAuth`. A caller can refund without a session.',
       evidence: { checks: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] },
@@ -338,8 +339,10 @@ describe('runPatternChecks', () => {
     expect(result.findings[3]).toEqual(expect.objectContaining({
       file: 'src/refund.ts', evidence: { checks: ['src/charge.ts:2 wraps the handler in `withAuth`'], proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] },
     }));
+    // A finding filed through the link sits on the diff's file, and its own line closes the proof there.
+    expect(result.findings[4]).toEqual(expect.objectContaining({ file: 'src/refund.ts', evidence: expect.objectContaining({ proof: ['src/charge.ts:2', 'src/cancel.ts:2', 'src/refund.ts:2'] }) }));
     expect(result.comparisons).toEqual([
-      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 4, dropped: 9, inputDigest: expect.any(String) },
+      { kind: 'pattern', reviewer: 'Pattern check: refund.ts', at: ['src/refund.ts:1'], status: 'answered', answer: 'differs', places: ['src/charge.ts:1', 'src/cancel.ts:1-3'], findings: 5, dropped: 9, inputDigest: expect.any(String) },
       { kind: 'pattern', reviewer: 'Pattern check: Refund', at: ['src/refund.ts:1'], status: 'answered', answer: 'follows', places: ['src/charge.ts:1'], findings: 0, inputDigest: expect.any(String) },
       { kind: 'pattern', reviewer: 'Pattern check: refunds', at: ['src/refund.ts:1'], status: 'answered', answer: 'no_comparable', findings: 0, inputDigest: expect.any(String) },
       // A difference whose findings are all unusable keeps its answer and places.
