@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 
 import { fenceText } from './github';
 import { extractJSON } from './json';
-import { newLineNumbers, repoLocation } from './diff';
+import { newLineNumbers, parsePRDiff, repoLocation } from './diff';
 import { checkEach, Checked, CheckOptions } from './pr-claims';
 import { LLMClient } from './providers';
 import { shownLines } from './refute';
@@ -319,4 +319,30 @@ export async function runFixChecks(
 export function fixesRecord({ cut, skipped }: { cut?: number; skipped?: string }, checked: RoundFix[]): RoundFixes | undefined {
   if (!skipped && !cut && checked.length === 0) return undefined;
   return { ...(skipped && { skipped }), ...(cut && { cut }), ...(checked.length > 0 && { fixes: checked }) };
+}
+
+/**
+ * Returns the fixes of `checked` that a check found to be a workaround and that the push changed: each with a line the
+ * inter-round diff adds or removes. When that diff is unknown, every workaround counts, since nothing shows the push
+ * left it alone.
+ */
+export function pushedWorkarounds(checked: readonly RoundFix[], interRoundDiff: string | undefined): RoundFix[] {
+  const workarounds = checked.filter(fix => fix.status === 'workaround');
+  if (interRoundDiff === undefined) return workarounds;
+  const pushed = new Map(parsePRDiff(interRoundDiff).files.map(file => [file.path, [...changedNewLines(file).keys()]]));
+  return workarounds.filter(fix => fix.at.some(range => {
+    const { file, start, end } = parseLocation(range)!;
+    return (pushed.get(file) ?? []).some(line => line >= start && line <= end);
+  }));
+}
+
+/** Returns what still goes wrong after `fix`, a workaround, as a thread it keeps open says it: the problem, its cause and what still fails, with the lines the check cited. */
+export function workaroundRemaining({ problem, cause, stillFails, proof, relatedProof }: RoundFix): string {
+  const cited = [...(proof ?? []), ...(relatedProof ?? [])].map(at => `\`${at}\``).join(', ');
+  return [
+    `The fix hides the symptom and leaves its cause as it was. The problem: ${problem}`,
+    ...(cause ? [`It comes from: ${cause}`] : []),
+    ...(stillFails ? [`Still fails: ${stillFails}`] : []),
+    ...(cited ? [`See ${cited}.`] : []),
+  ].join(' ');
 }

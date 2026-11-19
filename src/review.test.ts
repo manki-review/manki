@@ -29,6 +29,7 @@ import {
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
   FINDER_TOOLS_TIMEOUT_MS,
+  WORKAROUND_REASON,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
@@ -3442,14 +3443,14 @@ describe('runReview', () => {
       status: 'workaround', actsAt: 'symptom', cause: '`rate` divides without checking `count`.', stillFails: 'Every other caller of `rate`.', proof: ['src/rate.ts:2'],
       finding: { severity: 'warning', title: 'The guard hides a division by zero in `rate`', file: 'src/report.ts', line: 3, description: '`rate` still divides by zero for other callers.', howToFix: 'Check `count` in `rate`.', proof: ['src/rate.ts:2'] },
     };
-    const fixClients = (planner?: object): ReviewClients & { dedup: LLMClient } => {
+    const fixClients = (planner?: object, answer: object = workaround): ReviewClients & { dedup: LLMClient } => {
       const clients = {
         ...makeClients(),
         dedup: { sendMessage: jest.fn(async (system: string) => ({ content: listing(system) ? JSON.stringify([{ lines: ['src/report.ts:3'], problem: 'A count of zero divides by zero.' }]) : '[]' })) } as unknown as LLMClient,
         ...(planner && { planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify(planner) }) } as unknown as LLMClient }),
       };
       Object.assign(clients.reviewer, { repoTools: true });
-      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: isFixCheck(system) ? JSON.stringify(workaround) : '[]' }));
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: isFixCheck(system) ? JSON.stringify(answer) : '[]' }));
       return clients;
     };
     const { root, diff } = gitWorkspace({ 'src/rate.ts': rate, 'src/report.ts': report('') }, { 'src/report.ts': report('  if (count === 0) return 0;\n') });
@@ -3472,6 +3473,31 @@ describe('runReview', () => {
       expect(jest.mocked(retrying.reviewer.sendMessage).mock.calls.filter(([system]) => isFixCheck(system))).toEqual([]);
       expect(retried.fixes?.fixes?.map(f => [f.status, f.reused])).toEqual([['workaround', true]]);
       expect(mockedRunJudgeAgent.mock.calls.at(-1)![2].findings).toEqual([expect.objectContaining({ title: workaround.finding.title, reviewers: ['Fix check 1'] })]);
+
+      // A thread the judge finds fixed stays open as partly fixed when the push changed a fix the check found to be a
+      // workaround in the thread's file or a file its finding cited, or when nothing shows what the push changed.
+      const addressed: ThreadEvaluation = { threadId: 'T1', status: 'addressed', reason: 'The guard is in place.' };
+      const prior = buildPriorRound(1, [makePriorWarningFinding({ fingerprint: { file: 'src/report.ts', lineStart: 3, lineEnd: 3, slug: 'old-issue' } })]);
+      const pushTo = (line: number) => `diff --git a/src/report.ts b/src/report.ts\n--- a/src/report.ts\n+++ b/src/report.ts\n@@ -${line} +${line} @@\n-old\n+new\n`;
+      const evaluated = async (interRoundDiff: string | undefined, thread: Partial<OpenThread> = {}, answer: object = workaround) => {
+        mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok', threadEvaluations: [addressed] }));
+        const followUp = await runReview(fixClients(undefined, answer), {
+          config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext, isFollowUp: true,
+          openThreads: [makePriorOpenThread({ file: 'src/report.ts', line: 3, ...thread })], previousFindings: [], priorRounds: [prior], interRoundDiff, headSha: 'sha2',
+        });
+        return followUp.threadEvaluations;
+      };
+      const partly = [{
+        threadId: 'T1', status: 'partly_addressed', reason: WORKAROUND_REASON, grade: 'warning',
+        remaining: 'The fix hides the symptom and leaves its cause as it was. The problem: A count of zero divides by zero. It comes from: `rate` divides without checking `count`. Still fails: Every other caller of `rate`. See `src/rate.ts:2`.',
+      }];
+      expect(await evaluated(pushTo(3))).toEqual(partly);
+      expect(await evaluated(undefined)).toEqual(partly);
+      expect(await evaluated(pushTo(3), { file: 'src/rate.ts', line: 2, evidenceFiles: ['src/report.ts'] })).toEqual(partly);
+      // A push that left the workaround alone, a thread in another file, and a fix the check found to remove the cause leave the judge's call.
+      expect(await evaluated(pushTo(1))).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), { file: 'src/rate.ts', line: 2 })).toEqual([addressed]);
+      expect(await evaluated(pushTo(3), {}, { status: 'root_cause', actsAt: 'cause', cause: 'The guard sits in the only caller.', proof: ['src/report.ts:3'] })).toEqual([addressed]);
     } finally {
       for (const dir of [root, docs.root]) rmSync(dir, { recursive: true, force: true });
     }
