@@ -1632,8 +1632,8 @@ function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all
   const all = new Map<string, DeclarationView>();
   for (const { name, kind, line } of keywordDeclarations(file, lines)) {
     const text = lines.get(line)!;
-    // An indented declaration is most often local to a function.
-    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: signatureOf(text), local: /^\s/.test(text) });
+    // An indented declaration is most often local to a function, but an indented config key is nested in a section.
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: signatureOf(text), local: kind !== 'key' && /^\s/.test(text) });
   }
   return { all, touched: all };
 }

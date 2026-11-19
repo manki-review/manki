@@ -615,7 +615,7 @@ describe('listUsesOutsideDiff', () => {
       'src/config.test.ts': "it('parses', () => expect(parseConfig('1').limit).toBe(1));\n",
       'docs/config.md': '# Config\n',
       'cmd/fee.swift': 'func computeFee(n: Int) -> Int { return n }\n',
-      'manki.yml': 'review:\n  noise: low\n',
+      'manki.yml': 'review:\n  noise: low\n  old_limit: 2\n',
       'src/shapes.ts': 'export function area() {\n  return 1;\n}\n\nexport function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 1;\n  }\n}\n\n/** A square. */\nexport class Square {\n  draw() {\n    return 1;\n  }\n}\n\nexport const scale = (n: number) => n;\n',
       'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        1\n    }\n}\n',
       'cmd/shop.swift': 'func helper() {}\nfunc total() -> Int { return 1 }\nfunc outer() {\n    func inner() {}\n    struct Local {}\n}\n',
@@ -648,6 +648,8 @@ describe('listUsesOutsideDiff', () => {
         // Without a grammar, an indented declaration such as `inner` or `Local` is most often local to a function.
         { file: 'cmd/shop.swift', symbol: 'function helper', change: 'removed' },
         { file: 'cmd/shop.swift', symbol: 'function total', change: 'body changed' },
+        // A removed config key is mapped, however deep it is nested.
+        { file: 'manki.yml', symbol: 'config key old_limit', change: 'removed' },
         { file: 'manki.yml', symbol: 'config key slice_lines', change: 'added' },
         // A getter and its setter count as one declaration, so a change to the setter alone is mapped too.
         { file: 'src/box.ts', symbol: 'function Box.size', change: 'declaration changed' },
