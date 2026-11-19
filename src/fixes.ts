@@ -20,6 +20,8 @@ const MAX_READ_FIXES = MAX_LISTED_FIXES * 4;
 /** Fixes checked in one round, the largest first. */
 const MAX_FIX_CHECKS = 4;
 const MAX_FIX_LOCATIONS = 5;
+/** Changed lines one fix keeps, so a range over a large diff costs no more than this many. */
+const MAX_FIX_LINES = 200;
 const MAX_PROBLEM_CHARS = 300;
 const MAX_ANSWER_CHARS = 500;
 const MAX_WRITTEN_TITLE_CHARS = 160;
@@ -75,8 +77,8 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 
 ${WRITING_RULES}`;
 
-/** Each changed file of a diff by its path, with the changed lines `changedNewLines` gives for it. */
-type ChangedFiles = Map<string, Map<number, number>>;
+/** Each changed file of a diff by its path, with the changed lines `changedNewLines` gives for it, also as a sorted list. */
+type ChangedFiles = Map<string, { counts: Map<number, number>; lines: number[] }>;
 
 /**
  * Returns each line of the new file that `file` adds, or where the new file goes on after a removed line, with how many
@@ -98,35 +100,54 @@ function changedNewLines(file: DiffFile): Map<number, number> {
   return changed;
 }
 
-/** Returns how many lines `at` adds or removes in `changed`, counting a line that two ranges share once. */
+/**
+ * Returns how many lines `at` adds or removes in `changed`, counting a line that two ranges share once. Each range of
+ * `at` holds only changed lines, so the walk takes as many steps as `at` holds lines.
+ */
 function changedLines(changed: ChangedFiles, at: readonly string[]): number {
   let count = 0;
   const seen = new Set<string>();
   for (const location of at) {
     const { file, start, end } = parseLocation(location)!;
-    for (const [line, changes] of changed.get(file) ?? []) {
-      if (line < start || line > end || seen.has(`${file}:${line}`)) continue;
+    const counts = changed.get(file)?.counts;
+    for (let line = start; line <= end; line++) {
+      if (seen.has(`${file}:${line}`)) continue;
       seen.add(`${file}:${line}`);
-      count += changes;
+      count += counts?.get(line) ?? 0;
     }
   }
   return count;
 }
 
-/** Returns the runs of changed lines of `changed` inside the range `location`, as `path:start-end` locations. */
-function clipToChanges(location: string, changed: ChangedFiles): string[] {
+/** Returns the index of the first of the sorted `lines` that is `line` or later. */
+function firstFrom(lines: readonly number[], line: number): number {
+  let [low, high] = [0, lines.length];
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (lines[mid] < line) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+/**
+ * Returns the runs of changed lines of `changed` inside the range `location`, as `path:start-end` locations, with at most
+ * `room` changed lines in all, and how many it used.
+ */
+function clipToChanges(location: string, changed: ChangedFiles, room: number): { runs: string[]; used: number } {
   const range = parseLocation(location);
   // The listing reads the diff alone, so a path with a leading slash can only name the diff's file of that path.
   const path = range && [range.file, range.file.replace(/^\//, '')].find(p => changed.has(p));
-  if (!range || !path) return [];
-  const lines = [...changed.get(path)!.keys()].filter(l => l >= range.start && l <= range.end).sort((a, b) => a - b);
+  if (!range || !path) return { runs: [], used: 0 };
+  const { lines } = changed.get(path)!;
   const runs: Array<[number, number]> = [];
-  for (const line of lines) {
+  let used = 0;
+  for (let i = firstFrom(lines, range.start); i < lines.length && lines[i] <= range.end && used < room; i++, used++) {
     const last = runs.at(-1);
-    if (last && line === last[1] + 1) last[1] = line;
-    else runs.push([line, line]);
+    if (last && lines[i] === last[1] + 1) last[1] = lines[i];
+    else runs.push([lines[i], lines[i]]);
   }
-  return runs.map(([start, end]) => `${path}:${start === end ? start : `${start}-${end}`}`);
+  return { runs: runs.map(([start, end]) => `${path}:${start === end ? start : `${start}-${end}`}`), used };
 }
 
 /** Returns `value` as one line of at most `max` characters, or an empty string when it is no string. */
@@ -139,9 +160,16 @@ const oneLine = (value: unknown, max: number): string => (typeof value === 'stri
 function listedFix(entry: unknown, changed: ChangedFiles): ListedFix | undefined {
   if (!entry || typeof entry !== 'object') return undefined;
   const { lines, problem } = entry as Record<string, unknown>;
-  // Only the listed ranges are capped. The runs they are cut into are bounded by the lines the diff changes, and all stay.
   const at = Array.isArray(lines) ? [...new Set(lines.filter((l): l is string => typeof l === 'string').map(l => repoLocation(l.replace(/`/g, ''))))].slice(0, MAX_FIX_LOCATIONS) : [];
-  const kept = [...new Set(at.flatMap(location => clipToChanges(location, changed)))];
+  // Every run of changed lines in the listed ranges stays, up to `MAX_FIX_LINES` changed lines for the whole fix.
+  const runs: string[] = [];
+  let room = MAX_FIX_LINES;
+  for (const location of at) {
+    const clipped = clipToChanges(location, changed, room);
+    runs.push(...clipped.runs);
+    room -= clipped.used;
+  }
+  const kept = [...new Set(runs)];
   const said = oneLine(problem, MAX_PROBLEM_CHARS);
   return kept.length > 0 && said ? { at: kept, problem: said } : undefined;
 }
@@ -168,7 +196,10 @@ export async function listFixes(client: LLMClient | undefined, rawDiff: string, 
       error => core.warning(`The list of fixes could not be used (${error}), asking once more`),
       'array',
     );
-    const changed: ChangedFiles = new Map(diff.files.map(f => [f.path, changedNewLines(f)]));
+    const changed: ChangedFiles = new Map(diff.files.map(f => {
+      const counts = changedNewLines(f);
+      return [f.path, { counts, lines: [...counts.keys()].sort((a, b) => a - b) }];
+    }));
     const found = listed.slice(0, MAX_READ_FIXES).flatMap(entry => listedFix(entry, changed) ?? []);
     const fixes = found.map((fix, i) => ({ fix, i, size: changedLines(changed, fix.at) }))
       .sort((a, b) => b.size - a.size || a.i - b.i)

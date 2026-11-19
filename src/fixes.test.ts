@@ -6,7 +6,7 @@ import { deduplicateFindings } from './judge';
 import { deduplicateFindings as deduplicateAcrossRounds } from './recap';
 import { fixesRecord, isFixCheck, listFixes, runFixChecks } from './fixes';
 import { parsePRDiff } from './diff';
-import { fakeClient, gitWorkspace } from './test-utils';
+import { expectLinearTime, fakeClient, gitWorkspace } from './test-utils';
 import { ListedFix } from './types';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -82,6 +82,24 @@ describe('listFixes', () => {
     const read = await listFixes(fakeClient(() => JSON.stringify(long)), rawDiff, diff);
     expect(read.fixes.map(f => f.problem)).toEqual(Array.from({ length: 10 }, (_, i) => `Small ${i + 1}`));
     expect(read.cut).toBe(31);
+  });
+
+  it('keeps at most 200 changed lines of a fix, in time linear in the diff, for ranges over a file that changes every other line', async () => {
+    // Every other line of the file is replaced, so each changed line is a run of its own.
+    const alternating = (lines: number) => parsePRDiff(`diff --git a/src/big.ts b/src/big.ts\n--- a/src/big.ts\n+++ b/src/big.ts\n@@ -1,${2 * lines} +1,${2 * lines} @@\n${
+      Array.from({ length: lines }, (_, i) => `-${i}\n+${i}b\n ${i}c`).join('\n')}\n`);
+    const reply = (lines: number) => JSON.stringify(Array.from({ length: 40 }, (_, i) => ({
+      lines: Array.from({ length: 5 }, (_, k) => `src/big.ts:${1 + k}-${2 * lines - k}`), problem: `Problem ${i + 1}`,
+    })));
+    const [fix] = (await listFixes(fakeClient(() => reply(1000)), rawDiff, alternating(1000))).fixes;
+    expect(fix.at).toHaveLength(200);
+    expect(fix.at.slice(0, 2)).toEqual(['src/big.ts:1', 'src/big.ts:3']);
+    await expectLinearTime(async (lines) => {
+      const [client, big] = [fakeClient(() => reply(lines)), alternating(lines)];
+      const started = performance.now();
+      await listFixes(client, rawDiff, big);
+      return performance.now() - started;
+    }, 32_000);
   });
 
   it('lists no fix and says why when no model is set up, the call fails or its reply cannot be used twice', async () => {
