@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import type { getOctokit } from '@actions/github';
 
 import { RunCancelledError } from './abort';
@@ -5,6 +6,7 @@ import { addedLines, listedFilesDiff, oldLineOf, parsePRDiff, replacementOf } fr
 import { inline, sanitizeMarkdown } from './github';
 import { extractJSON } from './json';
 import { findLines } from './mcp-server';
+import { sanitizeLogOutput } from './providers';
 import { namedPullRequests } from './recap';
 import { isDiffLocation, locationFile, locationLines, shownLines } from './refute';
 import { fetchedRelatedRepos } from './related-repos';
@@ -374,19 +376,24 @@ const RETRY_SOON = 'in a few minutes';
 /** The most files GitHub lists for a comparison of two commits. */
 const MAX_COMPARED_FILES = 300;
 
+/** Returns a handler for a failed lookup that logs why `what` failed and gives `undefined`. */
+function logFailure(what: string) {
+  return (error: unknown): undefined => {
+    core.warning(`Failed to ${what}: ${sanitizeLogOutput(String((error as Error)?.message ?? error))}`);
+    return undefined;
+  };
+}
+
 /** Whether `commit` holds `ancestor`, or `undefined` when the lookup fails. */
 async function holds(octokit: Octokit, owner: string, repo: string, ancestor: string, commit: string): Promise<boolean | undefined> {
-  try {
-    const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base: ancestor, head: commit, per_page: 1 });
-    return data.status === 'ahead' || data.status === 'identical';
-  } catch {
-    return undefined;
-  }
+  return octokit.rest.repos.compareCommits({ owner, repo, base: ancestor, head: commit, per_page: 1 })
+    .then(({ data }) => data.status === 'ahead' || data.status === 'identical')
+    .catch(logFailure(`compare ${ancestor} with ${commit}`));
 }
 
 /** Returns every file pull request `pr` changes, by GitHub's list, `'cut'` when GitHub lists fewer, or `undefined` when the list fails. */
 async function everyListedFile(s: ElsewhereSources, pr: number, changedFiles: number) {
-  const listed = await s.octokit.paginate(s.octokit.rest.pulls.listFiles, { owner: s.owner, repo: s.repo, pull_number: pr, per_page: 100 }).catch(() => undefined);
+  const listed = await s.octokit.paginate(s.octokit.rest.pulls.listFiles, { owner: s.owner, repo: s.repo, pull_number: pr, per_page: 100 }).catch(logFailure(`list the files of #${pr}`));
   return listed && listed.length < changedFiles ? 'cut' as const : listed;
 }
 
@@ -414,7 +421,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
       if ((error as { status?: number }).status === 404) return 'missing' as const;
       throw error;
     }),
-  ]).catch(() => undefined);
+  ]).catch(logFailure(`read the repository, this PR or #${pr}`));
   if (!read) return { why: `#${pr} or this PR could not be read`, retry: RETRY_SOON };
   if (read[2] === 'missing') return { why: `#${pr} is not a pull request in this repository` };
   const [{ data: { default_branch: trunk } }, { data: own }, { data: other }] = [read[0], read[1], read[2]];
@@ -425,7 +432,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   if (!other.merged) return { why: `#${pr} is closed without being merged` };
   const merge = own.merge_commit_sha;
   const fix = other.merge_commit_sha;
-  const sinceHead = merge ? await octokit.rest.repos.compareCommits({ owner, repo, base: own.head.sha, head: merge }).then(r => r.data).catch(() => undefined) : undefined;
+  const sinceHead = merge ? await octokit.rest.repos.compareCommits({ owner, repo, base: own.head.sha, head: merge }).then(r => r.data).catch(logFailure(`compare this PR's head with its merge ${merge}`)) : undefined;
   if (!fix || !sinceHead || sinceHead.status !== 'ahead' || !await holds(octokit, owner, repo, fix, merge!)) {
     return { why: `GitHub's merge of this PR into its base does not hold #${pr} yet`, retry: `${RETRY_SOON}, once this PR merges cleanly with ${inline(own.base.ref)}` };
   }
@@ -478,6 +485,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
     answer = await s.ask(workspace, listedFilesDiff(covered), pr, merged);
   } catch (error) {
     if (error instanceof RunCancelledError) throw error;
+    logFailure(`check the merge with #${pr}`)(error);
     return { why: `the check of the merge with #${pr} failed`, retry: RETRY_SOON };
   }
   const checked = checkReply(answer, '', { workspace, relatedNames: [] });

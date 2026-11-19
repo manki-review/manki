@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -320,9 +321,9 @@ describe('checkFixedElsewhere', () => {
   // A pull request stacked on this one, which the replier can open with any code to back their own claim.
   const stacked: Pull = { state: 'open', merged: false, head: { sha: OTHER_HEAD }, base: { ref: 'feature' }, merge_commit_sha: 'e'.repeat(40), changed_files: 1 };
 
-  /** `holds` lists the `ancestor..commit` pairs where the commit holds the ancestor. */
-  function setup(other: Pull | Error, { holds = [`${HEAD}..${OTHER_HEAD}`, `${HEAD}..${MERGE}`, `${FIX}..${MERGE}`], files = [FILE] as object[], ownFiles = [OWN_FILE] as object[], sinceHead = [SINCE_HEAD] as object[], answer = '' as string | Error, checkout = true as boolean | 'none', line = 2, ownBase = 'main' }: {
-    holds?: string[]; files?: object[] | Error; ownFiles?: object[]; sinceHead?: object[]; answer?: string | Error; checkout?: boolean | 'none'; line?: number; ownBase?: string;
+  /** `holds` lists the `ancestor..commit` pairs where the commit holds the ancestor, and the comparison of `failing` throws. */
+  function setup(other: Pull | Error, { holds = [`${HEAD}..${OTHER_HEAD}`, `${HEAD}..${MERGE}`, `${FIX}..${MERGE}`], failing = '', files = [FILE] as object[], ownFiles = [OWN_FILE] as object[], sinceHead = [SINCE_HEAD] as object[], answer = '' as string | Error, checkout = true as boolean | 'none', line = 2, ownBase = 'main' }: {
+    holds?: string[]; failing?: string; files?: object[] | Error; ownFiles?: object[]; sinceHead?: object[]; answer?: string | Error; checkout?: boolean | 'none'; line?: number; ownBase?: string;
   } = {}) {
     const octokit = {
       rest: {
@@ -336,9 +337,12 @@ describe('checkFixedElsewhere', () => {
         },
         repos: {
           get: jest.fn(async () => ({ data: { default_branch: 'main' } })),
-          compareCommits: jest.fn(async ({ base, head }: { base: string; head: string }) => ({
-            data: { status: holds.includes(`${base}..${head}`) ? 'ahead' : 'diverged', ...(base === HEAD && head === MERGE && { files: sinceHead }) },
-          })),
+          compareCommits: jest.fn(async ({ base, head }: { base: string; head: string }) => {
+            if (`${base}..${head}` === failing) throw new Error('compare failed');
+            return {
+              data: { status: holds.includes(`${base}..${head}`) ? 'ahead' : 'diverged', ...(base === HEAD && head === MERGE && { files: sinceHead }) },
+            };
+          }),
         },
       },
       paginate: jest.fn(async (_list: unknown, { pull_number }: { pull_number: number }) => {
@@ -376,19 +380,26 @@ describe('checkFixedElsewhere', () => {
   });
 
   // A reason that can pass later says when to reply again, and no reason is a final verdict on the claim.
-  it.each<[string, Pull | Error, Parameters<typeof setup>[1], string, string]>([
-    ['an open pull request into this PR\'s base', { ...stacked, base: { ref: 'main' } }, {}, '#7 is not merged yet', 'once #7 is merged into `main`'],
-    ['a pull request that cannot be read', new Error('Not Found'), {}, '#7 or this PR could not be read', 'in a few minutes'],
-    ['a merge of this PR from before its head', merged, { holds: [`${FIX}..${MERGE}`] }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`'],
-    ['a merge of this PR GitHub has not updated with the fix yet', merged, { holds: [`${HEAD}..${MERGE}`] }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`'],
-    ['no merge of this PR', { ...merged, merge_commit_sha: null }, {}, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`'],
-    ['files that cannot be read', merged, { files: new Error('boom') }, 'the files this PR and #7 change could not be read', 'in a few minutes'],
-    ['a checkout that fails', merged, { checkout: false }, 'the merge with #7 could not be checked out', 'in a few minutes'],
-    ['a check of the merge that fails', merged, { answer: new Error('timed out') }, 'the check of the merge with #7 failed', 'in a few minutes'],
-  ])('confirms nothing yet for %s', async (_name, other, options, why, retry) => {
+  // Each failed lookup logs its cause.
+  it.each<[string, Pull | Error, Parameters<typeof setup>[1], string, string, string | undefined]>([
+    ['an open pull request into this PR\'s base', { ...stacked, base: { ref: 'main' } }, {}, '#7 is not merged yet', 'once #7 is merged into `main`', undefined],
+    ['a pull request that cannot be read', new Error('Not Found'), {}, '#7 or this PR could not be read', 'in a few minutes', 'Failed to read the repository, this PR or #7: Not Found'],
+    ['a comparison of this PR\'s head with its merge that fails', merged, { failing: `${HEAD}..${MERGE}` }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', `Failed to compare this PR's head with its merge ${MERGE}: compare failed`],
+    ['a lookup of whether this PR\'s head holds #7 that fails', merged, { failing: `${FIX}..${HEAD}` }, 'whether this PR\'s head holds #7 could not be read', 'in a few minutes', `Failed to compare ${FIX} with ${HEAD}: compare failed`],
+    ['a merge of this PR from before its head', merged, { holds: [`${FIX}..${MERGE}`] }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', undefined],
+    ['a merge of this PR GitHub has not updated with the fix yet', merged, { holds: [`${HEAD}..${MERGE}`] }, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', undefined],
+    ['no merge of this PR', { ...merged, merge_commit_sha: null }, {}, 'GitHub\'s merge of this PR into its base does not hold #7 yet', 'in a few minutes, once this PR merges cleanly with `main`', undefined],
+    ['files that cannot be read', merged, { files: new Error('boom') }, 'the files this PR and #7 change could not be read', 'in a few minutes', 'Failed to list the files of #7: boom'],
+    ['a checkout that fails', merged, { checkout: false }, 'the merge with #7 could not be checked out', 'in a few minutes', undefined],
+    ['a check of the merge that fails', merged, { answer: new Error('timed out') }, 'the check of the merge with #7 failed', 'in a few minutes', 'Failed to check the merge with #7: timed out'],
+  ])('confirms nothing yet for %s', async (_name, other, options, why, retry, logged) => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const { sources } = setup(other, options);
 
     expect(await checkFixedElsewhere(7, sources)).toEqual({ why, retry });
+    if (logged) expect(warning).toHaveBeenCalledWith(logged);
+    else expect(warning).not.toHaveBeenCalled();
+    warning.mockRestore();
   });
 
   it.each<[string, Pull | Error, Parameters<typeof setup>[1], string]>([
