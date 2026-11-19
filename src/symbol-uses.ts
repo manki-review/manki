@@ -466,6 +466,8 @@ interface Declaration {
   shape: boolean;
   /** Whether it is test code, such as a `#[test]` function or one inside `#[cfg(test)]`. */
   test: boolean;
+  /** Whether it is declared inside a function, or is a member of a type declared there, so no other file can use it. */
+  local: boolean;
 }
 
 interface Hit {
@@ -1573,7 +1575,8 @@ interface DeclarationView {
  * method or field by its type's name too, between the base and the head. A declaration only the head holds is added, one
  * only the base holds is removed, one whose part before its body differs is a changed declaration, and one whose body
  * differs is a changed body. Both sides are parsed where a grammar and the parse budget allow, else read by keyword from
- * the removed and added lines. A removed declaration local to a function is never named.
+ * the removed and added lines. A declaration local to a function is never named. Among those read by keyword, an indented
+ * removed one counts as local.
  */
 function mappedChanges(files: DiffFile[], parser: Parser): MappedChange[] {
   return files.filter(file => !TEST_PATH.test(file.path) && !DOC_FILE.test(file.path)).flatMap(file => {
@@ -1903,10 +1906,10 @@ class ParsedFile {
 
   /**
    * Returns the name the map of the change shows for `decl`: `Type.name` for a member of a type, and nothing for a
-   * function, type or constant declared inside a function.
+   * declaration local to a function.
    */
   mappedName(decl: Declaration): string | undefined {
-    if (decl.kind !== 'field' && decl.kind !== 'variant' && this.tree.ancestors(decl.node).some(a => this.rules.declarations[a.kind()] === 'function')) return undefined;
+    if (decl.local) return undefined;
     const owner = this.owners.get(decl) ?? (decl.container && this.byKey.get(decl.container)?.name);
     return owner ? `${owner}.${decl.name}` : decl.name;
   }
@@ -1928,11 +1931,16 @@ class ParsedFile {
     if (node.kind() === 'variable_declarator' && !isTopLevelConstant(node, this.tree)) return undefined;
     const body = node.field('body') ?? node.field('value');
     const end = node.range().end.line + 1;
-    const container = this.tree.ancestors(node).find(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
+    const ancestors = this.tree.ancestors(node);
+    const at = ancestors.findIndex(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
+    const container = at >= 0 ? ancestors[at] : undefined;
+    // A member is local only when its type is, so a field Python assigns in `__init__` is not.
+    const from = kind === 'field' || kind === 'variant' ? at : -1;
+    const local = ancestors.some((a, i) => i > from && this.rules.declarations[a.kind()] === 'function');
     const { line: start, column: startColumn } = this.leadingStart(node);
     return {
       node, name, kind, start, startColumn, headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
-      shape: this.rules.shapes.includes(String(node.kind())), test: this.inTestCode(node), ...(container && { container: nodeKey(container) }),
+      shape: this.rules.shapes.includes(String(node.kind())), test: this.inTestCode(node), local, ...(container && { container: nodeKey(container) }),
     };
   }
 
