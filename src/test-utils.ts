@@ -51,6 +51,8 @@ export interface BaseProofFixture {
   head: string;
   /** How many lines each file holds at the base and the head, which size the files of `baseProofWorkspace`. */
   lineCounts: Record<string, { base: number | null; head: number | null }>;
+  /** The real text of some lines of each file at the base and the head, by line number. */
+  text: Record<string, { base: Record<string, string>; head: Record<string, string> }>;
   findings: Array<{
     title: string; file: string; line: number; description: string; security?: true; proof: string[];
     /** What the round must post: a pre-existing warning, or the blocker. */
@@ -66,16 +68,15 @@ export function baseProofFixture(name: string): BaseProofFixture {
 }
 
 /**
- * Returns a workspace for `fixture` without its code: each file holds a numbered line per line it has at the base and
- * at the head, with the base at `BASE_REF`. The base check reads only which lines a file holds there. The head
- * changes each finding's own line, so the diff touches every finding.
+ * Returns a workspace for `fixture` with the base at `BASE_REF`. Each file holds as many lines as it has at the base
+ * and at the head, with the real text `fixture.text` gives and a blank line for every other line, so only real code
+ * reads the same on both sides.
  */
 export function baseProofWorkspace(fixture: BaseProofFixture): { root: string; diff: ParsedDiff } {
-  const changed = new Set(fixture.findings.map(f => `${f.file}:${f.line}`));
   const side = (at: 'base' | 'head'): Record<string, string> => Object.fromEntries(Object.entries(fixture.lineCounts).flatMap(([path, counts]) => {
     const count = counts[at];
-    const text = (n: number): string => (at === 'head' && changed.has(`${path}:${n}`) ? `// changed line ${n}\n` : `// line ${n}\n`);
-    return count === null ? [] : [[path, Array.from({ length: count }, (_, i) => text(i + 1)).join('')]];
+    const known = fixture.text[path]?.[at] ?? {};
+    return count === null ? [] : [[path, Array.from({ length: count }, (_, i) => `${known[String(i + 1)] ?? ''}\n`).join('')]];
   }));
   return gitWorkspace(side('base'), side('head'), []);
 }

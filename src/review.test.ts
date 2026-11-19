@@ -3795,7 +3795,7 @@ describe('runReview', () => {
     expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
   });
 
-  it('replays a rust-dashcore round: the blockers its base already had are posted as pre-existing warnings, and the security ones keep blocking', async () => {
+  it('replays a rust-dashcore round: the blockers whose flagged code the base already had are posted as pre-existing warnings, and the security ones keep blocking', async () => {
     const fixture = baseProofFixture('base-proof-rust-dashcore');
     const found = fixture.findings.map(f => ({
       severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, evidence: [`${f.file}:${f.line} shows it`], proof: f.proof,
@@ -3832,14 +3832,17 @@ describe('runReview', () => {
     };
 
     // The finding the PR introduced keeps blocking. So do both security findings, since one refuter never lowers one.
+    // The disproof of the finding on `sml_engine.rs` cites real base lines of its file, but this PR rewrote the code it
+    // flags, so none of them reads as a flagged line and it keeps blocking too.
     expect(await run()).toEqual(fixture.findings.map(f => [f.title, f.expected]));
-    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'pre-existing', 'blocker', 'blocker']);
-    // With a second refuter that gives the same answers, the security findings are pre-existing too.
-    expect((await run({ pair: true })).map(([, posted]) => posted)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing', 'pre-existing']);
+    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'blocker', 'pre-existing', 'blocker', 'blocker']);
+    // With a second refuter that gives the same answers, a security finding whose flagged code the base holds is
+    // pre-existing too. The one on `instantlock.rs` flags a check this PR added, so the base holds none of its lines.
+    expect((await run({ pair: true })).map(([, posted]) => posted)).toEqual(['blocker', 'pre-existing', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
     // Head line numbers past the end of the file at the base prove nothing there, so the blocker stays.
     const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[1].title
       ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[1].file}:870-875`] } } : recorded;
-    expect((await run({ answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'pre-existing', 'pre-existing', 'blocker', 'blocker']);
+    expect((await run({ answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'blocker']);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {

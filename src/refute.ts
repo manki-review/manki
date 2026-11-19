@@ -60,7 +60,7 @@ To refute it:
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
-- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does${readsBase ? '' : ', or the change shown is cut'}, answer \`base\` unsettled.${readsBase ? ' When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.' : ''} In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path${readsBase ? ' at the base, with at least one line of the finding\'s own file. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them, and a line the base does not hold leaves the answer unsettled' : ''}. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
+- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does${readsBase ? '' : ', or the change shown is cut'}, answer \`base\` unsettled.${readsBase ? ' When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.' : ''} In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path${readsBase ? ' at the base, with at least one line of the finding\'s own file that holds the code the finding flags as it reads at the head. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them, and a line the base does not hold leaves the answer unsettled' : ''}. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
 - **confirmed**: the failure path holds. Cite the lines that show the failure in \`proof\`.
@@ -165,20 +165,34 @@ export function shownLines(proof: unknown, workspace: string, related?: RelatedR
 
 /**
  * Returns the locations of `proof` whose lines their file holds at the PR's base in `workspace`, each with the path in
- * git's form. A file that cannot be read there, such as one the PR added or one `exclude_paths` matches, holds no line.
+ * git's form and the text of its lines there. A file that cannot be read there, such as one the PR added or one
+ * `exclude_paths` matches, holds no line.
  */
-async function linesAtBase(workspace: string, proof: readonly string[], excludePaths: readonly string[]): Promise<string[]> {
+async function linesAtBase(workspace: string, proof: readonly string[], excludePaths: readonly string[]): Promise<Array<{ location: string; lines: string[] }>> {
   const files = [...new Set(proof.map(locationFile))];
   const read = await Promise.all(files.map(file => readBaseText(workspace, file, excludePaths).then(
-    ({ file: path, text }) => ({ path, count: text.replace(/\n$/, '').split('\n').length }),
+    ({ file: path, text }) => ({ path, lines: text.replace(/\n$/, '').split('\n') }),
     () => undefined,
   )));
   const held = new Map(files.map((file, i) => [file, read[i]]));
   return proof.flatMap(location => {
     const at = held.get(locationFile(location));
-    if (!at || !holdsLines(at.count, ...locationLines(location))) return [];
-    return [`${at.path}${location.slice(locationFile(location).length)}`];
+    const [start, end] = locationLines(location);
+    if (!at || !holdsLines(at.lines.length, start, end)) return [];
+    return [{ location: `${at.path}${location.slice(locationFile(location).length)}`, lines: at.lines.slice(start - 1, end) }];
   });
+}
+
+/**
+ * Returns the trimmed text of the lines `finding` flags in its own file at the head in `workspace`: its `line` and the
+ * lines of that file its evidence cites. A line without a letter or digit, such as a lone brace, is left out, since
+ * any file holds one.
+ */
+function flaggedText(workspace: string, finding: Finding): Set<string> {
+  const file = readFileInRoot(workspace, finding.file);
+  if (!file || file === 'too large') return new Set();
+  const ranges = [[finding.line, finding.line], ...(finding.evidence?.proof ?? []).filter(p => locationFile(p) === finding.file).map(locationLines)];
+  return new Set(ranges.flatMap(([start, end]) => file.lines.slice(start - 1, end)).map(line => line.trim()).filter(line => /\w/.test(line)));
 }
 
 /** Whether `refutation` rests on a line of a related repo, in its own answer or in a premise. */
@@ -345,9 +359,11 @@ function parseBase(answer: unknown, cut: boolean, workspace: string, related?: R
 /**
  * Returns `check` with its `base` answer checked against the PR's base commit, which `BASE_REF` in `workspace` points
  * at. Only the `proof` lines that their file holds there are kept, with the `commit` they were found at. A disproof
- * lowers a blocker, so it stands only when every line it cites is there and one of them is in the finding's own file.
- * Any doubt leaves it unsettled: a workspace without a base, a file that cannot be read there, or a line it does not
- * hold. Any other answer needs one line that is there, or a line of a related repo, as a premise does.
+ * lowers a blocker, so it stands only when every line it cites is there and one of them in the finding's own file
+ * reads as a line the finding flags at the head. That shows the flawed code on the base unchanged, which the PR's
+ * author cannot plant there. Any doubt leaves it unsettled: a workspace without a base, a file that cannot be read
+ * there, a line it does not hold, or no line of the flagged code. Any other answer needs one line that is there, or a
+ * line of a related repo, as a premise does.
  */
 async function checkBase(check: Refutation, finding: Finding, workspace: string): Promise<Refutation> {
   const { base } = check;
@@ -355,10 +371,15 @@ async function checkBase(check: Refutation, finding: Finding, workspace: string)
   const excludePaths = baseReadsOf(workspace);
   const commit = excludePaths && await runGit(workspace, ['rev-parse', '--verify', '-q', `${BASE_REF}^{commit}`]).then(out => out.trim(), () => undefined);
   const cited = base.proof ?? [];
-  const found = excludePaths && commit ? await linesAtBase(workspace, cited, excludePaths) : [];
+  const held = excludePaths && commit ? await linesAtBase(workspace, cited, excludePaths) : [];
+  const found = held.map(h => h.location);
+  const showsFlaggedCode = (): boolean => {
+    const flagged = flaggedText(workspace, finding);
+    return held.some(h => locationFile(h.location) === finding.file && h.lines.some(line => flagged.has(line.trim())));
+  };
   const outcome = !commit ? 'unsettled'
     : base.outcome === 'disproved'
-      ? found.length > 0 && found.length === cited.length && found.some(location => locationFile(location) === finding.file) ? 'disproved' : 'unsettled'
+      ? found.length > 0 && found.length === cited.length && showsFlaggedCode() ? 'disproved' : 'unsettled'
       : found.length + (base.relatedProof?.length ?? 0) === 0 ? 'unsettled' : base.outcome;
   const { proof: _proof, ...answer } = base;
   return { ...check, base: { ...answer, outcome, ...(found.length > 0 && { proof: found, commit }) } };
