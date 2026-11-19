@@ -217,9 +217,11 @@ describe('runFixChecks', () => {
       const own = fakeClient(() => answer('workaround', 'symptom', [spelled]));
       expect((await runFixChecks(() => own, [guard], { rawDiff, workspace: root })).fixes).toEqual([{ ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, ...digest, proof: ['src/report.ts:3'] }]);
     }
-    // A range that reaches past the fix cites a line outside it.
-    const wider = fakeClient(() => answer('workaround', 'symptom', ['./src/report.ts:2-3']));
-    expect((await runFixChecks(() => wider, [guard], { rawDiff, workspace: root })).fixes[0]).toMatchObject({ status: 'workaround', proof: ['src/report.ts:2-3'] });
+    // The line right next to the fix, here the signature above the guard, is still at the fix. A line further away is not.
+    const beside = fakeClient(() => answer('workaround', 'symptom', ['./src/report.ts:2-4']));
+    expect((await runFixChecks(() => beside, [guard], { rawDiff, workspace: root })).fixes[0]).toMatchObject({ status: 'unchecked', proof: ['src/report.ts:2-4'] });
+    const wider = fakeClient(() => answer('workaround', 'symptom', ['./src/report.ts:1-3']));
+    expect((await runFixChecks(() => wider, [guard], { rawDiff, workspace: root })).fixes[0]).toMatchObject({ status: 'workaround', proof: ['src/report.ts:1-3'] });
 
     const [first] = client.calls;
     expect(first.options).toEqual({ effort: 'high', repoTools: { root, steps: 12 }, timeoutMs: 600_000 });

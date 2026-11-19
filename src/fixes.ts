@@ -57,10 +57,10 @@ A retry, a wait, a guard or a default is no workaround by itself. It is the righ
 
 Give one status:
 - **root_cause**: the fix changes the code that causes the problem. Cite in \`proof\` the lines of that cause.
-- **workaround**: the cause is in code the fix leaves as it was, so the problem is only hidden for the case the fix handles. Cite in \`proof\` the lines of the cause or of the path that still fails, at least one of them outside the lines of the fix, and report it in \`finding\`.
+- **workaround**: the cause is in code the fix leaves as it was, so the problem is only hidden for the case the fix handles. Cite in \`proof\` the lines of the cause or of the path that still fails, at least one of them away from the lines of the fix, not only right next to them, and report it in \`finding\`.
 - **unchecked**: you could not find the cause, could not finish, or the code leaves it open. Say in \`reason\` what is left to check.
 
-Manki keeps \`root_cause\` only with \`actsAt\` \`cause\`, and \`workaround\` only with \`actsAt\` \`symptom\`, each with a \`proof\` line that exists in the repository, or in a related repo when you are given any. A \`workaround\` also needs a \`proof\` line outside the lines of the fix. Every other answer counts as \`unchecked\`, and only a \`workaround\` that stands reports its \`finding\`. Cite a line of a related repo in \`proof\` as \`owner/name:path:line\`.
+Manki keeps \`root_cause\` only with \`actsAt\` \`cause\`, and \`workaround\` only with \`actsAt\` \`symptom\`, each with a \`proof\` line that exists in the repository, or in a related repo when you are given any. A \`workaround\` also needs a \`proof\` line that is neither a line of the fix nor right next to one. Every other answer counts as \`unchecked\`, and only a \`workaround\` that stands reports its \`finding\`. Cite a line of a related repo in \`proof\` as \`owner/name:path:line\`.
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
 
@@ -190,15 +190,16 @@ function checkMessage({ at, problem }: ListedFix, rawDiff: string): string {
 }
 
 /**
- * Whether every line `location` cites is inside a range of `at`. Both name their file by the path from the repository
- * root at `workspace`, and a path through a linked directory is the same file as its real path.
+ * Whether every line `location` cites is inside a range of `at` or right next to one, such as the signature above an
+ * added guard. Both name their file by the path from the repository root at `workspace`, and a path through a linked
+ * directory is the same file as its real path.
  */
-function insideFix(location: string, at: readonly string[], workspace: string): boolean {
+function atFix(location: string, at: readonly string[], workspace: string): boolean {
   const cited = parseLocation(location);
   if (!cited) return false;
   const file = realRepoPath(workspace, cited.file, true);
   const ranges = at.flatMap(range => parseLocation(range) ?? []).filter(fix => realRepoPath(workspace, fix.file, true) === file);
-  for (let line = cited.start; line <= cited.end; line++) if (!ranges.some(fix => line >= fix.start && line <= fix.end)) return false;
+  for (let line = cited.start; line <= cited.end; line++) if (!ranges.some(fix => line >= fix.start - 1 && line <= fix.end + 1)) return false;
   return true;
 }
 
@@ -233,7 +234,7 @@ type FixAnswer = Pick<RoundFix, 'status' | 'cause' | 'stillFails' | 'reason' | '
 
 /**
  * Reads a fix check's reply. `root_cause` stands only with `actsAt` `cause`, and `workaround` only with `actsAt` `symptom`
- * and a cited line outside the lines of the fix. Each also needs a cited line that exists in `workspace` or in a checkout
+ * and a cited line that is neither a line of the fix nor right next to one. Each also needs a cited line that exists in `workspace` or in a checkout
  * of the round's related repos. Every other answer is `unchecked`. Only a `workaround` that stands reports a finding, and
  * always one, as `workaroundFinding` says.
  */
@@ -242,7 +243,7 @@ function parseFixCheck(text: string, fix: ListedFix, workspace: string, reviewer
   const stated = STATUSES.find(status => status === parsed.status);
   if (!stated) throw new Error(`the status is ${JSON.stringify(parsed.status)}, not one of ${STATUSES.join(', ')}`);
   const { proof, relatedProof } = stated === 'unchecked' ? { proof: [], relatedProof: [] } : shownLines(parsed.proof, workspace, related);
-  const consistent = stated === 'root_cause' ? parsed.actsAt === 'cause' : parsed.actsAt === 'symptom' && (relatedProof.length > 0 || proof.some(p => !insideFix(p, fix.at, workspace)));
+  const consistent = stated === 'root_cause' ? parsed.actsAt === 'cause' : parsed.actsAt === 'symptom' && (relatedProof.length > 0 || proof.some(p => !atFix(p, fix.at, workspace)));
   const status = consistent && proof.length + relatedProof.length > 0 ? stated : 'unchecked';
   const cause = oneLine(parsed.cause, MAX_ANSWER_CHARS);
   const stillFails = oneLine(parsed.stillFails, MAX_ANSWER_CHARS);
