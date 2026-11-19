@@ -1603,24 +1603,28 @@ function mappedChanges(files: DiffFile[], parser: Parser): MappedChange[] {
 
 /**
  * Returns the declarations of a parsed side outside tests and functions, each by kind and name, and those of them whose
- * lines hold one of `changed`. The first of several namesakes stands for them.
+ * lines hold one of `changed`. Namesakes, such as a getter and its setter, count as one declaration made of them all.
  */
 function parsedViews(parsed: ParsedFile | undefined, changed: { has(line: number): boolean }): { all: Map<string, DeclarationView>; touched: Map<string, DeclarationView> } {
-  const all = new Map<string, DeclarationView>();
-  const touched = new Map<string, DeclarationView>();
+  const namesakes = new Map<string, { label: string; decls: Declaration[] }>();
+  const touched = new Set<string>();
   for (const decl of parsed?.declarations ?? []) {
     const name = decl.test ? undefined : parsed!.mappedName(decl);
-    const key = name && `${decl.kind} ${name}`;
-    if (!key || all.has(key)) continue;
-    const view = { label: `${KIND_LABEL[decl.kind]} ${name}`, signature: parsed!.headerText(decl).replace(/\s+/g, ' ').trim(), text: () => decl.node.text() };
-    all.set(key, view);
+    if (!name) continue;
+    const key = `${decl.kind} ${name}`;
+    const known = namesakes.get(key);
+    if (known) known.decls.push(decl);
+    else namesakes.set(key, { label: `${KIND_LABEL[decl.kind]} ${name}`, decls: [decl] });
     for (let line = decl.start; line <= decl.end; line++) {
       if (!changed.has(line)) continue;
-      touched.set(key, view);
+      touched.add(key);
       break;
     }
   }
-  return { all, touched };
+  const all = new Map([...namesakes].map(([key, { label, decls }]) => [key, {
+    label, signature: decls.map(d => parsed!.headerText(d).replace(/\s+/g, ' ').trim()).join('\n'), text: () => decls.map(d => d.node.text()).join('\n'),
+  }]));
+  return { all, touched: new Map([...touched].map(key => [key, all.get(key)!])) };
 }
 
 /** Returns the declarations `lines` hold by keyword, each by kind and name, as both the whole side and its changed part. */

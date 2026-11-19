@@ -621,6 +621,7 @@ describe('listUsesOutsideDiff', () => {
       'cmd/shop.swift': 'func helper() {}\nfunc total() -> Int { return 1 }\nfunc outer() {\n    func inner() {}\n    struct Local {}\n}\n',
       'src/outer.ts': 'export function outer() {\n  function gone() {}\n  class Gone {\n    size = 1;\n  }\n  return 1;\n}\n',
       'src/job.py': 'class Job:\n    def __init__(self):\n        self.size = 1\n',
+      'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: number) {}\n}\n',
     }, {
       'src/config.ts': config('limit: number | null;', "text ? { limit: Number(text) } : { limit: null }", 'export function newHelper(): number {\n  return 2;\n}\n'),
       'src/config.test.ts': "it('parses', () => expect(parseConfig('').limit).toBeNull());\n\nfunction fixture() {}\n",
@@ -631,6 +632,7 @@ describe('listUsesOutsideDiff', () => {
       'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n',
       'cmd/shop.swift': 'func total() -> Int { return 2 }\nfunc outer() {\n}\n',
       'src/outer.ts': 'export function outer() {\n  function inner() {}\n  class Local {\n    size = 1;\n  }\n  return 2;\n}\n\nexport const run = () => {\n  function step() {}\n};\n',
+      'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: string) {}\n}\n',
       'src/hooks.go': 'package hooks\n\nvar Handle = func() {\n\ttype event struct{ ID int }\n}\n',
       'src/job.py': 'class Job:\n    def __init__(self):\n        self.size = 1\n        self.cost = 2\n\n    def run(self):\n        def step():\n            pass\n',
     });
@@ -647,6 +649,9 @@ describe('listUsesOutsideDiff', () => {
         { file: 'cmd/shop.swift', symbol: 'function helper', change: 'removed' },
         { file: 'cmd/shop.swift', symbol: 'function total', change: 'body changed' },
         { file: 'manki.yml', symbol: 'config key slice_lines', change: 'added' },
+        // A getter and its setter count as one declaration, so a change to the setter alone is mapped too.
+        { file: 'src/box.ts', symbol: 'function Box.size', change: 'declaration changed' },
+        { file: 'src/box.ts', symbol: 'type Box', change: 'body changed' },
         // The removed lines declare `oldHelper` and `MAX_SIZE`, never the indented `local`.
         { file: 'src/config.ts', symbol: 'function oldHelper', change: 'removed' },
         { file: 'src/config.ts', symbol: 'constant MAX_SIZE', change: 'removed' },
