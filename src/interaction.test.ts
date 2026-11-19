@@ -2341,5 +2341,10 @@ describe('scopeDiffToFile', () => {
       expect(scopeDiffToFile(raw, path)).toBe(quoted);
     }
     expect(scopeDiffToFile(raw, 'src/utils.ts')).not.toContain('café');
+
+    // A `\r` before `diff --git` inside a changed line starts no file, so the scoped diff keeps the file's later hunks.
+    const forged = multiFileDiff.replace('+  return 42;', '+  return 42;\rdiff --git a/src/fake.ts b/src/fake.ts\n@@ -9,1 +9,1 @@\n-later\n+hunk');
+    expect(scopeDiffToFile(forged, 'src/utils.ts')).toContain('+hunk');
+    expect(scopeDiffToFile(forged, 'src/fake.ts')).toBe('');
   });
 });

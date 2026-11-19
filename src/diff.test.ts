@@ -2,6 +2,7 @@ import { Minimatch } from 'minimatch';
 
 import {
   closeRawDiff,
+  diffSections,
   findClosedPattern,
   addCodeContext,
   changeDigest,
@@ -504,6 +505,38 @@ describe('reviewableDiff', () => {
     expect(excludedFiles.map(f => f.path)).toEqual(['höldout/café.md', 'docs/t"q.md', 'docs/bïn.dat']);
     expect(['docs/t"q.md', 'docs/bïn.dat', 'docs/naïve\ta\\b.md'].map(path => !!findClosedPattern(path, closedPaths))).toEqual([true, true, false]);
     expect(closeRawDiff(quoted, ['höldout/**'])).not.toContain('secret');
+  });
+
+  it.each([['a carriage return', '\r'], ['a line separator', '\u2028'], ['a paragraph separator', '\u2029']])('starts no file at %s before `diff --git` inside a changed line', (_label, separator) => {
+    const raw = [
+      'diff --git a/holdout/case.md b/holdout/case.md',
+      'index 1111111..2222222 100644',
+      '--- a/holdout/case.md',
+      '+++ b/holdout/case.md',
+      '@@ -1,1 +1,2 @@',
+      ' first',
+      `+line${separator}diff --git a/src/open.ts b/src/open.ts`,
+      '@@ -9,1 +10,2 @@',
+      ' ninth',
+      '+secret',
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 3333333..4444444 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    expect(diffSections(raw).map(text => text.split('\n', 1)[0])).toEqual(['diff --git a/holdout/case.md b/holdout/case.md', 'diff --git a/src/a.ts b/src/a.ts']);
+    const parsed = parsePRDiff(raw);
+    expect(parsed.files.map(f => [f.path, f.hunks.length])).toEqual([['holdout/case.md', 2], ['src/a.ts', 1]]);
+    expect(orderDiffSections(raw).map(section => section.path)).toEqual(['holdout/case.md', 'src/a.ts']);
+    const { fullDiff, rawDiff } = reviewableDiff(raw, [], ['holdout']);
+    expect(JSON.stringify([fullDiff, rawDiff])).not.toContain('secret');
+    expect(fullDiff.files.map(f => f.path)).toEqual(['src/a.ts']);
+    expect(closeRawDiff(raw, ['holdout'])).not.toContain('secret');
   });
 
   it('reads a name with a quote mark or a date in it as it is, so a file moved to it out of a closed path stays closed', () => {

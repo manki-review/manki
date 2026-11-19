@@ -8,7 +8,7 @@ import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
-import { closeRawDiff, parsePRDiff } from './diff';
+import { closeRawDiff, diffSections, parsePRDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
@@ -1178,7 +1178,7 @@ function buildReplyContext(
 
 /** Returns the sections of `fullDiff` whose file is at `filePath` before or after the change, or an empty string for none. */
 export function scopeDiffToFile(fullDiff: string, filePath: string): string {
-  return fullDiff.split(/(?=^diff --git )/m).filter(text => {
+  return diffSections(fullDiff).filter(text => {
     const { files, binarySkipped = [] } = parsePRDiff(text);
     return [...files.flatMap(f => [f.path, f.oldPath]), ...binarySkipped.map(b => b.path)].includes(filePath);
   }).join('');

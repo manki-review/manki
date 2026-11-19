@@ -16,7 +16,7 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
     return { files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [] };
   }
 
-  const parsed = rawDiff.split(/(?=^diff --git )/m).flatMap(section => {
+  const parsed = diffSections(rawDiff).flatMap(section => {
     const [first, ...rest] = parseDiff(section);
     if (!first || !section.startsWith('diff --git ')) return first ? [first, ...rest] : [];
     const { from, to } = headerPaths(section);
@@ -63,6 +63,14 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
   }
 
   return { files, totalAdditions, totalDeletions, binarySkipped };
+}
+
+/**
+ * Returns the file sections of a git diff, each from its `diff --git` line up to the next one, after any text before the
+ * first. A section starts only after `\n`, since a changed line can hold a `\r` or a Unicode line separator.
+ */
+export function diffSections(rawDiff: string): string[] {
+  return rawDiff.split(/(?<![^\n])(?=diff --git )/).filter(text => text.length > 0);
 }
 
 /** Returns the first of `excludePaths` that matches `path`, or `undefined` when none does. */
@@ -227,7 +235,7 @@ export interface DiffSection {
  * their order. Each text ends with a line break, so joining them gives a valid diff.
  */
 export function orderDiffSections(rawDiff: string, first: readonly string[] = []): DiffSection[] {
-  const sections = rawDiff.split(/(?=^diff --git )/m).filter(text => text.length > 0).map(text => {
+  const sections = diffSections(rawDiff).map(text => {
     const parsed = parsePRDiff(text);
     return { path: parsed.files[0]?.path ?? parsed.binarySkipped?.[0]?.path ?? '', text: text.endsWith('\n') ? text : `${text}\n` };
   });
@@ -355,7 +363,7 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[], keep?: Re
  */
 export function closeRawDiff(rawDiff: string, closedPaths: readonly string[]): string {
   if (closedPaths.length === 0) return rawDiff;
-  return rawDiff.split(/(?=^diff --git )/m).filter(text => {
+  return diffSections(rawDiff).filter(text => {
     const parsed = parsePRDiff(text);
     return parsed.files.length + (parsed.binarySkipped?.length ?? 0) > 0 && withoutClosed(parsed, closedPaths).closed.length === 0;
   }).join('');
