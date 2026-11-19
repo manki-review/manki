@@ -68,8 +68,10 @@ function paxRecords(data: Buffer): Map<string, string> {
   const records = new Map<string, string>();
   for (let at = 0; at < data.length;) {
     const space = data.indexOf(0x20, at);
-    const length = Number(data.subarray(at, space).toString('utf8'));
-    if (space < 0 || !Number.isInteger(length) || length <= 0) throw new Error('the archive has a broken pax header');
+    // npm and Cargo read the length as decimal digits only, and a record that does not end in a newline where it says.
+    const digits = space < 0 ? '' : data.subarray(at, space).toString('latin1');
+    const length = /^\d{1,15}$/.test(digits) ? Number(digits) : 0;
+    if (length <= space - at + 1 || at + length > data.length || data[at + length - 1] !== 0x0a) throw new Error('the archive has a broken pax header');
     const record = data.subarray(space + 1, at + length - 1).toString('utf8');
     const eq = record.indexOf('=');
     if (eq < 0) throw new Error('the archive has a broken pax header');

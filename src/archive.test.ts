@@ -52,6 +52,8 @@ describe('extractTarGz', () => {
     // Records that tar readers resolve differently refuse the archive.
     for (const [entries, why] of [
       [[{ name: 'p', type: 'x', data: '11 size=1x\n' }, { name: 'package/a', data: 'x' }], 'a pax size that is no decimal number'],
+      // A record length in another form than decimal digits, or one that does not end the record on its newline.
+      ...['0xb size=1\n', '+12 size=12\n', '10 size=12'].map(data => [[{ name: 'p', type: 'x', data }, { name: 'package/a', data: 'x' }], 'a broken pax header']),
       [[{ name: 'p', type: 'x', data: '10 size=1\n10 size=2\n' }, { name: 'package/a', data: 'x' }], 'sets "size" twice'],
       [[{ name: 'p', type: 'x', data: '10 size=1\n' }, { name: 'q', type: 'x', data: '10 size=1\n' }, { name: 'package/a', data: 'x' }], 'two long-name or pax headers for one entry'],
       [[{ name: 'g', type: 'g', data: '10 size=1\n' }, { name: 'package/a', data: 'x' }], 'a global pax header that sets "size"'],
