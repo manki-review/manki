@@ -263,10 +263,14 @@ describe('reviewLocal', () => {
   }, GIT_TEST_TIMEOUT_MS);
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
-    let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean } | undefined;
+    let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean; indexed: string } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
       const workspace = options.workspace!;
-      workspaceSeen = { content: readFileSync(join(workspace, 'src/a.ts'), 'utf-8'), env: existsSync(join(workspace, '.env')), linkIsFile: lstatSync(join(workspace, 'link')).isFile() };
+      workspaceSeen = {
+        content: readFileSync(join(workspace, 'src/a.ts'), 'utf-8'), env: existsSync(join(workspace, '.env')), linkIsFile: lstatSync(join(workspace, 'link')).isFile(),
+        // Tools that list tracked files read the index, so it holds the files and the symlink the patch adds.
+        indexed: git(workspace, 'ls-files', '-s', '--', 'docs/x.md', 'link').replace(/ [0-9a-f]+ /g, ' '),
+      };
       return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
     });
     git(repo, 'checkout', '-q', '-b', 'with-link', 'feature');
@@ -282,7 +286,7 @@ describe('reviewLocal', () => {
     });
 
     const options = jest.mocked(runReview).mock.calls[0][1];
-    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true });
+    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true, indexed: '100644 0\tdocs/x.md\n120000 0\tlink' });
     expect(options.workspace).not.toBe(repo);
     expect(existsSync(options.workspace!)).toBe(false);
     expect(options.rawDiff).toContain('docs/x.md');

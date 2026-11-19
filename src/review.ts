@@ -1178,14 +1178,14 @@ export async function runReview(
   // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them. The
   // second refuter runs only next to a judge with tools, so its own tools offer nothing.
   const anyTools = finderTools || [pickReviewerClient(clients, comparisonModel).client, clients.judge].some(c => c.repoTools);
-  const related = workspace && anyTools ? relatedRepoTools(config.related_repos, options.relatedReposAsOf) : undefined;
+  const related = workspace && anyTools ? await relatedRepoTools(config.related_repos, workspace, options.relatedReposAsOf) : undefined;
   // The guide of each repo fetched before the finders run, known once that fetch is done.
   const pointedTo: { guides?: Record<string, string> } = {};
   // Every configured related repo is recorded: fetched, failed, unused, or skipped when no model could read it. A stage
   // after the finders can be the first to fetch one, so each way the round ends reads the outcomes then.
   const relatedRecord = (): Pick<ReviewResult, 'relatedRepos'> => {
     const relatedRepos: RoundRelatedRepo[] | undefined = related
-      ? relatedRepoOutcomes(related.repos, related.stateDir, pointedTo.guides, related.asOf)
+      ? relatedRepoOutcomes(related.repos, related.stateDir, pointedTo.guides, related.asOf, related.locks)
       : config.related_repos?.map(({ repo, ref }) => ({
         repo, ...(ref && { ref }), status: 'skipped' as const,
         reason: workspace ? 'no model of the round has repository tools' : 'the PR head was not checked out for the tools',

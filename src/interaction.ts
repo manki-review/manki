@@ -287,7 +287,7 @@ async function askWithRecord(
   const calls: LLMCall[] = [];
   const response = await recordCalls(client, { stage: 'reply' }, calls).sendMessage(systemPrompt, userMessage, { timeoutMs: REPLY_TIMEOUT_MS, ...options });
   const tokenService = tokenServiceCalls();
-  const relatedRepos = related && relatedRepoOutcomes(related.repos, related.stateDir).map(repo => withReads(repo, calls));
+  const relatedRepos = related && relatedRepoOutcomes(related.repos, related.stateDir, related.guides, related.asOf, related.locks).map(repo => withReads(repo, calls));
   const record = (decision?: ReplyDecision, checks?: StatementChecks) => formatReplyRecord({
     kind, prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage(calls),
     ...(tokenService.length > 0 && { tokenService }), ...(relatedRepos && { relatedRepos }), ...(decision && { decision }), ...checks,
@@ -507,7 +507,7 @@ export async function handleReviewCommentReply(
 
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
     // No repo is fetched up front: the tool server fetches one the first time the model names it.
-    const related = workspace ? relatedRepoTools(config?.related_repos) : undefined;
+    const related = workspace ? await relatedRepoTools(config?.related_repos, workspace) : undefined;
     const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, related, 'check') } : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools, related);
     const findingBody = root.comment.body ?? '';

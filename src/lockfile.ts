@@ -76,9 +76,39 @@ export interface LockfileDiff {
   changes: PackageChange[];
 }
 
+/** The bytes of one lockfile Manki reads at most, and of all the lockfiles one round reads. */
+export const MAX_LOCKFILE_BYTES = 10 * 1024 * 1024;
+export const MAX_LOCKFILES_TOTAL_BYTES = 40 * 1024 * 1024;
+
+/** The file names of the lockfiles Manki parses. */
+export const LOCKFILE_NAMES = Object.keys(PARSERS);
+
 /** Whether Manki parses `path` into a package list. */
 export function isParsedLockfile(path: string): boolean {
   return Object.hasOwn(PARSERS, posix.basename(path));
+}
+
+// A git source on github.com, as `git+https://github.com/<owner>/<name>?rev=..#<commit>`, `git+ssh://git@github.com/<owner>/<name>.git#<commit>`,
+// `github:<owner>/<name>#<commit>` or Yarn Berry's `https://github.com/<owner>/<name>.git#commit=<commit>`.
+const GITHUB_GIT_SOURCE = /^(?:git\+)?(?:(?:https|ssh|git):\/\/(?:[^@/]+@)?github\.com[/:]|git@github\.com:|github:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?(?:\?[^#]*)?#(?:commit=)?([0-9a-f]{40})(?:&[^#]*)?$/i;
+// A tarball of one commit, as Yarn 1 locks a GitHub dependency.
+const GITHUB_CODELOAD_SOURCE = /^https:\/\/codeload\.github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/tar\.gz\/([0-9a-f]{40})$/i;
+
+/**
+ * Returns the commits that the lockfile at `path` locks for each repository on github.com its packages come from, keyed
+ * by `owner/name` in lower case. Only the full commit after `#` counts, never a branch or tag the source names. Throws
+ * when the file does not parse.
+ */
+export function lockedGitCommits(path: string, text: string): Map<string, Set<string>> {
+  const locked = new Map<string, Set<string>>();
+  if (!isParsedLockfile(path)) return locked;
+  for (const { isPackage, source } of parseContent(PARSERS[posix.basename(path)], text)) {
+    const match = isPackage && source ? GITHUB_GIT_SOURCE.exec(source) ?? GITHUB_CODELOAD_SOURCE.exec(source) : null;
+    if (!match) continue;
+    const repo = `${match[1]}/${match[2]}`.toLowerCase();
+    locked.set(repo, (locked.get(repo) ?? new Set()).add(match[3].toLowerCase()));
+  }
+  return locked;
 }
 
 /**

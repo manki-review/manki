@@ -7,9 +7,11 @@ import { join } from 'path';
 
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, RelatedRepoPending, relatedReposCacheDir, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { RelatedRepo } from './types';
+import { gitWorkspace } from './test-utils';
 import { gitEnv } from './workspace';
 
 jest.mock('@actions/core', () => ({
+  info: jest.fn(),
   warning: jest.fn(),
 }));
 
@@ -438,16 +440,17 @@ describe('relatedRepoLoader', () => {
     }
   });
 
-  it('gives each round a state directory of its own, and states the related repos on the tools of every call', () => {
-    const first = relatedRepoTools([DASH, PLATFORM], '2026-01-05T00:00:00Z')!;
-    const second = relatedRepoTools([DASH])!;
+  it('gives each round a state directory of its own, and states the related repos on the tools of every call', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-related-tools-'));
+    const first = (await relatedRepoTools([DASH, PLATFORM], workspace, '2026-01-05T00:00:00Z'))!;
+    const second = (await relatedRepoTools([DASH], workspace))!;
     try {
       expect(first).toEqual({ repos: [DASH, PLATFORM], cacheDir: relatedReposCacheDir(), stateDir: expect.any(String), asOf: '2026-01-05T00:00:00Z' });
       expect(lstatSync(first.stateDir).isDirectory()).toBe(true);
       expect(second.stateDir).not.toBe(first.stateDir);
       expect(second).not.toHaveProperty('asOf');
-      expect(relatedRepoTools([])).toBeUndefined();
-      expect(relatedRepoTools(undefined)).toBeUndefined();
+      expect(await relatedRepoTools([], workspace)).toBeUndefined();
+      expect(await relatedRepoTools(undefined, workspace)).toBeUndefined();
       expect(repoTools('/work/head', 15, first)).toStrictEqual({ root: '/work/head', steps: 15, related: first });
       expect(repoTools('/work/head', 15, undefined)).toStrictEqual({ root: '/work/head', steps: 15, related: undefined });
       // A call that checks one finding or statement is marked, so its prompt gives it no rules for grading.
@@ -457,6 +460,96 @@ describe('relatedRepoLoader', () => {
       expect(repoTools('/work/head', 15, first, 'read')).toStrictEqual({ root: '/work/head', steps: 15, related: first, listed: true });
     } finally {
       for (const { stateDir } of [first, second]) rmSync(stateDir, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a dependency repo without a ref at the commit the lockfiles of the checkout lock, and at its default branch when they lock none or two', async () => {
+    const [a, b, c] = ['a', 'b', 'c'].map(ch => ch.repeat(40));
+    const cargo = (packages: Array<[string, string]>) => `version = 4\n${packages.map(([name, source]) => `\n[[package]]\nname = "${name}"\nversion = "1.0.0"\nsource = "${source}"\n`).join('')}`;
+    const npm = (resolved: string) => JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'app' }, 'node_modules/foo': { version: '1.0.0', resolved } } });
+    const { root } = gitWorkspace({ 'README.md': 'App\n' }, {
+      // The commit after `#` counts, never the `rev` the URL names, and one repo locked by two packages at one commit is locked.
+      'Cargo.lock': cargo([['dashcore', `git+https://github.com/dashpay/rust-dashcore?rev=main#${a}`], ['key-wallet', `git+https://github.com/dashpay/rust-dashcore?rev=main#${a}`], ['grovedb', `git+https://github.com/dashpay/grovedb?rev=${b}#${b}`]]),
+      'packages/sdk/Cargo.lock': cargo([['grovedb', `git+https://github.com/dashpay/grovedb?rev=${c}#${c}`]]),
+      // An npm git source names the repo with its own case and `.git`.
+      'web/package-lock.json': npm(`git+ssh://git@github.com/Acme/Foo.git#${c}`),
+      // A lockfile under `node_modules` or `target` is another project's.
+      'node_modules/bar/package-lock.json': npm(`git+ssh://git@github.com/dashpay/dips.git#${b}`),
+      // Yarn Berry names the commit as `commit=`, and Yarn 1 locks a GitHub dependency as a tarball of the commit.
+      'app/yarn.lock': `__metadata:\n  version: 8\n  cacheKey: 10\n\n"berry@https://github.com/acme/berry.git#commit=${a}":\n  version: 1.0.0\n  resolution: "berry@https://github.com/acme/berry.git#commit=${a}"\n  languageName: node\n  linkType: hard\n`,
+      'legacy/yarn.lock': `# yarn lockfile v1\n\n\n"tar@github:acme/tar#${b}":\n  version "1.0.0"\n  resolved "https://codeload.github.com/acme/tar/tar.gz/${b}"\n`,
+      // git lists a path with a tab as it is, after the tab that ends its mode and object.
+      'tab\tdir/Cargo.lock': cargo([['tabbed', `git+https://github.com/acme/tabbed#${c}`]]),
+      // A symlink is no lockfile of the checkout, so the other commit its target locks does not count.
+      'other.txt': cargo([['dashcore', `git+https://github.com/dashpay/rust-dashcore#${b}`]]),
+    });
+    mkdirSync(join(root, 'linked'));
+    symlinkSync('../other.txt', join(root, 'linked', 'Cargo.lock'));
+    spawnSync('git', ['-C', root, 'add', '-A']);
+    // The workspace is checked out with `core.symlinks=false`, which writes the link as a file holding its target.
+    rmSync(join(root, 'linked', 'Cargo.lock'));
+    writeFileSync(join(root, 'linked', 'Cargo.lock'), '../other.txt');
+    const dependency = (repo: string, ref?: string): RelatedRepo => ({ repo, kind: 'dependency', ...(ref && { ref }) });
+    const repos = [dependency('dashpay/rust-dashcore'), dependency('dashpay/grovedb'), dependency('acme/foo'), dependency('dashpay/dips'), dependency('tokio-rs/tokio', 'tokio-1.38.0'), DASH, dependency('acme/berry'), dependency('acme/tar'), dependency('acme/tabbed')];
+    const tools = (await relatedRepoTools(repos, root))!;
+    try {
+      expect(tools.repos).toEqual([
+        dependency('dashpay/rust-dashcore', a), dependency('dashpay/grovedb'), dependency('acme/foo', c), dependency('dashpay/dips'), repos[4], DASH,
+        dependency('acme/berry', a), dependency('acme/tar', b), dependency('acme/tabbed', c),
+      ]);
+      const locks = {
+        'dashpay/rust-dashcore': { lockfile: 'Cargo.lock' },
+        'dashpay/grovedb': { unlocked: 'the lockfiles lock it at 2 different commits' },
+        'acme/foo': { lockfile: 'web/package-lock.json' },
+        'dashpay/dips': { unlocked: 'no lockfile of the checkout locks it at a commit' },
+        'acme/berry': { lockfile: 'app/yarn.lock' },
+        'acme/tar': { lockfile: 'legacy/yarn.lock' },
+        'acme/tabbed': { lockfile: 'tab\tdir/Cargo.lock' },
+      };
+      expect(tools.locks).toEqual(locks);
+      expect(core.info).toHaveBeenCalledWith('Related repo dashpay/grovedb is read at its default branch: the lockfiles lock it at 2 different commits');
+      // The round record says how each ref was chosen.
+      expect(relatedRepoOutcomes(tools.repos, tools.stateDir, {}, undefined, tools.locks).slice(0, 2)).toEqual([
+        { repo: 'dashpay/rust-dashcore', ref: a, lockfile: 'Cargo.lock', status: 'unused' },
+        { repo: 'dashpay/grovedb', unlocked: 'the lockfiles lock it at 2 different commits', status: 'unused' },
+      ]);
+      // Without a dependency that names no ref, nothing is read and nothing is recorded.
+      const plain = (await relatedRepoTools([DASH, repos[4]], root))!;
+      expect(plain).not.toHaveProperty('locks');
+      rmSync(plain.stateDir, { recursive: true, force: true });
+    } finally {
+      rmSync(tools.stateDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    // A lockfile that does not parse may lock another commit, so no repo is read at a locked commit. Its path comes from
+    // the PR, so a workflow command in it is cut from the log.
+    const path = 'web\n::warning::forged/package-lock.json';
+    const broken = gitWorkspace({ 'README.md': 'App\n' }, { 'Cargo.lock': cargo([['dashcore', `git+https://github.com/dashpay/rust-dashcore#${a}`]]), [path]: '{' }).root;
+    jest.mocked(core.info).mockClear();
+    const unread = (await relatedRepoTools([dependency('dashpay/rust-dashcore')], broken))!;
+    try {
+      expect(unread.repos).toEqual([dependency('dashpay/rust-dashcore')]);
+      expect(unread.locks).toEqual({ 'dashpay/rust-dashcore': { unlocked: `the lockfile ${path} could not be read` } });
+      expect(jest.mocked(core.info).mock.calls.map(([line]) => line)).toEqual([
+        'Lockfile web\n[redacted-workflow-cmd]',
+        'Related repo dashpay/rust-dashcore is read at its default branch: the lockfile web\n[redacted-workflow-cmd]',
+      ]);
+    } finally {
+      rmSync(unread.stateDir, { recursive: true, force: true });
+      rmSync(broken, { recursive: true, force: true });
+    }
+
+    // More lockfiles than a round reads may lock another commit too, so none is read.
+    const lockfiles = Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`crates/c${i}/Cargo.lock`, cargo([['dashcore', `git+https://github.com/dashpay/rust-dashcore#${a}`]])]));
+    const crowded = gitWorkspace({ 'README.md': 'App\n' }, lockfiles).root;
+    const capped = (await relatedRepoTools([dependency('dashpay/rust-dashcore')], crowded))!;
+    try {
+      expect(capped.locks).toEqual({ 'dashpay/rust-dashcore': { unlocked: 'the checkout holds 51 lockfiles, more than the 50 a round reads' } });
+    } finally {
+      rmSync(capped.stateDir, { recursive: true, force: true });
+      rmSync(crowded, { recursive: true, force: true });
     }
   });
 });
