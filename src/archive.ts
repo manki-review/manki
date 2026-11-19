@@ -60,20 +60,29 @@ function checksumHolds(header: Buffer): boolean {
   return sum === octal(header, 148, 8);
 }
 
-/** Returns the `path` of a pax extended header's records, each `<length> <key>=<value>\n`. */
-function paxPath(data: Buffer): string | undefined {
-  let path: string | undefined;
+/**
+ * Returns the records of a pax extended header, each `<length> <key>=<value>\n`, by key. Throws on a key set twice,
+ * which tar readers resolve differently.
+ */
+function paxRecords(data: Buffer): Map<string, string> {
+  const records = new Map<string, string>();
   for (let at = 0; at < data.length;) {
     const space = data.indexOf(0x20, at);
     const length = Number(data.subarray(at, space).toString('utf8'));
     if (space < 0 || !Number.isInteger(length) || length <= 0) throw new Error('the archive has a broken pax header');
     const record = data.subarray(space + 1, at + length - 1).toString('utf8');
     const eq = record.indexOf('=');
-    if (record.slice(0, eq) === 'path') path = record.slice(eq + 1);
+    if (eq < 0) throw new Error('the archive has a broken pax header');
+    const key = record.slice(0, eq);
+    if (records.has(key)) throw new Error(`the archive has a pax header that sets ${quoted(key)} twice`);
+    records.set(key, record.slice(eq + 1));
     at += length;
   }
-  return path;
+  return records;
 }
+
+/** The magic and version of a POSIX ustar header. A GNU header keeps other fields where POSIX keeps a path's prefix. */
+const USTAR_MAGIC = Buffer.from('ustar\x0000', 'latin1');
 
 /** Shows the start of an archive's path in an error, since the path can be long. */
 function quoted(name: string): string {
@@ -132,31 +141,42 @@ export function extractTarGz(archive: Buffer, dest: string, {
   };
   let headers = 0;
   let longName: string | undefined;
-  let paxName: string | undefined;
+  let pax: Map<string, string> | undefined;
   for (let at = 0; at + BLOCK <= tar.length;) {
     const header = tar.subarray(at, at + BLOCK);
     if (header.every(b => b === 0)) break;
     if (++headers > maxHeaders) throw new Error(`the archive holds more than ${maxHeaders} entries`);
     if (!checksumHolds(header)) throw new Error('the archive has a header whose checksum does not match');
-    const size = octal(header, 124, 12);
     const type = String.fromCharCode(header[156] || 0x30);
-    if ('LKxg'.includes(type) && size > maxHeaderData) throw new Error(`the archive has a long-name or pax header of more than ${maxHeaderData} bytes`);
+    const extension = 'LKxg'.includes(type);
+    // A pax `size` replaces the header's for the entry it describes, as npm and Cargo read it.
+    const paxSize = extension ? undefined : pax?.get('size');
+    if (paxSize !== undefined && !/^\d{1,15}$/.test(paxSize)) throw new Error('the archive has a pax size that is no decimal number');
+    const size = paxSize !== undefined ? Number(paxSize) : octal(header, 124, 12);
+    if (extension && size > maxHeaderData) throw new Error(`the archive has a long-name or pax header of more than ${maxHeaderData} bytes`);
     const dataStart = at + BLOCK;
     if (dataStart + size > tar.length) throw new Error('the archive ends inside a file');
     const data = tar.subarray(dataStart, dataStart + size);
     at = dataStart + Math.ceil(size / BLOCK) * BLOCK;
+    // Tar readers differ on a second header of a kind for one entry, and on a global one that sets a path or size.
+    if ((type === 'L' && longName !== undefined) || (type === 'x' && pax !== undefined)) throw new Error('the archive has two long-name or pax headers for one entry');
     if (type === 'L') {
       longName = field(data, 0, data.length);
       continue;
     }
     if (type === 'x') {
-      paxName = paxPath(data);
+      pax = paxRecords(data);
       continue;
     }
-    if (type === 'g' || type === 'K') continue;
-    const prefix = field(header, 345, 155);
-    const name = longName ?? paxName ?? (prefix ? `${prefix}/${field(header, 0, 100)}` : field(header, 0, 100));
-    longName = paxName = undefined;
+    if (type === 'g') {
+      const set = ['path', 'size'].find(key => paxRecords(data).has(key));
+      if (set) throw new Error(`the archive has a global pax header that sets ${quoted(set)}`);
+      continue;
+    }
+    if (type === 'K') continue;
+    const prefix = header.subarray(257, 265).equals(USTAR_MAGIC) ? field(header, 345, 155) : '';
+    const name = longName ?? pax?.get('path') ?? (prefix ? `${prefix}/${field(header, 0, 100)}` : field(header, 0, 100));
+    longName = pax = undefined;
     const segments = entryPath(name, maxDepth, maxPathBytes);
     if (type === '1' || type === '2') {
       result.skippedLinks++;

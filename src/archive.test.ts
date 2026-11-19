@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { extractTarGz } from './archive';
-import { tarGz } from './test-utils';
+import { TarEntry, tarGz } from './test-utils';
 
 describe('extractTarGz', () => {
   let base: string;
@@ -32,6 +32,33 @@ describe('extractTarGz', () => {
     expect(readFileSync(join(out, 'a-very-long.js'), 'utf8')).toBe('x');
     expect(statSync(join(out, 'bin', 'run.sh')).mode & 0o111).toBe(0);
     expect(readdirSync(out).sort()).toEqual(['a-very-long.js', 'bin', 'lib']);
+  });
+
+  it('reads each entry as npm and Cargo read it: a pax size over the header\'s, and a path prefix only in a POSIX header', () => {
+    const out = dest();
+    // The header says the file is empty and the pax record says it holds the code, which is what an install unpacks.
+    const code = 'module.exports = 1;\n';
+    extractTarGz(tarGz([
+      { name: 'p', type: 'x', data: `${`size=${code.length}`.length + 4} size=${code.length}\n` },
+      { name: 'package/index.js', data: code, size: 0 },
+      { name: 'package/b.js', data: 'b' },
+      // A GNU header keeps times where POSIX keeps a prefix, so those bytes are no part of its path.
+      { name: 'package/gnu.js', data: 'g', gnu: true, prefix: 'elsewhere' },
+      { name: 'index.js', data: 'p', prefix: 'package/lib' },
+    ]), out);
+    expect(readFileSync(join(out, 'index.js'), 'utf8')).toBe(code);
+    expect(readdirSync(out).sort()).toEqual(['b.js', 'gnu.js', 'index.js', 'lib']);
+    expect(readFileSync(join(out, 'lib', 'index.js'), 'utf8')).toBe('p');
+    // Records that tar readers resolve differently refuse the archive.
+    for (const [entries, why] of [
+      [[{ name: 'p', type: 'x', data: '11 size=1x\n' }, { name: 'package/a', data: 'x' }], 'a pax size that is no decimal number'],
+      [[{ name: 'p', type: 'x', data: '10 size=1\n10 size=2\n' }, { name: 'package/a', data: 'x' }], 'sets "size" twice'],
+      [[{ name: 'p', type: 'x', data: '10 size=1\n' }, { name: 'q', type: 'x', data: '10 size=1\n' }, { name: 'package/a', data: 'x' }], 'two long-name or pax headers for one entry'],
+      [[{ name: 'g', type: 'g', data: '10 size=1\n' }, { name: 'package/a', data: 'x' }], 'a global pax header that sets "size"'],
+      [[{ name: 'g', type: 'g', data: '18 path=package/b\n' }, { name: 'package/a', data: 'x' }], 'a global pax header that sets "path"'],
+    ] as Array<[TarEntry[], string]>) {
+      expect(() => extractTarGz(tarGz(entries), dest())).toThrow(why);
+    }
   });
 
   it('refuses an archive with a path that leaves its folder', () => {
