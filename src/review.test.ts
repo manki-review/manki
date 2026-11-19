@@ -38,7 +38,7 @@ import * as relatedRepos from './related-repos';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
-import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
+import { formatFindingComment, holdsApproval, LinkedIssue, titleToSlug } from './github';
 import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
 import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
@@ -3770,19 +3770,26 @@ describe('runReview', () => {
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([[title, 'warning', 'blocker', ['pre-existing', 'follow-up'], 'touches_diff']]);
     expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
 
-    // The lines of the base prove it, so one refuter's answer lowers the blocker too, and so do two on the same model.
-    // The base answer cites base line 2, where the flagged head line 3 sat before this PR.
-    for (const options of [{ pairModel: null }, { pairModel: 'judge-model' }]) {
+    expect(result.findings.map(holdsApproval)).toEqual([false]);
+    // Two refuters on the same model make it pre-existing as well. The base answer cites base line 2, where the flagged
+    // head line 3 sat before this PR.
+    const sameModel = await run('disproved', { pairModel: 'judge-model' });
+    expect([sameModel.result.outcome, sameModel.result.findings.map(f => [f.severity, f.tags, holdsApproval(f)])]).toEqual(['READY', [['warning', ['pre-existing', 'follow-up'], false]]]);
+    // One refuter's answer, alone or beside a second call that failed, lowers the blocker to a warning that still holds
+    // the approval, so one steered model never releases it. Its thread still shows the lines of the base.
+    for (const options of [{ pairModel: null }, { pairModel: 'failed' }]) {
       const round = await run('disproved', options);
-      expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.tags])]).toEqual([options, 'READY', [['warning', ['pre-existing', 'follow-up']]]]);
+      const [lowered] = round.result.findings;
+      expect([options, round.result.outcome, lowered.severity, lowered.originalSeverity, lowered.tags?.includes('pre-existing'), holdsApproval(lowered)]).toEqual([options, 'READY', 'warning', 'blocker', false, true]);
+      expect(formatFindingComment(lowered, TEST_LINKS)).toContain('Same before this PR');
     }
 
     // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
-    // second call that failed, a security finding without both refuters, a workspace without the base, a line the base
+    // security finding without both refuters, a workspace without the base, a line the base
     // does not hold, no citation of the flagged line at its base line, a flagged line the PR re-indented, and a round with
     // no check at all keep the blocker its cell gives.
     const kept: Array<[RefutationOutcome, Options]> = [
-      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: 'failed' }], ['disproved', { pairModel: null, security: true }],
+      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: null, security: true }], ['disproved', { pairModel: 'failed', security: true }],
       ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
       ['disproved', { baseProof: ['src/queue.ts:3'] }], ['disproved', { line: 4 }], ['disproved', { repoTools: false }],
     ];
@@ -3797,7 +3804,7 @@ describe('runReview', () => {
     expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
   });
 
-  it('replays a rust-dashcore round: a blocker whose flagged line this PR left unchanged and the base already had is posted as a pre-existing warning, and the security ones keep blocking', async () => {
+  it('replays a rust-dashcore round: a blocker whose flagged line this PR left unchanged and the base already had becomes a warning, pre-existing only with two refuters, and the security ones keep blocking', async () => {
     const fixture = baseProofFixture('base-proof-rust-dashcore');
     const found = fixture.findings.map(f => ({
       severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, evidence: [`${f.file}:${f.line} shows it`], proof: f.proof,
@@ -3826,7 +3833,8 @@ describe('runReview', () => {
         const { findings } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
         return fixture.findings.map(f => {
           const posted = findings.find(p => p.title === f.title)!;
-          return [f.title, posted.severity === 'warning' && !!posted.tags?.includes('pre-existing') ? 'pre-existing' : posted.severity];
+          // A warning that holds the approval reads as `holding`, and one that holds nothing as `pre-existing`.
+          return [f.title, posted.severity === 'warning' ? (holdsApproval(posted) ? 'holding' : 'pre-existing') : posted.severity];
         });
       } finally {
         rmSync(root, { recursive: true, force: true });
@@ -3835,10 +3843,11 @@ describe('runReview', () => {
 
     // Only the finding on `masternodes/manager.rs` flags a line this PR left unchanged, and its answer cites that line at
     // its place in the base. The others flag lines this PR added or changed, so they keep blocking whatever the answer.
-    // The security finding on `instantsend/manager.rs` flags an unchanged line too, but one refuter never lowers one.
-    expect(await run()).toEqual(fixture.findings.map(f => [f.title, f.expected]));
+    // One refuter lowers it to a warning that still holds the approval. The security finding on
+    // `instantsend/manager.rs` flags an unchanged line too, but one refuter never lowers one.
     expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'blocker']);
-    // With a second refuter that gives the same answers, that security finding is pre-existing too.
+    expect(await run()).toEqual(fixture.findings.map(f => [f.title, f.expected === 'pre-existing' ? 'holding' : 'blocker']));
+    // With a second refuter that gives the same answers, both are pre-existing and hold nothing.
     expect((await run({ pair: true })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
     // The flagged line cited at its head number, which is another line at the base, proves nothing, so the blocker stays.
     const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[3].title
@@ -5072,10 +5081,10 @@ describe('runReview', () => {
       ['Old SQL injection', 'blocker', ['security', 'pre-existing']],
     ]);
 
-    // A finding on a changed line is pre-existing when the refuter found the same failure before this PR, with lines
-    // the code found at the base. It posts only what would block had this PR caused it, as a warning. This round runs no
-    // second refuter, so a security finding keeps blocking, and so does an answer left open, one the code did not check
-    // at the base, or one without lines.
+    // A blocker on a changed line becomes a warning when the refuter found the same failure before this PR, with lines
+    // the code found at the base. This round runs no second refuter, so the warning is not pre-existing and holds the
+    // approval, and a warning stays as it is. A security finding keeps blocking, and so does an answer left open, one the
+    // code did not check at the base, or one without lines.
     const check = (base: RefutationOutcome, model = 'first-model'): Refutation => ({
       outcome: 'confirmed', defect: 'confirmed', reason: 'It fails.', files: ['src/a.ts'], codeDigest: 'abc', model,
       base: { premise: BASE_QUESTION, outcome: base, reason: base === 'disproved' ? 'The same queue had no cap before this PR.' : 'r', proof: ['src/a.ts:11'], commit: 'base' },
@@ -5088,11 +5097,12 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: based, summary: 'Old defects on changed lines.' });
     const onBase = await run(makeClients());
     expect(onBase.outcome).toBe('READY');
-    expect(onBase.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([
-      ['Queue holds unverified entries', 'warning', 'blocker', ['pre-existing', 'follow-up'], undefined],
+    expect(onBase.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, holdsApproval(f)])).toEqual([
+      ['Queue holds unverified entries', 'warning', 'blocker', ['follow-up'], true],
+      ['Queue may grow', 'warning', undefined, ['follow-up'], true],
     ]);
     expect(onBase.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: 'the code before this PR fails the same way: The same queue had no cap before this PR.' });
-    expect(onBase.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual([['Queue may grow', 'warning', ['pre-existing']]]);
+    expect(onBase.unpostedPreExisting).toBeUndefined();
     const keptBlockers = [
       onLine('Left open', { refutation: check('unsettled') }), onLine('Newly reachable', { refutation: check('confirmed') }),
       onLine('Not asked', { refutation: { ...check('disproved'), base: undefined } }), onLine('No proof', { refutation: { ...check('disproved'), base: { ...check('disproved').base!, proof: [] } } }),

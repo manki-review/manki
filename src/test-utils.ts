@@ -55,7 +55,7 @@ export interface BaseProofFixture {
   hunks: Record<string, string[]>;
   findings: Array<{
     title: string; file: string; line: number; description: string; security?: true; proof: string[];
-    /** What the round must post: a pre-existing warning, or the blocker. */
+    /** Whether one refuter's recorded answer finds the failure the same before this PR, which lowers the blocker, or leaves the blocker. */
     expected: 'pre-existing' | 'blocker';
     /** The refuter's answer, with its answer about the base from the code at the base commit. */
     recorded: Record<string, unknown>;

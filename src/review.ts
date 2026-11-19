@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { canLeaveOut, CheckProgress, lowersOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
@@ -68,11 +68,13 @@ export function postedWhenPreExisting(f: Finding): boolean {
 }
 
 /**
- * Tags each finding that `checkOf` finds on code this PR did not change, or that `sameOnBase` finds failing the same
- * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
+ * Tags each finding that `checkOf` finds on code this PR did not change, or that `lowersOnBase` finds failing the same
+ * way before this PR without holding the approval, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
  * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
  * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker, whatever
- * `sameOnBase` found. `paired` says the round runs the second refuter, whose answer `sameOnBase` then needs too.
+ * the check of the base found. `paired` says the round runs the second refuter. A blocker that `lowersOnBase` lowers
+ * on one refuter's answer becomes a warning without the tag, which holds the approval like any warning, so one steered
+ * model never releases the approval.
  */
 function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined, paired: boolean): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -80,8 +82,14 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
   for (const f of findings) {
     // A claim the diff or the files contradict is kept with why, so the record shows which condition failed.
     const check = checkOf(f);
-    const base = f.severity === 'ignore' ? undefined : sameOnBase(f, paired);
+    const lowered = f.severity === 'ignore' ? undefined : lowersOnBase(f, paired);
+    const base = lowered?.holds ? undefined : lowered?.base;
     if (check !== 'pre_existing' && !base) {
+      if (lowered && f.severity === 'blocker') {
+        core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a warning that holds the approval: one refuter found the code before this PR fails the same way`);
+        posted.push({ ...f, ...gradeStep(f, 'warning', 'pre_existing', `the code before this PR fails the same way: ${lowered.base.reason}`), originalSeverity: f.originalSeverity ?? 'blocker', ...(check && { preExistingCheck: check }) });
+        continue;
+      }
       posted.push(check ? { ...f, preExistingCheck: check } : f);
       continue;
     }

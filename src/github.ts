@@ -8,7 +8,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
-import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, lowersOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
@@ -3643,7 +3643,8 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const known = knownFiles(finding, links);
   const checks = findingChecks(finding, known);
   // A finding a second refuter checked shows the answer only when both found the failure at the base.
-  const base = isPreExisting(finding) ? sameOnBase(finding, !!finding.pairRefutation) : undefined;
+  const lowered = isPreExisting(finding) || !!finding.gradePath?.some(step => step.by === 'pre_existing');
+  const base = lowered ? lowersOnBase(finding, !!finding.pairRefutation)?.base : undefined;
   // The answer cites lines of the base, so they link to the base commit, never to the same numbers at the head.
   const baseLinks: CodeLinks = { ...links, linkTo: base?.commit && links.linkAt ? links.linkAt(base.commit) : () => undefined };
   const refutations = [...refutationParts(finding, links, known), ...(base ? [refutationPart(SAME_ON_BASE_LABEL, SAME_ON_BASE_TEXT, base, undefined, baseLinks, known)] : [])];

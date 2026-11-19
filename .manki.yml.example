@@ -71,7 +71,7 @@
 # models:
 #   planner: claude-haiku-5-5      # fast pre-review planning pass
 #   judge: claude-opus-5-5         # precise, single judge
-#   second_refuter: gpt-6.1-sol    # a second refuter on another model, beside the first on the judge's model (default: off, needs the Claude or Codex CLI). With it, a blocker is pre-existing only when both find it in the code before the PR, and then a security one too
+#   second_refuter: gpt-6.1-sol    # a second refuter on another model, beside the first on the judge's model (default: off, needs the Claude or Codex CLI). Only with it can the code before the PR make a blocker pre-existing so it no longer holds the approval, when both find the same failure there
 #   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
 #   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused or whose model reached a limit (default: the first model of the `full` group other than the stage's own)
 #

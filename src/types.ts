@@ -1098,6 +1098,19 @@ export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation
   return isSecurityFinding(finding.tags, finding.reviewers) ? undefined : refutation.base;
 }
 
+/**
+ * Returns the answer that the code before this PR fails the same way when it lowers `finding`, and whether the lowered
+ * finding still holds the approval. In a `paired` round, both refuters' answers make it pre-existing, holding nothing.
+ * Otherwise one refuter's answer lowers a non-security finding to a warning that holds the approval, unless a second
+ * answer finds the failure the PR's own.
+ */
+export function lowersOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'tags' | 'reviewers'>, paired: boolean): { base: PremiseCheck; holds: boolean } | undefined {
+  const both = paired ? sameOnBase(finding, true) : undefined;
+  if (both) return { base: both, holds: false };
+  const alone = finding.pairRefutation?.base?.outcome === 'confirmed' ? undefined : sameOnBase(finding, false);
+  return alone && { base: alone, holds: true };
+}
+
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
 export function confirmsAll(checks: readonly Refutation[]): boolean {
   return checks.length > 0 && checks.every(r => r.defect === 'confirmed' && r.outcome === 'confirmed');
