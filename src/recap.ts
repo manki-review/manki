@@ -1354,6 +1354,15 @@ function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
   return !prev.fixed && !gradedAbove(finding.severity, prev) && ((finding.severity !== 'blocker' && !isSecurityFinding(finding.tags)) || isGuarded(prev));
 }
 
+/**
+ * Whether the waived `prev` drops `finding`, a repeat of it, by `mayWaive`. Manki's answer on an `auto-resolved` thread
+ * held for the code it read, and a repeat in another file can be a fix that came back there. So either stays waived
+ * only while `mayHaveChanged` says no push could have changed its code.
+ */
+function staysWaived(prev: PreviousFinding, finding: Finding, mayHaveChanged: (prev: PreviousFinding, finding: Finding) => boolean): boolean {
+  return mayWaive(prev, finding) && !((prev.status === 'auto-resolved' || prev.file !== finding.file) && mayHaveChanged(prev, finding));
+}
+
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
 function resemblingFixed(finding: Finding, fixed: PreviousFinding): Finding {
   core.info(`Dedup: "${finding.title}" resembles fixed "${fixed.title}", sending it to the judge`);
@@ -1475,11 +1484,8 @@ async function llmDeduplicateFindings(
       // A finding in another file is another place, which the static matcher never matches either, unless `acrossFiles` pairs them.
       const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedResolved - 1])
         .filter(p => !!p && (p.file === findings[i].file || acrossFiles(p, findings[i])));
-      // Manki's answer on an `auto-resolved` thread held for the code it read, and a match in another file can be a fix
-      // that came back there, so after a change the judge checks either again.
       const sameFile = (p: PreviousFinding) => p.file === findings[i].file;
-      const recheck = (p: PreviousFinding) => (p.status === 'auto-resolved' || !sameFile(p)) && mayHaveChanged(p, findings[i]);
-      const waived = priors.find(p => mayWaive(p, findings[i]) && !recheck(p));
+      const waived = priors.find(p => staysWaived(p, findings[i], mayHaveChanged));
       const fixed = priors.find(p => p.fixed);
       // Only a repeat in the thread's own file is answered there. One in another file keeps its own place and thread.
       const answered = priors.filter(p => sameFile(p) && mayWaive(p, findings[i])).find(isAnswered);
