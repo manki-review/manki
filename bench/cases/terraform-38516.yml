@@ -1,0 +1,49 @@
+id: terraform-38516
+repo: hashicorp/terraform
+source: terraform upstream PR 38516
+base: cf0aae24f4cc8456c4cbcc3d21eac124992a8c68
+head: dd98328d019dc8e7376f412b3998fd2408571932
+title: "Wire policy evaluation into Terraform core runtime"
+body: |
+  This is part of a stacked series to upstream the policy work in smaller, reviewable pieces:
+
+  - terraform PR 38514 
+  - terraform PR 38515 
+  - terraform PR 38516 **(this)**
+  - terraform PR 38518
+  - terraform PR 38519
+
+  This PR wires policy evaluation into Terraform core itself. It adds the runtime behavior for evaluating policy during graph execution, passes the relevant metadata and values into the policy engine, and records the resulting policy outcomes back onto the run so later layers can surface them.
+
+  This is the core of the stack. The main thing happening here is not CLI behavior yet, but rather defining where policy runs in the Terraform runtime, what objects get evaluated, and how those results are tracked.
+
+  ### Included here
+  - policy evaluation during core graph/runtime execution
+  - provider/resource runtime wiring
+  - core tests covering policy behavior
+  - supporting core/test plumbing needed to make that work
+
+  ## Target Release
+
+  1.16.x
+
+  ## Rollback Plan
+
+  - [ ] If a change needs to be reverted, we will roll out an update to the code within 7 days.
+
+  ## Changes to Security Controls
+
+  Are there any changes to security controls (access controls, encryption, logging) in this pull request? If so, explain.
+
+  ## CHANGELOG entry
+
+  - [ ] This change is user-facing and I added a changelog entry.
+  - [ ] This change is not user-facing.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The PR lets a vertex tolerate failed dependencies: in `internal/dag/walk.go` a `TolerantVertex` whose upstream failed gets `DependencyResultSoftFailure`, so its callback still runs, but the walk still records that its upstream failed, so every vertex that depends on it is skipped. The policy node is such a vertex. In `internal/terraform/transform_policy_eval.go` the PR makes every close-provider node (`GraphNodeCloseProvider`) depend on the policy node, which itself depends on every managed resource instance node. So whenever any resource fails, the policy node runs as a soft failure and every close-provider node after it is skipped: the providers are never closed. Each half reads correctly alone. The fix drops the soft failure and lets a node that must always run ignore its dependency errors without passing a failure on."
+    locations: ["internal/dag/walk.go", "TolerantVertex", "DependencyResultSoftFailure", "internal/terraform/transform_policy_eval.go", "GraphNodeCloseProvider", "closeProviderNodes"]
+    fix: "5c68683717eecffa9b88d575455d069a465470a6"
+nice_to_have: []

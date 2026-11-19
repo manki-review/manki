@@ -1,0 +1,33 @@
+id: zed-44838
+repo: zed-industries/zed
+source: zed upstream PR 44838
+base: 9677da9a60836b15b5358f58988b5cebeb3fdb72
+head: 7c5cc5d0c0138fdff7d2c8d06beab4dec7429f67
+title: "git: Rework side-by-side diff to use distinct buffers for the left-hand side"
+body: |
+  This PR reworks the (still feature-gated) side-by-side diff view to use a different approach to representing the multibuffers on the left- and right-hand sides.
+
+  Previously, these two multibuffers used identical sets of buffers and excerpts, and were made to behave differently by adding a new knob to the multibuffer controlling how diffs are displayed. Specifically, the left-hand side multibuffer would filter out the added range of each hunk from the excerpts using a new `FilteredInsertedHunk` diff transform, and the right-hand side would simply not show the deleted sides of expanded hunks. This approach has some problems:
+
+  - Line numbers, and actions that navigate by line number, behaved incorrectly for the left-hand side.
+  - Syntax highlighting and other features that use the buffer syntax tree also behaved incorrectly for the left-hand side.
+
+  In this PR, we've switched to using independent buffers to build the left-hand side. These buffers are constructed using the base texts for the corresponding diffs, and their lifecycle is managed by `BufferDiff`. The red "deleted" regions on the left-hand side are represented by `BufferContent` diff transforms, not `DeletedHunk` transforms. This means each excerpt on the left represents a contiguous slice of a single buffer, which fixes the above issues by construction.
+
+  The tradeoff with this new approach is that we now have to manually synchronize excerpt ranges from the right side to the left, which we do using `BufferDiffSnapshot::row_to_base_text_row`.
+
+  Release Notes:
+
+  - N/A
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The diff base text is now a `Buffer`, and `BufferDiff::language_changed` in `crates/buffer_diff/src/buffer_diff.rs` sets its language and emits `BufferDiffEvent::LanguageChanged` at once. Setting a language parses in the background, so at that moment the base text has no syntax tree yet. The new handler `inverted_buffer_diff_language_changed` in `crates/multi_buffer/src/multi_buffer.rs` takes the diff's snapshot on that event and stores it, so the left-hand side of the side-by-side diff keeps a snapshot without syntax and shows no highlighting. It also sets the language before the language registry, so injected languages are not parsed. The fix emits the event only once the base text has finished parsing, and sets the registry first."
+    locations: ["crates/buffer_diff/src/buffer_diff.rs", "language_changed", "LanguageChanged", "crates/multi_buffer/src/multi_buffer.rs", "inverted_buffer_diff_language_changed"]
+    fix: "21eb233a387f5b622d47f6db6bee75aed35f07e3"
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "When a diff updates, `set_snapshot_with_secondary` calls `set_text` on the base text `Buffer` and does not wait for it to reparse. Before this PR the base text was a series of `BufferSnapshot`s parsed in the background while the diff was computed, so the new base text now has no syntax tree when the update is emitted. Diffs outside the `GitStore`, such as those of `ActionLog` or `CommitView`, lose highlighting on their left-hand side."
+    locations: ["crates/buffer_diff/src/buffer_diff.rs", "set_snapshot_with_secondary", "set_text"]
