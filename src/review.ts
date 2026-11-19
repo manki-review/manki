@@ -1300,13 +1300,13 @@ export async function runReview(
   // Each counterpart in a related repo gets a call of its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
   const relatedChecksPromise = runRelatedChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'related_check', reviewer),
     checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], {
-      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: earlierOf(kept?.comparisons),
+      effort: comparisonEffort, workspace: checkWorkspace, related: withoutDependencies(relatedTools), signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: earlierOf(kept?.comparisons),
     });
   // Each piece of structure the change adds is compared with how the repository does the same kind of thing, in a call of
   // its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
   const patternChecksPromise = runPatternChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'pattern_check', reviewer),
     checkWorkspace ? uses.pieces ?? [] : [], {
-      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('pattern'),
+      effort: comparisonEffort, workspace: checkWorkspace, related: withoutDependencies(relatedTools), signal: comparisonDeadline.signal, progress: sideProgress('pattern'),
       earlier: earlierOf(kept?.comparisons), diff, fullDiff: options.fullDiff, instructionFiles: options.instructionFiles,
     });
   const usesOutsideDiff = uses.section + relatedUses.section;

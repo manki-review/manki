@@ -2441,6 +2441,9 @@ describe('runReview', () => {
     ]);
     expect(checks[0][1]).toContain('```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\no/ref:legacy.cpp:1: int CalcFee(int n);\n```');
     expect(checks.map(([, , sent]) => sent?.repoTools?.related?.guides)).toEqual([{ 'o/ref': 'AGENTS.md' }, { 'o/ref': 'AGENTS.md' }]);
+    // Only the refuters, the claim checks and the finders read dependencies, so a check of a related repo cites none.
+    const patterns = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => isPatternCheck(system));
+    expect([...checks, ...patterns].map(([, , sent]) => sent?.repoTools?.related?.dependencies)).toEqual([undefined, undefined, undefined, undefined]);
     const reviewers = ['Reference check: ComputeFee', 'Consumer check: ComputeFee'];
     expect(result.comparisons).toEqual([
       { kind: 'reference', reviewer: reviewers[0], at: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], status: 'answered', findings: 1, inputDigest: expect.any(String) },
