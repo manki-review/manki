@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse } from '../utils';
-import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, fileReadBy, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, closedCallsFile, fileReadBy, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, toolServerReadings, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 import { checkLoginFilePath, withLoginFile } from './codex-login-file';
 
@@ -640,15 +640,16 @@ export class OpenAIClient implements LLMClient {
       // Manki's instructions replace Codex's own, so stdin carries only the untrusted content.
       const instructionsPath = join(promptDir, 'instructions.md');
       writeFileSync(instructionsPath, instructions, { mode: 0o600 });
-      const readsFile = relatedReadsFile(promptDir);
       // A resumed run starts a new tool server, which counts on from the earlier ones in this folder.
       const stepsDir = endpoint && repoTools ? join(promptDir, 'steps') : undefined;
       if (stepsDir) mkdirSync(stepsDir);
       const toolArgs = repoTools
-        ? codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, stepsDir, related: repoTools.related, readsFile }), env)
+        ? codexToolServerArgs(toolServerCommand(repoTools.root, {
+          fileTools: true, steps: repoTools.steps, stepsDir, related: repoTools.related, readsFile: relatedReadsFile(promptDir), closedFile: closedCallsFile(promptDir),
+        }), env)
         : [];
-      const reads = () => (repoTools?.related ? readRelatedReads(readsFile) : undefined);
-      const carry = (error: unknown): never => { throw carryReadings(error, { relatedReads: reads(), ...fileReadings(), ...limitReadings() }); };
+      const reads = () => toolServerReadings(promptDir, repoTools);
+      const carry = (error: unknown): never => { throw carryReadings(error, { ...reads(), ...fileReadings(), ...limitReadings() }); };
       const run = async (runArgs: string[], input: string, usedMs?: number): Promise<CliExit & { events: CodexRunEvents }> => {
         output = '';
         // Where the lines of `output` not read for tool calls yet start, and when each call of this run was seen to
@@ -714,10 +715,10 @@ export class OpenAIClient implements LLMClient {
           return carry(Object.assign(limitError, { cause: error }));
         });
       }
-      return { ...exit, relatedReads: reads() };
+      return { ...exit, ...reads() };
     });
     const loginFile = this.auth.kind === 'oauthFile' ? this.auth.path : undefined;
-    const { code, signal, stderr, lastStdoutChunk, events, relatedReads } = await (loginFile
+    const { code, signal, stderr, lastStdoutChunk, events, relatedReads, closedCalls } = await (loginFile
       ? withLoginFile(loginFile, join(home, 'auth.json'), { limitMs, signal: options?.signal, runner: { cliPath, env } }, call)
       : call()
     ).catch((error: unknown) => {
@@ -730,7 +731,7 @@ export class OpenAIClient implements LLMClient {
       const limitError = codexLimitError(events.failure, !!endpoint);
       if (limitError) {
         core.warning(limitError.message);
-        throw carryReadings(limitError, { relatedReads, ...fileReadings(), ...limits });
+        throw carryReadings(limitError, { relatedReads, closedCalls, ...fileReadings(), ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -745,7 +746,7 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', events.reply ?? '');
-      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, ...fileReadings(), ...limits });
+      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, closedCalls, ...fileReadings(), ...limits });
     }
     const content = events.answer.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
@@ -757,6 +758,7 @@ export class OpenAIClient implements LLMClient {
       model: this.model,
       ...((toolSteps.length > 0 || repoTools) && { toolSteps }),
       ...(relatedReads && { relatedReads }),
+      ...(closedCalls && { closedCalls }),
       ...fileReadings(),
       ...limits,
     };

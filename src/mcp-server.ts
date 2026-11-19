@@ -10,13 +10,14 @@ import { Minimatch } from 'minimatch';
 import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
+import { findClosedPattern } from './diff';
 import { fenceText, MANKI_VERSION } from './github';
 import { relatedRepoLoader, RelatedRepoPending } from './related-repos';
 import { writableOnlyByUs } from './tool-install';
 import { claimStep, stepCheck } from './tool-steps';
 import { RelatedRepoTools } from './types';
 import { safeJsonParse } from './utils';
-import { gitEnv, WORKSPACE_DEPTH } from './workspace';
+import { closedPathsOf, gitEnv, WORKSPACE_DEPTH } from './workspace';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +38,9 @@ export const RELATED_REPOS_FLAG = '--related-repos';
 
 /** The argument before the file where the tool server keeps, as JSON, how many calls read each related repo. */
 export const READS_FILE_FLAG = '--reads-file';
+
+/** The argument before the file where the tool server counts the calls it refused because they named a closed path. */
+export const CLOSED_FILE_FLAG = '--closed-file';
 
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
@@ -123,6 +127,12 @@ function capOutput(text: string): string {
   return text.length <= MAX_OUTPUT_CHARS ? text : `${text.slice(0, MAX_OUTPUT_CHARS)}\n[output cut at ${MAX_OUTPUT_CHARS} characters]`;
 }
 
+/** Returns each path the file at `path` had in the history of the checkout at `root`, as git's rename detection follows it. */
+async function earlierNames(root: string, path: string): Promise<string[]> {
+  const { stdout } = await execFileAsync('git', ['log', '--follow', '--name-only', '--format=', '--', path], { cwd: root, env: gitEnv(), timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
+  return [...new Set(stdout.split('\n').filter(Boolean))];
+}
+
 export interface GitHistoryArgs {
   path: string;
   startLine?: number;
@@ -134,9 +144,16 @@ export interface GitHistoryArgs {
 export async function gitHistory(root: string, { path, startLine, endLine, maxCommits = 20 }: GitHistoryArgs): Promise<string> {
   const target = resolveInRoot(root, path);
   const realRoot = realpathSync(root);
-  const args = ['log', '--no-color', '--no-ext-diff', '--no-textconv', `--max-count=${Math.min(maxCommits, MAX_COMMITS)}`, '--date=short', '--format=commit %H%nAuthor: %an%nDate: %ad%n%n    %s%n'];
+  const closedPaths = closedPathsOf(realRoot);
+  // Following lines across a rename would show them as they were at a closed path.
+  const renames = closedPaths.length > 0 ? ['--no-renames'] : [];
+  const args = ['log', '--no-color', '--no-ext-diff', '--no-textconv', ...renames, `--max-count=${Math.min(maxCommits, MAX_COMMITS)}`, '--date=short', '--format=commit %H%nAuthor: %an%nDate: %ad%n%n    %s%n'];
   if (startLine !== undefined) {
     if (!statSync(target.absolute).isFile()) throw new Error(`${path} is not a file, so it has no lines`);
+    // A later commit's patch shows the lines it replaced, which can be a closed file's text when the file was moved out of a closed path.
+    if (closedPaths.length > 0 && (await earlierNames(realRoot, target.relative)).some(name => findClosedPattern(name, closedPaths))) {
+      throw new Error(`${path} was once at a path the repository's config closes, so its line history is not shown. Its commits are listed without a line range.`);
+    }
     args.push(`-L${startLine},${endLine ?? startLine}:${target.relative}`);
   } else {
     args.push('--', target.relative);
@@ -432,6 +449,47 @@ export async function repoInfo(repo: string, apiUrl = process.env.GITHUB_API_URL
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
+/**
+ * Returns each way `path`, relative to `root` or absolute, names a path below `root`: its base, `root` or its real
+ * path, and its segments. The path is resolved without the file system.
+ */
+function pathsBelow(root: string, path: string): { base: string; parts: string[] }[] {
+  return [...new Set([root, realpathSync(root)])].flatMap(base => {
+    const rel = relative(base, resolve(base, path));
+    return rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? [] : [{ base, parts: rel.split(sep) }];
+  });
+}
+
+/**
+ * Returns the pattern of `closedPaths` that closes `path`, relative to `root` or absolute, or `undefined` when none does.
+ * The path is resolved without the file system, since `closePaths` deleted what it closes.
+ */
+function closingPattern(root: string, path: string, closedPaths: readonly string[]): string | undefined {
+  if (closedPaths.length === 0) return undefined;
+  for (const { parts } of pathsBelow(root, path)) {
+    const pattern = findClosedPattern(parts.join('/'), closedPaths);
+    if (pattern) return pattern;
+  }
+  return undefined;
+}
+
+/** Whether `path`, relative to `root` or absolute, or a folder above it below `root`, is a symlink. */
+function throughSymlink(root: string, path: string): boolean {
+  return pathsBelow(root, path).some(({ base, parts }) => parts.some((_, i) => {
+    try {
+      return lstatSync(join(base, ...parts.slice(0, i + 1))).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  }));
+}
+
+/** Returns how many calls the file `closedFile` counts, or 0 when there is no such file. */
+export function readClosedCalls(closedFile: string): number {
+  const count = existsSync(closedFile) ? Number(readFileSync(closedFile, 'utf8')) : 0;
+  return Number.isInteger(count) && count > 0 ? count : 0;
+}
+
 /** Runs `tool` and turns its text, or the message of its error, into an MCP tool result. */
 async function toolResult(tool: () => Promise<string>): Promise<ToolResult> {
   try {
@@ -452,6 +510,8 @@ export interface McpServerOptions {
   related?: RelatedRepoTools;
   /** Where to keep how many calls read each related repo. A server that finds counts there adds to them. */
   readsFile?: string;
+  /** Where to count the calls refused because they named a path `closedPathsOf(root)` closes. A server adds to the count it finds. */
+  closedFile?: string;
   loadApi?: () => Promise<AstGrepApi>;
 }
 
@@ -460,15 +520,31 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: f
 
 /**
  * Returns Manki's tool server for the repository at `root`. Every tool reads only inside `root` and runs no shell, except
- * `repo_info`, which asks GitHub for a repository's public facts.
+ * `repo_info`, which asks GitHub for a repository's public facts. A call that names a path of `root` that
+ * `closedPathsOf(root)` closes is refused and counted.
  */
-export function createMcpServer(root: string, { fileTools = false, steps, stepsDir, related, readsFile, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
+export function createMcpServer(root: string, { fileTools = false, steps, stepsDir, related, readsFile, closedFile, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: 'manki', version: MANKI_VERSION });
+  const closedPaths = closedPathsOf(root);
+  let closedCalls = closedFile ? readClosedCalls(closedFile) : 0;
   let taken = 0;
-  const run = async (tool: () => Promise<string>): Promise<ToolResult> => {
+  // `args` are the call's arguments: a `path` with no related `repo` is a path of `root`.
+  const run = async (tool: () => Promise<string>, args: { path?: string; repo?: string } = {}): Promise<ToolResult> => {
     const check = steps === undefined ? {} : stepCheck(stepsDir ? claimStep(stepsDir) : ++taken, steps);
     if (check.refusal) return { content: [{ type: 'text', text: check.refusal }], isError: true };
-    const result = await toolResult(tool);
+    const closedBy = args.path !== undefined && !args.repo ? closingPattern(root, args.path, closedPaths) : undefined;
+    if (closedBy) {
+      closedCalls++;
+      try {
+        if (closedFile) writeFileSync(closedFile, String(closedCalls));
+      } catch { /* the count only feeds the round record */ }
+    }
+    // A symlink's target can be closed, so while paths are closed no tool follows one.
+    const linked = !closedBy && closedPaths.length > 0 && args.path !== undefined && !args.repo && throughSymlink(root, args.path);
+    const refusal = closedBy
+      ? `${args.path} is closed by the repository's config: \`closed_paths\` holds \`${closedBy}\`, so no review stage may read it.`
+      : linked ? `${args.path} goes through a symlink, which no tool follows while the repository's config closes paths.` : undefined;
+    const result = refusal ? { content: [{ type: 'text' as const, text: refusal }], isError: true } : await toolResult(tool);
     if (check.note) result.content.push({ type: 'text', text: check.note });
     return result;
   };
@@ -504,7 +580,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
         ...repoArg(fileTools),
       },
       annotations: READ_ONLY,
-    }, (args) => run(async () => readRepoFile(await rootOf(args), args)));
+    }, (args) => run(async () => readRepoFile(await rootOf(args), args), args));
     server.registerTool('grep', {
       description: 'Finds the lines of the repository that contain a piece of text, and lists each as file:line. Matches plain text, not a regular expression.',
       inputSchema: {
@@ -516,7 +592,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
         ...repoArg(fileTools),
       },
       annotations: READ_ONLY,
-    }, (args) => run(async () => grepRepo(await rootOf(args), args)));
+    }, (args) => run(async () => grepRepo(await rootOf(args), args), args));
     server.registerTool('glob', {
       description: 'Lists the files of the repository whose path matches a glob, such as `**/*.rs` or `src/net/*`.',
       inputSchema: {
@@ -525,7 +601,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
         ...repoArg(fileTools),
       },
       annotations: READ_ONLY,
-    }, (args) => run(async () => globRepo(await rootOf(args), args)));
+    }, (args) => run(async () => globRepo(await rootOf(args), args), args));
   }
   server.registerTool('git_history', {
     description: 'Lists the commits that changed a file or directory of the repository, newest first. With startLine, it follows only those lines and shows how each commit changed them.',
@@ -536,7 +612,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
       maxCommits: z.number().int().positive().max(MAX_COMMITS).optional().describe(`At most this many commits. Defaults to 20.`),
     },
     annotations: READ_ONLY,
-  }, (args) => run(() => gitHistory(root, args)));
+  }, (args) => run(() => gitHistory(root, args), args));
   server.registerTool('ast_grep', {
     description: 'Finds code by syntax with an ast-grep pattern, such as `$A.unwrap()` or `fn $NAME($$$) -> Result<$T, $E>`, and lists each match as file:line.',
     inputSchema: {
@@ -547,7 +623,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
       ...repoArg(true),
     },
     annotations: READ_ONLY,
-  }, (args) => run(async () => astGrepSearch(await rootOf(args), await loadApi(), args)));
+  }, (args) => run(async () => astGrepSearch(await rootOf(args), await loadApi(), args), args));
   server.registerTool('repo_info', {
     description: 'Tells whether a GitHub repository exists and is public, archived or a fork, and names its default branch. Reads no contents.',
     inputSchema: {
@@ -561,8 +637,8 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
 /**
  * Serves Manki's tools over stdin and stdout until the client disconnects. `args` are the repository root, then
  * `FILE_TOOLS_FLAG` for the file tools, `STEPS_FLAG` with a number for a step budget, `STEPS_DIR_FLAG` with the folder
- * that counts the steps, `RELATED_REPOS_FLAG` with the JSON of the related repos and `READS_FILE_FLAG` with the file for
- * their read counts. Exits with an error on stderr when the arguments are wrong, the root is not a directory or the
+ * that counts the steps, `RELATED_REPOS_FLAG` with the JSON of the related repos, `READS_FILE_FLAG` with the file for
+ * their read counts and `CLOSED_FILE_FLAG` with the file that counts the calls refused for a closed path. Exits with an error on stderr when the arguments are wrong, the root is not a directory or the
  * server cannot start.
  */
 export async function runMcpServer(args: string[]): Promise<void> {
@@ -578,7 +654,9 @@ export async function runMcpServer(args: string[]): Promise<void> {
     const readsFile = readsAt === -1 ? undefined : flags[readsAt + 1];
     const stepsDirAt = flags.indexOf(STEPS_DIR_FLAG);
     const stepsDir = stepsDirAt === -1 ? undefined : flags[stepsDirAt + 1];
-    await createMcpServer(root, { fileTools: flags.includes(FILE_TOOLS_FLAG), steps, stepsDir, related, readsFile }).connect(new StdioServerTransport());
+    const closedAt = flags.indexOf(CLOSED_FILE_FLAG);
+    const closedFile = closedAt === -1 ? undefined : flags[closedAt + 1];
+    await createMcpServer(root, { fileTools: flags.includes(FILE_TOOLS_FLAG), steps, stepsDir, related, readsFile, closedFile }).connect(new StdioServerTransport());
   } catch (error) {
     process.stderr.write(`Manki tool server: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);

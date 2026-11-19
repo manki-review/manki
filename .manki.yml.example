@@ -28,6 +28,14 @@
 #   - "dist/**"
 #   - "vendor/**"
 
+# Paths no review stage reads (default: none), such as a hidden test set. They
+# are left out of the diff and deleted from the checkout the reviewer tools
+# read, so not even a tool call finds them. A pattern that names a folder
+# closes every file in it. Read from the base branch only. A PR that changes a
+# closed file is never approved: a person must approve it.
+# closed_paths:
+#   - "tests/holdout/**"
+
 # PRs that get no automatic review (default: none). Read from the base branch
 # only. Labels and authors compare case-insensitively. Branches are globs on the
 # head branch. Label and branch rules skip only branches in the repo itself. A skipped Manki check passes a

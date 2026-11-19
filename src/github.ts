@@ -6,10 +6,10 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
+import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
 import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
-import { firstCommentableLine, isLineInDiff, listedFilesDiff } from './diff';
+import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -239,7 +239,7 @@ const APPROVAL_REFUSED_LINES: Record<EventRefusal, string> = {
   other: '**Approval held:** GitHub refused the approval, so this review is a comment. A person needs to approve the PR.',
 };
 
-/** The changed files no model reads: those `exclude_paths` drops, and those with no code to read, such as binaries. */
+/** The changed files no model reads: those `exclude_paths` or `closed_paths` drops, and those with no code to read, such as binaries. */
 export interface SkippedFiles {
   excluded: RoundDiffExcludedFile[];
   binary: BinaryFile[];
@@ -396,7 +396,7 @@ function formatSkippedFiles(skipped: SkippedFiles): string {
 /** Lists each skipped file and why, one per line, or returns an empty string when there is none. */
 function skippedFileList({ excluded, binary }: SkippedFiles): string {
   return cutList([
-    ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`exclude_paths\``),
+    ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`${f.closed ? 'closed_paths' : 'exclude_paths'}\``),
     ...binary.map(f => `- ${inline(f.path)}: ${SKIPPED_REASON[f.kind ?? 'binary']}`),
   ]);
 }
@@ -496,16 +496,48 @@ export async function fetchConfigFile(
   return readConfigFile(octokit, owner, repo, ref, configPath).catch(() => null);
 }
 
-/** Returns a config file's content at `ref`, or null when it does not exist. Throws when it cannot be read. */
+/** Returns the git blob id of `bytes`. */
+export function gitBlobSha(bytes: Buffer): string {
+  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+}
+
+/** The answer of the contents API for one path, as far as Manki reads it. */
+type ContentAnswer = { type: string; sha: string; content?: string; encoding?: string } | unknown[];
+
+/**
+ * Returns the bytes of a contents API answer when they are the file at the path asked for. GitHub answers a symlink to a
+ * file with the target's content and the type `file`, but with the blob id of the link itself, so content whose blob id
+ * differs from the one reported is a followed symlink and gives none. So does a `symlink` answer, which has no content.
+ */
+/** Thrown when a file exists but was not read: a symlink whose target is never read, or content GitHub or git did not give. */
+export class UnreadFileError extends Error {}
+
+function ownContent(data: ContentAnswer): Buffer | undefined {
+  if (Array.isArray(data) || data.type !== 'file' || typeof data.content !== 'string' || data.encoding !== 'base64') return undefined;
+  const bytes = Buffer.from(data.content, 'base64');
+  return gitBlobSha(bytes) === data.sha ? bytes : undefined;
+}
+
+/**
+ * Returns a config file's content at `ref`, or null when it does not exist. Throws when it cannot be read. Without
+ * `followSymlinks`, a symlink reads as no file, never as its target.
+ */
 export async function readConfigFile(
   octokit: Octokit,
   owner: string,
   repo: string,
   ref: string,
   configPath: string,
+  followSymlinks = true,
 ): Promise<string | null> {
   try {
     const { data } = await octokit.rest.repos.getContent({ owner, repo, path: configPath, ref });
+    if (!followSymlinks) {
+      if (Array.isArray(data)) return null;
+      const bytes = ownContent(data as ContentAnswer);
+      if (!bytes) throw new UnreadFileError(`${configPath} was not read: a symlink, a file over 1 MB or content that does not match its hash`);
+      return bytes.toString('utf-8');
+    }
     if ('content' in data && data.encoding === 'base64') {
       return Buffer.from(data.content, 'base64').toString('utf-8');
     }
@@ -542,21 +574,30 @@ export function brokenConfig(source: ConfigSource, brokenOwnCopy: boolean): Conf
 }
 
 /**
- * Loads the base branch's config, which `read` returns. One that cannot be read or does not load gives the defaults,
- * with the source saying why, so the change that fixes it is still reviewed. `describe` words the error in the warning.
+ * Loads the base branch's config, which `read` returns. A read that fails is tried once more. One that cannot be read or
+ * does not load gives the defaults, with the source saying why, so the change that fixes it is still reviewed. `describe`
+ * words the error in the warning. The defaults keep the `closed_paths` the file sets, as `readClosedPaths` reads them.
+ * When the file cannot say which paths it closes, because it cannot be read or `readClosedPaths` reads nothing,
+ * `closedUnknown` is the note to post in place of anything a model would read.
  */
 export async function loadBaseConfig(
   read: () => Promise<string | null>,
   configPath: string,
   describe: (error: unknown) => string,
-): Promise<{ config: ReviewConfig; source: ConfigSource }> {
-  const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
+): Promise<{ config: ReviewConfig; source: ConfigSource; closedUnknown?: string }> {
+  const fallBack = (source: ConfigSource, problem: string, error: unknown, closedPaths?: string[]) => {
     core.warning(`${problem} ${configPath} on the base branch, using the defaults and no approval: ${describe(error)}`);
-    return { config: fallbackConfig(), source };
+    if (closedPaths) return { config: fallbackConfig(closedPaths), source };
+    const why = source === 'base_unreadable' ? 'could not be read' : 'names `closed_paths` but does not parse, or its `closed_paths` is not a list of paths';
+    const closedUnknown = `The base branch's \`${configPath}\` ${why}, so Manki cannot tell which paths \`closed_paths\` keeps from every model, and reads no code until it is fixed.`;
+    return { config: fallbackConfig(), source, closedUnknown };
   };
   let content: string | null;
   try {
-    content = await read();
+    content = await read().catch((error: unknown) => {
+      core.info(`Could not read ${configPath} on the base branch, trying once more: ${describe(error)}`);
+      return read();
+    });
   } catch (error) {
     return fallBack('base_unreadable', 'Could not read', error);
   }
@@ -564,7 +605,7 @@ export async function loadBaseConfig(
     const config = loadConfig(content ?? undefined, configPath);
     return { config, source: config.review ? 'base' : 'builtin' };
   } catch (error) {
-    return fallBack('base_invalid', 'Could not load', error);
+    return fallBack('base_invalid', 'Could not load', error, readClosedPaths(content));
   }
 }
 
@@ -572,19 +613,47 @@ const MAX_RESOLVE_DEPTH = 3;
 
 /** Reads a repository's files at one commit. */
 export interface RepoFiles {
-  /** Returns a file's content, or null when no file is at `path`. Throws when it cannot be read. */
-  read(path: string): Promise<string | null>;
+  /**
+   * Returns a file's content, or null when no file is at `path`. Throws when it cannot be read. A symlink reads as its
+   * target, or with `followSymlinks` false as no file.
+   */
+  read(path: string, followSymlinks?: boolean): Promise<string | null>;
   /** Returns the path of every file in the tree. */
   list(): Promise<string[]>;
 }
 
 export function githubRepoFiles(octokit: Octokit, owner: string, repo: string, ref: string): RepoFiles {
   return {
-    read: (path) => readConfigFile(octokit, owner, repo, ref, path),
+    read: (path, followSymlinks) => readConfigFile(octokit, owner, repo, ref, path, followSymlinks),
     list: async () => {
       const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: ref, recursive: 'true' });
       return data.tree.filter(e => e.type === 'blob' && e.path).map(e => e.path!);
     },
+  };
+}
+
+/**
+ * Returns `files` without the paths `closedPaths` closes: reading one finds no file, and the list leaves it out. A
+ * symlink reads as no file either, since its target can be closed. With `refuseClosed`, reading a closed path throws
+ * instead, for a caller that must not take a closed file for a deleted one.
+ */
+export function openRepoFiles(files: RepoFiles, closedPaths: readonly string[], refuseClosed = false): RepoFiles {
+  if (closedPaths.length === 0) return files;
+  const closed = (path: string): null => {
+    if (refuseClosed) throw new Error(`${path} is closed by \`closed_paths\``);
+    return null;
+  };
+  return {
+    read: async (path) => {
+      if (findClosedPattern(path, closedPaths)) return closed(path);
+      try {
+        return await files.read(path, false);
+      } catch (error) {
+        if (!refuseClosed && error instanceof UnreadFileError) return null;
+        throw error;
+      }
+    },
+    list: async () => (await files.list()).filter(path => !findClosedPattern(path, closedPaths)),
   };
 }
 
@@ -681,15 +750,16 @@ export interface RepoContext {
   cut?: string;
 }
 
-/** Returns the repo description and the instruction files `buildRepoContext` reads at `ref`. */
+/** Returns the repo description and the instruction files `buildRepoContext` reads at `ref`, none of them closed by `closedPaths`. */
 export async function fetchRepoContext(
   octokit: Octokit,
   owner: string,
   repo: string,
   ref: string,
   changedPaths: string[],
+  closedPaths: readonly string[] = [],
 ): Promise<RepoContext> {
-  const context = await buildRepoContext(githubRepoFiles(octokit, owner, repo, ref), changedPaths);
+  const context = await buildRepoContext(openRepoFiles(githubRepoFiles(octokit, owner, repo, ref), closedPaths), changedPaths);
   const parts = [context.text].filter(Boolean);
   try {
     const { data: repoData } = await octokit.rest.repos.get({ owner, repo });
@@ -1977,8 +2047,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [], rules }: {
+  { existingThreads = [], draft = false, autoApprove = true, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [], openWarnings = [], rules, closedPaths = [] }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
+    /** The `closed_paths` setting. A file it closes is neither read nor linked, so the review quotes no code of it. */
+    closedPaths?: readonly string[];
     /** The `review.rules` setting, which decides whether a confirmed rule keeps a finding a check disproved. */
     rules?: RulesMode;
     /** The earlier warning threads that still hold the approval, or `unread` when they could not be read, which holds it too. */
@@ -2030,7 +2102,10 @@ export async function postReview(
   /** The open threads that carry a finding, each with whether one of its findings is a blocker. */
   const carriedThreads = new Map<string, boolean>();
   const nonBlocking: Finding[] = [];
-  const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
+  const isClosed = (file: string) => !!findClosedPattern(file, closedPaths);
+  // GitHub shows a permalink to lines on a line of its own as their code, so a closed file gets no link either.
+  const permalink = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
+  const linkTo: LineLink = (file, line, end) => (isClosed(file) ? undefined : permalink(file, line, end));
   const followUps = agreedFollowUps(existingThreads);
   const carried = result.carried ?? [];
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
@@ -2039,7 +2114,8 @@ export async function postReview(
   const anchorFile = diff?.files.find(f => firstCommentableLine(f) !== undefined) ?? diff?.files.at(0);
   const anchor = anchorFile?.path;
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
-  const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
+  const gone = new Set<string>();
+  const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])].filter(file => !isClosed(file)), gone);
   const links: CodeLinks = { linkTo, files, changed, related: relatedCommits(result.relatedRepos), rules };
 
   /** Records that the open thread `threadId` carries `f`, which counts and lists that thread as still open. */
@@ -2270,13 +2346,16 @@ export async function postReview(
     const placeOf = (f: Finding): PostedPlace => refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
       const posted = placeOf(f);
-      const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
+      const bodyWarning = posted === 'body' && f.severity === 'warning';
+      const cited = bodyWarning ? citedLine(files.get(f.file), f.line) : undefined;
+      // A file that is gone at the head was read and ends the warning. Only one that exists but was not read keeps it.
+      const unread = bodyWarning && !!f.file && f.line > 0 && !files.has(f.file) && !gone.has(f.file);
       // A finding with a thread of its own records no earlier thread, which its record entry would otherwise raise.
       const { threadId: linked, ...unlinked } = entry;
       const threadId = posted === 'thread' ? undefined : linked ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
-      const description = posted === 'body' && (f.severity === 'blocker' || cited) && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
+      const description = posted === 'body' && (f.severity === 'blocker' || cited || unread) && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
       const holds = holdsApproval(f);
-      return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(holds && { holds }), ...(description && { description }) };
+      return { ...unlinked, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(unread && { unread: true as const }), ...(holds && { holds }), ...(description && { description }) };
     };
     return (context
       ? formatRecordTrailer({
@@ -3731,7 +3810,7 @@ const DEFAULT_MAX_TOTAL_SIZE = 400 * 1024;
 
 /**
  * Fetch file contents for changed files via the GitHub API.
- * Skips binary files and files exceeding the size limit.
+ * Skips binary files, files exceeding the size limit and symlinks, whose target is never read.
  * If total content exceeds the budget, includes the files in `first` in their order, then the largest of the rest, as many as fit.
  * Adds each file that is not at `ref` to `notFound`, so a caller can tell a file that is gone from one it failed to read.
  */
@@ -3761,7 +3840,12 @@ export async function fetchFileContents(
         return null;
       }
 
-      const content = Buffer.from(data.content, 'base64').toString('utf-8');
+      const bytes = ownContent(data);
+      if (!bytes) {
+        core.debug(`Skipping ${path}: a symlink, whose target is never read`);
+        return null;
+      }
+      const content = bytes.toString('utf-8');
 
       // Skip binary files (content with null bytes)
       if (content.includes('\0')) {
@@ -3811,9 +3895,9 @@ export async function fetchFileContents(
 export const MAX_CONTENT_API_BYTES = 1024 * 1024;
 
 /** Returns the lines of each of `files` at `ref`, leaving out any file that can't be read. */
-async function fetchFileLines(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, string[]>> {
+async function fetchFileLines(octokit: Octokit, owner: string, repo: string, ref: string, files: string[], notFound?: Set<string>): Promise<Map<string, string[]>> {
   if (files.length === 0) return new Map();
-  const contents = await fetchFileContents(octokit, owner, repo, ref, files, MAX_CONTENT_API_BYTES, Infinity);
+  const contents = await fetchFileContents(octokit, owner, repo, ref, files, MAX_CONTENT_API_BYTES, Infinity, [], notFound);
   return new Map([...contents].map(([path, text]) => [path, fileLines(text)]));
 }
 

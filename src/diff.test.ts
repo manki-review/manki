@@ -1,4 +1,6 @@
 import {
+  closeRawDiff,
+  findClosedPattern,
   addCodeContext,
   changeDigest,
   onlyCommitChanging,
@@ -17,6 +19,7 @@ import {
   MAX_SLICE_CHARS,
   rebuildRawDiff,
   listedFilesDiff,
+  reviewableDiff,
   tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
@@ -124,6 +127,30 @@ index 1111111..2222222 100644
 @@ -1 +1 @@
 -{"version":3}
 +{"version":3,"mappings":"${'A'.repeat(200000)}"}
+${MULTI_FILE_DIFF}`;
+
+// A changed closed file, a file renamed out of the closed folder and a closed binary, each holding the marker, then two open files.
+const CLOSED_DIFF = `diff --git a/holdout/case.yml b/holdout/case.yml
+index 1111111..2222222 100644
+--- a/holdout/case.yml
++++ b/holdout/case.yml
+@@ -1 +1 @@
+-old hold-out marker
++new hold-out marker
+diff --git a/holdout/moved.ts b/src/moved.ts
+similarity index 50%
+rename from holdout/moved.ts
+rename to src/moved.ts
+index 3333333..4444444 100644
+--- a/holdout/moved.ts
++++ b/src/moved.ts
+@@ -1,2 +1,2 @@
+-const x = 'hold-out marker';
++const x = 'open';
+ export { x };
+diff --git a/holdout/hold-out marker.bin b/holdout/hold-out marker.bin
+index 5555555..6666666 100644
+Binary files a/holdout/hold-out marker.bin and b/holdout/hold-out marker.bin differ
 ${MULTI_FILE_DIFF}`;
 
 // -- Tests --
@@ -389,6 +416,56 @@ describe('filterDiff', () => {
   });
 });
 
+describe('reviewableDiff', () => {
+  it('leaves every file the closed paths close out of the full diff too, lists each, and changes nothing without them', () => {
+    const closed = { matchedPattern: 'holdout', closed: true };
+    const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(CLOSED_DIFF, ['src/b.ts'], ['holdout']);
+    expect(JSON.stringify([fullDiff, diff, rawDiff])).not.toContain('marker');
+    expect([fullDiff.files.map(f => f.path), fullDiff.binarySkipped, diff.files.map(f => f.path)]).toEqual([['src/a.ts', 'src/b.ts'], [], ['src/a.ts']]);
+    expect([diff.totalAdditions, diff.totalDeletions]).toEqual([1, 0]);
+    expect(excludedFiles).toEqual([
+      { path: 'holdout/case.yml', ...closed },
+      { path: 'src/moved.ts', ...closed },
+      { path: 'holdout/hold-out marker.bin', ...closed },
+      { path: 'src/b.ts', matchedPattern: 'src/b.ts' },
+    ]);
+    // A file renamed out of a closed path holds the closed file's text at the head, so its head path is closed too, and only that path.
+    const { closedPaths } = reviewableDiff(CLOSED_DIFF, ['src/b.ts'], ['holdout']);
+    expect(closedPaths).toEqual(['holdout', '/src/moved.ts']);
+    expect(['src/moved.ts', 'src/moved.tsx', 'lib/src/moved.ts'].map(path => findClosedPattern(path, closedPaths))).toEqual(['/src/moved.ts', undefined, undefined]);
+    const oddName = 'diff --git a/holdout/a[1]*.ts b/src/a[1]*.ts\nsimilarity index 100%\nrename from holdout/a[1]*.ts\nrename to src/a[1]*.ts\n';
+    const odd = reviewableDiff(oddName, [], ['holdout']).closedPaths;
+    expect(odd).toEqual(['holdout', '/src/a\\[1\\]\\*.ts']);
+    expect(['src/a[1]*.ts', 'src/a1x.ts'].map(path => findClosedPattern(path, odd))).toEqual([odd[1], undefined]);
+    // Only the closed files make up the change, as when every file is excluded.
+    expect(reviewableDiff(CLOSED_DIFF.replace(MULTI_FILE_DIFF, ''), [], ['holdout/**']).fullDiff.files).toEqual([]);
+    expect(reviewableDiff(CLOSED_DIFF, ['src/b.ts'], [])).toEqual(reviewableDiff(CLOSED_DIFF, ['src/b.ts']));
+    expect(reviewableDiff(CLOSED_DIFF, [], []).rawDiff).toContain('new hold-out marker');
+    // The `/dev/null` side of an added or deleted binary is no path, so it closes nothing.
+    const deletedBinary = 'diff --git a/app.jar b/app.jar\ndeleted file mode 100644\nindex abcdef1..0000000\nBinary files a/app.jar and /dev/null differ\n';
+    const binaries = reviewableDiff(`${BINARY_FILE_DIFF}${deletedBinary}${CLOSED_DIFF}`, [], ['holdout']);
+    expect(binaries.fullDiff.binarySkipped?.map(b => b.path)).toEqual(['assets/logo.png', 'app.jar']);
+    expect(binaries.excludedFiles.map(f => f.path)).toEqual(['holdout/case.yml', 'src/moved.ts', 'holdout/hold-out marker.bin']);
+  });
+});
+
+describe('findClosedPattern', () => {
+  it('matches a path however it is spelled, and closes one that leaves the repository', () => {
+    const closed = ['secret/**', 'notes'];
+    for (const path of ['secret/x.md', './secret/x.md', 'secret//x.md', 'src/../secret/x.md', 'secret\\x.md', '.\\secret\\x.md', 'secret/./x.md', 'secret/sub/']) {
+      expect([path, findClosedPattern(path, closed)]).toEqual([path, 'secret/**']);
+    }
+    expect(findClosedPattern('./docs//notes/a.md', closed)).toBe('notes');
+    for (const path of ['../x.md', '..', 'src/../../x.md', '/etc/x', '\\x.md']) {
+      expect([path, findClosedPattern(path, closed)]).toEqual([path, 'secret/**']);
+    }
+    for (const path of ['src/x.md', './src/x.md', 'src/secret.md', 'secrets/x.md']) {
+      expect([path, findClosedPattern(path, closed)]).toEqual([path, undefined]);
+    }
+    expect(findClosedPattern('../x.md', [])).toBeUndefined();
+  });
+});
+
 describe('filterRawDiff', () => {
   it('removes excluded files and keeps the hunks of every other file', () => {
     const result = filterRawDiff(GENERATED_FIRST_DIFF, DEFAULT_CONFIG.exclude_paths);
@@ -401,6 +478,16 @@ describe('filterRawDiff', () => {
   it('returns an empty string for an empty diff or one with only excluded files', () => {
     expect(filterRawDiff('', DEFAULT_CONFIG.exclude_paths)).toBe('');
     expect(filterRawDiff(GENERATED_FIRST_DIFF, ['dist/**', 'src/**'])).toBe('');
+  });
+
+  it('removes a closed file even when it is kept from the exclusions', () => {
+    const result = filterRawDiff(CLOSED_DIFF, [], new Set(['holdout/case.yml']), ['holdout/**']);
+    expect(result).not.toContain('marker');
+    expect(result).toBe(filterRawDiff(MULTI_FILE_DIFF, []));
+    // `closeRawDiff` drops only the sections of closed files and keeps the others as they came, binaries included.
+    expect(closeRawDiff(CLOSED_DIFF, ['holdout/**'])).toBe(MULTI_FILE_DIFF);
+    expect(closeRawDiff(`${BINARY_FILE_DIFF}${CLOSED_DIFF}`, ['holdout/**'])).toBe(`${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`);
+    expect(closeRawDiff(CLOSED_DIFF, [])).toBe(CLOSED_DIFF);
   });
 });
 

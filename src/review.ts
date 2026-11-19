@@ -3618,7 +3618,7 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
 /** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself, each with a `citedLine`. */
 export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEntry[] {
   const last = priorRounds.at(-1);
-  return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId) : [];
+  return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => (e.citedLine || e.unread) && !e.threadId) : [];
 }
 
 /**
@@ -3653,14 +3653,14 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   for (const entry of warnings) {
     const key = stringifyFindingFingerprint(entry.fingerprint);
     const { file } = entry.fingerprint;
-    const { hash, count } = entry.citedLine!;
     const lines = await linesOf(file);
-    const places = lines && placesReading(lines, hash);
+    // A warning whose file went unread when it was listed has no line to compare, so only the judge or a fix ends it.
+    const places = entry.citedLine && lines ? placesReading(lines, entry.citedLine.hash) : undefined;
     // Only a single place says where the warning is now. Without one, the line of the round that listed it stays the one compared.
     const currentLine = places?.length === 1 ? places[0] : undefined;
     const located: Located = { title: entry.title ?? '', file, line: currentLine ?? entry.fingerprint.lineStart, evidence: entry.evidence };
     const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
-    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < count ? 'line_changed' : fixed.has(key) ? 'fixed' : undefined);
+    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < entry.citedLine!.count ? 'line_changed' : fixed.has(key) ? 'fixed' : undefined);
     if (reason) {
       core.info(`No longer carrying the warning "${entry.title}" on ${file}:${located.line}: ${reason}`);
       ended.push({ key, reason });

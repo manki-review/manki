@@ -11,6 +11,7 @@ import { parseSettingsBlock } from './settings';
 import { _resetOctokitCache, main, runFullReview } from './index';
 import type { SendMessageOptions } from './providers';
 import { STALE_APPROVE_MARKER_PREFIX } from './state';
+import { contentAnswer } from './test-utils';
 import { fetchWorkspace } from './workspace';
 import { RoundContext } from './types';
 
@@ -289,7 +290,7 @@ class FakeGitHub {
     }
     if (method === 'GET' && route === `/contents/src/math.ts`) {
       const content = this.mathAt[searchParams.get('ref') ?? ''] ?? MATH_TS;
-      return json({ type: 'file', encoding: 'base64', size: content.length, content: Buffer.from(content).toString('base64') });
+      return json(contentAnswer(content));
     }
     if (method === 'GET' && (match = route.match(/^\/actions\/runs\/(\d+)$/))) {
       return json({ id: Number(match[1]), status: this.activeRuns.includes(Number(match[1])) ? 'in_progress' : 'completed', conclusion: null });
@@ -689,7 +690,7 @@ describe('runFullReview end to end', () => {
 
     await reviewRound();
 
-    expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app');
+    expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app', []);
     // One finder on a PR in no floor class gets the normal budget.
     expect(mockLLM.tools).toEqual([['scope', { root: '/work/pr-head', steps: 10 }], ['reviewer', { root: '/work/pr-head', steps: 30 }], ['second_read', { root: '/work/pr-head', steps: 30 }]]);
 

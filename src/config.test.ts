@@ -1,4 +1,5 @@
-import { changedKeys, DEFAULT_CONFIG, fallbackConfig, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel } from './config';
+import { changedKeys, DEFAULT_CONFIG, fallbackConfig, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, readClosedPaths, resolveFallbackModel, resolveModel } from './config';
+import { findClosedPattern } from './diff';
 import { GroupReviewer, ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -300,6 +301,48 @@ max_diff_lines: 5000
     it('replaces the default exclude_paths with the repository\'s list, so an empty list excludes nothing', () => {
       expect(loadConfigFromContent('exclude_paths:\n  - "vendor/**"\n  - "dist/**"\n').exclude_paths).toEqual(['vendor/**', 'dist/**']);
       expect(loadConfigFromContent('exclude_paths: []').exclude_paths).toEqual([]);
+    });
+
+    it('closes no path by default, and keeps exclude_paths when closed_paths is set', () => {
+      expect(loadConfigFromContent('').closed_paths).toEqual([]);
+      const config = loadConfigFromContent('closed_paths: ["bench/holdout/**"]\n');
+      expect([config.closed_paths, config.exclude_paths]).toEqual([['bench/holdout/**'], DEFAULT_CONFIG.exclude_paths]);
+    });
+
+    it('reads a closed path however it is written, closing the folder and its files, and refuses one that names no path', () => {
+      const spellings = ['bench/holdout/**', 'bench/holdout/', '/bench/holdout/**', './bench/holdout/**', 'bench//holdout/**', './/bench/./holdout//', 'bench/holdout'];
+      for (const pattern of spellings) {
+        const [closed] = loadConfigFromContent(`closed_paths: [${JSON.stringify(pattern)}]\n`).closed_paths!;
+        expect([pattern, readClosedPaths(`closed_paths: [${JSON.stringify(pattern)}]\n`)]).toEqual([pattern, [closed]]);
+        expect([pattern, findClosedPattern('bench/holdout/case.yml', [closed]), findClosedPattern('bench/holdout', [closed])]).toEqual([pattern, closed, closed]);
+        expect([pattern, findClosedPattern('bench/cases/case.yml', [closed]), findClosedPattern('bench', [closed])]).toEqual([pattern, undefined, undefined]);
+      }
+      // A pattern written with a slash matches from the root, and one with no slash matches a name at any depth.
+      const closed = loadConfigFromContent('closed_paths: ["/README.md", "./NOTES.md", "docs/", "secret.txt", "#hidden", "!keep"]\n').closed_paths!;
+      expect(closed).toEqual(['/README.md', '/NOTES.md', 'docs/**', 'secret.txt', '#hidden', '!keep']);
+      const closedBy = (path: string) => findClosedPattern(path, closed);
+      expect(['README.md', 'src/README.md', 'NOTES.md', 'src/NOTES.md', 'docs/a.md', 'src/docs/a.md'].map(closedBy))
+        .toEqual(['/README.md', undefined, '/NOTES.md', undefined, 'docs/**', undefined]);
+      expect(['secret.txt', 'src/deep/secret.txt', '#hidden', 'src/#hidden/a.ts', 'src/a.ts', 'keep'].map(closedBy))
+        .toEqual(['secret.txt', 'secret.txt', '#hidden', '#hidden', undefined, undefined]);
+      for (const pattern of ['', '/', './', '.', ' ', '../x/**', 'bench/../holdout', 'a/ /b']) {
+        const content = `closed_paths: [${JSON.stringify(pattern)}]\n`;
+        expect(() => loadConfigFromContent(content)).toThrow('`closed_paths[0]` names no path in the repository');
+        expect([pattern, readClosedPaths(content)]).toEqual([pattern, undefined]);
+      }
+      for (const pattern of ['bench\\holdout\\**', 'bench/holdout/\\*']) {
+        const content = `closed_paths: [${JSON.stringify(pattern)}]\n`;
+        expect(() => loadConfigFromContent(content)).toThrow('`closed_paths[0]` holds a backslash: write the path with `/`');
+        expect([pattern, readClosedPaths(content)]).toEqual([pattern, undefined]);
+      }
+    });
+
+    it('reads closed_paths from a file that does not load, and none when the file cannot say which paths it closes', () => {
+      expect(readClosedPaths('closed_paths: ["bench/**"]\nmax_diff_lines: 0\n')).toEqual(['bench/**']);
+      // YAML that does not parse to a mapping closes nothing while its text never names the key.
+      for (const content of [null, '', '# nothing\n', 'max_diff_lines: 0\n', 'exclude_paths: [\n', '- bench\n', 'plain']) expect(readClosedPaths(content)).toEqual([]);
+      const unknown = ['closed_paths: [\n', '# closed_paths\nexclude_paths: [\n', '- closed_paths: [bench]\n', 'closed_paths: bench/**\n', 'closed_paths: [1]\n', 'closed_paths:\n'];
+      for (const content of unknown) expect(readClosedPaths(content)).toBeUndefined();
     });
 
     it('deep-merges memory object', () => {
@@ -658,15 +701,19 @@ models:
     });
   });
 
-  describe('exclude_paths element type validation', () => {
-    it('throws when exclude_paths contains a non-string element', () => {
-      expect(() => loadConfigFromContent('exclude_paths:\n  - "*.lock"\n  - 42\n'))
-        .toThrow(/exclude_paths\[1\]/);
+  describe.each(['exclude_paths', 'closed_paths'])('%s element type validation', (key) => {
+    it(`throws when ${key} contains a non-string element`, () => {
+      expect(() => loadConfigFromContent(`${key}:\n  - "*.lock"\n  - 42\n`))
+        .toThrow(`\`${key}[1]\` must be a string, got number`);
     });
 
-    it('throws when exclude_paths contains a boolean element', () => {
-      expect(() => loadConfigFromContent('exclude_paths:\n  - true\n'))
-        .toThrow(/exclude_paths\[0\]/);
+    it(`throws when ${key} contains a boolean element`, () => {
+      expect(() => loadConfigFromContent(`${key}:\n  - true\n`))
+        .toThrow(`\`${key}[0]\` must be a string, got boolean`);
+    });
+
+    it(`throws when ${key} is not a list`, () => {
+      expect(() => loadConfigFromContent(`${key}: "dist/**"\n`)).toThrow(`\`${key}\` must be an array of strings`);
     });
   });
 

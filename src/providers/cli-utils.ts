@@ -7,7 +7,7 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { cutLegacyCommands, isSecretName, registerSecret, safeJsonParse, sanitizeLogOutput, sanitizeTokens, SYSTEM_ENV } from '../utils';
-import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_DIR_FLAG, STEPS_FLAG } from '../mcp-server';
+import { CLOSED_FILE_FLAG, FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, readClosedCalls, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_DIR_FLAG, STEPS_FLAG } from '../mcp-server';
 import { trackCliProcess } from '../run-diagnostics';
 import { makeScratchDir } from '../tool-install';
 import { LISTED_FILES_TO_OPEN, STALE_TIMEOUT_MS, STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
@@ -604,11 +604,11 @@ function mankiCommand(args: string[]): MankiCommand {
  * without its own. With `steps` it refuses every call after that many, for a CLI whose every tool comes from this server.
  * With `stepsDir` it counts them in that folder, so the servers a call starts one after another share the budget.
  * With `related` a `repo` argument also reads those repos, and with `readsFile` the server keeps there how many calls
- * read each of them.
+ * read each of them. With `closedFile` it counts there the calls it refused because they named a closed path.
  */
 export function toolServerCommand(
   root: string,
-  { fileTools = false, steps, stepsDir, related, readsFile }: { fileTools?: boolean; steps?: number; stepsDir?: string; related?: RelatedRepoTools; readsFile?: string } = {},
+  { fileTools = false, steps, stepsDir, related, readsFile, closedFile }: { fileTools?: boolean; steps?: number; stepsDir?: string; related?: RelatedRepoTools; readsFile?: string; closedFile?: string } = {},
 ): MankiCommand {
   return mankiCommand([
     MCP_SERVER_COMMAND, root,
@@ -617,7 +617,20 @@ export function toolServerCommand(
     ...(steps && stepsDir ? [STEPS_DIR_FLAG, stepsDir] : []),
     ...(related ? [RELATED_REPOS_FLAG, JSON.stringify(related)] : []),
     ...(related && readsFile ? [READS_FILE_FLAG, readsFile] : []),
+    ...(closedFile ? [CLOSED_FILE_FLAG, closedFile] : []),
   ]);
+}
+
+/** The file in a call's own folder where its tool server counts the calls it refused because they named a closed path. */
+export function closedCallsFile(dir: string): string {
+  return join(dir, 'closed-calls');
+}
+
+/** Returns what the tool servers of a call with `repoTools` counted in its folder `dir`: the reads of each related repo and the refused calls on a closed path. */
+export function toolServerReadings(dir: string, repoTools: RepoTools | undefined): Pick<LLMResponse, 'relatedReads' | 'closedCalls'> {
+  const relatedReads = repoTools?.related ? readRelatedReads(relatedReadsFile(dir)) : undefined;
+  const closedCalls = repoTools ? readClosedCalls(closedCallsFile(dir)) : 0;
+  return { ...(relatedReads && { relatedReads }), ...(closedCalls > 0 && { closedCalls }) };
 }
 
 /** The file in a call's own folder where its tool server keeps how many calls read each related repo. */
@@ -649,7 +662,7 @@ export function resultChars(content: unknown): number {
 }
 
 /** What a call measured before it failed. */
-type CallReadings = Pick<LLMResponse, 'relatedReads' | 'filesRead' | 'limits'>;
+type CallReadings = Pick<LLMResponse, 'relatedReads' | 'closedCalls' | 'filesRead' | 'limits'>;
 
 /** Puts the set `readings` of a call that failed on its error and returns it, so the failed call's record keeps them. */
 export function carryReadings(error: unknown, readings: CallReadings): unknown {
@@ -662,8 +675,8 @@ export function carryReadings(error: unknown, readings: CallReadings): unknown {
 /** Returns the readings `carryReadings` put on `error`. */
 export function readingsOf(error: unknown): CallReadings {
   if (!error || typeof error !== 'object') return {};
-  const { relatedReads, filesRead, limits } = error as CallReadings;
-  return { ...(relatedReads && { relatedReads }), ...(filesRead && { filesRead }), ...(limits && { limits }) };
+  const { relatedReads, closedCalls, filesRead, limits } = error as CallReadings;
+  return { ...(relatedReads && { relatedReads }), ...(closedCalls && { closedCalls }), ...(filesRead && { filesRead }), ...(limits && { limits }) };
 }
 
 /** Returns the related repo read counts a tool server kept in `path`, or `undefined` when it kept none. */

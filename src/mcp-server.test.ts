@@ -10,10 +10,11 @@ import rust from '@ast-grep/lang-rust';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { createMcpServer, McpServerOptions, runMcpServer } from './mcp-server';
+import { createMcpServer, McpServerOptions, readClosedCalls, runMcpServer } from './mcp-server';
 import * as relatedRepos from './related-repos';
 import { git } from './test-utils';
 import { RelatedRepoTools } from './types';
+import { fetchWorkspace } from './workspace';
 
 // The grammars are registered once per process, so every test file registers the same ones.
 napi.registerDynamicLanguage({ go, python, rust });
@@ -276,6 +277,53 @@ describe('Manki tool server', () => {
 
     expect(result.text).toContain('holds only the last 500 commits');
     await shallowClient.close();
+  });
+
+  it('refuses and counts each call on a path the checkout closed, finds nothing of it, and follows no line across a rename out of it', async () => {
+    const source = join(base, 'closed-source');
+    git(base, 'init', '-q', source);
+    mkdirSync(join(source, 'holdout'));
+    writeFileSync(join(source, 'holdout', 'case.yml'), 'hold-out marker\n');
+    writeFileSync(join(source, 'holdout', 'moved.txt'), 'hold-out marker\nsecond\nthird\nfourth\n');
+    writeFileSync(join(source, 'open.txt'), 'first open line\n');
+    git(source, 'add', '.');
+    git(source, 'commit', '-qm', 'add the cases');
+    // The move and the edit are separate commits, so the edit's patch removes the closed file's line.
+    git(source, 'mv', 'holdout/moved.txt', 'moved.txt');
+    git(source, 'commit', '-qm', 'move a case out');
+    writeFileSync(join(source, 'moved.txt'), 'open line\nsecond\nthird\nfourth\n');
+    git(source, 'commit', '-qam', 'rewrite the moved case');
+    const workspace = await fetchWorkspace(`file://${source}`, git(source, 'rev-parse', 'HEAD'), undefined, ['holdout/**']);
+    const closedFile = join(base, 'closed-calls');
+    const codex = await connect(workspace, { fileTools: true, closedFile });
+    try {
+      const refused = { text: 'holdout/case.yml is closed by the repository\'s config: `closed_paths` holds `holdout/**`, so no review stage may read it.', isError: true };
+      expect(await call(codex, 'read_file', { path: 'holdout/case.yml' })).toEqual(refused);
+      expect(await call(codex, 'grep', { text: 'marker', path: join(workspace, 'holdout', 'case.yml') })).toEqual({ ...refused, text: refused.text.replace('holdout/case.yml', join(workspace, 'holdout', 'case.yml')) });
+      expect((await call(codex, 'git_history', { path: './holdout/moved.txt' })).text).toContain('`closed_paths` holds `holdout/**`');
+      expect(await call(codex, 'grep', { text: 'marker' })).toEqual({ text: 'No matches.', isError: false });
+      expect(await call(codex, 'glob', { pattern: '**' })).toEqual({ text: 'moved.txt\nopen.txt', isError: false });
+      // A file moved out of a closed path gets its commits but no line history.
+      expect(await call(codex, 'git_history', { path: 'moved.txt', startLine: 1 })).toEqual({
+        text: 'moved.txt was once at a path the repository\'s config closes, so its line history is not shown. Its commits are listed without a line range.', isError: true,
+      });
+      const commits = await call(codex, 'git_history', { path: 'moved.txt' });
+      expect([commits.text.includes('rewrite the moved case'), commits.text.includes('marker')]).toEqual([true, false]);
+      expect((await call(codex, 'git_history', { path: 'open.txt', startLine: 1 })).text).toContain('+first open line');
+      // A symlink that got into the checkout is not followed, even to an open file, and is not counted as closed.
+      symlinkSync('moved.txt', join(workspace, 'link.txt'));
+      expect(await call(codex, 'read_file', { path: 'link.txt' })).toEqual({ text: 'link.txt goes through a symlink, which no tool follows while the repository\'s config closes paths.', isError: true });
+      expect((await call(codex, 'read_file', { path: 'moved.txt' })).text).toContain('open line');
+      expect(readClosedCalls(closedFile)).toBe(3);
+      // A later server of the same call adds to the count in the file.
+      const later = await connect(workspace, { closedFile });
+      expect((await call(later, 'ast_grep', { pattern: '$X', path: 'holdout/case.yml' })).isError).toBe(true);
+      await later.close();
+      expect(readClosedCalls(closedFile)).toBe(4);
+    } finally {
+      await codex.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('reads a related repo named by `repo`, fetched on the first call that names it, and nowhere outside it', async () => {

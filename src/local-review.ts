@@ -8,7 +8,7 @@ import { extractCurrentCodeWindow } from './code-window';
 import { CONFIG_PATH, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
-import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, plainCitedFiles, RepoFiles, roundApproval, skippedFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, holdsApproval, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, openRepoFiles, plainCitedFiles, RepoFiles, roundApproval, skippedFiles, titleToSlug, UnreadFileError } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, MAX_LOCKFILE_BYTES, readLockfileChanges, withLockfiles } from './lockfile';
 import type { ProviderInputs } from './providers';
 import type { PreviousFinding } from './recap';
@@ -18,7 +18,7 @@ import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
 import { SECURITY_TAG, threadWarns } from './types';
 import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RulesMode } from './types';
-import { fetchWorkspace, gitEnv, runGit } from './workspace';
+import { closePaths, fetchWorkspace, gitEnv, runGit } from './workspace';
 
 
 /** Config keys and their values, as a `.manki.yml` holds them. */
@@ -139,19 +139,23 @@ export interface LocalReview {
 
 const MAX_SYMLINK_HOPS = 5;
 
-/** Reads the files of `commit` in the repository at `root`. A symlink reads as its target, while that stays in the tree. */
+/**
+ * Reads the files of `commit` in the repository at `root`. A symlink reads as its target, while that stays in the tree,
+ * or as no file when `read` is told not to follow symlinks.
+ */
 function gitRepoFiles(root: string, commit: string): RepoFiles {
-  const read = async (path: string, hops = 0): Promise<string | null> => {
+  const read = async (path: string, follow: boolean, hops = 0): Promise<string | null> => {
     // Prints `<mode> <type> <object>\t<path>`, or nothing for a missing path.
     const [mode, type, object] = (await runGit(root, ['--literal-pathspecs', 'ls-tree', '-z', commit, '--', path])).split('\t')[0].split(' ');
     if (type !== 'blob') return null;
+    if (mode === '120000' && !follow) throw new UnreadFileError(`${path} was not read: a symlink, whose target is never read`);
     const content = await runGit(root, ['cat-file', 'blob', object]);
     if (mode !== '120000') return content;
     const target = posix.normalize(posix.join(posix.dirname(path), content));
-    return hops < MAX_SYMLINK_HOPS && !posix.isAbsolute(content) && !target.startsWith('../') ? read(target, hops + 1) : null;
+    return hops < MAX_SYMLINK_HOPS && !posix.isAbsolute(content) && !target.startsWith('../') ? read(target, follow, hops + 1) : null;
   };
   return {
-    read: path => read(path),
+    read: (path, followSymlinks = true) => read(path, followSymlinks),
     list: async () => (await runGit(root, ['ls-tree', '-r', '-z', '--name-only', commit])).split('\0').filter(Boolean),
   };
 }
@@ -159,8 +163,8 @@ function gitRepoFiles(root: string, commit: string): RepoFiles {
 /**
  * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. A config at `head` that
  * does not load gives a warning and `brokenHead`, which says whether it differs from the copy at `base`. With `overrides`,
- * they are set on top, and a base config that does not load throws instead of falling back to the defaults.
- * `head` is a commit or a tree.
+ * they are set on top, and a base config that does not load throws instead of falling back to the defaults. Without
+ * them, a base config that cannot say which paths `closed_paths` closes throws too. `head` is a commit or a tree.
  */
 async function loadLocalConfig(
   root: string, base: string, head: string, configPath: string, overrides?: ConfigOverrides,
@@ -175,9 +179,10 @@ async function loadLocalConfig(
     core.warning(`Could not load ${configPath} at the head, this review uses the base's settings: ${describe(error)}`);
   }
   const read = () => gitRepoFiles(root, base).read(configPath);
-  const loaded = overrides
+  const { closedUnknown, ...loaded }: Awaited<ReturnType<typeof loadBaseConfig>> = overrides
     ? loadOverlaidConfig(await read(), configPath, overrides)
     : await loadBaseConfig(read, configPath, describe);
+  if (closedUnknown) throw new Error(closedUnknown);
   // A copy that cannot be read or compared counts as changed, so its approval is held.
   if (!headConfig) return { ...loaded, brokenHead: { changed: headContent === undefined || headContent !== await read().catch(() => undefined) } };
   // A key the overrides set differs from the head's whatever the change did, so it is left out.
@@ -211,7 +216,7 @@ async function applyPatch(dir: string, patch: string, head: string, index?: stri
   // A symlink the patch adds is written as a plain file holding its target, as `fetchWorkspace` checks one out.
   await runGit(dir, ['-c', 'core.symlinks=false', 'apply', index ? '--cached' : '--index', '--whitespace=nowarn', file], env).catch((error: Error) => {
     throw new Error(`The patch does not apply to ${head.slice(0, 7)}: ${error.message}`);
-  });
+  }).finally(() => rmSync(file, { force: true }));
 }
 
 /** Returns the tree of `head` with `patch` applied. A scratch index builds it, so the checkout and its index stay as they are. */
@@ -262,8 +267,8 @@ async function followUpInputs(
   const earlierHead = (await runGit(repoRoot, ['rev-parse', '--verify', `${earlier.head}^{commit}`])).trim();
   const earlierBase = (await runGit(repoRoot, ['merge-base', base, earlierHead])).trim();
   const lockfilePaths = new Set(lockfiles.map(l => l.path));
-  const priorChange = filterDiff(parsePRDiff(await runGit(repoRoot, [...DIFF_ARGS, earlierBase, earlierHead])), config.exclude_paths, lockfilePaths).diff;
-  const sinceEarlier = filterRawDiff(await runGit(repoRoot, [...DIFF_ARGS, earlierHead, head]), config.exclude_paths, lockfilePaths);
+  const priorChange = filterDiff(parsePRDiff(await runGit(repoRoot, [...DIFF_ARGS, earlierBase, earlierHead])), config.exclude_paths, lockfilePaths, config.closed_paths).diff;
+  const sinceEarlier = filterRawDiff(await runGit(repoRoot, [...DIFF_ARGS, earlierHead, head]), config.exclude_paths, lockfilePaths, config.closed_paths);
   const interRoundDiff = lockfilesLast(ownChangeSince(sinceEarlier, priorChange, reviewed), lockfiles);
 
   const threads = earlier.findings.filter(f => f.thread);
@@ -278,15 +283,18 @@ async function followUpInputs(
     ...cited(f),
   }));
   const open = threads.filter(f => f.thread === 'open');
-  const files = gitRepoFiles(repoRoot, head);
+  const headFiles = gitRepoFiles(repoRoot, head);
+  const files = openRepoFiles(headFiles, config.closed_paths ?? []);
   const contents = new Map<string, string>();
   for (const path of new Set(open.map(f => f.file))) {
     const content = await files.read(path);
     if (content !== null) contents.set(path, content);
   }
+  // A file at the head that was not read, as a closed file or a symlink while paths are closed, is unread, not removed.
+  const atHead = new Set(await headFiles.list());
   const openThreads: OpenThread[] = open.map(f => ({
     threadId: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix,
-    ...cited(f), currentCode: extractCurrentCodeWindow(contents, f.file, f.line),
+    ...cited(f), currentCode: extractCurrentCodeWindow(contents, f.file, f.line), ...(atHead.has(f.file) && !contents.has(f.file) && { codeUnread: true }),
   }));
 
   const posted: Finding[] = earlier.findings.map(f => ({
@@ -307,12 +315,14 @@ async function followUpInputs(
     openThreads: [], memoryLoadStatus: 'disabled',
   }, result, { judgeDurationMs: 0 });
   // A pull request round records the line of a warning it lists only in the review body, which a later round compares.
-  const earlierLines = cachedFileLines(gitRepoFiles(repoRoot, earlierHead), 'so its earlier warnings are not carried');
+  const earlierLines = cachedFileLines(openRepoFiles(gitRepoFiles(repoRoot, earlierHead), config.closed_paths ?? [], true), 'so its earlier warnings are carried without their line');
   const entries = await Promise.all(record.findings.entries.map(async (entry, i) => {
     const { thread, severity, file, line, description } = earlier.findings[i];
     if (thread || severity !== 'warning') return entry;
-    const cited = file && line > 0 ? citedLine(await earlierLines(file), line) : undefined;
-    return { ...entry, posted: 'body' as const, ...(cited && { citedLine: cited }), ...(cited && description && { description }) };
+    const lines = file && line > 0 ? await earlierLines(file) : undefined;
+    const cited = lines && citedLine(lines, line);
+    const unread = !!file && line > 0 && !lines;
+    return { ...entry, posted: 'body' as const, ...(cited && { citedLine: cited }), ...(unread && { unread: true as const }), ...((cited || unread) && description && { description }) };
   }));
   return { previousFindings, openThreads, priorRounds: [{ ...record, findings: { ...record.findings, entries } }], priorChange, interRoundDiff };
 }
@@ -329,9 +339,10 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   // The head's copy of the config is the one the change leaves: the commit's, or the patched one.
   const loaded: Awaited<ReturnType<typeof loadLocalConfig>> = input.config ? { config: input.config, source: 'base' }
     : await loadLocalConfig(repoRoot, base, patch === undefined ? head : await patchedTree(repoRoot, head, patch), configPath, input.configOverrides);
-  const { config } = loaded;
   const raw = patch ?? await runGit(repoRoot, [...DIFF_ARGS, base, head]);
-  const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(raw, config.exclude_paths);
+  const { fullDiff, diff, excludedFiles, rawDiff, closedPaths } = reviewableDiff(raw, loaded.config.exclude_paths, loaded.config.closed_paths);
+  // Every later read of the head, the tools' checkout included, keeps out a file renamed out of a closed path too.
+  const config = { ...loaded.config, closed_paths: closedPaths };
   // A patch applies to `head`, so its lockfiles are read before the change, and a commit range's after it.
   const lockfiles = await readLocalLockfiles(repoRoot, head, fullDiff, patch === undefined ? 'head' : 'base');
   if (diff.files.length === 0 && lockfiles.length === 0) throw new Error('Nothing to review: the change has no reviewable files');
@@ -339,7 +350,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const { clients, models } = buildReviewClients(config, providerInputs);
   await warmUpClients(clients);
   signal?.throwIfAborted();
-  const repoContext = await buildRepoContext(gitRepoFiles(repoRoot, base), diff.files.map(f => f.path));
+  const repoContext = await buildRepoContext(openRepoFiles(gitRepoFiles(repoRoot, base), config.closed_paths ?? []), diff.files.map(f => f.path));
   const title = input.title ?? (await runGit(repoRoot, ['log', '-1', '--format=%s', head])).trim();
   const hasTools = [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])].some(c => c.repoTools);
   const followUp = input.earlier && patch === undefined
@@ -356,6 +367,8 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       // no later commit of the checkout.
       workspace = await fetchWorkspace(pathToFileURL(repoRoot).href, head);
       if (patch !== undefined) await applyPatch(workspace, patch, head);
+      // Closed after the patch, which can add or change a closed file.
+      closePaths(workspace, config.closed_paths ?? []);
     }
     signal?.throwIfAborted();
     const result = await runReview(clients, {
@@ -390,7 +403,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), followUp?.priorChange, followUp?.interRoundDiff ? parsePRDiff(followUp.interRoundDiff) : undefined);
       hideSeenNotes(result, followUp && withLockfiles(diff, lockfiles));
       capNotes(result, followUp?.previousFindings ?? [], config.review?.notes);
-      if (followUp) await carryBodyWarnings(result, followUp.priorRounds, gitRepoFiles(repoRoot, head));
+      if (followUp) await carryBodyWarnings(result, followUp.priorRounds, openRepoFiles(gitRepoFiles(repoRoot, head), config.closed_paths ?? [], true));
     }
     const context = buildRoundContext({
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,

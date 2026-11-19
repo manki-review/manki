@@ -1540,6 +1540,11 @@ export interface ReviewConfig {
    */
   author_clear_role?: AuthorClearRole;
   exclude_paths: string[];
+  /**
+   * Glob patterns of paths no review stage reads: not in the diff, not in the checkout the tools read. A pattern that
+   * names a folder closes every file in it.
+   */
+  closed_paths?: string[];
   /** Labels that skip review, compared case-insensitively. Read from the base branch only. */
   skip_labels?: string[];
   /** PR authors whose PRs are skipped, compared case-insensitively, such as `dependabot[bot]`. Read from the base branch only. */
@@ -2139,6 +2144,13 @@ export interface RoundAnalyzerRun {
   results?: number;
   /** Why the analyzer was skipped. */
   reason?: string;
+  /** The files the analyzer left out, each with why. */
+  skippedFiles?: SkippedFile[];
+}
+
+export interface SkippedFile {
+  path: string;
+  reason: string;
 }
 
 export interface RoundSignalSourceRun {
@@ -2316,6 +2328,8 @@ export interface RoundConfig {
 export interface RoundDiffExcludedFile {
   path: string;
   matchedPattern: string;
+  /** Set when the pattern is one of `closed_paths`, not of `exclude_paths`. */
+  closed?: true;
 }
 
 export interface RoundDiffPerFile {
@@ -2335,7 +2349,7 @@ export interface RoundDiff {
   deletions: number;
   filesReviewed: number;
   fileTypes: Record<string, number>;
-  /** Files filtered out by `config.exclude_paths` and which pattern fired. */
+  /** Files filtered out by `config.exclude_paths` or `config.closed_paths` and which pattern fired. */
   excludedFiles?: RoundDiffExcludedFile[];
   /** Paths skipped by `isBinaryFile` during `parsePRDiff`. */
   binarySkipped?: string[];
@@ -2859,6 +2873,8 @@ export interface FindingFingerprintEntry {
    * the same. A warning without a line, or on a line the round could not read, has none.
    */
   citedLine?: CitedLine;
+  /** Set on a body warning whose file the round could not read, so it has no `citedLine`. A later round carries it without comparing its line. */
+  unread?: true;
   /** Set on a warning that holds the approval: through its thread, or as `body` with no thread. */
   holds?: true;
   /**
@@ -2975,6 +2991,8 @@ export interface RoundUsage extends RoundUsageStage {
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */
   limits?: LimitUsage[];
+  /** Tool calls Manki's tool server refused because they named a path `closed_paths` closes. Unset when none was. */
+  closedCalls?: number;
 }
 
 /** Older records hold only some of the fields. */

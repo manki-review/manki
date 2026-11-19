@@ -1,8 +1,10 @@
 import { execFile } from 'child_process';
-import { rmSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { devNull } from 'os';
+import { join } from 'path';
 import { promisify } from 'util';
 
+import { findClosedPattern } from './diff';
 import { makeScratchDir } from './tool-install';
 import { SYSTEM_ENV } from './utils';
 
@@ -41,10 +43,10 @@ export async function runGit(dir: string, args: string[], env = gitEnv()): Promi
 
 /**
  * Fetches commit `sha` of the repo at `url`, with `WORKSPACE_DEPTH` commits of history, into a new directory, checks
- * it out and returns the directory. `token` authenticates the fetch only: it reaches git through the environment, so
- * it is never written to the repo's config or shown on a command line.
+ * it out without the paths `closedPaths` closes and returns the directory. `token` authenticates the fetch only: it
+ * reaches git through the environment, so it is never written to the repo's config or shown on a command line.
  */
-export async function fetchWorkspace(url: string, sha: string, token?: string): Promise<string> {
+export async function fetchWorkspace(url: string, sha: string, token?: string, closedPaths: readonly string[] = []): Promise<string> {
   const dir = makeScratchDir('repo');
   const git = (args: string[], env = gitEnv()) => runGit(dir, args, env);
   const auth: Record<string, string> = token ? { 'http.extraHeader': `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` } : {};
@@ -53,9 +55,50 @@ export async function fetchWorkspace(url: string, sha: string, token?: string): 
     await git(['fetch', '-q', '--no-tags', `--depth=${WORKSPACE_DEPTH}`, url, sha], gitEnv(auth));
     // Symlinks are checked out as plain files holding their target, so none of them points out of the workspace.
     await git(['-c', 'core.symlinks=false', 'checkout', '-q', '--detach', sha]);
+    closePaths(dir, closedPaths);
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
     throw error;
   }
   return dir;
+}
+
+/** The file in a checkout's `.git` that keeps the patterns `closePaths` removed, for the tool server. */
+const CLOSED_PATHS_FILE = 'manki-closed-paths.json';
+
+/**
+ * Deletes every file and folder of the checkout at `dir` that `closedPaths` closes, every symlink, whose target could be
+ * closed, and the folders that leaves empty, so no tool that reads the checkout finds them. Keeps the patterns in `.git`
+ * for `closedPathsOf`.
+ */
+export function closePaths(dir: string, closedPaths: readonly string[]): void {
+  if (closedPaths.length === 0) return;
+  // Returns whether deleting closed paths left the folder `rel` empty.
+  const close = (rel: string): boolean => {
+    let emptied = false;
+    let left = 0;
+    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const path = rel ? `${rel}/${entry.name}` : entry.name;
+      if (path === '.git') {
+        left++;
+      } else if (entry.isSymbolicLink() || findClosedPattern(path, closedPaths) || (entry.isDirectory() && close(path))) {
+        rmSync(join(dir, path), { recursive: true, force: true });
+        emptied = true;
+      } else {
+        left++;
+      }
+    }
+    return emptied && left === 0;
+  };
+  close('');
+  writeFileSync(join(dir, '.git', CLOSED_PATHS_FILE), JSON.stringify(closedPaths));
+}
+
+/** Returns the patterns `closePaths` removed from the checkout at `dir`, or none for a checkout it never closed. */
+export function closedPathsOf(dir: string): string[] {
+  const file = join(dir, '.git', CLOSED_PATHS_FILE);
+  if (!existsSync(file)) return [];
+  const patterns: unknown = JSON.parse(readFileSync(file, 'utf8'));
+  if (!Array.isArray(patterns) || !patterns.every(p => typeof p === 'string')) throw new Error(`${file} does not list the closed paths`);
+  return patterns;
 }

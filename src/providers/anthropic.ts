@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, fileReadBy, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, closedCallsFile, fileReadBy, MankiCommand, matchQuotaText, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, toolServerReadings, warnReplyTail, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -347,15 +347,13 @@ export class AnthropicClient implements LLMClient {
       if (repoTools) {
         const stepsDir = join(promptDir, 'steps');
         mkdirSync(stepsDir);
-        const readsFile = relatedReadsFile(promptDir);
-        tools = { mcpConfigPath: writeToolServerConfig(promptDir, toolServerCommand(repoTools.root, { related: repoTools.related, readsFile })), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
+        const command = toolServerCommand(repoTools.root, { related: repoTools.related, readsFile: relatedReadsFile(promptDir), closedFile: closedCallsFile(promptDir) });
+        tools = { mcpConfigPath: writeToolServerConfig(promptDir, command), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
       }
       const args = claudeCliArgs(this.model, systemPromptPath, options, tools);
-      const reads = () => (repoTools?.related ? readRelatedReads(relatedReadsFile(promptDir)) : undefined);
       const response = await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options)
-        .catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads() }); });
-      const relatedReads = reads();
-      return relatedReads ? { ...response, relatedReads } : response;
+        .catch((error: unknown) => { throw carryReadings(error, toolServerReadings(promptDir, repoTools)); });
+      return { ...response, ...toolServerReadings(promptDir, repoTools) };
     });
   }
 

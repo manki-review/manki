@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
+import { findClosedPattern } from './diff';
 import { fenceText, linkedIssueNumbers } from './github';
 import { extractJSON } from './json';
 import type { LLMClient } from './providers';
@@ -56,6 +57,8 @@ interface RelatedWorkTarget {
   title: string;
   body: string;
   diff: ParsedDiff;
+  /** The `closed_paths` setting, whose files no other PR's file list names. */
+  closedPaths?: readonly string[];
 }
 
 /**
@@ -95,13 +98,13 @@ interface LookupRequest {
   retries: number;
 }
 
-async function findOverlappingPrs(octokit: Octokit, { owner, repo, prNumber, diff }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
+async function findOverlappingPrs(octokit: Octokit, { owner, repo, prNumber, diff, closedPaths = [] }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
   const changed = new Set(diff.files.flatMap(f => f.oldPath ? [f.path, f.oldPath] : [f.path]));
   const { repository } = await octokit.graphql<{ repository: { pullRequests: { nodes: OpenPrNode[] } } }>(OPEN_PRS_QUERY, { owner, repo, request });
   return repository.pullRequests.nodes
     .filter(pr => pr.number !== prNumber)
     .map((pr): RelatedItem & { sharedFiles: number } => {
-      const files = (pr.files?.nodes ?? []).map(f => f.path);
+      const files = (pr.files?.nodes ?? []).map(f => f.path).filter(path => !findClosedPattern(path, closedPaths));
       const shared = files.filter(f => changed.has(f));
       return {
         kind: 'pr', number: pr.number, title: pr.title, excerpt: excerpt(pr.body, MAX_EXCERPT),
