@@ -8,6 +8,7 @@ import { cratesIo } from './registries/crates';
 import { npmRegistry } from './registries/npm';
 import { Registry } from './registries/types';
 import { fetchedRelatedRepos } from './related-repos';
+import { closePaths } from './workspace';
 import { FakeRegistry, fakeRegistry, git, sha256Hex, sha512Integrity, tarGz } from './test-utils';
 
 const crate = (version: string) => tarGz([{ name: `demo-${version}/src/lib.rs`, data: `pub const VERSION: &str = "${version}";\n` }]);
@@ -278,6 +279,36 @@ describe('dependencyLoader', () => {
     // Without such a setting, or with one for another scope only, the package is read from npm, checked against npm's checksum.
     expect((await round({ 'yarn.lock': berryLock }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
     expect((await round({ ...required, '.npmrc': '@corp:registry=https://npm.corp.example/\nregistry=https://registry.npmjs.org/\n' }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+  });
+
+  it('refuses every package when `closed_paths` removed a file that can decide one, and reads it when only other files were removed', async () => {
+    const berryLock = '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"left-pad@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "left-pad@npm:1.2.0"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n';
+    const closed = async (files: Record<string, string>, patterns: string[]) => {
+      const checkout = round({ 'yarn.lock': berryLock, 'Cargo.toml': '[dependencies]\ndemo = "1"\n', 'bench/cases/a.yml': 'case\n', ...files });
+      await closePaths(checkout.repo, patterns);
+      return checkout;
+    };
+    const removed = '`closed_paths` removed';
+    // A closed setting that names another registry would otherwise read as absent, and npm's archive would be read.
+    const npmrc = await closed({ '.npmrc': 'registry=https://npm.corp.example/\n' }, ['.npmrc']);
+    await expect(npmrc.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: ${removed} .npmrc from the checkout, and that path can decide which code the PR runs.`);
+    expect(dependencyOutcomes(npmrc.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', status: 'refused' })]);
+    await expect((await closed({ 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }, ['*.lock'])).load('crates.io/demo')).rejects.toThrow(`${removed} Cargo.lock from`);
+    await expect((await closed({ 'web/.yarnrc.yml': 'npmRegistryServer: "https://npm.corp.example"\n' }, ['web/**'])).load('npm/left-pad')).rejects.toThrow(`${removed} web/.yarnrc.yml from`);
+    await expect((await closed({ '.cargo/config.toml': '[source.crates-io]\nreplace-with = "vendored"\n' }, ['.cargo'])).load('crates.io/demo')).rejects.toThrow(`${removed} .cargo/config.toml from`);
+    // A committed copy the project runs in place of the archive refuses it too, closed as a file or as its folder.
+    await expect((await closed({ 'node_modules/left-pad/index.js': 'patched\n' }, ['node_modules/**'])).load('npm/left-pad')).rejects.toThrow(`${removed} node_modules from`);
+    await expect((await closed({ '.yarn/cache/left-pad-npm-1.2.0-abc.zip': 'zip\n' }, ['*.zip'])).load('npm/left-pad')).rejects.toThrow(`${removed} .yarn/cache from`);
+    expect(server.requests).toEqual([]);
+
+    // Closing only files that decide no package leaves every package readable.
+    const unrelated = await closed({}, ['bench/**']);
+    expect((await unrelated.load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    expect((await unrelated.load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');
+    // A record of the closed paths that cannot be read may hide any of them, so it refuses every package.
+    const unreadable = await closed({}, ['bench/**']);
+    writeFileSync(join(unreadable.repo, '.git', 'manki-closed-paths.json'), '["bench/**"]');
+    await expect(unreadable.load('npm/left-pad')).rejects.toThrow('Manki could not read which files `closed_paths` removed from the checkout');
   });
 
   it('reads a crate a plain `Cargo.toml` requires with no lockfile, and reads the forms of TOML it reads with certainty', async () => {

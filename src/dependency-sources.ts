@@ -15,6 +15,7 @@ import { DEPENDENCY_STATE, FETCH_TIMEOUT_MS, fetchOutcome, RelatedRepoPending, R
 import { claimStep, STALE_TIMEOUT_MS } from './tool-steps';
 import { fetchWhole, matchesIntegrity, TransientDownloadError } from './tool-install';
 import { RoundDependencySource } from './types';
+import { removedPathsOf } from './workspace';
 
 /** How many packages one round may fetch, over all its tool calls. */
 export const MAX_PACKAGES_PER_ROUND = 10;
@@ -26,6 +27,8 @@ export const REGISTRIES: readonly Registry[] = [cratesIo(), npmRegistry()];
 const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
 /** The most lockfiles, manifests and settings files of the checkout Manki lists. */
 const MAX_LISTED = 20_000;
+/** A path inside a committed install, such as `node_modules` or Yarn's cache, which a project runs in place of the registry's archive. */
+const INSTALLED_COPY = /(?:^|\/)(?:node_modules|\.yarn\/cache)(?:\/|$)/;
 const SRI_ALGORITHMS = ['sha512', 'sha384', 'sha256', 'sha1'];
 
 /** A package version the PR uses, and where that version comes from. */
@@ -448,6 +451,15 @@ export function dependencyLoader(
   let listing: Promise<Listing> | undefined;
   const listed = (): Promise<Listing> => listing ??= trackedFiles(root).then((tracked): Listing => {
     if (!tracked) return { files: [], cut: 'Manki could not list the files of the checkout, so it cannot tell which code the PR runs' };
+    // `closed_paths` deletes files from the checkout and its index, so a closed lockfile, setting or committed copy looks absent.
+    let removed: string[];
+    try {
+      removed = removedPathsOf(root);
+    } catch {
+      return { files: [], cut: 'Manki could not read which files `closed_paths` removed from the checkout, so it cannot tell which code the PR runs' };
+    }
+    const closed = removed.find(path => isRead(path) || INSTALLED_COPY.test(path));
+    if (closed) return { files: [], cut: `\`closed_paths\` removed ${shown(closed)} from the checkout, and that path can decide which code the PR runs` };
     // An install follows a symlink, which can hold a lockfile, a setting or a whole folder of them where Manki does not look.
     const plainFiles = new Set(tracked.filter(f => !f.symlink).map(f => f.path));
     const link = tracked.find(f => f.symlink && (isRead(f.path) || !linksToPlainFile(root, f.path, plainFiles)));

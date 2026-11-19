@@ -8,7 +8,7 @@ import { join } from 'path';
 import * as core from '@actions/core';
 
 import { git } from './test-utils';
-import { BASE_READS_FILE, BASE_REF, closedPathsOf, closePaths, fetchWorkspace } from './workspace';
+import { BASE_READS_FILE, BASE_REF, closedPathsOf, closePaths, fetchWorkspace, removedPathsOf } from './workspace';
 
 const TOKEN = 'ghs_workspaceFetchToken';
 // Several git processes per test can pass Jest's default 5 seconds on a slow runner.
@@ -101,6 +101,8 @@ describe('fetchWorkspace', () => {
     expect(listed(closed)).toEqual(['bench/cases/a.yml', 'data/open.txt', 'src/a.ts']);
     expect(readdirSync(join(closed, 'bench'))).toEqual(['cases']);
     expect(closedPathsOf(closed)).toEqual(['bench/holdout/**', 'secret.txt']);
+    // Each path it deleted or dropped from the index is kept, so a reader that must see every file can tell one is missing.
+    expect(removedPathsOf(closed)).toEqual(['bench/holdout', 'bench/holdout/b.yml', 'bench/holdout/deep', 'bench/holdout/deep/c.yml', 'data/secret.txt', 'src/secret.txt']);
     // git reads a tracked file it no longer finds as deleted, so a search of the checkout finds nothing in it.
     expect(git(closed, 'grep', '-l', 'closed marker').split('\n')).toEqual(['bench/cases/a.yml', 'data/open.txt', 'src/a.ts']);
     // A tool that lists tracked files reads the index, which names no closed file either.
@@ -109,6 +111,7 @@ describe('fetchWorkspace', () => {
     const open = await fetchWorkspace(`file://${source}`, sha, undefined, []);
     expect(listed(open)).toEqual([...files].sort());
     expect(closedPathsOf(open)).toEqual([]);
+    expect(removedPathsOf(open)).toEqual([]);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('reads no closed file through a symlink: the checkout holds the link text, and closing deletes any real symlink', async () => {
