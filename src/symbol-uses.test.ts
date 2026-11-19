@@ -625,6 +625,7 @@ describe('listUsesOutsideDiff', () => {
       'src/printer.ts': 'export class Printer {\n  show(x: { balance: bigint }) {}\n}\n',
       'cmd/rates.swift': `func build() {\n${Array.from({ length: 7 }, (_, i) => `    const k${i} = 1\n`).join('')}}\nfunc legacy() {}\n`,
       'conf/app.yml': 'server:\n  pool:\n    idle_timeout: 30\n',
+      'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 1;\n}\n',
       'src/store.go': 'package store\n\ntype Store struct {\n\tA int\n}\n',
       'src/ids.rs': 'pub type Id = u8;\n',
       'src/box.ts': 'export class Box {\n  get size() {\n    return 1;\n  }\n\n  set size(v: number) {}\n}\n',
@@ -645,6 +646,7 @@ describe('listUsesOutsideDiff', () => {
       'src/api.gen.ts': 'export function fetchAccount() {}\n',
       'src/printer.ts': 'export class Printer {\n  show(x: { balance: number }) {}\n}\n',
       'cmd/rates.swift': 'func build() {\n}\n',
+      'src/limits.rs': 'pub struct A;\npub struct B;\n\nimpl A {\n    pub const MAX: u8 = 1;\n}\n\nimpl B {\n    pub const MAX: u8 = 2;\n}\n',
       'conf/app.yml': `server:\n  pool:\n${Array.from({ length: 6 }, (_, i) => `new_key${i}: 1\n`).join('')}`,
       'src/ids.rs': 'pub type Id = u16;\n',
     });
@@ -693,6 +695,8 @@ describe('listUsesOutsideDiff', () => {
         { file: 'src/job.py', symbol: 'function Job.__init__', change: 'body changed' },
         { file: 'src/job.py', symbol: 'field Job.cost', change: 'added' },
         { file: 'src/job.py', symbol: 'function Job.run', change: 'added' },
+        // A constant in an `impl` block is named with its type, so the `MAX` of `A` and that of `B` stay apart.
+        { file: 'src/limits.rs', symbol: 'constant B.MAX', change: 'body changed' },
         // A function or type declared in a function, an arrow function or a Go function literal, and the fields of such a
         // type, are never named.
         { file: 'src/outer.ts', symbol: 'function outer', change: 'body changed' },

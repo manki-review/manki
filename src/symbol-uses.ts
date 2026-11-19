@@ -1840,7 +1840,7 @@ class ParsedFile {
   /** Each lookup of an item in a collection field on a touched line, outside tests. */
   readonly lookups: Lookup[];
   private readonly byKey = new Map<string, Declaration>();
-  /** The type each of `methods` is declared on. */
+  /** The type each of `methods` is declared on, and that of any other declaration in a block of `rules.owners` but in no type, such as a constant in a Rust `impl`. */
   private readonly owners: Map<Declaration, string>;
   private readonly members = new Map<string, Declaration[]>();
   private readonly fieldsByLine = new Map<number, Declaration[]>();
@@ -1890,6 +1890,11 @@ class ParsedFile {
     }
     this.methods = this.findMethods();
     this.owners = new Map(this.methods.map(m => [m.decl, m.owner]));
+    for (const decl of this.declarations) {
+      if (decl.kind === 'function' || decl.container || this.rules.receiver) continue;
+      const { owner } = this.scopeOf(decl.node);
+      if (owner && TYPE_PATH.test(owner)) this.owners.set(decl, owner);
+    }
     const selfMethods = this.methods.filter(m => m.self);
     const methodNodes = new Set(selfMethods.map(m => m.decl.node.id()));
     const { kinds: rebinders = [], byParameter } = rules.rebinds ?? {};
