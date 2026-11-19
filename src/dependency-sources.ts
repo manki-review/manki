@@ -231,7 +231,8 @@ async function resolveDependency(
     const reason = !VERSION.test(p.version) ? `${shown(p.file)} locks it at a version Manki does not read`
       : !registry.isRegistrySource(p.source, p.name, p.version) ? `${shown(p.file)} locks it from ${shown((p.source ?? 'this repository').slice(0, 200))}, not from ${registry.id}`
         : p.patched ? `${shown(p.file)} locks it with a patch applied, so the PR does not run the code ${registry.id} publishes`
-          : !registry.namesHost(p.source) && otherRegistry !== undefined ? `it may come from another registry than ${registry.id}, since ${otherRegistry}`
+          // npm and Yarn fetch an entry that names the public registry from the one the settings give, so the host proves nothing.
+          : otherRegistry !== undefined ? `it may come from another registry than ${registry.id}, since ${otherRegistry}`
             : unreadIn(posix.dirname(p.file), true) !== undefined ? `${shown(p.file)} locks it, and ${shown(unreadIn(posix.dirname(p.file), true)!)}, which Manki does not read, can decide what an install there gets`
               : undefined;
     if (reason) refuse(reason, { ...(VERSION.test(p.version) && { version: p.version }), source: 'lockfile', file: p.file });

@@ -67,7 +67,7 @@ export interface Registry {
   isRegistrySource(source: string | undefined, name: string, version: string): boolean;
   /**
    * Whether a lockfile's source names the registry by its host. A source without one, such as Yarn's `npm`, means the
-   * registry the project is set up with, so it counts only when `otherRegistry` finds no other one set.
+   * registry the project is set up with, which the note on the package says.
    */
   namesHost(source: string | undefined): boolean;
   /**

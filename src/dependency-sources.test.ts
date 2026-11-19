@@ -248,6 +248,9 @@ describe('dependencyLoader', () => {
     const berryLock = '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"left-pad@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "left-pad@npm:1.2.0"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n';
     const another = 'it may come from another registry than npm, since';
     const scopedRequired = { 'package.json': JSON.stringify({ dependencies: { '@corp/pad': '^1.0.0' } }) };
+    // npm fetches an entry that names its public host from the registry the settings give, so that entry is refused too.
+    const packageLock = JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/left-pad': { version: '1.2.0', resolved: `https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz` } } });
+    await expect(round({ 'package-lock.json': packageLock, '.npmrc': 'registry=https://npm.corp.example/\n' }).load('npm/left-pad')).rejects.toThrow(`${another} .npmrc sets the registry`);
     const berry = round({ 'yarn.lock': berryLock, '.yarnrc.yml': 'npmRegistryServer: "https://npm.corp.example"\n' });
     await expect(berry.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: ${another} .yarnrc.yml sets the registry https://npm.corp.example.`);
     expect(dependencyOutcomes(berry.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', version: '1.2.0', status: 'refused' })]);
