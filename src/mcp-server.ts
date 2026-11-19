@@ -624,7 +624,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
   /** Returns the folder a call reads, and for a dependency the note that names its version. */
   const rootOf = async (args: object): Promise<{ dir: string; note?: string }> => {
     const { repo, dependency } = args as { repo?: string; dependency?: string };
-    if (dependency !== undefined && loadDependency) {
+    if (dependency && loadDependency) {
       if (repo) throw new Error('Name a related repo in `repo` or a dependency in `dependency`, not both.');
       const { key, dir, note } = await loadDependency(dependency);
       countRead(key);
