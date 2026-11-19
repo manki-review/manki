@@ -1449,7 +1449,7 @@ describe('handleReviewCommentReply', () => {
   const FIX_PR_CLOSED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: this PR is no longer open. A maintainer should decide and resolve this thread.';
   const FIX_UNCHECKED = 'Unverified. You name #7. I check a fix in another pull request only for a blocker or a security finding, so I did not check #7. This thread stays as it is.';
   const MERGED = { state: 'closed', merged: true, base: { ref: 'main' }, merge_commit_sha: 'd'.repeat(40) };
-  it.each<[string, Record<string, unknown>, string, boolean, boolean?, boolean?, string?, ('blocker' | 'warning' | 'detached')?]>([
+  it.each<[string, Record<string, unknown>, string, boolean, boolean?, boolean?, string?, ('blocker' | 'warning' | 'detached' | 'outdated')?]>([
     ['a pull request merged into this PR\'s base', MERGED, FIX_CONFIRMED, true],
     ['a pull request merged into this PR\'s base, named by a maintainer', MERGED, FIX_CONFIRMED, true, false, false, 'alice'],
     ['a throwaway pull request stacked on this one', { state: 'open', merged: false, base: { ref: 'feature' }, merge_commit_sha: 'e'.repeat(40) }, FIX_STACKED, false],
@@ -1462,6 +1462,8 @@ describe('handleReviewCommentReply', () => {
     // GitHub moves no line of a thread on another file. This PR added a line above the finding's line 10 since the
     // thread was posted, so the line #7 has to replace is line 11.
     ['a detached blocker whose line this PR moved', MERGED, FIX_CONFIRMED, true, false, false, 'pr-author', 'detached'],
+    // A push that changes the thread's line makes it outdated, so GitHub reports no line and the posted one is mapped the same way.
+    ['an outdated blocker whose line this PR moved', MERGED, FIX_CONFIRMED, true, false, false, 'pr-author', 'outdated'],
     // Nothing reads the check of a thread that does not block, so it makes no checkout and no second call.
     ['a warning', MERGED, FIX_UNCHECKED, false, false, false, 'pr-author', 'warning'],
   ])('answers a claim that another pull request fixes a finding, and never clears the thread: %s', async (_name, otherState, answer, confirmed, checkFails = false, prClosed = false, sender = 'pr-author', kind = 'blocker') => {
@@ -1478,12 +1480,13 @@ describe('handleReviewCommentReply', () => {
       const posted = 'f'.repeat(40);
       octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: kind === 'detached'
         ? { user: MANKI_USER, body: findingComment('blocker', true), path: 'src/other.ts', line: 3, original_line: 3, original_commit_id: posted }
+        : kind === 'outdated' ? { user: MANKI_USER, body: findingComment('blocker'), path: 'src/file.ts', line: null, original_line: 10, original_commit_id: posted }
         : { user: MANKI_USER, body: findingComment(kind === 'warning' ? 'warning' : 'blocker'), path: 'src/file.ts', line: 10 } });
       octokit.rest.pulls.get.mockImplementation(async ({ pull_number }: { pull_number: number }) => ({ data: pull_number === 7
         ? { ...otherState, head: { sha: 'b'.repeat(40) }, changed_files: 1 }
         : { title: 'Retry uploads', body: '', state: 'open', merged: false, head: { sha: 'a'.repeat(40) }, base: { ref: 'main' }, merge_commit_sha: 'c'.repeat(40), changed_files: 1 } }));
       octokit.rest.pulls.listFiles = jest.fn();
-      const at = kind === 'detached' ? 11 : 10;
+      const at = kind === 'detached' || kind === 'outdated' ? 11 : 10;
       const change = [{ filename: 'src/file.ts', status: 'modified', patch: `@@ -${at},1 +${at},1 @@\n-log(token)\n+check(token)` }];
       const sincePosted = [{ filename: 'src/file.ts', status: 'modified', patch: '@@ -0,0 +1,1 @@\n+// header' }];
       // This PR's head holds none of the other commits but the one the thread was posted on, and every other commit compared holds the one before it.

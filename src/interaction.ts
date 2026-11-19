@@ -561,10 +561,12 @@ export async function handleReviewCommentReply(
     // Only a blocking or security thread reads the result, so no other thread is checked. A thread that could not be read may be one.
     const checksElsewhere = checked.fixedIn !== undefined && (!live || isGuarded(live));
     // A merged or closed PR keeps its threads as they are, so a fix elsewhere is not checked there. GitHub moves no line
-    // of a detached thread, so its line is the one on the commit it was posted on.
+    // of a detached thread, and an outdated one has none, so their line is the one on the commit they were posted on.
+    const outdated = !findingData?.detached && !root.comment.line && !!root.comment.original_line;
+    const postedPlace = outdated ? findingPlace(findingBody, root.comment.path, root.comment.original_line, root.comment.original_line) : place;
     const elsewhere = !checksElsewhere ? undefined : closed ? { why: 'this PR is no longer open' } : await checkFixedElsewhere(checked.fixedIn!, {
-      octokit, owner, repo, prNumber, file: filePath, line: currentFindingLine(place), evidenceFiles: evidenceFiles ?? [],
-      ...(findingData?.detached && { postedOn: root.comment.original_commit_id }),
+      octokit, owner, repo, prNumber, file: filePath, line: currentFindingLine(postedPlace), evidenceFiles: evidenceFiles ?? [],
+      ...((findingData?.detached || outdated) && { postedOn: root.comment.original_commit_id }),
       ...(client.repoTools && loadWorkspace && { checkout: async (commit: string) => loadWorkspace(commit) }),
       ask: async (checkout, change, pr, lines) => (await response.recorded.sendMessage(FIXED_ELSEWHERE_SYSTEM_PROMPT, fixedElsewhereContext(findingBody, filePath, lines, change, pr), {
         timeoutMs: REPLY_TIMEOUT_MS, repoTools: repoTools(checkout, REPLY_STEPS, undefined, 'check'),
