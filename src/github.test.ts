@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 
 import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, SideCheckState } from './types';
+import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, SideCheckState } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
@@ -2526,8 +2526,8 @@ describe('postReview body lead', () => {
     expect(recorded).not.toContain('Started automatically');
 
     // A round that kept findings of the last attempt names the models of their finders below that, with the checks it kept.
-    const keptFrom = (agentMetrics: RoundContext['reviewers']['agentMetrics'], comparisons?: RoundContext['comparisons']) => makeContext({
-      meta: { ...retried.meta, reusedFrom: { review: 7, timestamp: '2026-11-18T15:00:00.000Z' } }, reviewers: { agents: [], agentMetrics }, ...(comparisons && { comparisons }),
+    const keptFrom = (agentMetrics: RoundContext['reviewers']['agentMetrics'], comparisons?: RoundContext['comparisons'], fixes?: RoundFix[]) => makeContext({
+      meta: { ...retried.meta, reusedFrom: { review: 7, timestamp: '2026-11-18T15:00:00.000Z' } }, reviewers: { agents: [], agentMetrics }, ...(comparisons && { comparisons }), ...(fixes && { fixes: { fixes } }),
     });
     const keptLine = async (context: RoundContext): Promise<string> => {
       mockCreateReview.mockClear();
@@ -2540,6 +2540,9 @@ describe('postReview body lead', () => {
     expect(await keptLine(keptFrom([opus, { ...gpt, reused: undefined }]))).toBe('Claude Opus 5.5 read this commit in the last attempt, and its findings were kept.');
     expect(await keptLine(keptFrom([opus, gpt], [compared]))).toBe('Claude Opus 5.5 and GPT 5.5 read this commit in the last attempt, and their findings were kept, as were the answers of 1 check.');
     expect(await keptLine(keptFrom([], [compared, compared]))).toBe('This review kept the answers of 2 checks from the last attempt on this commit.');
+    // A kept fix check counts as a kept check too.
+    const fixed: RoundFix = { at: ['src/a.ts:1'], problem: 'p', reviewer: 'Fix check 1', status: 'root_cause', reused: true };
+    expect(await keptLine(keptFrom([], undefined, [fixed]))).toBe('This review kept the answers of 1 check from the last attempt on this commit.');
   });
 
   it('posts follow-up warnings off the changed lines as file-level threads, security ones included, and lists the suggestions', async () => {

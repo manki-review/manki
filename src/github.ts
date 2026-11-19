@@ -1413,7 +1413,7 @@ export async function updateProgressComment(
 function reusedLine(context: RoundContext): string | undefined {
   if (!context.meta.reusedFrom) return undefined;
   const models = [...new Set((context.reviewers.agentMetrics ?? []).filter(m => m.reused).map(m => sanitizeMarkdown(m.model ? modelDisplayName(m.model) : m.name)))];
-  const checks = [...(context.comparisons ?? []), ...(context.prClaims?.claims ?? [])].filter(c => c.reused).length;
+  const checks = [...(context.comparisons ?? []), ...(context.prClaims?.claims ?? []), ...(context.fixes?.fixes ?? [])].filter(c => c.reused).length;
   const answers = checks > 0 ? `the answers of ${countOf(checks, 'check')}` : '';
   if (models.length === 0) return answers ? `This review kept ${answers} from the last attempt on this commit.` : undefined;
   return `${models.join(' and ')} read this commit in the last attempt, and ${models.length === 1 ? 'its' : 'their'} findings were kept${answers && `, as were ${answers}`}.`;
