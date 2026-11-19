@@ -3480,9 +3480,11 @@ describe('runReview', () => {
       const prior = buildPriorRound(1, [makePriorWarningFinding({ fingerprint: { file: 'src/report.ts', lineStart: 3, lineEnd: 3, slug: 'old-issue' } })]);
       const pushTo = (line: number) => `diff --git a/src/report.ts b/src/report.ts\n--- a/src/report.ts\n+++ b/src/report.ts\n@@ -${line} +${line} @@\n-old\n+new\n`;
       const keep = (findings: Finding[]) => findings;
-      const evaluated = async (interRoundDiff: string | undefined, thread: Partial<OpenThread> = {}, answer: object = workaround, judged = keep) => {
+      const evaluated = async (interRoundDiff: string | undefined, thread: Partial<OpenThread> = {}, answer: object = workaround, judged = keep, reader?: object) => {
         mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: judged(input.findings), summary: 'ok', threadEvaluations: [addressed] }));
-        const followUp = await runReview(fixClients(undefined, answer), {
+        const followClients = fixClients(undefined, answer);
+        if (reader) jest.mocked(followClients.judge.sendMessage).mockResolvedValue({ content: JSON.stringify(reader) });
+        const followUp = await runReview(followClients, {
           config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext, isFollowUp: true,
           openThreads: [makePriorOpenThread({ file: 'src/report.ts', line: 3, ...thread })], previousFindings: [], priorRounds: [prior], interRoundDiff, headSha: 'sha2',
         });
@@ -3506,6 +3508,10 @@ describe('runReview', () => {
       expect(await evaluated(pushTo(3), {}, workaround, () => [])).toEqual([addressed]);
       expect(await evaluated(pushTo(3), {}, workaround, findings => findings.map(f => ({ ...f, severity: 'note' as const })))).toEqual([addressed]);
       expect(await evaluated(pushTo(3), {}, workaround, findings => findings.map(f => ({ ...f, refutation: disproved })))).toEqual([addressed]);
+      // A workaround whose finding stands keeps the thread open after the verdict reader's blockers too, even when no cited line proves the finding and the review leaves it out.
+      const unproven = (findings: Finding[]) => findings.map(f => ({ ...f, evidence: { checks: [], proof: [] } }));
+      const readerBlocker = { verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/rate.ts', line: 2, title: '`rate` divides by zero', description: 'd' }], summary: 's', whatThisDoes: '', whatToTest: '' };
+      expect(await evaluated(pushTo(3), {}, workaround, unproven, readerBlocker)).toEqual(partly);
     } finally {
       for (const dir of [root, docs.root]) rmSync(dir, { recursive: true, force: true });
     }

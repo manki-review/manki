@@ -2140,15 +2140,16 @@ export async function runReview(
   const priorBlockers = collectPriorBlockers(sortedPriorRounds);
   const pushChangedFiles = filesChangedByPush(interRoundDiff);
   const pushWorkarounds = pushedWorkarounds(fixChecks.record?.fixes ?? [], interRoundDiff);
-  // A workaround keeps a thread open only while its finding stands: kept by the judge as a warning or a blocker, and not disproved.
-  const standingWorkarounds = (findings: Finding[]) => pushWorkarounds.filter(fix => findings.some(f =>
+  // A workaround keeps a thread open only while its finding stands: kept by the judge as a warning or a blocker, and not
+  // disproved. Read once before any step hides a warning, so every grading of the threads in the round counts the same ones.
+  const standingWorkarounds = pushWorkarounds.filter(fix => finalFindings.some(f =>
     f.reviewers.includes(fix.reviewer) && (f.severity === 'blocker' || f.severity === 'warning') && !disproof(f)));
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   // Unlinked before the threads are graded, so the grades, the fold and the verdict all see the finding on its own.
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads);
   finalFindings = finalFindings.map(guard);
-  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds(finalFindings));
+  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
   if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
   const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
@@ -2160,7 +2161,7 @@ export async function runReview(
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   if (stopped) return incompleteAfterJudge(stopped);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
-  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds(finalFindings));
+  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
   const proven = hideUnprovenWarnings(finalFindings, config.review?.rules);
   finalFindings = proven.posted;
@@ -2233,7 +2234,7 @@ export async function runReview(
       // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
       const readerFindings = hideUnprovenWarnings(folded.blockers.map(guard).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), config.review?.rules, () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
-      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds(finalFindings));
+      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
       if (readerFindings.some(f => f.severity === 'blocker')) {
         outcome = 'ADDRESS_FIRST';
