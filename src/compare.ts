@@ -3,9 +3,9 @@ import * as core from '@actions/core';
 import { addedLines } from './diff';
 import { fenceText, InstructionFile } from './github';
 import { extractJSON } from './json';
-import { resolveInRoot } from './mcp-server';
 import { LLMClient, SendMessageOptions } from './providers';
 import { offeredRepos, repoTools } from './related-repos';
+import { realRepoPath } from './mcp-server';
 import { locationFile, locationLines, shownLines } from './refute';
 import { isUsableElement, parseFindings } from './review';
 import { AddedPiece, CodeExcerpt, PLAIN_FILE_NAME, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
@@ -315,7 +315,7 @@ export async function runComparisons(clientFor: (reviewer: string) => LLMClient,
   const implementations = questions.filter(q => q.kind === 'implementations');
   const asked = [...fields.slice(0, MAX_FIELD_QUESTIONS), ...implementations.slice(0, MAX_IMPLEMENTATION_QUESTIONS)];
   const cut = [...fields.slice(MAX_FIELD_QUESTIONS), ...implementations.slice(MAX_IMPLEMENTATION_QUESTIONS)];
-  return ask(clientFor, asked, cut, options, { what: 'sibling comparison', system: systemPrompt, parse: (content, reviewer) => ({ findings: parseFindings(content, reviewer) }) });
+  return ask(clientFor, asked, cut, options, { what: 'sibling comparison', system: systemPrompt, parse: (content, reviewer) => ({ findings: parseFindings(content, reviewer, options.workspace) }) });
 }
 
 /**
@@ -323,7 +323,7 @@ export async function runComparisons(clientFor: (reviewer: string) => LLMClient,
  * in the checkouts of `related`. Their `proof` and `relatedProof` hold only those lines. Returns how many were dropped.
  */
 function parseRelatedFindings(content: string, reviewer: string, workspace: string, related?: RelatedRepoTools): { findings: Finding[]; dropped: number } {
-  const parsed = parseFindings(content, reviewer);
+  const parsed = parseFindings(content, reviewer, workspace);
   // `parseFindings` maps the usable elements in order, so the raw `proof` of each finding is the element at its index.
   const elements = (JSON.parse(extractJSON(content, 'array')) as unknown[]).filter(isUsableElement);
   const findings = parsed.flatMap((finding, i) => {
@@ -381,20 +381,14 @@ function parsePatternAnswer(
   if (!answer) throw new Error(`the answer is ${JSON.stringify(parsed.answer)}, not one of ${PATTERN_ANSWERS.join(', ')}`);
   const addedBy = (changed: ParsedDiff) => new Map(changed.files.map(f => [f.path, [...addedLines(f).keys()]]));
   const [reviewed, added] = [addedBy(diff), addedBy(fullDiff)];
-  const rootPath = (file: string) => {
-    try {
-      return resolveInRoot(workspace, file).relative;
-    } catch {
-      return file;
-    }
-  };
-  const adds = (lines: Map<string, number[]>, file: string, start: number, end: number) => !!lines.get(file)?.some(line => line >= start && line <= end);
+  const adds = (lines: Map<string, number[]>, file: string, start: number, end: number) => !!lines.get(realRepoPath(workspace, file))?.some(line => line >= start && line <= end);
   const existing = (proof: unknown) => {
-    const places: Array<{ file: string; start: number; end: number }> = [];
+    const places: Array<{ file: string; real: string; start: number; end: number }> = [];
     for (const location of shownLines(proof, workspace).proof) {
-      const [file, [start, end]] = [rootPath(locationFile(location)), locationLines(location)];
-      if (adds(added, file, start, end) || places.some(p => p.file === file && p.start <= end && start <= p.end)) continue;
-      places.push({ file, start, end });
+      const [file, [start, end]] = [locationFile(location), locationLines(location)];
+      const real = realRepoPath(workspace, file);
+      if (adds(added, file, start, end) || places.some(p => p.real === real && p.start <= end && start <= p.end)) continue;
+      places.push({ file, real, start, end });
     }
     return places.map(({ file, start, end }) => `${file}:${start}${end > start ? `-${end}` : ''}`);
   };
@@ -403,10 +397,10 @@ function parsePatternAnswer(
   if (answer !== 'differs' || !Array.isArray(parsed.findings)) return { findings: [], record };
   // `parseFindings` maps the usable elements in order, so the raw `proof` and `cost` of each finding are the element at its index.
   const elements = parsed.findings.filter(isUsableElement);
-  const reported = elements.length > 0 ? parseFindings(JSON.stringify(elements), reviewer, instructionFiles) : [];
+  const reported = elements.length > 0 ? parseFindings(JSON.stringify(elements), reviewer, workspace, instructionFiles) : [];
   const findings = reported.flatMap((finding, i) => {
     const { proof: cited, cost } = elements[i];
-    const own = rootPath(finding.file);
+    const own = finding.file;
     const proof = existing(cited);
     if ((!finding.rule && proof.length < 2) || !adds(reviewed, own, finding.line, finding.line)) return [];
     const evidence = { ...(finding.evidence ?? { checks: [] }), proof: [...proof, `${own}:${finding.line}`] };

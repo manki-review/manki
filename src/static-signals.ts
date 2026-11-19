@@ -9,7 +9,7 @@ import { holdsLines } from './code-window';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { LockfileDiff, lockfileSignals, MAX_LOCKFILE_BYTES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
-import { readFileInRoot, resolveInRoot } from './mcp-server';
+import { readFileInRoot, realRepoPath } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, SkippedFile, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
 
@@ -590,7 +590,7 @@ function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }
   for (const cited of all.slice(0, MAX_CITATIONS)) {
     const { rank, says } = check(cited);
     const result = { citation: cited.citation, rank, says: namesPrFile(workspace, cited) ? `${says} (the PR also has a file at \`${cited.repo}:${cited.path}\`)` : says };
-    const key = `${cited.repo}:${pathInCheckout(checkouts.get(cited.repo), cited.path)}:${cited.start}`;
+    const key = `${cited.repo}:${realRepoPath(checkouts.get(cited.repo), cited.path)}:${cited.start}`;
     const place = places.get(key);
     if (!place) places.set(key, { ...result, others: [] });
     else if (result.rank < place.rank) places.set(key, { ...result, others: [...place.others, place.citation] });
@@ -598,15 +598,6 @@ function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }
   }
   return [...places.values()].map(({ citation, says, others }) =>
     `\`${citation}\`${others.length > 0 ? ` (also cited as ${others.map(other => `\`${other}\``).join(', ')})` : ''} ${says}`);
-}
-
-/** Returns `path` as the checkout at `dir` names the file, so two spellings of one file compare equal, or `path` itself when the file is not there. */
-function pathInCheckout(dir: string | undefined, path: string): string {
-  try {
-    return dir ? resolveInRoot(dir, path).relative : path;
-  } catch {
-    return path;
-  }
 }
 
 const withoutWhitespace = (text: string): string => text.replace(/\s+/g, '');

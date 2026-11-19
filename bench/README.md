@@ -74,7 +74,7 @@ The gate pools all runs of one commit per case, over every report of a side that
 
 ### The route of each blocker
 
-The report stores with each finding how it got its grade: the grade its finder gave it, and the lowest one when the finders split, the severity table cell the judge stated, the grade a confirmed doubt would give, the grade the judge itself stated for that case, whether it is a security finding, each step of its grade path with what made the step, the number of doubts of each kind and how many of them state the consequence, the outcome of the refuter's check, whether an unsettled check ended on its step budget, how many lines of related repos and of the PR's repository that check cited when it cited a related line, and the check status. With each run it stores why the review reached its outcome. These are grades, kinds and counts. No text of a finding is among them.
+The report stores with each finding how it got its grade: the grade its finder gave it, and the lowest one when the finders split, the severity table cell the judge stated, the grade a confirmed doubt would give, the grade the judge itself stated for that case, whether it is a security finding, whether only claim checks or only fix checks reported it, each step of its grade path with what made the step, the number of doubts of each kind and how many of them state the consequence, the outcome of the refuter's check, whether an unsettled check ended on its step budget, how many lines of related repos and of the PR's repository that check cited when it cited a related line, and the check status. With each run it stores why the review reached its outcome. These are grades, kinds and counts. No text of a finding is among them.
 
 The summary counts the blockers of the complete runs by the route each took, against the grade of the key item it matches. A blocker that matches a key item only partly counts in that item's column. The table holds counts only, so it also covers hold-out cases. The routes are:
 
@@ -83,6 +83,7 @@ The summary counts the blockers of the complete runs by the route each took, aga
 - **raised by a confirmed doubt**: its finders graded it lower, a doubt of the judge held it below blocker, and the refuter's check confirmed the doubt. Only a security finding or one that restates an earlier blocker takes this route.
 - **raised by a confirmed doubt and consequence**: its finders graded it lower, a doubt of the judge held it below blocker, and every check confirmed the defect and every premise, among them the consequence the judge named.
 - **claim check**: only the checks of the PR text's claims reported it, whatever happened to its grade afterwards.
+- **fix check**: only the checks of the fixes in the change reported it, whatever happened to its grade afterwards.
 - **verdict reader**: the verdict reader named it.
 - **other**: another step made it a blocker, such as a broken rule under `review.rules: block`.
 - **unknown**: the report holds no route. Each ref writes its own case reports, so every blocker of a ref from before the route was stored is unknown.

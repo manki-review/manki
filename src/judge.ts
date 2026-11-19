@@ -587,7 +587,7 @@ For each finding, evaluate:
 
 ${agentCount >= 2 ? `## Finder Agreement
 
-Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\`, \`Reference check: ...\`, \`Consumer check: ...\`, \`Dependency check: ...\`, \`Pattern check: ...\`, \`Claim check N\` or \`Sweep N\` comes from a call asked about that spot, that counterpart in a related repo, that piece of new structure, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two. Nor does a finding named \`Second read N\`: one finder's model read the change again after it was shown the titles of the round's findings, so its copy of a finding is no independent report.
+Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\`, \`Reference check: ...\`, \`Consumer check: ...\`, \`Dependency check: ...\`, \`Pattern check: ...\`, \`Claim check N\`, \`Fix check N\` or \`Sweep N\` comes from a call asked about that spot, that counterpart in a related repo, that piece of new structure, that statement of the PR author, that fix or that kind of mistake, not from a finder, so it never counts as one of the two. Nor does a finding named \`Second read N\`: one finder's model read the change again after it was shown the titles of the round's findings, so its copy of a finding is no independent report.
 - **Both finders reported the defect** (one finding from each, which you mark as duplicates): strong evidence that it is real. Drop it only when you can say concretely why both are wrong.
 - **One finder reported it**: ordinary. The other finder's silence is not evidence against it.
 
@@ -1136,8 +1136,8 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExist
 }
 
 /** Returns the `file:line` locations a finding's proving lines and evidence lines cite, the proving lines first. */
-function citedLocations(f: Finding): string[] {
-  return [...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)];
+function citedLocations(f: Finding, workspace: string | undefined): string[] {
+  return [...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks, workspace)];
 }
 
 /**
@@ -1183,7 +1183,7 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
     let windows = 0;
     const prReads = { reads: 0 };
     const relatedReads = { reads: 0 };
-    for (const location of new Set(citedLocations(finding))) {
+    for (const location of new Set(citedLocations(finding, workspace))) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const [, file, start, end] = location.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
       if (!file) continue;
@@ -1384,7 +1384,7 @@ function parseThreadEvaluations(value: unknown): ThreadEvaluation[] | undefined 
     });
 }
 
-export function parseJudgeResponse(responseText: string): JudgeResult {
+export function parseJudgeResponse(responseText: string, workspace: string | undefined): JudgeResult {
   const parsed = JSON.parse(extractJSON(responseText));
 
   const parseFindings = (arr: unknown[]): JudgedFinding[] => {
@@ -1397,7 +1397,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const variantOf = parsePriorId(f.variantOf);
       const category = oneOf(FINDING_CATEGORIES, f.category, 'category');
       const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
-      const proof = parseProof(f.proof);
+      const proof = parseProof(f.proof, workspace);
       const title = String(f.title || 'Untitled');
       const stated = tableWord(f.row);
       // `ignore` is the prompt's word for a dropped finding, and `none` says the same.
@@ -1586,7 +1586,7 @@ export async function runJudgeAgent(
     ];
   };
   // The judge gets each finding's code and the hunks of the files it judges, never a cut copy of the whole diff.
-  const citedFiles = (f: Finding) => citedLocations(f).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
+  const citedFiles = (f: Finding) => citedLocations(f, refutation?.workspace).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
   const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...citedFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path) && !listed.has(f.path)).map(shortenLongLines) });
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles, carried);
@@ -1613,7 +1613,7 @@ export async function runJudgeAgent(
     if (reply.truncated) {
       throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
     }
-    const parsed = parseJudgeResponse(reply.content);
+    const parsed = parseJudgeResponse(reply.content, refutation?.workspace);
     return { ...parsed, findings: alignJudgedToFindings(findings, parsed.findings, asked).flatMap((j, i) => (j ? [{ ...j, id: i + 1 }] : [])) };
   };
   const leftOut = (result: JudgeResult): { findings: number[]; threads: string[] } => {

@@ -6,7 +6,7 @@ import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
 import { shownLines } from './refute';
 import { offeredRepos, repoTools } from './related-repos';
-import type { EarlierAnswers } from './compare';
+import type { EarlierAnswer, EarlierAnswers } from './compare';
 import { fencePrText, parseFindings, unmarkedText } from './review';
 import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
@@ -218,79 +218,108 @@ function parseCheck(text: string, workspace: string, reviewer: string, related?:
   const { proof, relatedProof } = stated === 'unchecked' ? { proof: [], relatedProof: [] } : shownLines(parsed.proof, workspace, related);
   const status = proof.length + relatedProof.length > 0 ? stated : 'unchecked';
   const reason = typeof parsed.reason === 'string' ? safeTruncate(parsed.reason.trim(), MAX_REASON_CHARS) : '';
-  const reported = status === 'disproven' && Array.isArray(parsed.findings) ? parseFindings(JSON.stringify(parsed.findings), reviewer) : [];
+  const reported = status === 'disproven' && Array.isArray(parsed.findings) ? parseFindings(JSON.stringify(parsed.findings), reviewer, workspace) : [];
   return { status, ...(reason && { reason }), ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }), reported };
 }
 
 /** Whether `reviewer` is the name `runClaimChecks` gives a claim check. */
 export const isClaimCheck = (reviewer: string): boolean => reviewer.startsWith(`${CLAIM_CHECK_NAME} `);
 
-interface ClaimCheckOptions {
-  /** The PR's raw diff, which each check is shown. */
-  rawDiff: string;
+/** How a step of checks with repository tools runs. `R` is the record of a check an earlier attempt can hand on. */
+export interface CheckOptions<R = never> {
   effort?: EffortLevel;
   /** The checked-out PR head, which a check reads with read-only tools. Without it no check runs. */
   workspace?: string;
   /** The related repos of the round, which a check reads with the same tools. */
   related?: RelatedRepoTools;
-  /** Lines of the related repos to start from, by the position of the claim, each as `owner/name:path:line: text`. */
-  relatedLines?: ReadonlyMap<number, readonly string[]>;
   /** Stops the checks still running or not yet asked, which are then recorded as `timed_out`. */
   signal?: AbortSignal;
   /** Hears how many checks are asked and the findings of each. A check skipped for want of tools made no call. */
   progress?: CheckProgress<number>;
   /** The answers of an earlier attempt. A check sent exactly what its answer's `inputDigest` says is not asked again. */
-  earlier?: EarlierAnswers<RoundPrClaim>;
+  earlier?: EarlierAnswers<R>;
 }
 
+interface ClaimCheckOptions extends CheckOptions<RoundPrClaim> {
+  /** The PR's raw diff, which each check is shown. */
+  rawDiff: string;
+  /** Lines of the related repos to start from, by the position of the claim, each as `owner/name:path:line: text`. */
+  relatedLines?: ReadonlyMap<number, readonly string[]>;
+}
+
+/** The answer of one check of `checkEach` with the digest of what it was sent, the earlier answer it kept, or why there is none. */
+export type Checked<A, R = never> =
+  | { answer: A; inputDigest: string; kept?: undefined; call?: undefined }
+  | ([R] extends [never] ? never : { kept: EarlierAnswer<R>; answer?: undefined; call?: undefined })
+  | { call: 'failed' | 'timed_out' | 'skipped'; answer?: undefined; kept?: undefined };
+
 /**
- * Asks one call per claim whether the code proves it, `MAX_PARALLEL_CHECKS` at a time, each on the client `clientFor`
- * returns for its reviewer name. A check sees its claim, the diff and its `relatedLines`, never the PR description. Returns the findings of
- * the claims a check disproved, which carry that name, and a record of every claim. A claim whose check did not run,
- * failed or was stopped by `signal` is `unchecked`, with why in `call`. It never throws.
+ * Sends each message of `asked` with `system` in a call of its own, with repository tools, `MAX_PARALLEL_CHECKS` at a
+ * time, each on the client `clientFor` returns for its reviewer name. `parse` reads a reply, and a reply it throws on is
+ * asked for once more. Returns each answer in the order of `asked`. A check whose earlier answer was sent the same input
+ * keeps that answer. A check without a workspace or repository tools makes no call and is `skipped`. One that fails is
+ * `failed`, and one `signal` stopped is `timed_out`. It never throws.
  */
-export async function runClaimChecks(
-  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, relatedLines, signal, progress, earlier }: ClaimCheckOptions,
-): Promise<{ findings: Finding[]; claims: RoundPrClaim[] }> {
-  // A name never carries text from the PR, so each check is numbered and its record holds the quote.
-  const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}`, lines: relatedLines?.get(i) }));
+export async function checkEach<A extends { status: string; reported: Finding[] }, R extends { call?: string; inputDigest?: string } = never>(
+  clientFor: (reviewer: string) => LLMClient, asked: ReadonlyArray<{ reviewer: string; message: string }>, system: string,
+  parse: (content: string, reviewer: string, workspace: string) => A, { effort, workspace, related, signal, progress, earlier }: CheckOptions<R>,
+): Promise<Checked<A, R>[]> {
   progress?.started(asked.length);
-  const answers = await mapWithConcurrency(asked, MAX_PARALLEL_CHECKS, async ({ claim, reviewer, lines }): Promise<{ record: RoundPrClaim; findings: Finding[] }> => {
-    const unchecked = (call: NonNullable<RoundPrClaim['call']>) => ({ record: { ...claim, reviewer, status: 'unchecked' as const, call }, findings: [] });
+  return mapWithConcurrency(asked, MAX_PARALLEL_CHECKS, async ({ reviewer, message }): Promise<Checked<A, R>> => {
     const client = clientFor(reviewer);
-    if (!workspace || !client.repoTools) return unchecked('skipped');
-    const message = checkMessage(claim, rawDiff, lines);
-    const inputDigest = digestOf([CHECK_SYSTEM_PROMPT, message, effort ?? null, CHECK_STEPS, offeredRepos(related)]);
+    if (!workspace || !client.repoTools) return { call: 'skipped' };
+    const inputDigest = digestOf([system, message, effort ?? null, CHECK_STEPS, offeredRepos(related)]);
     const kept = earlier?.answers.get(reviewer);
     if (kept && !kept.record.call && kept.record.inputDigest === inputDigest && await earlier!.confirm()) {
       core.info(`${reviewer}: kept the answer of the last attempt`);
-      return { record: { ...kept.record, reused: true as const }, findings: kept.findings };
+      return { kept } as Checked<A, R>;
     }
-    if (signal?.aborted) return unchecked('timed_out');
+    if (signal?.aborted) return { call: 'timed_out' };
     const options: SendMessageOptions = {
       ...(effort && { effort }), ...(signal && { signal }), repoTools: repoTools(workspace, CHECK_STEPS, related), timeoutMs: CHECK_TIMEOUT_MS,
     };
     try {
-      const { reported, ...answer } = await sendWithParseRetry(
+      const answer = await sendWithParseRetry(
         message,
-        sent => client.sendMessage(CHECK_SYSTEM_PROMPT, sent, options),
+        sent => client.sendMessage(system, sent, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);
-          return parseCheck(reply.content, workspace, reviewer, related);
+          return parse(reply.content, reviewer, workspace);
         },
         error => core.warning(`${reviewer} reply could not be used (${error}), asking once more`),
       );
-      core.info(`${reviewer}: ${answer.status}${reported.length > 0 ? `, ${reported.length} finding(s)` : ''}`);
-      return { record: { ...claim, reviewer, ...answer, ...(answer.status === 'disproven' && { findings: reported.length }), inputDigest }, findings: reported };
+      core.info(`${reviewer}: ${answer.status}${answer.reported.length > 0 ? `, ${answer.reported.length} finding(s)` : ''}`);
+      return { answer, inputDigest };
     } catch (error) {
       if (signal?.aborted) {
-        core.warning(`${reviewer} was still running when the round stopped waiting, so its claim stays unchecked this round`);
-        return unchecked('timed_out');
+        core.warning(`${reviewer} was still running when the round stopped waiting, so it stays unchecked this round`);
+        return { call: 'timed_out' };
       }
-      core.warning(`${reviewer} failed, so its claim stays unchecked this round: ${error}`);
-      return unchecked('failed');
+      core.warning(`${reviewer} failed, so it stays unchecked this round: ${error}`);
+      return { call: 'failed' };
     }
-  }, ({ record, findings }) => progress?.ended(record.call === 'skipped' ? undefined : findings.length));
+  }, checked => progress?.ended(checked.call === 'skipped' ? undefined : checked.answer?.reported.length ?? checked.kept?.findings.length ?? 0));
+}
+
+/**
+ * Asks one call per claim whether the code proves it, as `checkEach` says. A check sees its claim, the diff and its
+ * `relatedLines`, never the PR description. Returns the findings of the claims a check disproved, which carry the check's
+ * name, and a record of every claim. A claim whose check did not run, failed or was stopped is `unchecked`, with why in
+ * `call`. It never throws.
+ */
+export async function runClaimChecks(
+  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, relatedLines, ...options }: ClaimCheckOptions,
+): Promise<{ findings: Finding[]; claims: RoundPrClaim[] }> {
+  // A name never carries text from the PR, so each check is numbered and its record holds the quote.
+  const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}`, message: checkMessage(claim, rawDiff, relatedLines?.get(i)) }));
+  const checked = await checkEach(clientFor, asked, CHECK_SYSTEM_PROMPT, (content, reviewer, workspace) => parseCheck(content, workspace, reviewer, options.related), options);
+  const answers = asked.map(({ claim, reviewer }, i): { record: RoundPrClaim; findings: Finding[] } => {
+    const result = checked[i];
+    if (result.kept) return { record: { ...result.kept.record, reused: true as const }, findings: result.kept.findings };
+    if (!result.answer) return { record: { ...claim, reviewer, status: 'unchecked', call: result.call }, findings: [] };
+    const { reported, ...rest } = result.answer;
+    return { record: { ...claim, reviewer, ...rest, ...(rest.status === 'disproven' && { findings: reported.length }), inputDigest: result.inputDigest }, findings: reported };
+  });
   return { findings: answers.flatMap(a => a.findings), claims: answers.map(a => a.record) };
 }
 

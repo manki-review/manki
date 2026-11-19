@@ -186,7 +186,7 @@ describe('parseFindings', () => {
       { severity: 'warning', title: 'No fix', file: 'main.go', line: 3, description: 'd', howToFix: '   ' },
     ]);
 
-    const findings = parseFindings(json, 'TestReviewer');
+    const findings = parseFindings(json, 'TestReviewer', undefined);
     expect(findings).toHaveLength(2);
     expect(findings[0].howToFix).toBe('Check the bound first.');
     // A blank fix in words is no fix, so the finding keeps the layout of one without it.
@@ -199,6 +199,20 @@ describe('parseFindings', () => {
     expect(findings[0].suggestedFix).toBe('Fix it like this.');
     expect(findings[0].reviewers).toEqual(['TestReviewer']);
     expect(findings[0].evidence).toBeUndefined();
+
+    // Each path is read from the repository root however the reply spelled it. An absolute path into the checkout loses
+    // the checkout's path, in the proof and in the line an evidence entry starts with. Any other absolute path, and any
+    // absolute path read without a checkout, stays as it is.
+    const checkout = join(__dirname, '..');
+    const reply = JSON.stringify([{
+      title: 'Spelled', file: './src/a.ts', line: 1, description: 'd', proof: ['./src/a.ts:1', '/src/b.ts:2', `${__filename}:3`], evidence: [`\`${__filename}:4\` reads the row`, 'no location here'],
+    }]);
+    const [spelled] = parseFindings(reply, 'R', checkout);
+    expect(spelled.file).toBe('src/a.ts');
+    expect(spelled.evidence).toEqual({ checks: ['`src/review.test.ts:4` reads the row', 'no location here'], proof: ['src/a.ts:1', '/src/b.ts:2', 'src/review.test.ts:3'] });
+    expect(parseFindings(reply, 'R', undefined)[0].evidence).toEqual({ checks: [`\`${__filename}:4\` reads the row`, 'no location here'], proof: ['src/a.ts:1', '/src/b.ts:2', `${__filename}:3`] });
+    expect(parseFindings(JSON.stringify([{ title: 'Absolute', file: __filename, line: 1, description: 'd' }]), 'R', checkout)[0].file).toBe('src/review.test.ts');
+    expect(parseFindings(JSON.stringify([{ title: 'No file', description: 'd' }]), 'R', undefined)[0].file).toBe('');
   });
 
   it('reads the evidence, keeps only proof entries that start with a location, marks open leads not checked, reads a pre-existing mark with its reason, and keeps a rule only when its loaded file holds the quote', () => {
@@ -215,7 +229,7 @@ describe('parseFindings', () => {
       { lead: true, severity: 'blocker', title: 'Cache may go stale', file: 'src/c.ts', line: 3, description: '', checked: 'read src/c.ts:3', left: 'find the writers' },
     ]);
 
-    const [checked, unchecked, lead] = parseFindings(json, 'R');
+    const [checked, unchecked, lead] = parseFindings(json, 'R', undefined);
 
     expect(checked.evidence).toEqual({
       checks: ['src/api.ts:42 divides by `page`'],
@@ -224,11 +238,11 @@ describe('parseFindings', () => {
       emptySearch: 'grep `page === 0` under src: no match',
     });
     // At most ten locations, and an entry that lists many lines keeps the first line of every later entry.
-    const many = parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`, 'src/b.ts:42']);
+    const many = parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`, 'src/b.ts:42'], undefined);
     expect(many).toHaveLength(10);
     expect(many.slice(0, 3)).toEqual(['src/a.ts:1', 'src/b.ts:42', 'src/a.ts:2']);
     // Entries without a location never push a later location out.
-    expect(parseProof([...Array.from({ length: 10 }, (_, i) => `the caller ${i}`), 'lib/parser.go:7'])).toEqual(['lib/parser.go:7']);
+    expect(parseProof([...Array.from({ length: 10 }, (_, i) => `the caller ${i}`), 'lib/parser.go:7'], undefined)).toEqual(['lib/parser.go:7']);
     expect(checked.notChecked).toBeUndefined();
     expect([checked.preExisting, unchecked.preExisting]).toEqual(['The division predates this PR.', undefined]);
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
@@ -260,19 +274,19 @@ describe('parseFindings', () => {
       ['Every model change needs a migration.', undefined],
     ];
     const replies = JSON.stringify(rules.map(([rule, ruleFile]) => ({ severity: 'warning', title: 'Rule', file: 'shop/models.py', line: 4, description: 'd', rule, ruleFile })));
-    const marked = parseFindings(replies, 'R', instructionFiles);
+    const marked = parseFindings(replies, 'R', undefined, instructionFiles);
     expect(marked[0].rule).toEqual({ file: 'CONTRIBUTING.md', quote: 'Every model change needs a migration.' });
     expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', ...Array(5).fill('CONTRIBUTING.md'), ...Array(6).fill(undefined)]);
     // The kept quote holds the text of each link only, so nothing the file lacks reaches the judge or the comment.
     expect(marked.slice(4, 8).map(f => f.rule?.quote)).toEqual(['PR titles must use Conventional Commits', ...Array(3).fill('Every model change needs a migration.')]);
     // Without the instruction files no rule can be checked.
-    expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(14).fill(undefined));
+    expect(parseFindings(replies, 'R', undefined).map(f => f.rule)).toEqual(Array(14).fill(undefined));
   });
 
   it('parses markdown-wrapped JSON', () => {
     const json = '```json\n[{"severity":"note","title":"Naming","file":"a.ts","line":1,"description":"Rename this."}]\n```';
 
-    const findings = parseFindings(json, 'Reviewer');
+    const findings = parseFindings(json, 'Reviewer', undefined);
     expect(findings).toHaveLength(1);
     expect(findings[0].severity).toBe('note');
   });
@@ -280,7 +294,7 @@ describe('parseFindings', () => {
   it('parses markdown-wrapped JSON without language tag', () => {
     const json = '```\n[{"severity":"note","title":"Why?","file":"b.ts","line":5,"description":"Unclear code."}]\n```';
 
-    const findings = parseFindings(json, 'Reviewer');
+    const findings = parseFindings(json, 'Reviewer', undefined);
     expect(findings).toHaveLength(1);
     expect(findings[0].severity).toBe('note');
   });
@@ -300,7 +314,7 @@ describe('parseFindings', () => {
     // The keys are model output: each is cut, kept to plain characters, and only the first few are named.
     ['keys that are long, odd or many', JSON.stringify([Object.fromEntries([['a\n::error::`b`', 1], ['k'.repeat(80), 1], ...Array.from({ length: 9 }, (_, i) => [`k${i}`, 1])])]), new RegExp(`\\(1 element\\(s\\), keys: a\\?\\?\\?error\\?\\?\\?b\\?, k{30}, k0, k1, k2, k3, k4, k5, \\.\\.\\.\\)$`)],
   ])('throws on %s', (_label, input, expected) => {
-    expect(() => parseFindings(input, 'Reviewer')).toThrow(expected);
+    expect(() => parseFindings(input, 'Reviewer', undefined)).toThrow(expected);
   });
 
   it('reads the unit lines apart from the findings, and an answer of unit lines alone as no findings', () => {
@@ -318,26 +332,26 @@ describe('parseFindings', () => {
     const finding = { unit: 'U1', severity: 'warning', title: 'An empty tag passes the check', file: 'a.sh', line: 1, description: 'd' };
     try {
       const reply = JSON.stringify([...lines, finding]);
-      expect(parseFindings(reply, 'Reviewer').map(f => f.title)).toEqual([finding.title]);
+      expect(parseFindings(reply, 'Reviewer', undefined).map(f => f.title)).toEqual([finding.title]);
       expect(parseUnitLines(reply, units)).toEqual([
         { unit: 'U1', checked: 'An empty tag passes it.', defect: 'An empty tag passes the check' },
         { unit: 'U2', checked: 'Both branches.' },
         { unit: 'U3', checked: 'c'.repeat(200), defect: 'd'.repeat(200) },
       ]);
-      expect(parseFindings(JSON.stringify(lines), 'Reviewer')).toEqual([]);
+      expect(parseFindings(JSON.stringify(lines), 'Reviewer', undefined)).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();
       // Findings that are all unusable fail the reply as they do without unit lines, so the finder's retry asks again.
-      expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer'))
+      expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer', undefined))
         .toThrow(/^no element has a title or a description \(1 element\(s\), keys: severity, file, line\)$/);
       // An element with a string `unit` and nothing that makes it a finding is a unit line, whatever else it holds.
       const located = JSON.stringify([{ unit: 'U1', checked: 'Read it.', defect: 'none', severity: 'note', file: 'a.sh', line: 1, confidence: 'high' }]);
-      expect([parseFindings(located, 'Reviewer'), parseUnitLines(located, units)]).toEqual([[], [{ unit: 'U1', checked: 'Read it.' }]]);
+      expect([parseFindings(located, 'Reviewer', undefined), parseUnitLines(located, units)]).toEqual([[], [{ unit: 'U1', checked: 'Read it.' }]]);
       // An element with a `description` is a finding, also without a `title`, and naming a unit does not change that.
       const described = JSON.stringify([{ unit: 'U1', description: 'The ban check runs after the grant.', severity: 'warning', file: 'a.sh', line: 1 }]);
-      expect([parseFindings(described, 'Reviewer').map(f => f.description), parseUnitLines(described, units)]).toEqual([['The ban check runs after the grant.'], []]);
+      expect([parseFindings(described, 'Reviewer', undefined).map(f => f.description), parseUnitLines(described, units)]).toEqual([['The ban check runs after the grant.'], []]);
       // An element with a `title` is a finding, so a malformed one that names a unit fails the reply.
       const malformed = { unit: 'U1', title: '', severity: 'warning', file: 'a.sh', line: 1 };
-      expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer')).toThrow(/^no element has a title or a description \(1 element\(s\), keys: unit, title, severity, file, line\)$/);
+      expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer', undefined)).toThrow(/^no element has a title or a description \(1 element\(s\), keys: unit, title, severity, file, line\)$/);
       expect(parseUnitLines(JSON.stringify([malformed]), units)).toEqual([]);
       // A reply that does not parse holds no line.
       expect(parseUnitLines('I checked U1.', units)).toEqual([]);
@@ -349,8 +363,8 @@ describe('parseFindings', () => {
   it('parses empty array without warning', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     try {
-      expect(parseFindings('[]', 'Reviewer')).toEqual([]);
-      expect(parseFindings('```json\n[]\n```', 'Reviewer')).toEqual([]);
+      expect(parseFindings('[]', 'Reviewer', undefined)).toEqual([]);
+      expect(parseFindings('```json\n[]\n```', 'Reviewer', undefined)).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
@@ -368,7 +382,7 @@ describe('parseFindings', () => {
         'a stray note',
       ]);
 
-      const findings = parseFindings(json, 'Reviewer');
+      const findings = parseFindings(json, 'Reviewer', undefined);
       expect(findings.map(f => [f.title, f.file, f.line, f.description, f.suggestedFix])).toEqual([
         ['Untitled finding', '', 0, 'The sum overflows.', undefined],
         ['Unchecked sum', '', 0, '', undefined],
@@ -389,7 +403,7 @@ describe('parseFindings', () => {
       description: 'Desc',
     }]);
 
-    const findings = parseFindings(json, 'Reviewer');
+    const findings = parseFindings(json, 'Reviewer', undefined);
     expect(findings[0].severity).toBe('note');
   });
 });
@@ -1374,7 +1388,7 @@ describe('buildReviewerUserMessage', () => {
 describe('parseFindings with extractJSON', () => {
   it('extracts JSON array from text with preamble', () => {
     const input = 'Here are my findings:\n\n[{"severity":"blocking","title":"Bug","file":"a.ts","line":1,"description":"Crash"}]';
-    const findings = parseFindings(input, 'Test');
+    const findings = parseFindings(input, 'Test', undefined);
     expect(findings).toHaveLength(1);
     expect(findings[0].title).toBe('Bug');
   });
@@ -2447,9 +2461,10 @@ describe('runReview', () => {
       expect(system).toContain('. Specifications: when the change touches a wire format');
       expect(system).toContain('. Consumers: for each public type, function or serialized format the change alters');
     }
-    // One call on the dedup model translates the names for the search, under its own stage.
-    expect(jest.mocked(clients.dedup!.sendMessage)).toHaveBeenCalledTimes(1);
-    expect(jest.mocked(clients.dedup!.sendMessage).mock.calls[0][1]).toContain('```\nComputeFee\n```');
+    // One call on the dedup model translates the names for the search, under its own stage, beside the list of fixes.
+    const translations = jest.mocked(clients.dedup!.sendMessage).mock.calls.filter(([system]) => !system.startsWith('You list the fixes'));
+    expect(translations).toHaveLength(1);
+    expect(translations[0][1]).toContain('```\nComputeFee\n```');
     expect(result.llmCalls?.filter(c => c.stage === 'translate')).toHaveLength(1);
     // A translation that fails leaves the round complete: the search runs with the diff's names and the record says why.
     expect(untranslated.verdict).toBe(result.verdict);
@@ -3199,11 +3214,12 @@ describe('runReview', () => {
       const run = async (clients: ReviewClients) => {
         mockedRunJudgeAgent.mockClear();
         mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
-        const { prClaims, llmCalls, plannerDurationMs: _plannerDurationMs, agentDurationMs: _agentDurationMs, judgeDurationMs: _judgeDurationMs, ...result } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
+        // The list of fixes is asked on the dedup model, which one run leaves out.
+        const { prClaims, fixes: _fixes, llmCalls, plannerDurationMs: _plannerDurationMs, agentDurationMs: _agentDurationMs, judgeDurationMs: _judgeDurationMs, ...result } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
         return {
           prClaims,
           checks: reviewerCalls(clients).filter(([system]) => isCheck(system)).length,
-          stages: llmCalls?.map(c => c.stage).filter(stage => stage !== 'claims' && stage !== 'claim_check'),
+          stages: llmCalls?.map(c => c.stage).filter(stage => stage !== 'claims' && stage !== 'claim_check' && stage !== 'fixes'),
           // What every call but a claim check was sent, and how the round ended.
           finders: reviewerCalls(clients).filter(([system]) => !isCheck(system)),
           judge: JSON.parse(JSON.stringify(mockedRunJudgeAgent.mock.calls.map(call => call[2]))),
@@ -3409,6 +3425,66 @@ describe('runReview', () => {
         expect(result.verdict).toBe(unclaimed.result.verdict);
       }
     });
+  });
+
+  it('lists the fixes from the diff alone, checks each in a call of its own beside the finders, and hands the judge only a workaround that stands', async () => {
+    const rate = 'export function rate(total: number, count: number) {\n  return total / count;\n}\n';
+    const report = (guard: string) => `import { rate } from './rate';\nexport function report(total: number, count: number) {\n${guard}  return rate(total, count);\n}\n`;
+    const isFixCheck = (system: string) => system.startsWith('You check one fix');
+    const listing = (system: string) => system.startsWith('You list the fixes');
+    const workaround = {
+      status: 'workaround', actsAt: 'symptom', cause: '`rate` divides without checking `count`.', stillFails: 'Every other caller of `rate`.', proof: ['src/rate.ts:2'],
+      finding: { severity: 'warning', title: 'The guard hides a division by zero in `rate`', file: 'src/report.ts', line: 3, description: '`rate` still divides by zero for other callers.', howToFix: 'Check `count` in `rate`.', proof: ['src/rate.ts:2'] },
+    };
+    const fixClients = (planner?: object): ReviewClients & { dedup: LLMClient } => {
+      const clients = {
+        ...makeClients(),
+        dedup: { sendMessage: jest.fn(async (system: string) => ({ content: listing(system) ? JSON.stringify([{ lines: ['src/report.ts:3'], problem: 'A count of zero divides by zero.' }]) : '[]' })) } as unknown as LLMClient,
+        ...(planner && { planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify(planner) }) } as unknown as LLMClient }),
+      };
+      Object.assign(clients.reviewer, { repoTools: true });
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: isFixCheck(system) ? JSON.stringify(workaround) : '[]' }));
+      return clients;
+    };
+    const { root, diff } = gitWorkspace({ 'src/rate.ts': rate, 'src/report.ts': report('') }, { 'src/report.ts': report('  if (count === 0) return 0;\n') });
+    const prContext = { title: 'Speed up the report', body: 'Adds a guard for an empty report.', baseBranch: 'main' };
+    mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+    const clients = fixClients();
+    const trivial = fixClients({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' });
+    const docs = gitWorkspace({ 'README.md': 'Report\n' }, { 'README.md': 'Report\n\nAn empty report shows zero.\n' });
+    let result;
+    let quick;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
+      quick = await runReview(trivial, { config: makeConfig(), diff: docs.diff, rawDiff: 'raw diff', repoContext: '', workspace: docs.root, prContext });
+    } finally {
+      for (const dir of [root, docs.root]) rmSync(dir, { recursive: true, force: true });
+    }
+
+    // The list is asked once on the dedup model, and sees the diff without the PR text.
+    const lists = jest.mocked(clients.dedup.sendMessage).mock.calls.filter(([system]) => listing(system));
+    expect(lists).toHaveLength(1);
+    expect(lists[0][1]).toContain('## Pull Request Diff');
+    expect(lists[0][1]).not.toMatch(/Speed up the report|Adds a guard/);
+    const checks = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => isFixCheck(system));
+    expect(checks).toHaveLength(1);
+    expect(checks[0][1]).not.toMatch(/Speed up the report|Adds a guard/);
+    expect(checks[0][2]).toEqual({ effort: 'high', signal: expect.any(AbortSignal), repoTools: { root, steps: 12 }, timeoutMs: 600_000 });
+    expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ title: workaround.finding.title, reviewers: ['Fix check 1'] })]);
+    expect(result.fixes).toEqual({
+      fixes: [{
+        at: ['src/report.ts:3'], problem: 'A count of zero divides by zero.', reviewer: 'Fix check 1', status: 'workaround',
+        cause: workaround.cause, stillFails: workaround.stillFails, proof: ['src/rate.ts:2'], findings: 1,
+      }],
+    });
+    expect(result.llmCalls?.filter(c => c.stage === 'fixes')).toHaveLength(1);
+    expect(result.llmCalls?.filter(c => c.stage === 'fix_check').map(c => c.agent)).toEqual(['Fix check 1']);
+    expect(result.agentNames).not.toContain('Fix check 1');
+    // The quick check of a trivial change asks for no list and checks no fix.
+    expect(quick.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
+    expect(jest.mocked(trivial.dedup.sendMessage).mock.calls.filter(([system]) => listing(system))).toEqual([]);
+    expect(quick.fixes).toBeUndefined();
+    expect(quick.llmCalls?.filter(c => c.stage === 'fixes' || c.stage === 'fix_check')).toEqual([]);
   });
 
   it('gives none of the eight checks to a warning a later step keeps out of the review, and no check to a warning in the `rare` column a memory suppression hides', async () => {
@@ -6966,7 +7042,7 @@ describe('runReview', () => {
     // Each finder's tool calls, the steps beside the finders, the judge's grades and the verdict reader reach the progress as they happen.
     const events = () => onProgress.mock.calls.map(([event]: [import('./review').ReviewProgress]) => event);
     expect(events().filter(e => e.phase === 'side-check').map(e => e.sideCheck).sort((a, b) => a!.kind.localeCompare(b!.kind))).toEqual([
-      { kind: 'claim', total: 0 }, { kind: 'comparison', total: 0 }, { kind: 'pattern', total: 0 }, { kind: 'related', total: 0 }, { kind: 'second_read', total: 1 }, { kind: 'second_read', ended: 0 },
+      { kind: 'claim', total: 0 }, { kind: 'comparison', total: 0 }, { kind: 'fix', total: 0 }, { kind: 'pattern', total: 0 }, { kind: 'related', total: 0 }, { kind: 'second_read', total: 1 }, { kind: 'second_read', ended: 0 },
     ]);
     expect(events().filter(e => e.phase === 'verdict-reader')).toEqual([{ phase: 'verdict-reader' }, { phase: 'verdict-reader', verdictReaderDone: true }]);
     expect(events().filter(e => e.phase === 'agent-start')).toEqual(result.agentNames.map(agentName => ({ phase: 'agent-start', agentName })));

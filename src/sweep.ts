@@ -95,12 +95,12 @@ function byPriority(sources: readonly Finding[]): Finding[] {
   return sources.map(f => ({ f, key: key(f) })).sort((a, b) => a.key.map((n, i) => n - b.key[i]).find(d => d !== 0) ?? 0).map(({ f }) => f);
 }
 
-function parseSweep(text: string, reviewer: string): { general: boolean; defectClass: string; findings: Finding[] } {
+function parseSweep(text: string, reviewer: string, workspace?: string): { general: boolean; defectClass: string; findings: Finding[] } {
   const parsed = JSON.parse(extractJSON(text, 'object')) as Record<string, unknown>;
   const defectClass = typeof parsed.class === 'string' ? parsed.class.trim().slice(0, MAX_CLASS_CHARS) : '';
   if (!defectClass) throw new Error('the reply names no defect class');
   const general = parsed.general !== false;
-  const findings = general && Array.isArray(parsed.findings) ? parseFindings(JSON.stringify(parsed.findings), reviewer) : [];
+  const findings = general && Array.isArray(parsed.findings) ? parseFindings(JSON.stringify(parsed.findings), reviewer, workspace) : [];
   return { general, defectClass, findings };
 }
 
@@ -124,7 +124,8 @@ export function sharesCitedLine(a: Cites, b: Cites): boolean {
 
 /** Returns `f`'s own line and the lines it cites in its proof or evidence, in spans no wider than `citedBy` reads. */
 function citedSpans(f: Cites): Array<{ file: string; start: number; end: number }> {
-  return [`${f.file}:${f.line}`, ...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)]
+  // `parseEvidence` already read these lines with the round's workspace, so no checkout is needed to read them again.
+  return [`${f.file}:${f.line}`, ...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks, undefined)]
     .flatMap(location => parseLocation(location) ?? []).filter(span => span.end - span.start <= OWN_LINE_TOLERANCE * 2);
 }
 
@@ -173,7 +174,7 @@ export async function runSweeps(
         message => client.sendMessage(systemPrompt(tools), message, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);
-          return parseSweep(reply.content, reviewer);
+          return parseSweep(reply.content, reviewer, workspace);
         },
         error => core.warning(`${reviewer} reply could not be used (${error}), asking once more`),
       );

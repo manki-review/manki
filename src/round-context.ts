@@ -462,6 +462,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(result.sweeps?.length && { sweeps: result.sweeps }),
     ...(result.secondReads && { secondReads: result.secondReads }),
     ...(result.prClaims && { prClaims: result.prClaims }),
+    ...(result.fixes && { fixes: result.fixes }),
     ...(result.scope && { scope: result.scope }),
   };
 }

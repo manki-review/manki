@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { realpathSync } from 'fs';
 import { posix } from 'path';
 
 import * as core from '@actions/core';
@@ -6,6 +7,34 @@ import parseDiff from 'parse-diff';
 import { minimatch, Minimatch } from 'minimatch';
 
 import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, canLeaveOut } from './types';
+
+/**
+ * Returns `path` as the path from the repository root, without `./` or `.` segments. An absolute path into the checkout
+ * at `workspace`, under its own or its real path, loses that prefix. Any other absolute path stays as it is, since
+ * nothing says which repository path it names. Symlinks are not followed, so the path stays the one the diff names.
+ */
+export function repoPath(path: string, workspace?: string): string {
+  if (!path.trim()) return '';
+  const normal = posix.normalize(path.trim().replace(/\\/g, '/'));
+  const roots = workspace ? [workspace, realPathOf(workspace)].map(root => `${posix.normalize(root.replace(/\\/g, '/')).replace(/\/+$/, '')}/`) : [];
+  const root = roots.find(prefix => normal.startsWith(prefix));
+  return root ? normal.slice(root.length) : normal;
+}
+
+/** Returns the real path of `dir`, or `dir` itself when it cannot be resolved. */
+function realPathOf(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/** Returns the `file:line` or `file:start-end` `location` with its file as `repoPath` gives it. */
+export function repoLocation(location: string, workspace?: string): string {
+  const file = location.replace(/:\d+(?:-\d+)?$/, '');
+  return `${repoPath(file, workspace)}${location.slice(file.length)}`;
+}
 
 /**
  * Parse a unified diff string into structured data. Each `diff --git` section is parsed on its own, and its paths come

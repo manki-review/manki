@@ -1,6 +1,5 @@
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
-import { posix } from 'path';
 
 import * as core from '@actions/core';
 import * as github from '@actions/github';
@@ -9,7 +8,7 @@ import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
 import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
-import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
+import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern, repoPath } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
@@ -940,9 +939,9 @@ function reviewHeading(routing: DashboardData['routing']): string {
   return `Review (${sanitizeMarkdown(route)})`;
 }
 
-const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', sweep: 'sweeps', second_read: 'second reads' };
-// `runReview` starts these four steps beside the finders in every round, the second reads after the finders and the sweeps after the judge, so the sweeps show under the judge.
-const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern'];
+const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', fix: 'fix checks', sweep: 'sweeps', second_read: 'second reads' };
+// `runReview` starts these five steps beside the finders in every round, the second reads after the finders and the sweeps after the judge, so the sweeps show under the judge.
+const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern', 'fix'];
 
 /**
  * The line of the side checks of `kinds`, such as `⏳ Comparisons and claim checks: 2 of 5 done, 1 finding`. It is done
@@ -1636,7 +1635,7 @@ function hasDotSegment(path: string): boolean {
  * URL or one that leaves the repository, so a comparison with a repository path never matches on its spelling.
  */
 function plainRepoPath(path: string): string | undefined {
-  const normal = posix.normalize(path.trim());
+  const normal = repoPath(path);
   return LINKABLE_PATH_RE.test(normal) && !hasDotSegment(normal) ? normal : undefined;
 }
 
