@@ -2142,7 +2142,7 @@ async function runFullReview(
       return;
     }
     const { fullDiff, diff, excludedFiles, rawDiff, closedPaths } = collected;
-    // Every later read of the head, the tools' checkout included, keeps out a file renamed out of a closed path too.
+    // Every later read, the tools' checkout included, keeps out the open path of a rename into or out of a closed path too.
     config = { ...config, closed_paths: closedPaths };
     const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
@@ -2591,10 +2591,10 @@ async function handleReviewCommentInteraction(): Promise<void> {
       if (!headSha || !baseRef) return undefined;
       let closedPaths = config.closed_paths ?? [];
       try {
-        // A file the PR renames out of a closed path holds the closed file's text at the head, so it is closed too.
+        // The open path of a file the PR renames into or out of a closed path holds the closed file's text at the base or the head.
         if (closedPaths.length > 0) closedPaths = reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), [], closedPaths).closedPaths;
       } catch (error) {
-        core.warning(`Could not read the PR's diff to find the files it moves out of a closed path, so the reply runs without tools: ${failureReason(error)}`);
+        core.warning(`Could not read the PR's diff to find the files it moves into or out of a closed path, so the reply runs without tools: ${failureReason(error)}`);
         return undefined;
       }
       return fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha, baseRef }, [client], config.exclude_paths, closedPaths);

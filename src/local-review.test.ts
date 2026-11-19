@@ -12,7 +12,7 @@ import { filesChangedByPush, runReview } from './review';
 import { GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { REACH_DOUBT } from './types';
 import type { Finding, ReviewResult, RoundOutcome, ThreadEvaluation } from './types';
-import { BASE_READS_FILE, BASE_REF } from './workspace';
+import { BASE_READS_FILE, BASE_REF, closedPathsOf } from './workspace';
 
 jest.mock('@actions/core');
 jest.mock('./providers', () => ({
@@ -317,18 +317,21 @@ describe('reviewLocal', () => {
     expect(review.base).toBe(review.head);
 
     // A file moved out of a closed path holds the closed file's text, so it is closed in the checkout and for every later read too.
+    // A file moved into one held that text at the base, so its old path is closed too.
     git(repo, 'checkout', '-q', '-b', 'moved', 'feature');
     git(repo, 'mv', 'docs/x.md', 'src/x.md');
+    git(repo, 'mv', 'guides/conventions.md', 'docs/conventions.md');
     commit(repo, 'Move the notes', { 'src/a.ts': 'const a = 1;\nconst b = 9;\n' });
     git(repo, 'checkout', '-q', 'main');
-    let movedSeen: boolean | undefined;
+    let movedSeen: { headCopy: boolean; toolsClose: string[] } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
-      movedSeen = existsSync(join(options.workspace!, 'src/x.md'));
+      movedSeen = { headCopy: existsSync(join(options.workspace!, 'src/x.md')), toolsClose: closedPathsOf(options.workspace!) };
       return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
     });
     await reviewLocal({ repoRoot: repo, base: 'feature', head: 'moved', config: { ...jest.requireActual('./config').DEFAULT_CONFIG, closed_paths: ['docs/**'] }, providerInputs: inputs });
-    expect(movedSeen).toBe(false);
-    expect(jest.mocked(runReview).mock.calls.at(-1)![1].config.closed_paths).toEqual(['docs/**', '/src/x.md']);
+    // The tool server refuses a read at the base by the list the checkout keeps, so it holds the old path too.
+    expect(movedSeen).toEqual({ headCopy: false, toolsClose: ['docs/**', '/guides/conventions.md', '/src/x.md'] });
+    expect(jest.mocked(runReview).mock.calls.at(-1)![1].config.closed_paths).toEqual(['docs/**', '/guides/conventions.md', '/src/x.md']);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('reads a symlinked config and instruction file at their targets, and no target outside the tree', async () => {

@@ -341,7 +341,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     : await loadLocalConfig(repoRoot, base, patch === undefined ? head : await patchedTree(repoRoot, head, patch), configPath, input.configOverrides);
   const raw = patch ?? await runGit(repoRoot, [...DIFF_ARGS, base, head]);
   const { fullDiff, diff, excludedFiles, rawDiff, closedPaths } = reviewableDiff(raw, loaded.config.exclude_paths, loaded.config.closed_paths);
-  // Every later read of the head, the tools' checkout included, keeps out a file renamed out of a closed path too.
+  // Every later read, the tools' checkout included, keeps out the open path of a rename into or out of a closed path too.
   const config = { ...loaded.config, closed_paths: closedPaths };
   // A patch applies to `head`, so its lockfiles are read before the change, and a commit range's after it.
   const lockfiles = await readLocalLockfiles(repoRoot, head, fullDiff, patch === undefined ? 'head' : 'base');
