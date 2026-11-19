@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, quotaResetTime, recordCalls, SendMessageOptions, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput, NotStartedError } from './providers';
-import { digestOf, escapeRegExp, formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
+import { appendTo, digestOf, escapeRegExp, formatDuration, jsonOnlyReply, mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
@@ -2470,9 +2470,9 @@ const MAX_MAPPED_PER_FILE = 6;
  * Returns the entry of each file of `diff` in the map of the change: its path, how it changed, its added and removed
  * lines, and the first `MAX_MAPPED_PER_FILE` of its `changes`.
  */
-function changeMapOf(diff: ParsedDiff, changes: readonly MappedChange[] = []): Map<string, string> {
+export function changeMapOf(diff: ParsedDiff, changes: readonly MappedChange[] = []): Map<string, string> {
   const byFile = new Map<string, MappedChange[]>();
-  for (const change of changes) byFile.set(change.file, [...byFile.get(change.file) ?? [], change]);
+  for (const change of changes) appendTo(byFile, change.file, change);
   return new Map(diff.files.map(file => {
     const { additions, deletions } = countChangedLines(file);
     const how = file.changeType === 'renamed' && file.oldPath ? `renamed from ${file.oldPath}, ` : file.changeType === 'added' ? 'new, ' : file.changeType === 'deleted' ? 'deleted, ' : '';

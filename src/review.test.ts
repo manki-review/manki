@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import {
+  changeMapOf,
   dealUnits,
   parseFindings,
   parseUnitLines,
@@ -39,7 +40,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
-import { fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -111,6 +112,21 @@ const postedRecord = (result: ReviewResult): RoundContext => JSON.parse(JSON.str
   models: { planner: 'p', judge: 'j', dedup: 'd' }, recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 5,
   diff: makeDiff(), changeDigest: 'digest', excludedFiles: [], openThreads: [], memoryLoadStatus: 'disabled',
 }, result, { judgeDurationMs: 0 }))) as RoundContext;
+
+describe('changeMapOf', () => {
+  it('maps a file of many changed declarations in time that grows linearly with their number', async () => {
+    const diff = parsePRDiff('diff --git a/src/big.ts b/src/big.ts\n--- a/src/big.ts\n+++ b/src/big.ts\n@@ -1,1 +1,1 @@\n-export const a = 1;\n+export const a = 2;');
+    const changes = (n: number) => Array.from({ length: n }, (_, i) => ({ file: 'src/big.ts', symbol: `constant c${i}`, change: 'added' as const }));
+    let entry: string | undefined;
+    await expectLinearTime((n) => {
+      const all = changes(n);
+      const started = performance.now();
+      entry = changeMapOf(diff, all).get('src/big.ts');
+      return performance.now() - started;
+    }, 100_000);
+    expect(entry).toBe(`src/big.ts (+1 -1): ${Array.from({ length: 6 }, (_, i) => `constant c${i} (added)`).join(', ')}, 99994 more`);
+  });
+});
 
 describe('dealUnits', () => {
   const units = (count: number, file = 'src/a.ts', from = 1) => Array.from({ length: count }, (_, i) => ({ id: `U${from + i}`, kind: 'function' as const, file, start: i + 1, end: i + 1, name: `f${i}` }));
