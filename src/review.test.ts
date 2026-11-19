@@ -3,7 +3,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import {
+  dealUnits,
   parseFindings,
+  parseUnitLines,
   parseProof,
   validateSeverity,
   determineOutcome,
@@ -37,7 +39,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
-import { fingerprintEntriesFromLegacy, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -54,6 +56,8 @@ import { repoToolsPrompt } from './providers/cli-utils';
 const failedPlanner = (): LLMClient => ({ sendMessage: jest.fn().mockRejectedValue(new Error('planner unavailable')) });
 const isRelatedCheck = (system: string) => system.startsWith('You check a pull request\'s change against one counterpart in a related repository');
 const isPatternCheck = (system: string) => system.startsWith('You check one piece of structure a pull request adds');
+/** Returns a finder's line for each unit of the change `message` lists, as a finder that answers for every unit gives them. */
+const unitLines = (message: string) => [...message.matchAll(/^(U\d+) (?:function `\w+`|condition) at /gm)].map(([, unit]) => ({ unit, checked: 'Followed each path.', defect: 'none' }));
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -105,6 +109,49 @@ const postedRecord = (result: ReviewResult): RoundContext => JSON.parse(JSON.str
   models: { planner: 'p', judge: 'j', dedup: 'd' }, recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 5,
   diff: makeDiff(), changeDigest: 'digest', excludedFiles: [], openThreads: [], memoryLoadStatus: 'disabled',
 }, result, { judgeDurationMs: 0 }))) as RoundContext;
+
+describe('dealUnits', () => {
+  const units = (count: number, file = 'src/a.ts', from = 1) => Array.from({ length: count }, (_, i) => ({ id: `U${from + i}`, kind: 'function' as const, file, start: i + 1, end: i + 1, name: `f${i}` }));
+  const ids = (list: Array<{ id: string }> | undefined) => list?.map(unit => unit.id);
+
+  it('gives every finder all units of a call up to the cap, deals them out in turns past it, and cuts the rest', () => {
+    const one = [{}];
+    const twenty = units(20);
+    const both = dealUnits(twenty, ['A', 'B'], one);
+    expect([ids(both.byFinder.get('A')), ids(both.byFinder.get('B')), both.cut]).toEqual([ids(twenty), ids(twenty), []]);
+
+    const fifty = units(50);
+    const dealt = dealUnits(fifty, ['A', 'B'], one);
+    expect(ids(dealt.byFinder.get('A'))).toEqual(ids(fifty.filter((_, i) => i % 2 === 0 && i < 40)));
+    expect(ids(dealt.byFinder.get('B'))).toEqual(ids(fifty.filter((_, i) => i % 2 === 1 && i < 40)));
+    expect(ids(dealt.cut)).toEqual(ids(fifty.slice(40)));
+    const alone = dealUnits(fifty, ['A'], one);
+    expect([ids(alone.byFinder.get('A')), ids(alone.cut)]).toEqual([ids(fifty.slice(0, 20)), ids(fifty.slice(20))]);
+
+    // Each slice's call takes the units of its files, a unit of a file in two slices goes to the first, and a unit of a file in no slice is cut.
+    const sliced = [{ paths: new Set(['src/a.ts', 'src/b.ts']) }, { paths: new Set(['src/b.ts', 'src/c.ts']) }];
+    const spread = [...units(15, 'src/a.ts'), ...units(10, 'src/c.ts', 16), ...units(1, 'src/b.ts', 26), ...units(1, 'src/gone.ts', 27)];
+    const perSlice = dealUnits(spread, ['A'], sliced);
+    expect([ids(perSlice.byFinder.get('A')), ids(perSlice.cut)]).toEqual([[...ids(spread.slice(0, 15))!, 'U26', ...ids(spread.slice(15, 25))!], ['U27']]);
+
+    // A file split between slices: a unit goes to the slice whose hunks hold its lines. A condition of a deleted file, or one
+    // the change only removes, goes by its base lines, since its head line can sit past the end of every hunk.
+    const spans = (from: number, to: number) => [[from, to]] as Array<[number, number]>;
+    const split = [
+      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(1, 900)]]), baseLines: new Map([['src/big.ts', spans(1, 900)], ['gone.sh', spans(1, 1000)]]) },
+      { paths: new Set(['src/big.ts', 'gone.sh']), lines: new Map([['src/big.ts', spans(901, 2000)]]), baseLines: new Map([['src/big.ts', spans(901, 2100)], ['gone.sh', spans(1001, 2000)]]) },
+    ];
+    const late = { id: 'U1', kind: 'condition' as const, file: 'src/big.ts', start: 1500, end: 1500, code: '+if (a) {' };
+    const across = { id: 'U2', kind: 'function' as const, file: 'src/big.ts', start: 880, end: 950, name: 'f' };
+    const gone = { id: 'U3', kind: 'condition' as const, file: 'gone.sh', start: 1500, end: 1500, deleted: true as const, code: '-if a' };
+    const removed = { id: 'U4', kind: 'condition' as const, file: 'src/big.ts', start: 2001, end: 2001, base: [2100, 2100] as [number, number], code: '-if (b) {' };
+    const bySlice = dealUnits([late, across, gone, removed], ['A'], split);
+    expect(ids(bySlice.byFinder.get('A'))).toEqual(['U2', 'U1', 'U3', 'U4']);
+
+    // Without a finder no unit is asked about.
+    expect([dealUnits(twenty, [], one).byFinder.size, dealUnits(twenty, [], one).cut]).toEqual([0, twenty]);
+  });
+});
 
 describe('parseFindings', () => {
   it('parses valid JSON array', () => {
@@ -236,6 +283,49 @@ describe('parseFindings', () => {
     ['keys that are long, odd or many', JSON.stringify([Object.fromEntries([['a\n::error::`b`', 1], ['k'.repeat(80), 1], ...Array.from({ length: 9 }, (_, i) => [`k${i}`, 1])])]), new RegExp(`\\(1 element\\(s\\), keys: a\\?\\?\\?error\\?\\?\\?b\\?, k{30}, k0, k1, k2, k3, k4, k5, \\.\\.\\.\\)$`)],
   ])('throws on %s', (_label, input, expected) => {
     expect(() => parseFindings(input, 'Reviewer')).toThrow(expected);
+  });
+
+  it('reads the unit lines apart from the findings, and an answer of unit lines alone as no findings', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const units = ['U1', 'U2', 'U3'].map(id => ({ id, kind: 'condition' as const, file: 'a.sh', start: 1, end: 1, code: '+if x' }));
+    const lines = [
+      { unit: 'U1', checked: 'An empty tag passes it.', defect: 'An empty tag passes the check' },
+      { unit: ' U2 ', checked: '  Both branches.  ', defect: 'None.' },
+      // A line that says nothing checked, or names a unit it was not asked about, counts for none.
+      { unit: 'U3', checked: ' ', defect: 'none' },
+      { unit: 'U9', checked: 'Read it.', defect: null },
+      { unit: 'U3', checked: 'c'.repeat(300), defect: 'd'.repeat(300) },
+    ];
+    // An element with a title is a finding, also one that names its unit.
+    const finding = { unit: 'U1', severity: 'warning', title: 'An empty tag passes the check', file: 'a.sh', line: 1, description: 'd' };
+    try {
+      const reply = JSON.stringify([...lines, finding]);
+      expect(parseFindings(reply, 'Reviewer').map(f => f.title)).toEqual([finding.title]);
+      expect(parseUnitLines(reply, units)).toEqual([
+        { unit: 'U1', checked: 'An empty tag passes it.', defect: 'An empty tag passes the check' },
+        { unit: 'U2', checked: 'Both branches.' },
+        { unit: 'U3', checked: 'c'.repeat(200), defect: 'd'.repeat(200) },
+      ]);
+      expect(parseFindings(JSON.stringify(lines), 'Reviewer')).toEqual([]);
+      expect(warnSpy).not.toHaveBeenCalled();
+      // Findings that are all unusable fail the reply as they do without unit lines, so the finder's retry asks again.
+      expect(() => parseFindings(JSON.stringify([...lines, { severity: 'warning', file: 'a.sh', line: 1 }]), 'Reviewer'))
+        .toThrow(/^no element has a title or a description \(1 element\(s\), keys: severity, file, line\)$/);
+      // An element with a string `unit` and nothing that makes it a finding is a unit line, whatever else it holds.
+      const located = JSON.stringify([{ unit: 'U1', checked: 'Read it.', defect: 'none', severity: 'note', file: 'a.sh', line: 1, confidence: 'high' }]);
+      expect([parseFindings(located, 'Reviewer'), parseUnitLines(located, units)]).toEqual([[], [{ unit: 'U1', checked: 'Read it.' }]]);
+      // An element with a `description` is a finding, also without a `title`, and naming a unit does not change that.
+      const described = JSON.stringify([{ unit: 'U1', description: 'The ban check runs after the grant.', severity: 'warning', file: 'a.sh', line: 1 }]);
+      expect([parseFindings(described, 'Reviewer').map(f => f.description), parseUnitLines(described, units)]).toEqual([['The ban check runs after the grant.'], []]);
+      // An element with a `title` is a finding, so a malformed one that names a unit fails the reply.
+      const malformed = { unit: 'U1', title: '', severity: 'warning', file: 'a.sh', line: 1 };
+      expect(() => parseFindings(JSON.stringify([...lines, malformed]), 'Reviewer')).toThrow(/^no element has a title or a description \(1 element\(s\), keys: unit, title, severity, file, line\)$/);
+      expect(parseUnitLines(JSON.stringify([malformed]), units)).toEqual([]);
+      // A reply that does not parse holds no line.
+      expect(parseUnitLines('I checked U1.', units)).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('parses empty array without warning', () => {
@@ -2176,12 +2266,12 @@ describe('runReview', () => {
     const run = async (stage: Stage, fallbackTools: boolean, error: QuotaError = limit) => {
       const clients = makeClients();
       let reported = false;
-      const answer = async (system: string, _user: string, _options?: SendMessageOptions) => {
+      const answer = async (system: string, user: string, _options?: SendMessageOptions) => {
         const answered = stageOf(system);
         if (answered === 'compare') return { content: '[]' };
         if (answered === 'sweep') return { content: JSON.stringify({ class: 'a lookup checks one of two sets', general: true, findings: [] }) };
         if (answered === 'claim_check') return { content: JSON.stringify({ status: 'unchecked', reason: 'The importer was not read.' }) };
-        const content = reported ? '[]' : JSON.stringify([blocker]);
+        const content = JSON.stringify([...unitLines(user), ...(reported ? [] : [blocker])]);
         reported = true;
         return { content };
       };
@@ -2398,13 +2488,13 @@ describe('runReview', () => {
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }]);
     const NOTE = '\n\nYou answered this message before without opening any file outside the changed files that "Uses Outside the Diff" or "In the Reference Repos" lists. ';
     const ASKED = 'without opening any file outside the changed files that';
-    const answer = (title: string) => ({ content: JSON.stringify([{ severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
+    const answer = (title: string, message = '') => ({ content: JSON.stringify([...unitLines(message), { severity: 'note', title, file: 'cmd/fee.go', line: 5, description: 'd' }]) });
     type Reads = { toolSteps?: []; filesRead?: string[] };
     type Asked = { first: Reads | ((message: string) => Reads); second?: () => Promise<{ content: string }>; workspace?: typeof change; tools?: boolean; planner?: string; leaveOut?: string; attempt?: RoundContext };
     const run = async ({ first, second = async () => ({ ...answer('Second'), toolSteps: [] }), workspace = change, tools = true, planner, leaveOut, attempt }: Asked) => {
       const clients = makeClients();
       const reads = (message: string) => (typeof first === 'function' ? first(message) : first);
-      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : isPatternCheck(system) ? { content: '{"answer": "follows"}' } : message.includes(ASKED) ? second() : { ...answer('First'), ...reads(message) }));
+      const sendMessage = jest.fn(async (system: string, message: string) => (isRelatedCheck(system) ? { content: '[]' } : isPatternCheck(system) ? { content: '{"answer": "follows"}' } : message.includes(ASKED) ? second() : { ...answer('First', message), ...reads(message) }));
       Object.assign(clients.reviewer, { sendMessage, ...(tools && { repoTools: true }) });
       if (planner) clients.planner = { sendMessage: jest.fn().mockResolvedValue({ content: planner }) } as unknown as import('./providers').LLMClient;
       // `leaveOut` drops a file from the diff the finders read, but not from the one the uses are listed for.
@@ -2524,6 +2614,148 @@ describe('runReview', () => {
     }
   }, 4 * GIT_TEST_TIMEOUT_MS);
 
+  it('asks every finder for a line per unit of the change, once more for the units still without one, keeps both answers and records the lines', async () => {
+    const gate = (check: string) => `export function allow(user: User): boolean {\n${check}  return true;\n}\n`;
+    const { root, diff } = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n') });
+    // A new file over the character budget of a slice, split between two, whose function and condition sit in the second.
+    const bigText = `${Array.from({ length: 2500 }, (_, i) => `export const v${i} = '${'x'.repeat(90)}';\n`).join('')}export function late(n: number): number {\n  if (n > 1) return 1;\n  return 0;\n}\n`;
+    const big = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/big.ts': bigText });
+    // The same file deleted, so its condition is a unit at a base line in the second slice.
+    const deleted = gitWorkspace({ 'src/gate.ts': gate(''), 'src/big.ts': bigText }, {}).root;
+    rmSync(join(deleted, 'src/big.ts'));
+    git(deleted, 'add', '-A');
+    const gone = { root: deleted, diff: parsePRDiff(git(deleted, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
+    // A change read in two slices, each with a unit.
+    const twoSlices = gitWorkspace({ 'src/gate.ts': gate('') }, {
+      'src/gate.ts': gate('  if (user.banned) return false;\n'),
+      'lib/limit.ts': `${Array.from({ length: 1600 }, (_, i) => `// pad ${i}\n`).join('')}export const cap = (n: number) => n > 1 && n < 9;\n`,
+    });
+    // A file split between slices whose last hunk only removes its last line, a condition, so its head line is past that hunk.
+    const tail = (mark: string, last: string) => `${Array.from({ length: 2500 }, (_, i) => `// ${mark.repeat(90)} ${i}\n`).join('')}${Array.from({ length: 10 }, (_, i) => `const k${i} = ${i};\n`).join('')}${last}`;
+    const trailing = gitWorkspace({ 'src/tail.ts': tail('x', 'if (debug) console.log(1);\n') }, { 'src/tail.ts': tail('y', '') });
+    // The same change with a file long enough that the diff is read in slices.
+    const sliced = gitWorkspace({ 'src/gate.ts': gate('') }, { 'src/gate.ts': gate('  if (user.banned) return false;\n'), 'assets/rates.txt': 'rate\n'.repeat(1600) });
+    const ASKED = 'without a line for';
+    const finding = (title: string) => ({ severity: 'note', title, file: 'src/gate.ts', line: 2, description: 'd' });
+    const checkedU1 = { unit: 'U1', checked: 'Both returns.', defect: 'none' };
+    const checkedU2 = { unit: 'U2', checked: 'A banned admin is refused.', defect: 'none' };
+    const run = async (first: object[], second: object[] | ((message: string) => object[]), change = { root, diff }, attempt?: RoundContext) => {
+      const clients = makeClients();
+      const sendMessage = jest.fn(async (_system: string, message: string) => ({
+        content: JSON.stringify(!message.includes(ASKED) ? first : typeof second === 'function' ? second(message) : second),
+      }));
+      Object.assign(clients.reviewer, { sendMessage });
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+      const result = await runReview(clients, {
+        config: makeConfig(), diff: change.diff, rawDiff: rebuildRawDiff(change.diff), repoContext: '', workspace: change.root,
+        ...(attempt && { headSha: 'abc', changeDigest: 'digest', earlierAttempt: { record: { ...attempt, meta: { ...attempt.meta, incomplete: true } }, review: 7 } }),
+      });
+      const messages = sendMessage.mock.calls.map(call => call[1]);
+      return { result, first: messages.filter(m => !m.includes(ASKED)), again: messages.filter(m => m.includes(ASKED)) };
+    };
+    try {
+      const asked = await run([checkedU1, finding('First')], [checkedU2, finding('Second')]);
+      expect(asked.result.agentNames).toHaveLength(2);
+      expect(asked.result.units).toEqual({
+        listed: [{ id: 'U1', kind: 'function', at: 'src/gate.ts:1-4', name: 'allow' }, { id: 'U2', kind: 'condition', at: 'src/gate.ts:2' }],
+      });
+      for (const message of asked.first) {
+        expect(message).toContain('## Units of the Change\n\nManki split the change into the units below: each function it changes, and each condition it adds, changes or removes');
+        expect(message).toContain('For a condition, name the input or state that passes it but should not, and what happens when a command or call it relies on fails, returns nothing or returns an error.');
+        expect(message).toContain('```\nU1 function `allow` at src/gate.ts:1-4\nU2 condition at src/gate.ts:2\n    +  if (user.banned) return false;\n```\n\n## Pull Request Diff');
+      }
+      // The second ask is the same message with a note that names the units without a line, and both answers' findings stay.
+      expect(asked.again).toHaveLength(2);
+      for (const message of asked.again) {
+        expect(message.startsWith(asked.first[0])).toBe(true);
+        expect(message.slice(asked.first[0].length)).toBe('\n\nYou answered this message before without a line for the unit U2 of "Units of the Change". Check that unit as that section asks. Then answer with only the findings you add and a line for it. Your earlier findings are kept. Reply with only the JSON array the system prompt describes, with no text, markdown or code fence around it.');
+      }
+      expect(asked.result.agentsAskedAgain).toEqual(asked.result.agentNames);
+      expect(asked.result.rawFindings?.map(f => f.title)).toEqual(['First', 'Second', 'First', 'Second']);
+      // A line that names no defect is recorded without one.
+      const recorded = [{ unit: 'U1', checked: checkedU1.checked }, { unit: 'U2', checked: checkedU2.checked }];
+      expect([...asked.result.agentUnitLines!]).toEqual(asked.result.agentNames.map(name => [name, recorded]));
+      // A retry of the round keeps each finder whose input, units included, is the same, with its unit lines.
+      const kept = await run([], [], { root, diff }, postedRecord(asked.result));
+      expect([kept.first, kept.result.reused?.finders]).toEqual([[], kept.result.agentNames]);
+      expect([...kept.result.agentUnitLines!]).toEqual(kept.result.agentNames.map(name => [name, recorded]));
+
+      // A unit still without a line after the second ask stays in the record without what was checked, and no third ask follows.
+      const left = await run([checkedU1], []);
+      expect(left.again).toHaveLength(2);
+      expect([...left.result.agentUnitLines!]).toEqual(left.result.agentNames.map(name => [name, [recorded[0], { unit: 'U2' }]]));
+      // A finder with a line for every unit is not asked again.
+      const covered = await run([checkedU1, checkedU2], []);
+      expect([covered.again, covered.result.agentsAskedAgain]).toEqual([[], []]);
+
+      // A sliced finder answers for each unit in the call on its slice, and is asked once more on that slice only.
+      const slices = await run([checkedU1, finding('First')], [checkedU2, finding('Second')], sliced);
+      const gateSlice = slices.first.find(message => message.includes('diff --git a/src/gate.ts'))!;
+      expect(slices.first.filter(message => message.includes('## Units of the Change'))).toEqual([gateSlice, gateSlice]);
+      expect(slices.again).toHaveLength(2);
+      for (const message of slices.again) {
+        expect(message.startsWith(gateSlice)).toBe(true);
+        expect(message.slice(gateSlice.length)).toMatch(/^\n\nYou read this diff before, in slices, without a line for the unit U2 of "Units of the Change"\. /);
+      }
+      expect(slices.result.rawFindings?.map(f => f.title)).toEqual(['First', 'First', 'Second', 'First', 'First', 'Second']);
+      expect([...slices.result.agentUnitLines!]).toEqual(slices.result.agentNames.map(name => [name, recorded]));
+      // Units without a line in two slices are asked about in one call on each of them.
+      const lineFor = (unit: string) => ({ unit, checked: 'Both sides of the check.', defect: 'none' });
+      const both = await run([], ['U1', 'U2', 'U3'].map(lineFor), twoSlices);
+      const bothFirst = both.first.filter(message => message.includes('## Units of the Change'));
+      expect([bothFirst.length, both.again.length]).toEqual([4, 4]);
+      for (const message of both.again) expect(bothFirst.some(first => message.startsWith(first))).toBe(true);
+      expect(both.again.filter(message => message.includes('without a line for the unit U1 of'))).toHaveLength(2);
+      expect(both.again.filter(message => message.includes('without a line for the units U2, U3 of'))).toHaveLength(2);
+      expect([...both.result.agentUnitLines!]).toEqual(both.result.agentNames.map(name => [name, ['U1', 'U2', 'U3'].map(unit => ({ unit, checked: 'Both sides of the check.' }))]));
+      // A slice whose ask fails keeps the first answer for its units, and the other slice's answer still counts.
+      const half = await run([], (message: string) => {
+        if (message.includes('without a line for the unit U1 of')) throw new Error('The call was refused');
+        return ['U2', 'U3'].map(lineFor);
+      }, twoSlices);
+      expect([half.result.outcome, half.again.length]).toEqual(['READY', 4]);
+      expect([...half.result.agentUnitLines!]).toEqual(half.result.agentNames.map(name => [name, [{ unit: 'U1' }, ...['U2', 'U3'].map(unit => ({ unit, checked: 'Both sides of the check.' }))]]));
+
+      // A file split between slices: its units go to the call whose slice holds their lines.
+      const split = await run([checkedU1, checkedU2], [], big);
+      const withUnits = split.first.filter(message => message.includes('## Units of the Change'));
+      expect(split.first.length).toBe(2 * split.result.agentNames.length);
+      expect(withUnits).toHaveLength(split.result.agentNames.length);
+      for (const message of withUnits) {
+        expect(message).toContain('U1 function `late` at src/big.ts:2501-2504\nU2 condition at src/big.ts:2502');
+        // The call's own diff holds the function, not only the units section.
+        expect(message).toContain('\n+export function late(n: number): number {\n');
+      }
+      const removed = await run([checkedU1], [], gone);
+      const removedUnits = removed.first.filter(message => message.includes('## Units of the Change'));
+      expect([removed.first.length, removedUnits.length]).toEqual([2 * removed.result.agentNames.length, removed.result.agentNames.length]);
+      for (const message of removedUnits) {
+        expect(message).toContain('U1 condition at src/big.ts:2502 of the base, in a file the PR deletes');
+        expect(message).toContain('\n-  if (n > 1) return 1;\n');
+      }
+      const cut = await run([checkedU1], [], trailing);
+      const cutUnits = cut.first.filter(message => message.includes('## Units of the Change'));
+      expect(cutUnits).toHaveLength(cut.result.agentNames.length);
+      for (const message of cutUnits) {
+        expect(message).toContain('U1 condition at src/tail.ts:2511\n');
+        expect(message).toContain('\n-if (debug) console.log(1);\n');
+      }
+
+      // Findings that are all unusable fail the reply also next to unit lines, so the finder is run again with the note on its reply.
+      const clients = makeClients();
+      const replies = [[checkedU1, checkedU2, { severity: 'warning', file: 'src/gate.ts', line: 2 }], [checkedU1, checkedU2, finding('Retried')]];
+      const RETRY_NOTE = 'no element has a title or a description';
+      const sendMessage = jest.fn(async (_system: string, message: string) => ({ content: JSON.stringify(replies[message.includes(RETRY_NOTE) ? 1 : 0]) }));
+      Object.assign(clients.reviewer, { sendMessage });
+      const retried = await runReview(clients, { config: makeConfig(), diff, rawDiff: rebuildRawDiff(diff), repoContext: '', workspace: root });
+      expect([...retried.agentRetryCount!.values()]).toEqual(retried.agentNames.map(() => 1));
+      expect(sendMessage.mock.calls.filter(([, message]) => message.includes(RETRY_NOTE))).toHaveLength(retried.agentNames.length);
+      expect(retried.rawFindings?.map(f => f.title)).toEqual(['Retried', 'Retried']);
+    } finally {
+      for (const dir of [root, sliced.root, big.root, deleted, trailing.root, twoSlices.root]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, GIT_TEST_TIMEOUT_MS);
+
   it('searches a dependency for the names the change calls, and fetches for those names only when one is configured', async () => {
     // The change declares nothing a search could use, and calls a function of the dependency.
     const { root, diff } = gitWorkspace({ 'src/main.ts': 'export function main() {}\n' }, { 'src/main.ts': 'export function main() { ledger.roundUp(2); }\n' });
@@ -2589,17 +2821,17 @@ describe('runReview', () => {
       const opus = jest.fn().mockRejectedValue(new Error('endpoint limit'));
       const failing = makeClients();
       failing.reviewerByModel = new Map([['anthropic/claude-opus-5-5', { sendMessage: opus } as unknown as LLMClient]]);
-      jest.mocked(failing.reviewer.sendMessage).mockImplementation(async (system: string) => {
+      jest.mocked(failing.reviewer.sendMessage).mockImplementation(async (system: string, message: string) => {
         if (system.startsWith('You compare code')) throw new Error('comparison failed');
-        return { content: JSON.stringify([raised]) };
+        return { content: JSON.stringify([...unitLines(message), raised]) };
       });
       const attempt = await runReview(failing, options);
       expect(attempt.outcome).toBe('INCOMPLETE');
       expect(attempt.comparisons).toEqual([expect.objectContaining({ status: 'failed' })]);
 
       // The retry asks again only the finder and the comparison that failed, and keeps the findings of the finder on Sonnet.
-      opus.mockReset().mockResolvedValue({ content: '[]' });
-      jest.mocked(failing.reviewer.sendMessage).mockReset().mockImplementation(async (system: string) => ({ content: system.startsWith('You compare code') ? JSON.stringify([finding]) : '[]' }));
+      opus.mockReset().mockImplementation(async (_system: string, message: string) => ({ content: JSON.stringify(unitLines(message)) }));
+      jest.mocked(failing.reviewer.sendMessage).mockReset().mockImplementation(async (system: string, message: string) => ({ content: JSON.stringify(system.startsWith('You compare code') ? [finding] : unitLines(message)) }));
       mockedRunJudgeAgent.mockClear();
       const retried = await runReview(failing, { ...options, earlierAttempt: { record: postedRecord(attempt), review: 7 } });
       expect(jest.mocked(failing.reviewer.sendMessage).mock.calls.map(([system]) => system.startsWith('You compare code'))).toEqual([true]);
@@ -2820,7 +3052,7 @@ describe('runReview', () => {
       };
       Object.assign(clients.reviewer, { repoTools: true });
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, user: string) => {
-        const answer = isCheck(system) ? check(user) : JSON.stringify(found);
+        const answer = isCheck(system) ? check(user) : JSON.stringify([...unitLines(user), ...found]);
         if (answer instanceof Error) throw answer;
         return { content: answer };
       });

@@ -1276,7 +1276,7 @@ export interface ReviewResult {
   agentRetryCount?: Map<string, number>;
   /** Why each failed attempt of an agent failed, in order, kept when a retry then succeeded. */
   agentWarnings?: Map<string, string[]>;
-  /** The finders asked once more, since their first answer opened none of the files outside the diff that the lists in their message name. */
+  /** The finders asked once more, since their first answer opened none of the files outside the diff that the lists in their message name, or left a unit of the change without a line. */
   agentsAskedAgain?: string[];
   /** The `inputDigest` of each finder whose read finished, run this round or kept from an earlier attempt. */
   agentInputDigests?: Map<string, string>;
@@ -1284,6 +1284,10 @@ export interface ReviewResult {
   agentFindingsReturned?: Map<string, number>;
   /** Set when the round kept results of an earlier attempt: which attempt, and the finders whose findings it kept. */
   reused?: { from: RoundReusedFrom; finders: string[] };
+  /** Each finder's line for every unit of the change it was asked to answer for. */
+  agentUnitLines?: Map<string, RoundUnitLine[]>;
+  /** The units of the change the finders answered for. */
+  units?: RoundUnits;
   plannerDurationMs?: number;
   /** Set when the round had no finding, open thread or carried warning to judge, so no judge was called. */
   judgeSkipped?: true;
@@ -1995,6 +1999,8 @@ export interface RoundContext {
   relatedRepos?: RoundRelatedRepo[];
   /** What the finders were shown as uses outside the diff. */
   usesOutsideDiff?: RoundUses;
+  /** The units of the change the finders answered for. Each finder's lines are in `reviewers.agentMetrics`. */
+  units?: RoundUnits;
   /** The open PRs and issues that may relate to this PR, with their classification. */
   relatedWork?: RoundRelatedWork;
   /** Each sibling comparison the round found, asked or cut. */
@@ -2425,6 +2431,37 @@ export interface RoundJudgeDrop {
   rule?: Finding['rule'];
 }
 
+/** A unit of the change, as the round record keeps it. */
+export interface RoundUnit {
+  id: string;
+  /** A function the change touches, or a condition it adds, changes or removes. */
+  kind: 'function' | 'condition';
+  /** `file:line` or `file:start-end` in the head commit, or with `deleted` in the base. */
+  at: string;
+  /** The function's name. */
+  name?: string;
+  /** Set on a condition of a file the PR deletes. */
+  deleted?: true;
+  /** Set when the cap per finder call left it off every finder's list. */
+  cut?: true;
+}
+
+/** The units of the change the finders answered for. */
+export interface RoundUnits {
+  listed: RoundUnit[];
+  /** How many units past the round's limit were not listed. */
+  overLimit?: number;
+}
+
+/** A finder's line for one unit of the change. */
+export interface RoundUnitLine {
+  unit: string;
+  /** What the finder says it checked there. Unset when it gave the unit no line. */
+  checked?: string;
+  /** The defect it named there. Unset when it named none. */
+  defect?: string;
+}
+
 export interface RoundAgentMetric {
   name: string;
   findingsRaw?: number;
@@ -2438,8 +2475,10 @@ export interface RoundAgentMetric {
   outputTokens?: number;
   /** Number of CLI/SDK retries this agent triggered. Zero on the success-on-first-try path. */
   retryCount?: number;
-  /** Set when the finder was asked once more, since its first answer opened none of the files outside the diff that the lists in its message name. */
+  /** Set when the finder was asked once more, since its first answer opened none of the files outside the diff that the lists in its message name, or left a unit of the change without a line. */
   askedAgain?: true;
+  /** The finder's line for each unit of the change it was asked to answer for. A unit without `checked` was not covered, even after a second ask. */
+  units?: RoundUnitLine[];
   /** Last-failure reason recorded by the reviewer loop. Present only when retries exhausted. */
   failureReason?: string;
   /** Model the agent ran on. Present whenever the agent ran. */

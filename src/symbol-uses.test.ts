@@ -521,6 +521,93 @@ describe('listUsesOutsideDiff', () => {
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the change adds more than 20 pieces of structure, so the 3 smallest are not listed');
   });
 
+  it('lists the units of the change: each changed function, and each run of changed lines that adds, changes or removes a condition, also in a deleted file, outside tests, docs and excluded files', async () => {
+    const admit = (guard: string, test: string) => `pub fn admit(n: usize) -> bool {\n${guard}    n < 10\n}\n\npub fn untouched() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn admits() {\n        assert!(super::admit(1));\n${test}    }\n}\n`;
+    const workflow = 'jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n';
+    const gate = 'export class Gate {\n  open(user: User): boolean {\n    return user.admin;\n  }\n}\n';
+    const base = {
+      '.github/workflows/ci.yml': workflow,
+      'scripts/pick.lua': 'if a then\n  x()\nend\n',
+      'scripts/release.sh': '#!/bin/sh\nset -e\nprev=$(cat VERSION)\n[ "$prev" != "$VERSION" ] ||\n  die "no bump"\necho done\n',
+      'src/auth.ts': gate,
+      'src/gate.py': 'def allowed(user):\n    if user.banned:\n        return False\n    return True\n',
+      'lib/kind.rb': 'def kind(x)\n  case x\n  when 1 then :one\n  end\nend\n',
+      'src/limits.rs': admit('', ''),
+      'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    0\n}\n',
+      'src/gate.test.ts': 'it("opens", () => {});\n',
+      'docs/guide.md': '# Guide\n',
+      'dist/out.js': 'run();\n',
+    };
+    const head = {
+      '.github/workflows/ci.yml': `${workflow}      - if: github.event_name == 'push'\n        run: npm run publish\n`,
+      'scripts/pick.lua': 'if a then\n  x()\nelseif b then\n  y()\nend\n',
+      'scripts/release.sh': '#!/bin/sh\nset -e\n# if this fails, nothing is published\n[ -n "$(git diff --name-only HEAD^ HEAD -- CHANGELOG.md)" ] ||\n  die "no changelog"\nstatus=0\ngit ls-remote --exit-code origin "$tag" >/dev/null || status=$?\n[ "$status" -eq 2 ] && exit 0\necho done\n',
+      'src/auth.ts': gate.replace('user.admin;', 'user.admin && !user.locked;'),
+      'src/gate.py': 'def allowed(user):\n    return True\n',
+      // A `when` branch, like `case` and `match`, adds no condition unit.
+      'lib/kind.rb': 'def kind(x)\n  case x\n  when 1 then :one\n  when 2 then :two\n  end\nend\n',
+      'src/limits.rs': admit('    if n == 0 {\n        return false;\n    }\n', '        assert!(!super::admit(0));\n'),
+      'src/refs.rs': 'pub fn pick(v: &[&str]) -> usize {\n    let first: &&str = &v[0];\n    let worker = std::thread::spawn(move || {\n        1\n    });\n    let later = || v.len();\n    v.iter().filter(|s| s.len() > 1).count()\n        + usize::from(first.is_empty() && later() > 2)\n}\n',
+      'src/rules.ts': `export const ok = (a: number) =>\n${Array.from({ length: 8 }, (_, i) => `  a > ${i + 1} &&\n`).join('')}  a > 9;\n`,
+      'src/gate.test.ts': 'it("opens", () => {\n  if (gate.open()) done();\n});\n',
+      'docs/guide.md': '# Guide\n\nif you want, open the gate && close it.\n',
+      'dist/out.js': 'if (a && b) run();\n',
+    };
+    const { units } = await usesFor(base, head, ['dist/**']);
+    const condition = (file: string, start: number, end: number, code: string) => ({ kind: 'condition', file, start, end, code });
+    expect(units?.map(({ id: _id, ...unit }) => unit)).toEqual([
+      condition('.github/workflows/ci.yml', 6, 6, "+      - if: github.event_name == 'push'"),
+      condition('scripts/pick.lua', 3, 3, '+elseif b then'),
+      // A changed condition shows the line it replaced. A comment that says `if` is no condition, and lines next to each other are one unit.
+      condition('scripts/release.sh', 4, 4, '-[ "$prev" != "$VERSION" ] ||\n+[ -n "$(git diff --name-only HEAD^ HEAD -- CHANGELOG.md)" ] ||'),
+      condition('scripts/release.sh', 7, 8, '+git ls-remote --exit-code origin "$tag" >/dev/null || status=$?\n+[ "$status" -eq 2 ] && exit 0'),
+      { kind: 'function', file: 'src/auth.ts', start: 2, end: 4, name: 'open' },
+      condition('src/auth.ts', 3, 3, '+    return user.admin && !user.locked;'),
+      // A removed guard is a unit at the line where it was.
+      { kind: 'function', file: 'src/gate.py', start: 1, end: 2, name: 'allowed' },
+      { ...condition('src/gate.py', 2, 2, '-    if user.banned:'), base: [2, 2] },
+      // A test function, and an assertion in it, add none.
+      { kind: 'function', file: 'src/limits.rs', start: 1, end: 6, name: 'admit' },
+      condition('src/limits.rs', 2, 2, '+    if n == 0 {'),
+      // A reference type such as `&&str` and a closure such as `move || {` join no checks. Only `&&` between two operands does.
+      { kind: 'function', file: 'src/refs.rs', start: 1, end: 9, name: 'pick' },
+      condition('src/refs.rs', 8, 8, '+        + usize::from(first.is_empty() && later() > 2)'),
+      // A constant that holds a function is no function unit, and a long condition shows its first 6 lines.
+      condition('src/rules.ts', 2, 9, `${Array.from({ length: 6 }, (_, i) => `+  a > ${i + 1} &&`).join('\n')}\n... 2 more lines`),
+    ]);
+    expect(units?.map(unit => unit.id)).toEqual(Array.from({ length: 13 }, (_, i) => `U${i + 1}`));
+
+    // A deleted file adds each stretch of condition lines it removes, at its base lines.
+    const kept = gitWorkspace({ 'run.sh': 'echo\n' }, { 'run.sh': 'echo\n' });
+    try {
+      const gone = '#!/bin/sh\nif [ -f a ]; then\n  rm a\nfi\n[ -n "$x" ] || exit 1\n[ -z "$y" ] && exit 2\n';
+      const deleted = parsePRDiff(`diff --git a/scripts/old.sh b/scripts/old.sh\ndeleted file mode 100644\n--- a/scripts/old.sh\n+++ /dev/null\n@@ -1,6 +0,0 @@\n${gone.trimEnd().split('\n').map(line => `-${line}`).join('\n')}\n`);
+      expect(deleted.files[0].changeType).toBe('deleted');
+      const { units: removed } = await listUsesOutsideDiff(kept.root, deleted, { loadApi });
+      expect(removed).toEqual([
+        { id: 'U1', kind: 'condition', file: 'scripts/old.sh', start: 2, end: 2, deleted: true, code: '-if [ -f a ]; then' },
+        { id: 'U2', kind: 'condition', file: 'scripts/old.sh', start: 5, end: 6, deleted: true, code: '-[ -n "$x" ] || exit 1\n-[ -z "$y" ] && exit 2' },
+      ]);
+    } finally {
+      rmSync(kept.root, { recursive: true, force: true });
+    }
+
+    // At most 100 units are listed, the first in diff order, and the rest are counted.
+    const many = await usesFor({ 'run.sh': 'echo\n' }, { 'run.sh': `echo\n${Array.from({ length: 101 }, (_, i) => `if [ -f a${i} ]; then\n  rm a${i}\nfi\n`).join('')}` });
+    expect([many.units?.length, many.units?.at(-1)?.code, many.unitsOverLimit]).toEqual([100, '+if [ -f a99 ]; then', 1]);
+
+    // Changed files past every header budget leave the uses their own, so a use in generated code still comes last.
+    const limit = (value: number) => `export function headerLimit(): number {\n  return ${value};\n}\n`;
+    const data = Object.fromEntries(Array.from({ length: 2001 }, (_, i) => [`data/f${String(i).padStart(4, '0')}.dat`, `${i}\n`]));
+    const ranked = await usesFor({
+      'package.json': '{ "name": "app" }\n',
+      'src/limits.ts': limit(64),
+      'src/a_stub.ts': '// Code generated by stubgen. DO NOT EDIT.\nconst stubbed = headerLimit();\n',
+      'src/z_last.ts': 'const last = headerLimit();\n',
+    }, { ...data, 'src/limits.ts': limit(128) });
+    expect(listedUnder(ranked.finderSection, 'headerLimit')).toEqual(['src/z_last.ts:1', 'src/a_stub.ts:2']);
+  });
+
   it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
@@ -1094,8 +1181,10 @@ ${body}	return true
       // A failed search leaves its reason in the round record, which tells it from a change with nothing to list.
       expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
-      expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ ...NOTHING, referenceNames: ['compute_total'] });
-      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons and 0 added pieces$/));
+      expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({
+        ...NOTHING, referenceNames: ['compute_total'], units: [{ id: 'U1', kind: 'function', file: 'src/a.rs', start: 1, end: 1, name: 'compute_total' }],
+      });
+      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons, 0 added pieces and 1 units$/));
       // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name.
       rmSync(join(root, '.git'), { recursive: true, force: true });
       mkdirSync(join(root, '.git'));

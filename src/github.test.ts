@@ -1637,10 +1637,15 @@ describe('postReview with context', () => {
       symbols: [{ name: 'parse_header', declared: 'src/parse.py:4', uses: ['src/read.py:9', 'cmd/main.go:30'] }],
       types: ['src/model.ts:12: interface Header { size: number; flags: number }'],
     };
+    // A round of many units, each with a finder's line on it.
+    const units = { listed: Array.from({ length: 100 }, (_, i) => ({ id: `U${i + 1}`, kind: 'condition' as const, at: `src/${i}.ts:${i + 1}` })) };
+    const agentMetrics = [{ name: 'Correctness', units: units.listed.map(({ id }) => ({ unit: id, checked: noise(), defect: noise() })) }];
     const ctx = makeContext({
       findings: { count: 1, severityCounts: { warning: 1 }, entries },
+      units,
       reviewers: {
         agents: ['Correctness'],
+        agentMetrics,
         rawFindings: Array.from({ length: 600 }, (_, i) => ({
           title: `Finding ${i}`, file: `src/${i}.ts`, line: i, severity: 'note' as const, reviewers: ['Correctness'], description: noise(),
           suggestedFix: noise(), evidence: { checks: [noise()], proof: [`src/${i}.ts:${i}`] },
@@ -1655,8 +1660,10 @@ describe('postReview with context', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('Many findings.');
     const [record] = extractReviewRecords(body).records.map(r => JSON.parse(r) as RoundContext);
-    expect(record.meta.omitted).toEqual(['judge.dropped']);
+    expect(record.meta.omitted).toEqual(['judge.dropped', 'units', 'reviewers.agentMetrics.units']);
     expect(record.meta.compacted).toEqual(['reviewers.rawFindings', 'usesOutsideDiff']);
+    // The units and the finders' lines go first, and the finder's own entry stays.
+    expect([record.units, record.reviewers.agentMetrics]).toEqual([undefined, [{ name: 'Correctness' }]]);
     expect(record.reviewers.rawFindings).toHaveLength(600);
     expect(record.reviewers.rawFindings?.[7]).toEqual({ title: 'Finding 7', file: 'src/7.ts', line: 7, severity: 'note', reviewers: ['Correctness'] });
     expect(record.usesOutsideDiff).toEqual({ symbols: usesOutsideDiff.symbols, types: ['src/model.ts:12'] });

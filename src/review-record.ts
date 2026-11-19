@@ -81,14 +81,18 @@ function recordJson(record: object): string {
 }
 
 /**
- * Returns `context` without its per-file and per-finding diagnostics, keeping what later rounds read:
+ * Returns `context` without its per-file and per-finding diagnostics, the units of the change and the finders' lines for
+ * them, keeping what later rounds read:
  * the findings, thread evaluations, verdict and counts. With `keepTraces`, the raw findings keep their titles, locations,
  * severities and reviewers, and the uses outside the diff keep only names and locations, so a missed defect can still be
  * traced. `meta.omitted` names each field it left out, and `meta.compacted` each field it shortened.
  */
 export function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean): RoundContext {
   const { perFile: _perFile, excludedFiles: _excludedFiles, binarySkipped: _binarySkipped, ...diff } = context.diff;
-  const { rawFindings, ...reviewers } = context.reviewers;
+  const { rawFindings, ...reviewersWithLines } = context.reviewers;
+  // The units of the change and each finder's lines for them are diagnostics too.
+  const unitLines = reviewersWithLines.agentMetrics?.some(m => m.units) ? true : undefined;
+  const reviewers = unitLines ? { ...reviewersWithLines, agentMetrics: reviewersWithLines.agentMetrics!.map(({ units: _units, ...metric }) => metric) } : reviewersWithLines;
   const { dropped: _dropped, ...judge } = context.judge;
   const { duplicateMatches: _duplicateMatches, staticSignalMatches: _staticSignalMatches, ...dedup } = context.dedup;
   const uses = context.usesOutsideDiff;
@@ -98,12 +102,14 @@ export function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean)
     ['judge.dropped', context.judge.dropped],
     ['dedup.duplicateMatches', context.dedup.duplicateMatches], ['dedup.staticSignalMatches', context.dedup.staticSignalMatches],
     ['recap.reclassifiedPriors', context.recap?.reclassifiedPriors],
+    ['units', context.units], ['reviewers.agentMetrics.units', unitLines],
     ...(keepTraces ? [] : traces),
   ];
   const named = (fields: Array<[string, unknown]>) => fields.filter(([, value]) => value !== undefined).map(([field]) => field);
   const compacted = keepTraces ? named(traces) : [];
   return {
     ...context,
+    units: undefined,
     usesOutsideDiff: keepTraces && uses ? { ...uses, ...(uses.types && { types: uses.types.map(t => t.match(/^(.+?:\d+):/)?.[1] ?? t) }) } : undefined,
     meta: { ...context.meta, omitted: named(present), ...(compacted.length > 0 && { compacted }) },
     diff,

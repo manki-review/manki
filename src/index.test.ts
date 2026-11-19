@@ -3607,6 +3607,8 @@ describe('runFullReview orchestration', () => {
       agentFailureReasons: { general: 'CLI timed out' },
       agentWarnings: new Map([['general', ['malformed response', 'CLI timed out']]]),
       agentsAskedAgain: ['general'],
+      agentUnitLines: new Map([['general', [{ unit: 'U1', checked: 'Both paths.' }, { unit: 'U2' }]]]),
+      units: { listed: [{ id: 'U1', kind: 'function', at: 'src/app.ts:1-4', name: 'run' }, { id: 'U2', kind: 'condition', at: 'src/app.ts:2' }] },
       plannerDurationMs: 500,
       judgeDurationMs: 800,
       judgeRetryCount: 2,
@@ -3662,10 +3664,13 @@ describe('runFullReview orchestration', () => {
         failureReason: 'CLI timed out',
         warnings: ['malformed response', 'CLI timed out'],
         askedAgain: true,
+        units: [{ unit: 'U1', checked: 'Both paths.' }, { unit: 'U2' }],
       }),
     ]);
     expect(ctx!.reviewers.agentMetrics![0]).not.toHaveProperty('warnings');
     expect(ctx!.reviewers.agentMetrics![0]).not.toHaveProperty('askedAgain');
+    expect(ctx!.reviewers.agentMetrics![0]).not.toHaveProperty('units');
+    expect(ctx!.units).toEqual({ listed: [{ id: 'U1', kind: 'function', at: 'src/app.ts:1-4', name: 'run' }, { id: 'U2', kind: 'condition', at: 'src/app.ts:2' }] });
   });
 
   it('emits `usage` with zero rollups and no `perStage` when no stage reports tokens', async () => {

@@ -423,8 +423,10 @@ interface FinderSteps {
   toolSteps: number;
   /** Distinct files the finder's tool calls read, over all its calls. */
   filesRead: number;
-  /** Set when the finder was asked once more, since its first answer opened none of the listed files outside the diff. */
+  /** Set when the finder was asked once more, since its first answer opened none of the listed files outside the diff or left a unit of the change without a line. */
   askedAgain?: true;
+  /** The units of the change the finder was asked about and gave no line, even after a second ask. */
+  unitsNotCovered?: number;
 }
 
 /** How a finding got its grade, in grades, kinds and counts only, so a summary can count it for a hold-out case. */
@@ -595,8 +597,12 @@ function finderSteps(review: LocalReview): FinderSteps[] {
     for (const file of call.filesRead ?? []) entry.files.add(file);
     byName.set(call.agent, entry);
   }
-  const askedAgain = new Set(review.context.reviewers?.agentMetrics?.filter(a => a.askedAgain).map(a => a.name));
-  return [...byName].map(([name, { model, toolSteps, files }]) => ({ name, ...(model && { model }), toolSteps, filesRead: files.size, ...(askedAgain.has(name) && { askedAgain: true as const }) }));
+  const metrics = new Map(review.context.reviewers?.agentMetrics?.map(a => [a.name, a]));
+  return [...byName].map(([name, { model, toolSteps, files }]) => {
+    const metric = metrics.get(name);
+    const notCovered = metric?.units?.filter(line => !line.checked).length;
+    return { name, ...(model && { model }), toolSteps, filesRead: files.size, ...(metric?.askedAgain && { askedAgain: true as const }), ...(notCovered && { unitsNotCovered: notCovered }) };
+  });
 }
 
 /** The key items a restatement of an earlier finding is matched against: what is left of each kept-open thread, and each earlier finding still present. */
@@ -1708,7 +1714,7 @@ export function formatBenchSummary(report: BenchReport): string {
         lines.push(`  ${item.id} ${TIER_LABELS[item.tier]} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
       }
       for (const [i, run] of c.runs.entries()) {
-        const reads = run.finders.map(f => `${f.name} ${f.filesRead}${f.askedAgain ? ' (asked again)' : ''}`).join(', ') || 'none';
+        const reads = run.finders.map(f => `${f.name} ${f.filesRead}${f.askedAgain ? ' (asked again)' : ''}${f.unitsNotCovered ? ` (${f.unitsNotCovered} units not covered)` : ''}`).join(', ') || 'none';
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}`
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
