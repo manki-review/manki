@@ -447,6 +447,57 @@ describe('reviewableDiff', () => {
     expect(binaries.fullDiff.binarySkipped?.map(b => b.path)).toEqual(['assets/logo.png', 'app.jar']);
     expect(binaries.excludedFiles.map(f => f.path)).toEqual(['holdout/case.yml', 'src/moved.ts', 'holdout/hold-out marker.bin']);
   });
+
+  it('reads each path git quoted as the real name, so a closed pattern with a non-ASCII character closes the file', () => {
+    // As `git diff` writes them: a name with a non-ASCII byte, a quote or a backslash is quoted, with C escapes.
+    const quoted = [
+      'diff --git "a/h\\303\\266ldout/caf\\303\\251.md" "b/h\\303\\266ldout/caf\\303\\251.md"',
+      'index b3c6b97..1f5f959 100644',
+      '--- "a/h\\303\\266ldout/caf\\303\\251.md"',
+      '+++ "b/h\\303\\266ldout/caf\\303\\251.md"',
+      '@@ -1 +1 @@',
+      '-secret one',
+      '+secret one changed',
+      'diff --git "a/h\\303\\266ldout/t\\"q.md" "b/docs/t\\"q.md"',
+      'similarity index 50%',
+      'rename from "h\\303\\266ldout/t\\"q.md"',
+      'rename to "docs/t\\"q.md"',
+      'index 1111111..2222222 100644',
+      '--- "a/h\\303\\266ldout/t\\"q.md"',
+      '+++ "b/docs/t\\"q.md"',
+      '@@ -1,2 +1,2 @@',
+      ' secret two',
+      '-line',
+      '+line changed',
+      'diff --git "a/h\\303\\266ldout/bin.dat" "b/docs/b\\303\\257n.dat"',
+      'similarity index 100%',
+      'rename from "h\\303\\266ldout/bin.dat"',
+      'rename to "docs/b\\303\\257n.dat"',
+      'diff --git "a/docs/na\\303\\257ve\\ta\\\\b.md" "b/docs/na\\303\\257ve\\ta\\\\b.md"',
+      'new file mode 100644',
+      'index 0000000..3333333',
+      '--- /dev/null',
+      '+++ "b/docs/na\\303\\257ve\\ta\\\\b.md"',
+      '@@ -0,0 +1 @@',
+      '+open text',
+      '',
+    ].join('\n');
+
+    const parsed = parsePRDiff(quoted);
+    expect(parsed.files.map(f => [f.path, f.oldPath])).toEqual([
+      ['höldout/café.md', undefined], ['docs/t"q.md', 'höldout/t"q.md'], ['docs/naïve\ta\\b.md', undefined],
+    ]);
+    expect(parsed.binarySkipped?.map(b => [b.path, JSON.parse(b.header).slice(0, 2)])).toEqual([['docs/bïn.dat', ['höldout/bin.dat', 'docs/bïn.dat']]]);
+    // A rebuilt diff quotes the names again, and reads back as the same paths.
+    expect(parsePRDiff(rebuildRawDiff(parsed)).files.map(f => [f.path, f.oldPath])).toEqual(parsed.files.map(f => [f.path, f.oldPath]));
+
+    const { fullDiff, excludedFiles, rawDiff, closedPaths } = reviewableDiff(quoted, [], ['höldout/**']);
+    expect(JSON.stringify([fullDiff, rawDiff])).not.toContain('secret');
+    expect([fullDiff.files.map(f => f.path), fullDiff.binarySkipped]).toEqual([['docs/naïve\ta\\b.md'], []]);
+    expect(excludedFiles.map(f => f.path)).toEqual(['höldout/café.md', 'docs/t"q.md', 'docs/bïn.dat']);
+    expect(['docs/t"q.md', 'docs/bïn.dat', 'docs/naïve\ta\\b.md'].map(path => !!findClosedPattern(path, closedPaths))).toEqual([true, true, false]);
+    expect(closeRawDiff(quoted, ['höldout/**'])).not.toContain('secret');
+  });
 });
 
 describe('findClosedPattern', () => {
@@ -729,9 +780,17 @@ describe('listedFilesDiff', () => {
     if ('previous_filename' in file) expect(raw).not.toContain(file.previous_filename);
   });
 
-  it('escapes the characters git escapes once a name is quoted, and leaves any other name as it is', () => {
-    expect(listedFilesDiff([{ filename: 't\tq"b\\c\u0001', status: 'modified' }]).split('\n')[0]).toBe('diff --git "a/t\\tq\\"b\\\\c\\001" "b/t\\tq\\"b\\\\c\\001"');
-    expect(listedFilesDiff([{ filename: 'dir/a "b".ts', status: 'modified' }]).split('\n')[0]).toBe('diff --git a/dir/a "b".ts b/dir/a "b".ts');
+  it('quotes a name as git does, escaping the characters git escapes, and reads each name back as it was', () => {
+    const names = ['t\tq"b\\c\u0001', 'dir/a "b".ts', 'dir/a\\tb.ts', 'dir/café.ts', 'dir/plain name.ts'];
+    const raw = listedFilesDiff(names.map(filename => ({ filename, status: 'modified' })));
+    expect(raw.split('\n').filter(l => l.startsWith('diff --git'))).toEqual([
+      'diff --git "a/t\\tq\\"b\\\\c\\001" "b/t\\tq\\"b\\\\c\\001"',
+      'diff --git "a/dir/a \\"b\\".ts" "b/dir/a \\"b\\".ts"',
+      'diff --git "a/dir/a\\\\tb.ts" "b/dir/a\\\\tb.ts"',
+      'diff --git a/dir/café.ts b/dir/café.ts',
+      'diff --git a/dir/plain name.ts b/dir/plain name.ts',
+    ]);
+    expect(parsePRDiff(raw).binarySkipped?.map(b => b.path)).toEqual(names);
   });
 
   it.each([

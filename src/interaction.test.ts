@@ -2322,4 +2322,24 @@ describe('scopeDiffToFile', () => {
     expect(result).not.toContain('src/handler.test.ts');
     expect(result).not.toContain('src/utils.ts');
   });
+
+  it('finds a file git wrote with a quoted name, by its real name before or after a rename', () => {
+    const quoted = [
+      'diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251 \\"v2\\".ts"',
+      'similarity index 90%',
+      'rename from "src/caf\\303\\251.ts"',
+      'rename to "src/caf\\303\\251 \\"v2\\".ts"',
+      '--- "a/src/caf\\303\\251.ts"',
+      '+++ "b/src/caf\\303\\251 \\"v2\\".ts"',
+      '@@ -1 +1 @@',
+      '-old',
+      '+renamed',
+      '',
+    ].join('\n');
+    const raw = `${multiFileDiff}\n${quoted}`;
+    for (const path of ['src/café "v2".ts', 'src/café.ts']) {
+      expect(scopeDiffToFile(raw, path)).toBe(quoted);
+    }
+    expect(scopeDiffToFile(raw, 'src/utils.ts')).not.toContain('café');
+  });
 });

@@ -1176,21 +1176,12 @@ function buildReplyContext(
   return context;
 }
 
+/** Returns the sections of `fullDiff` whose file is at `filePath` before or after the change, or an empty string for none. */
 export function scopeDiffToFile(fullDiff: string, filePath: string): string {
-  const lines = fullDiff.split('\n');
-  const result: string[] = [];
-  let inTargetFile = false;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      inTargetFile = line.includes(` a/${filePath} `) || line.endsWith(` b/${filePath}`);
-    }
-    if (inTargetFile) {
-      result.push(line);
-    }
-  }
-
-  return result.length > 0 ? result.join('\n') : '';
+  return fullDiff.split(/(?=^diff --git )/m).filter(text => {
+    const { files, binarySkipped = [] } = parsePRDiff(text);
+    return [...files.flatMap(f => [f.path, f.oldPath]), ...binarySkipped.map(b => b.path)].includes(filePath);
+  }).join('');
 }
 
 /** Whether `body` holds one of Manki's markers. Anyone can write one, so this only tells which comments to leave unanswered. */

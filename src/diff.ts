@@ -15,7 +15,7 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
     return { files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [] };
   }
 
-  const parsed = parseDiff(rawDiff);
+  const parsed = parseDiff(rawDiff).map(file => ({ ...file, from: file.from && unquotedPath(file.from), to: file.to && unquotedPath(file.to) }));
   let totalAdditions = 0;
   let totalDeletions = 0;
   const files: DiffFile[] = [];
@@ -117,13 +117,27 @@ export function filterFilesWithAttribution(
 
 const isControlChar = (c: string): boolean => c < ' ' || c === '\u007f';
 const C_ESCAPES: Record<string, string> = { '\u0007': '\\a', '\b': '\\b', '\t': '\\t', '\n': '\\n', '\v': '\\v', '\f': '\\f', '\r': '\\r', '"': '\\"', '\\': '\\\\' };
+const C_UNESCAPES: Record<string, string> = Object.fromEntries(Object.entries(C_ESCAPES).map(([c, escape]) => [escape[1], c]));
 
 /**
- * Returns `prefix` and `path` as one diff header path. A path with a control character, such as a line break, is quoted
- * and escaped as git does, so it can never start a header line of its own.
+ * Returns a header path that `parse-diff` read with git's C escapes decoded. Git quotes a path with a control character,
+ * a quote, a backslash or a non-ASCII byte, and `parse-diff` drops the quotes but keeps the escapes, such as `\303\251`
+ * for `é`. Git writes a backslash only inside a quoted path, so a path without one is returned as it is.
+ */
+function unquotedPath(path: string): string {
+  if (!path.includes('\\')) return path;
+  // Splitting on a capture group puts each escape at an odd index, without its backslash.
+  const parts = path.split(/\\([0-7]{3}|[abtnvfr"\\])/);
+  return Buffer.concat(parts.map((part, i) => (i % 2 === 0 ? Buffer.from(part) : /^[0-7]{3}$/.test(part) ? Buffer.from([parseInt(part, 8)]) : Buffer.from(C_UNESCAPES[part])))).toString('utf8');
+}
+
+/**
+ * Returns `prefix` and `path` as one diff header path. A path with a quote, a backslash or a control character such as a
+ * line break is quoted and escaped as git does. So it can never start a header line of its own, and `parsePRDiff` reads
+ * it back as it was.
  */
 function headerPath(prefix: string, path: string): string {
-  if (![...path].some(isControlChar)) return `${prefix}${path}`;
+  if (![...path].some(c => isControlChar(c) || c === '"' || c === '\\')) return `${prefix}${path}`;
   const escaped = [...path].map(c => C_ESCAPES[c] ?? (isControlChar(c) ? `\\${c.charCodeAt(0).toString(8).padStart(3, '0')}` : c)).join('');
   return `"${prefix}${escaped}"`;
 }
