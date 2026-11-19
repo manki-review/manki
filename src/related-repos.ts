@@ -7,7 +7,7 @@ import { runTool } from './binary-analyzers';
 import { RepoTools } from './providers/types';
 import { makeScratchDir } from './tool-install';
 import { STALE_TIMEOUT_MS } from './tool-steps';
-import { LOCKFILE_NAMES, lockedGitCommits } from './lockfile';
+import { LOCKFILE_NAMES, lockedGitCommits, MAX_LOCKFILE_BYTES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RepoLock, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -60,14 +60,12 @@ export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspa
   return { repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }), ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }) };
 }
 
-// The bytes of lockfiles one round reads at most, so a PR cannot make a round parse more.
-const MAX_LOCKFILE_BYTES = 32 * 1024 * 1024;
-
 /**
  * Returns `repos` with the `ref` of each `dependency` repo that names none set to the commit that the lockfiles of the
  * checkout at `workspace` lock for it, and how each such `ref` was chosen. A repo that no lockfile locks, or that two
  * lockfiles lock at different commits, keeps its default branch. So does every repo when a lockfile could not be read,
- * since it may lock another commit. Only regular files git tracks count, outside `node_modules` and `target`.
+ * since it may lock another commit. Only files git tracks count, outside `node_modules` and `target`, and never a
+ * symlink, which a checkout with `core.symlinks=false` writes as a file that holds the link's target.
  */
 async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Promise<{ repos: RelatedRepo[]; locks: Record<string, RepoLock> }> {
   const open = repos.filter(r => r.kind === 'dependency' && !r.ref);
@@ -75,18 +73,22 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   // Each commit a lockfile locks, by `owner/name` in lower case, with the first lockfile that locks it.
   const found = new Map<string, Map<string, string>>();
   let unread: string | undefined;
-  const listed = await runTool('git', ['ls-files', '-z', '--', ...LOCKFILE_NAMES.map(name => `:(glob)**/${name}`)], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
+  const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...LOCKFILE_NAMES.map(name => `:(glob)**/${name}`)], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
   if (listed.code !== 0) unread = 'the lockfiles of the checkout could not be listed';
-  const files = listed.code === 0 ? listed.stdout.split('\0').filter(f => f && !f.split('/').some(part => part === 'node_modules' || part === 'target')) : [];
-  let budget = MAX_LOCKFILE_BYTES;
+  // Each entry is `<mode> <object> <stage>\t<path>`, and mode `120000` is a symlink.
+  const entries = listed.code === 0 ? listed.stdout.split('\0').filter(Boolean).map(entry => entry.split('\t')) : [];
+  const files = entries.filter(([meta]) => !meta.startsWith('120000 ')).map(([, file]) => file)
+    .filter(f => f && !f.split('/').some(part => part === 'node_modules' || part === 'target'));
+  let budget = MAX_LOCKFILES_TOTAL_BYTES;
   for (const file of files) {
     let commits: Map<string, Set<string>>;
     try {
       const path = join(workspace, file);
-      // A lockfile that is gone, such as one under a closed path, or a symlink is no lockfile of the checkout.
+      // A lockfile that is gone, such as one under a closed path, is no lockfile of the checkout.
       const stat = existsSync(path) ? lstatSync(path) : undefined;
       if (!stat?.isFile()) continue;
-      if (stat.size > budget) throw new Error(`the lockfiles are over the ${MAX_LOCKFILE_BYTES / 1024 / 1024} MB a round reads`);
+      if (stat.size > MAX_LOCKFILE_BYTES) throw new Error(`it is over the ${MAX_LOCKFILE_BYTES / 1024 / 1024} MB Manki reads of one lockfile`);
+      if (stat.size > budget) throw new Error(`the lockfiles are over the ${MAX_LOCKFILES_TOTAL_BYTES / 1024 / 1024} MB a round reads`);
       budget -= stat.size;
       commits = lockedGitCommits(file, readFileSync(path, 'utf-8'));
     } catch (error) {

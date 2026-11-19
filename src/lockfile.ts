@@ -76,6 +76,10 @@ export interface LockfileDiff {
   changes: PackageChange[];
 }
 
+/** The bytes of one lockfile Manki reads at most, and of all the lockfiles one round reads. */
+export const MAX_LOCKFILE_BYTES = 10 * 1024 * 1024;
+export const MAX_LOCKFILES_TOTAL_BYTES = 40 * 1024 * 1024;
+
 /** The file names of the lockfiles Manki parses. */
 export const LOCKFILE_NAMES = Object.keys(PARSERS);
 

@@ -485,6 +485,9 @@ describe('relatedRepoLoader', () => {
     mkdirSync(join(root, 'linked'));
     symlinkSync('../other.txt', join(root, 'linked', 'Cargo.lock'));
     spawnSync('git', ['-C', root, 'add', '-A']);
+    // The workspace is checked out with `core.symlinks=false`, which writes the link as a file holding its target.
+    rmSync(join(root, 'linked', 'Cargo.lock'));
+    writeFileSync(join(root, 'linked', 'Cargo.lock'), '../other.txt');
     const dependency = (repo: string, ref?: string): RelatedRepo => ({ repo, kind: 'dependency', ...(ref && { ref }) });
     const repos = [dependency('dashpay/rust-dashcore'), dependency('dashpay/grovedb'), dependency('acme/foo'), dependency('dashpay/dips'), dependency('tokio-rs/tokio', 'tokio-1.38.0'), DASH, dependency('acme/berry'), dependency('acme/tar')];
     const tools = (await relatedRepoTools(repos, root))!;
