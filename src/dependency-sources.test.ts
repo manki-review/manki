@@ -177,10 +177,11 @@ describe('dependencyLoader', () => {
     await expect(round({ 'package.json': JSON.stringify({ dependencies: { 'left-pad': '1' } }), '.yarnrc.yml': 'npmScopes: [unclosed\n' }).load('npm/left-pad'))
       .rejects.toThrow('Manki does not read npm/left-pad: Manki cannot read .yarnrc.yml with certainty');
     expect(server.requests).toEqual([]);
+    const lockOfPad = npmLock('https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz');
     // An install follows a symlink, which Manki does not, so a link that can hold a setting, or points to a folder, outside
     // the checkout or nowhere, refuses every package.
     const linked = (links: Record<string, string>, plain: boolean) => {
-      const r = round({ 'package-lock.json': npmLock('https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz'), 'shared/npm-settings': 'registry=https://npm.corp.example/\n', 'vendor/cache/left-pad-npm-1.2.0.zip': '', 'README.md': '' });
+      const r = round({ 'package-lock.json': lockOfPad, 'shared/npm-settings': 'registry=https://npm.corp.example/\n', 'vendor/cache/left-pad-npm-1.2.0.zip': '', 'README.md': '' });
       for (const [path, target] of Object.entries(links)) {
         mkdirSync(dirname(join(r.repo, path)), { recursive: true });
         symlinkSync(target, join(r.repo, path));
@@ -200,9 +201,16 @@ describe('dependencyLoader', () => {
       // A link to a plain file of the checkout, under a name Manki does not read, changes no install.
       expect((await linked({ 'docs/README.md': '../README.md' }, plain).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
     }
-    // A file that does not name the package, in any spelling or through an escape, cannot change it.
-    const unrelated = round({ 'a/package.json': '{"dependencies": {"other": ', 'b/package.json': JSON.stringify({ dependencies: { 'left-pad': '1' } }) });
-    expect((await unrelated.load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    // A lockfile or a Cargo manifest that does not name the package, in any spelling or through an escape, cannot change it.
+    const unrelated = round({ 'a/Cargo.toml': '[dependencies]\nother = ', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) });
+    expect((await unrelated.load('crates.io/demo')).key).toBe('crates.io/demo@1.2.0');
+    // Any `package.json` can hold an install script, which changes every package, so one Manki cannot read refuses them all.
+    await expect(round({ 'package-lock.json': lockOfPad, 'tools/package.json': '{"scripts": {"postinstall": ' }).load('npm/left-pad')).rejects.toThrow('Manki does not read npm/left-pad: Manki cannot read tools/package.json with certainty');
+    // npm drops a byte order mark before it parses a manifest, and so does Manki.
+    const bom = '\uFEFF';
+    await expect(round({ 'package-lock.json': lockOfPad, 'package.json': `${bom}${JSON.stringify({ scripts: { postinstall: 'node fix.js' } })}` }).load('npm/left-pad')).rejects.toThrow('its `postinstall` script runs at install');
+    const workspace = { 'package.json': `${bom}${JSON.stringify({ workspaces: ['web'] })}`, 'web/package.json': `${bom}${JSON.stringify({ dependencies: { 'left-pad': '^1.0.0' } })}` };
+    expect((await round({ ...workspace, 'package-lock.json': lockOfPad }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
   });
 
   it('without a lockfile, reads the highest version a requirement allows that is not yanked, deprecated or a prerelease', async () => {

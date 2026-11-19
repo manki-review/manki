@@ -186,11 +186,12 @@ async function resolveDependency(
   const uncertain = (file: string, error: unknown): never => refuse(`Manki cannot read ${shown(file)} with certainty: ${shown(error instanceof Error ? error.message : String(error))}`, { file });
   if (cut) refuse(cut);
   const read = (file: string, what: string): string => readManifest(root, file, budget) ?? refuse(`Manki could not read ${shown(file)}, which can ${what}, within its size limits`, { file });
-  const certain = <T>(file: string, text: string, parse: () => T, ifUnrelated: T): T => {
+  // A file that does not parse refuses the package, unless `ifUnrelated` is given and the file cannot name it.
+  const certain = <T>(file: string, text: string, parse: () => T, ifUnrelated?: T): T => {
     try {
       return parse();
     } catch (error) {
-      return mayName(text, name) ? uncertain(file, error) : ifUnrelated;
+      return ifUnrelated !== undefined && !mayName(text, name) ? ifUnrelated : uncertain(file, error);
     }
   };
 
@@ -246,7 +247,7 @@ async function resolveDependency(
     }
   };
   const requirements = manifests.flatMap(({ file, text }) => {
-    const { requirements: stated, overridden, otherSource, lockedElsewhere } = certain(file, text, () => registry.manifest(text, name), { requirements: [] });
+    const { requirements: stated, overridden, otherSource, lockedElsewhere } = certain(file, text, () => registry.manifest(text, name), registry.manifestsChangeAll ? undefined : { requirements: [] });
     if (overridden) refuse(`${shown(file)} changes its code for an install: ${overridden}`, { file });
     if (otherSource) refuse(`${shown(file)} does not take it from ${registry.id}: ${otherSource}`, { file });
     if (stated.length === 0) return [];

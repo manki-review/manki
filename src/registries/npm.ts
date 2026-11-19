@@ -23,6 +23,11 @@ const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependenc
 /** A requirement that names no version from the registry: an alias, a path, a git repository, a URL or a workspace link. */
 const NOT_A_RANGE = /^(?:npm:|file:|link:|portal:|patch:|workspace:|git|github:|gitlab:|bitbucket:|https?:)|\//;
 
+/** Parses the JSON of a manifest, without the byte order mark that npm, pnpm and Yarn drop before they parse one. */
+function parseManifest(text: string): unknown {
+  return JSON.parse(text.startsWith('\uFEFF') ? text.slice(1) : text);
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -186,6 +191,7 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
     id: 'npm',
     origins: [new URL(registry).origin],
     manifests: ['package.json'],
+    manifestsChangeAll: true,
     lockfiles: ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml'],
     unreadInstallFiles: UNREAD_INSTALL_FILES,
     isWorkspaceMember(lockfile, member, text) {
@@ -200,7 +206,7 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
         }
       } else {
         const manifest = text(posix.join(root, 'package.json'));
-        const data: unknown = manifest === undefined ? undefined : JSON.parse(manifest);
+        const data = manifest === undefined ? undefined : parseManifest(manifest);
         const workspaces = isObject(data) ? data.workspaces : undefined;
         patterns.push(...(Array.isArray(workspaces) ? workspaces : isObject(workspaces) && Array.isArray(workspaces.packages) ? workspaces.packages : []));
       }
@@ -265,7 +271,7 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
       return undefined;
     },
     manifest(text, name) {
-      const manifest: unknown = JSON.parse(text);
+      const manifest = parseManifest(text);
       if (!isObject(manifest)) throw new Error('the manifest is not an object');
       const stated = DEPENDENCY_FIELDS.flatMap(field => {
         const deps = manifest[field];

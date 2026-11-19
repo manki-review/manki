@@ -45,6 +45,8 @@ export interface Registry {
   origins: readonly string[];
   /** The file names of the manifests that state requirements. */
   manifests: readonly string[];
+  /** Whether a manifest can change every package without naming one, such as through an install script, so one Manki cannot read refuses any package. */
+  manifestsChangeAll: boolean;
   /** The file names of the lockfiles that lock versions. `lockedPackages` parses each of them. */
   lockfiles: readonly string[];
   /** The file names of lockfiles and install settings Manki does not read, which decide the packages of the manifests in their folder and below. */

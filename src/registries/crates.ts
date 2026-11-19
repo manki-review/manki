@@ -170,6 +170,7 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     id: 'crates.io',
     origins: [new URL(index).origin, new URL(download).origin],
     manifests: ['Cargo.toml'],
+    manifestsChangeAll: false,
     lockfiles: ['Cargo.lock'],
     validName: name => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name),
     sameName: (a, b) => normalize(a) === normalize(b),
