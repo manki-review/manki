@@ -997,6 +997,8 @@ export interface PremiseCheck {
   proof?: string[];
   /** The lines of related repos that decide it, as `owner/name:path:line`. They can confirm, and never count toward a disproof. */
   relatedProof?: string[];
+  /** The PR's base commit that holds the `proof` lines of an answer to `BASE_QUESTION`, set once the code found them there. */
+  commit?: string;
 }
 
 /** The outcome of the judge's attempt to refute a finding with tools. */
@@ -1075,15 +1077,19 @@ export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts
 }
 
 /**
- * Returns the answer that shows the code at the PR's base fails the same way as `finding`, when both refuters, on
- * different models, disproved `BASE_QUESTION` with proof lines. One model's answer, read from files the PR author
- * controls, never lowers a blocker, so one refuter alone, or one whose call failed, keeps the finding as it is.
+ * Returns the answer that shows the code at the PR's base fails the same way as `finding`: a disproof of
+ * `BASE_QUESTION` whose lines the code found at the base `commit`. The PR author cannot plant text in the base, so the
+ * first refuter's answer is enough, except on a security finding, whose input an attacker picks. With `paired`, the
+ * round runs the second refuter of `models.second_refuter`, and both refuters must give such an answer, for a security
+ * finding as for any other. So a second check that failed, found the failure the PR's own or left it open keeps the
+ * finding as it is, and without `paired` a security finding always does.
  */
-export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
+export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'tags' | 'reviewers'>, paired: boolean): PremiseCheck | undefined {
+  const same = (r: Refutation | undefined): r is Refutation & { base: PremiseCheck } => r?.base?.outcome === 'disproved' && !!r.base.proof?.length && !!r.base.commit;
   const { refutation, pairRefutation } = finding;
-  if (!refutation?.model || !pairRefutation?.model || refutation.model === pairRefutation.model) return undefined;
-  const same = (r: Refutation): boolean => r.base?.outcome === 'disproved' && !!r.base.proof?.length;
-  return same(refutation) && same(pairRefutation) ? refutation.base : undefined;
+  if (!same(refutation)) return undefined;
+  if (paired) return same(pairRefutation) ? refutation.base : undefined;
+  return isSecurityFinding(finding.tags, finding.reviewers) ? undefined : refutation.base;
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */

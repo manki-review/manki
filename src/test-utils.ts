@@ -8,6 +8,7 @@ import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RoundContext } from './types';
 import { BotIdentity, CodeLinks, gitBlobSha, reviewedCommit, titleToSlug } from './github';
 import { parsePRDiff } from './diff';
+import { BASE_READS_FILE, BASE_REF } from './workspace';
 import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 
 /** Time limit for a test that starts real `git` processes. Under parallel load each one can take far longer than alone. */
@@ -18,8 +19,11 @@ export function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
 }
 
-/** Commits `base` in a new git repo, writes `head` over it and returns the repo with the staged diff between the two. */
-export function gitWorkspace(base: Record<string, string>, head: Record<string, string>): { root: string; diff: ParsedDiff } {
+/**
+ * Commits `base` in a new git repo, writes `head` over it and returns the repo with the staged diff between the two.
+ * With `baseExcludes`, the repo holds the base commit at `BASE_REF` for reads at the base, which leave out those paths.
+ */
+export function gitWorkspace(base: Record<string, string>, head: Record<string, string>, baseExcludes?: readonly string[]): { root: string; diff: ParsedDiff } {
   const root = mkdtempSync(join(tmpdir(), 'manki-workspace-'));
   const write = (files: Record<string, string>) => {
     for (const [path, content] of Object.entries(files)) {
@@ -31,6 +35,10 @@ export function gitWorkspace(base: Record<string, string>, head: Record<string, 
   git(root, 'init', '-q');
   git(root, 'add', '-A');
   git(root, 'commit', '-qm', 'base');
+  if (baseExcludes) {
+    git(root, 'update-ref', BASE_REF, 'HEAD');
+    writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: baseExcludes }));
+  }
   write(head);
   git(root, 'add', '-A');
   return { root, diff: parsePRDiff(git(root, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
@@ -307,9 +315,12 @@ export function namingCommit<R extends { body?: string | null; commit_id?: strin
 
 const numberedLines = (count: number): string[] => Array.from({ length: count }, (_, i) => `line ${i + 1}`);
 
-/** Links a finding comment's code to a fixed commit, with the lines of two files. */
+const testLinkAt = (commit: string): CodeLinks['linkTo'] => (file, line, end = line) => `https://github.com/o/r/blob/${commit}/${file}#L${line}${end > line ? `-L${end}` : ''}`;
+
+/** Links a finding comment's code to a fixed commit, or to another one with `linkAt`, with the lines of two files. */
 export const TEST_LINKS: CodeLinks = {
-  linkTo: (file, line, end = line) => `https://github.com/o/r/blob/sha/${file}#L${line}${end > line ? `-L${end}` : ''}`,
+  linkTo: testLinkAt('sha'),
+  linkAt: testLinkAt,
   files: new Map([['src/main.ts', numberedLines(60)], ['src/util.ts', numberedLines(30)]]),
   related: new Map(),
 };

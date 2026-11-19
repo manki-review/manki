@@ -2142,8 +2142,11 @@ export async function postReview(
   const nonBlocking: Finding[] = [];
   const isClosed = (file: string) => !!findClosedPattern(file, closedPaths);
   // GitHub shows a permalink to lines on a line of its own as their code, so a closed file gets no link either.
-  const permalink = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
-  const linkTo: LineLink = (file, line, end) => (isClosed(file) ? undefined : permalink(file, line, end));
+  const linkAt = (commit: string): LineLink => {
+    const permalink = buildLineLink(owner, repo, commit, github.context.serverUrl);
+    return (file, line, end) => (isClosed(file) ? undefined : permalink(file, line, end));
+  };
+  const linkTo = linkAt(commitSha);
   const followUps = agreedFollowUps(existingThreads);
   const carried = result.carried ?? [];
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
@@ -2154,7 +2157,7 @@ export async function postReview(
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const gone = new Set<string>();
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])].filter(file => !isClosed(file)), gone);
-  const links: CodeLinks = { linkTo, files, changed, related: relatedCommits(result.relatedRepos), rules };
+  const links: CodeLinks = { linkTo, linkAt, files, changed, related: relatedCommits(result.relatedRepos), rules };
 
   /** Records that the open thread `threadId` carries `f`, which counts and lists that thread as still open. */
   const carry = (f: Finding, threadId: string): void => {
@@ -3417,9 +3420,10 @@ function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits
 /**
  * Links a finding's code to the reviewed commit. `files` holds the lines of the files read there, which keep a preview
  * inside its file. With `changed`, the PR's changed files, they give a cited file name its directories. `related`
- * holds the related repos whose lines a check may show.
+ * holds the related repos whose lines a check may show. `linkAt` links lines of another commit of the repository,
+ * such as the PR's base.
  */
-interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related: RelatedCommits; rules?: RulesMode }
+interface CodeLinks { linkTo: LineLink; linkAt?: (commit: string) => LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related: RelatedCommits; rules?: RulesMode }
 
 /**
  * Returns `path` as the repository path it names. A file name with no directories gets those of the one known file
@@ -3631,8 +3635,11 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const { linkTo, files, related } = links;
   const known = knownFiles(finding, links);
   const checks = findingChecks(finding, known);
-  const base = isPreExisting(finding) ? sameOnBase(finding) : undefined;
-  const refutations = [...refutationParts(finding, links, known), ...(base ? [refutationPart(SAME_ON_BASE_LABEL, SAME_ON_BASE_TEXT, base, finding.evidence, links, known)] : [])];
+  // A finding a second refuter checked shows the answer only when both found the failure at the base.
+  const base = isPreExisting(finding) ? sameOnBase(finding, !!finding.pairRefutation) : undefined;
+  // The answer cites lines of the base, so they link to the base commit, never to the same numbers at the head.
+  const baseLinks: CodeLinks = { ...links, linkTo: base?.commit && links.linkAt ? links.linkAt(base.commit) : () => undefined };
+  const refutations = [...refutationParts(finding, links, known), ...(base ? [refutationPart(SAME_ON_BASE_LABEL, SAME_ON_BASE_TEXT, base, undefined, baseLinks, known)] : [])];
   // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too. The
   // evidence of a blocker listed again is an earlier round's, and so is the commit its related lines were read at.
   const relatedLines = relatedLineLinks(finding.evidence?.relatedProof, related, finding.relisted);

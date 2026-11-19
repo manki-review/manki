@@ -9,6 +9,7 @@ import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason 
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
 import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { git, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 import { BASE_READS_FILE } from './workspace';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -1165,10 +1166,20 @@ describe('refuteBlockers', () => {
       'No answer about the base': confirmed,
       'Same before without proof': { ...confirmed, base: { ...same, proof: [] } },
       'Same before by an unrelated file': { ...confirmed, base: { ...same, proof: ['README.md:1'] } },
+      // Line 9 of `src/api.ts` is there at the head only, so it is no line of the base, whatever the head holds.
+      'Same before on a line of the head': { ...confirmed, base: { ...same, proof: ['src/math.ts:2', 'src/api.ts:9'] } },
+      'Same before in a file the PR added': { ...confirmed, base: { ...same, proof: ['src/new.ts:1'] } },
       'Pending blocker': { ...confirmed, premises: [confirmed], base: same },
       'Security': { ...confirmed, base: same },
       'Plain warning': { ...confirmed, base: same },
     };
+    // The base holds the same `src/math.ts`, one line less of `src/api.ts` and no `src/new.ts`.
+    const { root } = gitWorkspace(
+      { 'src/math.ts': 'export function add(a: number, b: number) {\n  return a + b;\n}\n', 'src/api.ts': '// handler\n'.repeat(8), 'README.md': 'Old notes.\n' },
+      { 'src/api.ts': `${'// handler\n'.repeat(8)}if (a > 1000 || b > 1000) throw new Error();\n`, 'src/new.ts': 'export const sum = (a: number) => a + 1;\n' },
+      [],
+    );
+    const baseCommit = git(root, 'rev-parse', 'HEAD');
     const client = fakeClient(replies, 'first-model');
     const pair = fakeClient(replies, 'pair-model');
     const findings = [
@@ -1176,87 +1187,101 @@ describe('refuteBlockers', () => {
       finding('No answer about the base'),
       finding('Same before without proof'),
       finding('Same before by an unrelated file'),
+      finding('Same before on a line of the head'),
+      finding('Same before in a file the PR added', { file: 'src/new.ts', line: 1, evidence: { checks: [], proof: ['src/new.ts:1'] } }),
       finding('Pending blocker', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [doubt] }),
       finding('Security', { tags: ['security'] }),
       finding('Plain warning', { severity: 'warning', evidence: { checks: [], proof: [] } }),
     ];
 
-    const result = await refuteBlockers(client, findings, { workspace, diff, pair, excludedPaths: ['gen/client.ts'] });
+    const result = await refuteBlockers(client, findings, { workspace: root, diff, pair, excludedPaths: ['gen/client.ts'] });
 
     const message = (title: string) => client.calls.find(([t]) => t === title)![2];
     const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
-    expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, false]);
-    // The workspace holds no base, so the refuter is not sent to read one.
-    expect(client.messages[0][0]).toContain('does not show, read how this PR changed those lines with `git_history`, or answer unsettled.');
-    expect(client.messages[0][0]).not.toContain('`ref`');
+    expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, true, true, false]);
+    // The workspace holds the base, so the refuter cites the lines of the base and reads a changed file there.
+    expect(client.messages[0][0]).toContain('Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them');
+    expect(client.messages[0][0]).toContain('does not show, read that file at the base with `read_file` and `ref` set to `base`, or how this PR changed those lines with `git_history`, or answer unsettled.');
     // A check that asks shows the PR's change to the cited files and names the other files the PR changes.
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
     expect(message('Pending blocker')).toContain('- **Other files this PR changes**');
     expect(message('Plain warning')).not.toContain('Other files this PR changes');
-    // The answer never moves the outcome or the grade here. Only an answer with a line of the finding's file or the diff
-    // counts, from both refuters on different models, for a security finding as for any other.
-    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.base?.outcome, !!sameOnBase(f)])).toEqual([
+    // The answer never moves the outcome or the grade here. A disproof counts only when every line it cites is in its
+    // file at the base, and one of them is in the finding's own file. With a second refuter, both must give one, for a
+    // security finding as for any other.
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.base?.outcome, !!sameOnBase(f, true)])).toEqual([
       ['Same before', 'blocker', 'confirmed', 'disproved', true],
       ['No answer about the base', 'blocker', 'confirmed', 'unsettled', false],
       ['Same before without proof', 'blocker', 'confirmed', 'unsettled', false],
       ['Same before by an unrelated file', 'blocker', 'confirmed', 'unsettled', false],
+      ['Same before on a line of the head', 'blocker', 'confirmed', 'unsettled', false],
+      ['Same before in a file the PR added', 'blocker', 'confirmed', 'unsettled', false],
       ['Pending blocker', 'blocker', 'confirmed', 'disproved', true],
       ['Security', 'blocker', 'confirmed', 'disproved', true],
       ['Plain warning', 'warning', 'confirmed', undefined, false],
     ]);
-    expect(result[0].refutation?.base).toEqual({ premise: BASE_QUESTION, outcome: 'disproved', reason: same.reason, proof: ['src/math.ts:2'] });
-    // One refuter, a second call that failed, two on the same model, or a second check that finds the failure the PR's
-    // own or leaves it open, keeps the finding as it is.
+    expect(result[0].refutation?.base).toEqual({ premise: BASE_QUESTION, outcome: 'disproved', reason: same.reason, proof: ['src/math.ts:2'], commit: baseCommit });
+    // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.
+    expect(result[4].refutation?.base?.proof).toEqual(['src/math.ts:2']);
+    // Without a second refuter, the first refuter's answer is enough, except on a security finding.
+    expect(result.map(f => !!sameOnBase({ ...f, pairRefutation: undefined }, false))).toEqual([true, false, false, false, false, false, true, false, false]);
+    // With one, a second call that failed, or a second check that finds the failure the PR's own, leaves it open or cites
+    // no line found at the base, keeps the finding as it is.
     const [lowered] = result;
-    expect(sameOnBase({ ...lowered, pairRefutation: undefined })).toBeUndefined();
-    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, model: 'first-model' } })).toBeUndefined();
-    expect(sameOnBase({ ...lowered, refutation: { ...lowered.refutation!, model: undefined } })).toBeUndefined();
+    const pairBase = lowered.pairRefutation!.base!;
+    expect(sameOnBase({ ...lowered, pairRefutation: undefined }, true)).toBeUndefined();
     for (const outcome of ['confirmed', 'unsettled'] as const) {
-      expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...lowered.pairRefutation!.base!, outcome } } })).toBeUndefined();
+      expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...pairBase, outcome } } }, true)).toBeUndefined();
     }
-    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...lowered.pairRefutation!.base!, proof: undefined } } })).toBeUndefined();
+    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...pairBase, proof: undefined } } }, true)).toBeUndefined();
+    // An answer stored before the code checked its lines at the base names no commit, so it lowers nothing.
+    expect(sameOnBase({ ...lowered, refutation: { ...lowered.refutation!, base: { ...lowered.refutation!.base!, commit: undefined } } }, false)).toBeUndefined();
     const failed = fakeClient({ 'Same before': new Error('timed out') }, 'pair-model');
-    const [alone] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, pair: failed });
-    expect([alone.refutation?.base?.outcome, alone.pairRefutation, sameOnBase(alone)]).toEqual(['disproved', undefined, undefined]);
+    const [alone] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, pair: failed });
+    expect([alone.refutation?.base?.outcome, alone.pairRefutation, sameOnBase(alone, true)]).toEqual(['disproved', undefined, undefined]);
+
+    // A base that `exclude_paths` keeps from the tools, or a workspace without a base, leaves every answer open.
+    writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['src/math.ts'] }));
+    const [excluded] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff });
+    writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: [] }));
+    const [none] = await refuteBlockers(client, [finding('Same before')], { workspace, diff });
+    expect([excluded, none].map(f => [f.refutation?.base?.outcome, f.refutation?.base?.proof])).toEqual([['unsettled', undefined], ['unsettled', undefined]]);
+    // Without a base, the refuter is not sent to read one.
+    expect(client.messages.at(-1)![0]).toContain('does not show, read how this PR changed those lines with `git_history`, or answer unsettled.');
+    expect(client.messages.at(-1)![0]).not.toContain('`ref`');
 
     // A change the message leaves out looks the same at the base, so an answer under a cut list of changed files, or
     // under a cut change to the cited file, stays open.
     const paths = (n: number) => Array.from({ length: n }, (_, i) => `gen/file${i}.ts`);
-    const [named] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(49) });
-    const [cut] = await refuteBlockers(client, [finding('Same before')], { workspace, diff, excludedPaths: paths(50) });
+    const [named] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, excludedPaths: paths(49) });
+    const [cut] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, excludedPaths: paths(50) });
     expect(client.calls.at(-1)![2]).toContain(', and 1 more it does not name');
     const longChange = (lines: number): ParsedDiff => ({
       ...diff, files: [...diff.files, { path: 'src/math.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 + lines, content: '+  // note\n'.repeat(lines) }] }],
     });
-    const [shortChange] = await refuteBlockers(client, [finding('Same before')], { workspace, diff: longChange(10) });
-    const [cutChange] = await refuteBlockers(client, [finding('Same before')], { workspace, diff: longChange(1000) });
+    const [shortChange] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff: longChange(10) });
+    const [cutChange] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff: longChange(1000) });
     expect([named, cut, shortChange, cutChange].map(f => f.refutation?.base?.outcome)).toEqual(['disproved', 'unsettled', 'disproved', 'unsettled']);
 
     // A warning reuses its stored check without the answer about the base, so no stale answer makes it pre-existing.
     const stored = (refutation: Refutation) => [{ findings: { entries: [{ title: 'Same before', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation }] }, judge: {} }] as unknown as RoundContext[];
     const again = fakeClient({ 'Same before': { ...confirmed, base: same } });
-    const [warning] = await refuteBlockers(again, [finding('Same before', { severity: 'warning', evidence: { checks: [], proof: [] } })], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    const [warning] = await refuteBlockers(again, [finding('Same before', { severity: 'warning', evidence: { checks: [], proof: [] } })], { workspace: root, diff, priorRounds: stored(result[0].refutation!) });
     expect([again.calls.length, warning.refutation?.outcome, warning.refutation?.base]).toEqual([0, 'confirmed', undefined]);
     // A blocker's stored check that found the same failure before this PR is never reused, since a push to any file can
     // make the failure the PR's own: it is asked again with the code unchanged, after a push to another file, and after
     // a push to a cited file. One whose answer about the base lowers nothing is reused while its files are unchanged.
     const open = { ...result[1].refutation!, codeDigest: result[0].refutation!.codeDigest, files: result[0].refutation!.files };
-    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(open) });
+    await refuteBlockers(again, [finding('Same before')], { workspace: root, diff, priorRounds: stored(open) });
     expect(again.calls).toHaveLength(0);
-    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
-    writeFileSync(join(workspace, 'src', 'api.ts'), 'export const total = add(Number.MAX_SAFE_INTEGER, 1);\n');
-    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
-    writeFileSync(join(workspace, 'src', 'math.ts'), 'export function add(a: number, b: number) {\n  return a + b + 1;\n}\n');
-    await refuteBlockers(again, [finding('Same before')], { workspace, diff, priorRounds: stored(result[0].refutation!) });
+    await refuteBlockers(again, [finding('Same before')], { workspace: root, diff, priorRounds: stored(result[0].refutation!) });
+    writeFileSync(join(root, 'src', 'api.ts'), 'export const total = add(Number.MAX_SAFE_INTEGER, 1);\n');
+    await refuteBlockers(again, [finding('Same before')], { workspace: root, diff, priorRounds: stored(result[0].refutation!) });
+    writeFileSync(join(root, 'src', 'math.ts'), 'export function add(a: number, b: number) {\n  return a + b + 1;\n}\n');
+    await refuteBlockers(again, [finding('Same before')], { workspace: root, diff, priorRounds: stored(result[0].refutation!) });
     expect(again.calls).toHaveLength(3);
-
-    // A workspace that holds the base sends the refuter to read the changed file there.
-    mkdirSync(join(workspace, '.git'));
-    writeFileSync(join(workspace, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: [] }));
-    const withBase = fakeClient(replies, 'first-model');
-    await refuteBlockers(withBase, [finding('Same before')], { workspace, diff });
-    expect(withBase.messages[0][0]).toContain('does not show, read that file at the base with `read_file` and `ref` set to `base`, or how this PR changed those lines with `git_history`, or answer unsettled.');
-  });
+    rmSync(root, { recursive: true, force: true });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {
     writeFileSync(join(workspace, 'src', 'profile.ts'), "export function displayName(user: User | undefined): string {\n  if (!user) return 'guest';\n  return user.name;\n}\n");

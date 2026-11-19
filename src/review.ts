@@ -72,15 +72,15 @@ export function postedWhenPreExisting(f: Finding): boolean {
  * way before this PR, as pre-existing. Only the findings `postedWhenPreExisting` accepts are `posted`, the rest are
  * `unposted`, for the round record only. A posted blocker becomes a warning, so no check that reads the severity, in
  * this round or a later one, lets it block. A security blocker on code this PR did not change stays a blocker, whatever
- * `sameOnBase` found.
+ * `sameOnBase` found. `paired` says the round runs the second refuter, whose answer `sameOnBase` then needs too.
  */
-function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined): { posted: Finding[]; unposted: Finding[] } {
+function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined, paired: boolean): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
     // A claim the diff or the files contradict is kept with why, so the record shows which condition failed.
     const check = checkOf(f);
-    const base = f.severity === 'ignore' ? undefined : sameOnBase(f);
+    const base = f.severity === 'ignore' ? undefined : sameOnBase(f, paired);
     if (check !== 'pre_existing' && !base) {
       posted.push(check ? { ...f, preExistingCheck: check } : f);
       continue;
@@ -2057,7 +2057,7 @@ export async function runReview(
     if (stopped) return incompleteAfterJudge(stopped);
   }
   // After the suppressions, so a blocker the PR did not cause keeps their blocker guard.
-  const preExisting = markPreExisting(finalFindings, unchangedCheck);
+  const preExisting = markPreExisting(finalFindings, unchangedCheck, !!refutation?.pair);
   finalFindings = preExisting.posted;
   let unpostedPreExisting = preExisting.unposted;
 
@@ -2222,7 +2222,7 @@ export async function runReview(
       // way before this PR is pre-existing, as any other.
       const attributed = markPreExisting((refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input, excludedPaths: options.excludedPaths })
-        : readerBlockers).filter(f => f.severity !== 'ignore'), () => undefined);
+        : readerBlockers).filter(f => f.severity !== 'ignore'), () => undefined, !!refutation?.pair);
       const refuted = attributed.posted;
       unpostedPreExisting = [...unpostedPreExisting, ...attributed.unposted];
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);

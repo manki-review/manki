@@ -561,18 +561,30 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, toolSource: 'CodeQL' })).not.toContain(unchecked);
     expect(render({ ...baseFinding, reviewers: [] })).not.toContain(unchecked);
 
-    // A finding posted as pre-existing because the code before this PR fails the same way says so, with the lines the check read.
-    const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'] };
+    // A finding posted as pre-existing because the code before this PR fails the same way says so, with the lines the
+    // check read at the base, linked to the base commit.
+    const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'], commit: 'base' };
+    const baseLink = links.linkAt!('base')('src/main.ts', 40);
     const confirmedBefore: Finding = {
       ...baseFinding, severity: 'warning', tags: ['pre-existing'], evidence: { checks: [], proof: ['src/main.ts:42'] },
       refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'first-model', base: same },
       pairRefutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'pair-model', base: same },
     };
-    expect(render(confirmedBefore)).toContain(`**Same before this PR**\nManki read the code before this PR and found it fails the same way, so this PR did not cause it. The queue had no cap before this PR. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
+    const sameBefore = `**Same before this PR**\nManki read the code before this PR and found it fails the same way, so this PR did not cause it. The queue had no cap before this PR. See [\`src/main.ts:40\`](${baseLink}).`;
+    expect(baseLink).toContain('/blob/base/');
+    expect(render(confirmedBefore)).toContain(sameBefore);
     expect(render(confirmedBefore)).toContain('double-checked, same before this PR</summary>');
-    // Without the pre-existing mark, or with an answer left open, nothing says so.
+    // One refuter's answer says so too, except on a security finding.
+    expect(render({ ...confirmedBefore, pairRefutation: undefined })).toContain(sameBefore);
+    expect(render({ ...confirmedBefore, pairRefutation: undefined, tags: ['pre-existing', 'security'] })).not.toContain('Same before this PR');
+    // Without a way to link the base commit, the lines show unlinked rather than as lines of the head.
+    expect(formatFindingComment(confirmedBefore, { ...links, linkAt: undefined })).toContain('so this PR did not cause it. The queue had no cap before this PR. See `src/main.ts:40`.');
+    // Without the pre-existing mark, with an answer left open, with a second check that did not find it at the base, or
+    // with lines the code never found at the base, nothing says so.
     expect(render({ ...confirmedBefore, tags: undefined })).not.toContain('Same before this PR');
     expect(render({ ...confirmedBefore, refutation: { ...confirmedBefore.refutation!, base: { ...same, outcome: 'unsettled' } } })).not.toContain('Same before this PR');
+    expect(render({ ...confirmedBefore, pairRefutation: { ...confirmedBefore.pairRefutation!, base: { ...same, outcome: 'confirmed' } } })).not.toContain('Same before this PR');
+    expect(render({ ...confirmedBefore, refutation: { ...confirmedBefore.refutation!, base: { ...same, commit: undefined } } })).not.toContain('Same before this PR');
 
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
     const disprovedFinding: Finding = {

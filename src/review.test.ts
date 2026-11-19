@@ -3723,14 +3723,16 @@ describe('runReview', () => {
     }];
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     // `sameBefore` is each check's answer whether the failure is the PR's own: disproved when the loop failed the same
-    // way before. `pairModel` is the second refuter's model, `failed` when its call fails, or none without a second refuter.
-    const run = async (sameBefore: RefutationOutcome, { repoTools = true, pairModel = 'pair-model' }: { repoTools?: boolean; pairModel?: string | null } = {}) => {
-      const { root, diff } = gitWorkspace({ 'src/queue.ts': before }, { 'src/queue.ts': after });
+    // way before. `pairModel` is the second refuter's model, `failed` when its call fails, or none without a second
+    // refuter. `readsBase` says the workspace holds the base, whose lines `baseProof` cites.
+    type Options = { repoTools?: boolean; pairModel?: string | null; readsBase?: boolean; baseProof?: string[]; security?: boolean };
+    const run = async (sameBefore: RefutationOutcome, { repoTools = true, pairModel = 'pair-model', readsBase = true, baseProof = ['src/queue.ts:2', 'src/queue.ts:3'], security = false }: Options = {}) => {
+      const { root, diff } = gitWorkspace({ 'src/queue.ts': before }, { 'src/queue.ts': after }, readsBase ? [] : undefined);
       const refuterMessages: string[] = [];
       const reply = (model: string) => ({
         model, content: JSON.stringify({
           outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'],
-          base: { outcome: sameBefore, reason: 'The loop before this PR also only read the entry.', proof: ['src/queue.ts:3', 'src/queue.ts:4'] },
+          base: { outcome: sameBefore, reason: 'The loop before this PR also only read the entry.', proof: baseProof },
         }),
       });
       const pair = pairModel === null ? undefined : {
@@ -3741,7 +3743,7 @@ describe('runReview', () => {
       Object.assign(clients.judge, { repoTools });
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You are a code review judge')) {
-          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row: 'severe', preExisting: true, reasoning: 'Pre-existing: the loop is only re-indented.' }] }) };
+          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row: 'severe', preExisting: true, ...(security && { security: true }), reasoning: 'Pre-existing: the loop is only re-indented.' }] }) };
         }
         if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
         refuterMessages.push(user);
@@ -3767,18 +3769,30 @@ describe('runReview', () => {
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([[title, 'warning', 'blocker', ['pre-existing', 'follow-up'], 'touches_diff']]);
     expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
 
-    // The judge's pre-existing call alone lowers nothing, and neither does one refuter's answer. Checks that find the
-    // failure the PR's own or leave it open, one refuter only, two on the same model, a second call that failed, and a
-    // round with no check at all keep the blocker its cell gives.
-    const kept: Array<[RefutationOutcome, { repoTools?: boolean; pairModel?: string | null }]> = [
-      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: null }], ['disproved', { pairModel: 'judge-model' }], ['disproved', { pairModel: 'failed' }],
+    // The lines of the base prove it, so one refuter's answer lowers the blocker too, and so do two on the same model.
+    // The base answer cites base line 2, which is the head's new comment line.
+    for (const options of [{ pairModel: null }, { pairModel: 'judge-model' }]) {
+      const round = await run('disproved', options);
+      expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.tags])]).toEqual([options, 'READY', [['warning', ['pre-existing', 'follow-up']]]]);
+    }
+
+    // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
+    // second call that failed, a security finding without both refuters, a workspace without the base, a line the base
+    // does not hold, no cited line in the finding's file, and a round with no check at all keep the blocker its cell gives.
+    const kept: Array<[RefutationOutcome, Options]> = [
+      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: 'failed' }], ['disproved', { pairModel: null, security: true }],
+      ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:3', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
       ['disproved', { repoTools: false }],
     ];
     for (const [sameBefore, options] of kept) {
       const round = await run(sameBefore, options);
-      expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.gradeIfConfirmed, f.tags])]).toEqual([options, 'ADDRESS_FIRST', [['blocker', undefined, undefined]]]);
+      expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.gradeIfConfirmed, f.tags?.filter(t => t !== 'security')])])
+        .toEqual([options, 'ADDRESS_FIRST', [['blocker', undefined, options.security ? [] : undefined]]]);
       expect(round.refuterMessages).toHaveLength(options.repoTools === false ? 0 : 1);
     }
+    // Both refuters lower a security blocker.
+    const both = await run('disproved', { security: true });
+    expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
   });
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {
@@ -5007,18 +5021,17 @@ describe('runReview', () => {
       ['Old SQL injection', 'blocker', ['security', 'pre-existing']],
     ]);
 
-    // A finding on a changed line is pre-existing when both refuters, on different models, found the same failure before
-    // this PR with proof lines, a security finding as any other. It posts only what would block had this PR caused it,
-    // as a warning. An answer left open, one that found the PR makes the failure newly reachable, or one refuter alone
-    // keeps the blocker.
+    // A finding on a changed line is pre-existing when the refuter found the same failure before this PR, with lines
+    // the code found at the base. It posts only what would block had this PR caused it, as a warning. This round runs no
+    // second refuter, so a security finding keeps blocking, and so does an answer left open, one the code did not check
+    // at the base, or one without lines.
     const check = (base: RefutationOutcome, model = 'first-model'): Refutation => ({
       outcome: 'confirmed', defect: 'confirmed', reason: 'It fails.', files: ['src/a.ts'], codeDigest: 'abc', model,
-      base: { premise: BASE_QUESTION, outcome: base, reason: base === 'disproved' ? 'The same queue had no cap before this PR.' : 'r', proof: ['src/a.ts:11'] },
+      base: { premise: BASE_QUESTION, outcome: base, reason: base === 'disproved' ? 'The same queue had no cap before this PR.' : 'r', proof: ['src/a.ts:11'], commit: 'base' },
     });
-    const onLine = (title: string, extra: Partial<Finding> = {}) => blocker(title, 'src/a.ts', 12, { preExisting: undefined, refutation: check('disproved'), pairRefutation: check('disproved', 'pair-model'), ...extra });
+    const onLine = (title: string, extra: Partial<Finding> = {}) => blocker(title, 'src/a.ts', 12, { preExisting: undefined, refutation: check('disproved'), ...extra });
     const based = [
       onLine('Queue holds unverified entries'),
-      onLine('Peer can fill the queue', { tags: ['security'] }),
       onLine('Queue may grow', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'Entries arrive faster than they drain', decides: 'defect' }], refutation: { ...check('disproved'), outcome: 'unsettled' } }),
     ];
     mockedRunJudgeAgent.mockResolvedValue({ findings: based, summary: 'Old defects on changed lines.' });
@@ -5026,15 +5039,14 @@ describe('runReview', () => {
     expect(onBase.outcome).toBe('READY');
     expect(onBase.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([
       ['Queue holds unverified entries', 'warning', 'blocker', ['pre-existing', 'follow-up'], undefined],
-      ['Peer can fill the queue', 'warning', 'blocker', ['security', 'pre-existing', 'follow-up'], undefined],
     ]);
     expect(onBase.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: 'the code before this PR fails the same way: The same queue had no cap before this PR.' });
     expect(onBase.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual([['Queue may grow', 'warning', ['pre-existing']]]);
     const keptBlockers = [
-      onLine('Left open', { refutation: check('unsettled') }), onLine('Newly reachable', { pairRefutation: check('confirmed', 'pair-model') }),
+      onLine('Left open', { refutation: check('unsettled') }), onLine('Newly reachable', { refutation: check('confirmed') }),
       onLine('Not asked', { refutation: { ...check('disproved'), base: undefined } }), onLine('No proof', { refutation: { ...check('disproved'), base: { ...check('disproved').base!, proof: [] } } }),
-      onLine('One check', { pairRefutation: undefined }), onLine('On one model', { pairRefutation: check('disproved') }),
-      onLine('Security with one check', { tags: ['security'], pairRefutation: undefined }), onLine('Security on one model', { tags: ['security'], pairRefutation: check('disproved') }),
+      onLine('Not checked at the base', { refutation: { ...check('disproved'), base: { ...check('disproved').base!, commit: undefined } } }),
+      onLine('Security with one check', { tags: ['security'] }), onLine('Security with a stored second check', { tags: ['security'], pairRefutation: check('disproved', 'pair-model') }),
     ];
     for (const kept of keptBlockers) {
       mockedRunJudgeAgent.mockResolvedValue({ findings: [kept], summary: 'One defect.' });
