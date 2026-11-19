@@ -5,7 +5,7 @@ import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
 import { RunCancelledError, stopWritesOn } from './abort';
-import { changeThreadThroughService, createAuthenticatedOctokit, createOctokit, fetchPrState, reportPrState, resolveGitHubToken, tokenServiceCalls, TokenResult, TokenServiceError } from './auth';
+import { changeThreadThroughService, createAuthenticatedOctokit, createOctokit, fetchPrState, isAllowedAccount, reportPrState, resolveGitHubToken, tokenServiceCalls, TokenResult, TokenServiceError } from './auth';
 import { startReviewCheck } from './check-run';
 import { pastRetryWait } from './test-utils';
 
@@ -256,6 +256,51 @@ describe('reportPrState', () => {
       await reportPrState(OWNER, REPO, 12, { pause: null });
       expect(global.fetch).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe('isAllowedAccount', () => {
+  beforeEach(() => {
+    mockGetInput.mockReset().mockReturnValue('');
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
+    jest.mocked(core.warning).mockClear();
+    process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+  });
+
+  afterEach(() => {
+    delete process.env.GITHUB_EVENT_NAME;
+    jest.restoreAllMocks();
+  });
+
+  it('asks `/access` with the OIDC token, and reads only `allowed: true` as allowed', async () => {
+    for (const [reply, allowed] of [[{ allowed: true }, true], [{ allowed: false }, false], [{ allowed: 'yes' }, false], [null, false]] as const) {
+      mockFetch(async () => Response.json(reply));
+      expect(await isAllowedAccount(OWNER, REPO, 31)).toBe(allowed);
+      const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://manki-api.dustinface.me/access');
+      expect(init.headers['Authorization']).toBe('Bearer fake-oidc-token');
+      expect(JSON.parse(init.body)).toEqual({ owner: OWNER, repo: REPO, user_id: 31 });
+    }
+    expect(core.warning).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing in a run on another event than `workflow_dispatch`', async () => {
+    process.env.GITHUB_EVENT_NAME = 'issue_comment';
+    mockFetch(async () => Response.json({ allowed: true }));
+    expect(await isAllowedAccount(OWNER, REPO, 31)).toBe(false);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the run has no OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC')), 0, 'no OIDC token, so the workflow needs `id-token: write`'],
+    ['the service refuses the run', () => mockFetch(async () => Response.json({ error: 'run 7 is not active on this PR' }, { status: 403 })), 1, 'HTTP 403'],
+    ['the service fails twice', () => mockFetch(async () => new Response('Bad Gateway', { status: 502 })), 2, 'HTTP 502'],
+    ['the request fails twice', () => mockFetch(async () => { throw new TypeError('fetch failed'); }), 2, 'TypeError: fetch failed'],
+  ])('answers not allowed with a warning naming the cause when %s', async (_case, arrange, calls, cause) => {
+    arrange();
+    expect(await pastRetryWait(() => isAllowedAccount(OWNER, REPO, 31))).toBe(false);
+    if (calls) expect(global.fetch).toHaveBeenCalledTimes(calls);
+    expect(jest.mocked(core.warning).mock.calls).toEqual([[`Could not ask the token service whether account 31 may use Manki, treating it as not allowed: ${cause}`]]);
   });
 });
 

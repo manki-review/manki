@@ -75,6 +75,9 @@ Changes to security-sensitive paths, CI or dependency files and data contracts a
 | `/manki check` | Check thread resolution and auto-approve if clear |
 | `/manki forget <text>` | Remove a learning matching the text |
 | `/manki forget suppression <pattern>` | Remove a suppression matching the pattern |
+| `/manki allow @<login>` | Let an account without write access use Manki in this repository. Needs the `maintain` or `admin` role |
+| `/manki disallow @<login>` | Take that back. Needs the `maintain` or `admin` role |
+| `/manki allowed` | List the accounts allowed to use Manki here, with who allowed each one and when |
 | `/manki help` | Show all commands |
 
 A message from Manki that names one of these steps carries a box for it, such as Review again, Check approval, Forget this learning or Dismiss this finding. Ticking the box does what the command does, for the same people. See [Severity tiers](docs/how-reviews-work.md#severity-tiers).
@@ -124,7 +127,7 @@ See [`.manki.yml.example`](.manki.yml.example) for all options, or [Configuratio
 
 ## Security
 
-Secrets are masked, PR content is sanitized before posting, and only people with write access to the repo can start Manki from a comment or change its memory. See the [Security model](docs/security.md).
+Secrets are masked, PR content is sanitized before posting, and only people with write access to the repo, or accounts a maintainer [allowed](docs/getting-started.md#allowing-an-account-without-write-access), can start Manki from a comment or change its memory. See the [Security model](docs/security.md).
 
 ## License
 

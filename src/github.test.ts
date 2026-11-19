@@ -6847,6 +6847,40 @@ describe('authorClearRole', () => {
     expect(warningSpy).toHaveBeenCalledWith('Could not read the repo permission of alice, treating it as none: Error: Server Error');
     warningSpy.mockRestore();
   });
+
+  it('counts a person on the token service\'s allow list as having write access in a dispatched run, but never as holding a role', async () => {
+    const event = process.env.GITHUB_EVENT_NAME;
+    const realFetch = global.fetch;
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
+    // The allow list holds user id 31 only.
+    global.fetch = jest.fn(async (_url: unknown, init?: RequestInit) => Response.json({ allowed: JSON.parse(String(init?.body)).user_id === 31 })) as jest.Mock;
+    const asked = () => jest.mocked(global.fetch).mock.calls.map(([url, init]) => [String(url).replace(/^.*\//, ''), JSON.parse(String(init?.body))]);
+    const reader = (id: number, type = 'User') => clientFor({ permission: 'read', role_name: 'read', user: { type, id } }).octokit;
+    try {
+      process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+      const allowed = reader(31);
+      expect(await hasWriteAccess(allowed, 'o', 'r', 'ally')).toBe(true);
+      expect(await hasWriteAccess(allowed, 'o', 'r', 'Ally')).toBe(true);
+      expect(await authorClearRole(allowed, 'o', 'r', 'ally', 'write')).toBeUndefined();
+      expect(await hasWriteAccess(reader(41), 'o', 'r', 'other')).toBe(false);
+      // A bot, and a person with write access, need no question.
+      expect(await hasWriteAccess(reader(31, 'Bot'), 'o', 'r', 'ally')).toBe(false);
+      expect(await hasWriteAccess(clientFor({ permission: 'write', user: { type: 'User', id: 31 } }).octokit, 'o', 'r', 'ally')).toBe(true);
+      expect(asked()).toEqual([['access', { owner: 'o', repo: 'r', user_id: 31 }], ['access', { owner: 'o', repo: 'r', user_id: 41 }]]);
+
+      // Only a `workflow_dispatch` run asks, and an answer without a user id asks nothing.
+      jest.mocked(global.fetch).mockClear();
+      expect(await hasWriteAccess(clientFor({ permission: 'read', user: { type: 'User' } }).octokit, 'o', 'r', 'ally')).toBe(false);
+      delete process.env.GITHUB_EVENT_NAME;
+      expect(await hasWriteAccess(reader(31), 'o', 'r', 'ally')).toBe(false);
+      expect(global.fetch).not.toHaveBeenCalled();
+    } finally {
+      process.env.GITHUB_EVENT_NAME = event;
+      if (event === undefined) delete process.env.GITHUB_EVENT_NAME;
+      global.fetch = realFetch;
+      jest.restoreAllMocks();
+    }
+  });
 });
 
 describe('isBotLogin', () => {

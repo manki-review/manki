@@ -5,6 +5,7 @@ import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 import { assertWritesAllowed } from './abort';
 import { offerQueuedCheck, QueuedCheck } from './check-run';
+import { isDispatchedRun } from './dispatch';
 import { BOT_LOGIN, BotIdentity } from './github';
 import type { PrState, RunMode, StateReport, TokenServiceCall } from './types';
 import { redactSecretsDeep, registerSecret } from './utils';
@@ -271,6 +272,27 @@ export async function fetchPrState(owner: string, repo: string, prNumber: number
     runModes: modesOf(data?.active, item => item.run_id === runId),
     queuedModes: modesOf(data?.queue, () => true),
   };
+}
+
+/**
+ * Whether a maintainer put the account with user id `userId` on the token service's allow list for `owner/repo`, so it
+ * may use Manki there without write access. Only a `workflow_dispatch` run asks, and the service's `/access` refuses
+ * a run it did not dispatch, such as one started by hand. Any failure is a no, with its cause in a warning.
+ */
+export async function isAllowedAccount(owner: string, repo: string, userId: number): Promise<boolean> {
+  if (!isDispatchedRun()) return false;
+  const notAllowed = (cause: string) => {
+    core.warning(`Could not ask the token service whether account ${userId} may use Manki, treating it as not allowed: ${cause}`);
+    return false;
+  };
+  try {
+    const response = await callTokenService('access', { owner, repo, user_id: userId }, NOTHING_FOR_RUN, true);
+    if (!response) return notAllowed('no OIDC token, so the workflow needs `id-token: write`');
+    if (!response.ok) return notAllowed(`HTTP ${response.status}`);
+    return (response.data as { allowed?: unknown } | null)?.allowed === true;
+  } catch (error) {
+    return notAllowed(String(error));
+  }
 }
 
 /** The clients holding the token service's review token, which cannot resolve review threads itself. */
