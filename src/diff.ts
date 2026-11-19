@@ -556,6 +556,26 @@ export function replacementOf(file: DiffFile, oldLine: number): [number, number]
   return undefined;
 }
 
+/** Whether a run of changed lines sits right before or right after `oldLine` of the old file. */
+export function changesNextTo(file: DiffFile, oldLine: number): boolean {
+  for (const hunk of file.hunks) {
+    let oldAt = hunk.oldStart + (hunk.oldLines === 0 ? 1 : 0);
+    let runStart: number | undefined;
+    for (const content of [...hunk.content.split('\n'), ' ']) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-') || content.startsWith('+')) {
+        runStart ??= oldAt;
+        if (content.startsWith('-')) oldAt++;
+        continue;
+      }
+      if (runStart !== undefined && (runStart === oldLine + 1 || oldAt === oldLine)) return true;
+      runStart = undefined;
+      oldAt++;
+    }
+  }
+  return false;
+}
+
 /**
  * Check if a line number, or any line from `line` to `end`, is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.

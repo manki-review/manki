@@ -416,7 +416,9 @@ describe('checkFixedElsewhere', () => {
     ['a pull request this PR\'s head already holds', merged, { holds: [`${HEAD}..${MERGE}`, `${FIX}..${MERGE}`, `${FIX}..${HEAD}`] }, 'this PR\'s head already holds #7, so #7 cannot be what fixes it'],
     ['no change to a file the finding cites', merged, { files: [{ ...FILE, filename: 'src/other.rs' }] }, '#7 changes none of the files this finding cites'],
     ['a finding on the whole file', merged, { line: 0 }, 'this finding names no line'],
-    ['a merge that keeps the finding\'s line', merged, { line: 1 }, 'the merge with #7 leaves `src/ledger.rs:1` as it is'],
+    ['a merge that keeps the finding\'s line and replaces the next one', merged, { line: 1 }, 'the merge with #7 changes only the lines next to `src/ledger.rs:1`, and the check needs `src/ledger.rs:1` itself replaced'],
+    ['a merge that only adds a guard above the finding\'s line', merged, { sinceHead: [{ ...SINCE_HEAD, patch: '@@ -1,2 +1,3 @@\n pub struct Ledger;\n+// guard\n impl Ledger {}' }] }, 'the merge with #7 changes only the lines next to `src/ledger.rs:2`, and the check needs `src/ledger.rs:2` itself replaced'],
+    ['a merge that changes the finding\'s file far from its line', merged, { line: 40 }, 'the merge with #7 leaves `src/ledger.rs:40` as it is'],
     ['a merge that does not change the finding\'s file', merged, { sinceHead: [{ ...SINCE_HEAD, filename: 'src/other.rs' }] }, 'the merge with #7 leaves `src/ledger.rs:2` as it is'],
     // A change GitHub does not show in full is no proof either way, so a maintainer decides.
     ['a merge whose change GitHub shows without lines', merged, { sinceHead: [{ ...SINCE_HEAD, patch: undefined }] }, 'GitHub shows no lines of the change the merge with #7 makes to `src/ledger.rs`'],

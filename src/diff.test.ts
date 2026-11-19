@@ -13,6 +13,7 @@ import {
   filterRawDiff,
   isLineInDiff,
   firstCommentableLine,
+  changesNextTo,
   oldLineOf,
   replacementOf,
   sliceDiff,
@@ -992,7 +993,7 @@ describe('isLineInDiff', () => {
   });
 });
 
-describe('oldLineOf and replacementOf', () => {
+describe('oldLineOf, replacementOf and changesNextTo', () => {
   // Line 2 is replaced by two lines, and line 10 is removed.
   const file = parsePRDiff([
     'diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts',
@@ -1014,6 +1015,13 @@ describe('oldLineOf and replacementOf', () => {
 
   it('returns the new lines that replace a removed old line, and none for a line the diff keeps', () => {
     expect([2, 10, 1, 3].map(line => replacementOf(file, line))).toEqual([[2, 3], [11, 10], undefined, undefined]);
+  });
+
+  it('tells a line right before or after a run of changed lines from the changed line and a line further away', () => {
+    expect([1, 2, 3, 4, 8, 9, 10, 11, 12].map(line => changesNextTo(file, line))).toEqual([true, false, true, false, false, true, false, true, false]);
+    // Two lines added after line 5, with no line of context.
+    const added = parsePRDiff(['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', '@@ -5,0 +6,2 @@\n+a\n+b'].join('\n')).files[0];
+    expect([4, 5, 6, 7].map(line => changesNextTo(added, line))).toEqual([false, true, true, false]);
   });
 });
 

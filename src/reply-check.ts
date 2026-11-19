@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import type { getOctokit } from '@actions/github';
 
 import { RunCancelledError } from './abort';
-import { addedLines, listedFilesDiff, oldLineOf, parsePRDiff, replacementOf } from './diff';
+import { addedLines, changesNextTo, listedFilesDiff, oldLineOf, parsePRDiff, replacementOf } from './diff';
 import { inline, sanitizeMarkdown } from './github';
 import { extractJSON } from './json';
 import { findLines } from './mcp-server';
@@ -457,7 +457,10 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   if (headChange && !findingFile) return { why: `GitHub shows no lines of the change the merge with #${pr} makes to ${file}` };
   if (findingFile?.changeType === 'deleted') return { why: `the merge with #${pr} deletes ${file}` };
   const merged = findingFile && replacementOf(findingFile, s.line);
-  if (!merged) return { why: `the merge with #${pr} leaves ${place} as it is` };
+  if (!merged) {
+    const beside = findingFile && changesNextTo(findingFile, s.line);
+    return { why: beside ? `the merge with #${pr} changes only the lines next to ${place}, and the check needs ${place} itself replaced` : `the merge with #${pr} leaves ${place} as it is` };
+  }
   // The merge holds every change on the base since this PR branched, so only a line `pr`'s own diff replaced, with the
   // lines it put there still in place, credits `pr`. A file this PR only renamed keeps its lines where they are.
   const ownFile = ownFiles.find(f => f.filename === s.file && !(f.status === 'renamed' && f.changes === 0));
