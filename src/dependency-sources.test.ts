@@ -365,6 +365,11 @@ describe('dependencyLoader', () => {
       await expect(refused.load('npm/left-pad')).rejects.toThrow(why);
       expect(dependencyOutcomes(refused.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', status: 'refused' })]);
     }
+    // Yarn follows a cache folder that is a symlink, also one git does not track.
+    const cached = round({ 'package.json': manifest({}), 'package-lock.json': lock, 'vendor/cache/left-pad-npm-1.2.0-abc.zip': '' });
+    mkdirSync(join(cached.repo, '.yarn'));
+    symlinkSync('../vendor/cache', join(cached.repo, '.yarn', 'cache'));
+    await expect(cached.load('npm/left-pad')).rejects.toThrow('the checkout holds .yarn/cache/left-pad-npm-1.2.0-abc.zip');
     // An override or patch of another package, and a script that does not run at install, change nothing for this one.
     expect((await round({
       'package.json': manifest({ overrides: { 'left-pads': '1' }, resolutions: { 'other/left-pad-x': '1' }, scripts: { test: 'jest', build: 'tsc' } }),

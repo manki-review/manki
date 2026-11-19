@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync } from 'fs';
+import { lstatSync, readdirSync, statSync } from 'fs';
 import { join, posix } from 'path';
 import { validRange } from 'semver';
 import { parse } from 'yaml';
@@ -217,7 +217,8 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
       const installed = posix.join('node_modules', name);
       if (lstatSync(join(dir, installed), { throwIfNoEntry: false })) return installed;
       const cache = join(dir, '.yarn', 'cache');
-      const zip = lstatSync(cache, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(cache).find(f => f.startsWith(`${name.replace('/', '-')}-npm-`)) : undefined;
+      // Yarn follows a cache folder that is a symlink, so the check does too.
+      const zip = statSync(cache, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(cache).find(f => f.startsWith(`${name.replace('/', '-')}-npm-`)) : undefined;
       return zip && `.yarn/cache/${zip}`;
     },
     validName: name => name.length <= 214 && /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name),
