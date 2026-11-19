@@ -1045,15 +1045,16 @@ export async function runReview(
   // Every call ends by `until`, and a fallback gets only what the failed call left of that.
   const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string, movesOnLimit?: () => (() => void) | undefined, until = deadline): LLMClient => {
     const label = { stage, ...(agent && { agent }) };
-    const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
-    const recorded = recordCalls(client, label, llmCalls);
-    const noted: LLMClient = {
+    // A limit on either side marks that model, so a second read passes it over.
+    const noteLimit = (model: LLMClient, recorded: LLMClient): LLMClient => ({
       ...recorded,
       sendMessage: (...args) => recorded.sendMessage(...args).catch((error: unknown) => {
-        if (error instanceof QuotaError) limitedClients.add(client);
+        if (error instanceof QuotaError) limitedClients.add(model);
         throw error;
       }),
-    };
+    });
+    const recordedFallback = fallback && noteLimit(fallback.client, recordCalls(fallback.client, { ...label, fallback: true }, llmCalls));
+    const noted = noteLimit(client, recordCalls(client, label, llmCalls));
     return withSignal(withModelFallback(noted, recordedFallback, (error) => {
       const limit = error instanceof QuotaError;
       const unreachable = error instanceof UnreachableError;
@@ -1684,7 +1685,7 @@ export async function runReview(
    */
   const readAgain = async (candidates: Finder[]): Promise<RoundSecondReads> => {
     const found = new Map(candidates.map(c => [c.name, allFindings.filter(f => f.reviewers.includes(c.name)).length]));
-    // A side check's finding can come from a claim of the PR text, which no finder reads.
+    // A side check's finding can come from a claim of the PR text, and no finder is shown the claims or the claim checks' findings.
     const byReaders = new Set(team.finders.map(f => f.name));
     const reads: RoundSecondReads['reads'] = [];
     const progress = sideProgress('second_read');
@@ -2341,7 +2342,7 @@ function secondReader(finders: readonly Finder[], found: ReadonlyMap<string, num
 
 /** The note of a second read: the location and title of each of the round's `findings`, never their reasoning. */
 function secondReadNote(findings: readonly Finding[]): string {
-  const listed = findings.map(f => `${f.file ? `${f.file}:${f.line}` : '(no file)'} ${f.title.replace(/\s+/g, ' ')}`);
+  const listed = findings.map(f => `${f.file ? `${f.file}:${f.line}` : '(no file)'}: ${f.title.replace(/\s+/g, ' ')}`);
   return 'You answered this message before. The reviewers of this round have raised the findings below so far, each as its location and title. '
     + 'The list is not complete, so the change can hold defects it does not name.\n\n'
     + `${fenceText(listed.join('\n') || '(none)')}\n\n`
