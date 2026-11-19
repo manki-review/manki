@@ -102,8 +102,8 @@ function readableChecksum(checksum: string | undefined): checksum is string {
  * other one matches.
  */
 export function pickVersion(versions: readonly PublishedVersion[], range: string, latest?: string): PublishedVersion | undefined {
-  // A version reaches a key, a URL and a note, so only one spelled exactly as semver spells it is picked.
-  const matching = versions.filter(v => !v.yanked && valid(v.version) === v.version && VERSION.test(v.version) && satisfies(v.version, range));
+  // A version reaches a key, a URL and a note, so only one spelled exactly as semver spells it is picked. `valid` drops build metadata.
+  const matching = versions.filter(v => !v.yanked && valid(v.version) === v.version.replace(/\+.*$/, '') && VERSION.test(v.version) && satisfies(v.version, range));
   const current = matching.filter(v => !v.deprecated);
   const preferred = latest === undefined ? undefined : current.find(v => v.version === latest);
   return preferred ?? (current.length > 0 ? current : matching).sort((a, b) => rcompare(a.version, b.version))[0];

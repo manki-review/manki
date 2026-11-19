@@ -52,6 +52,9 @@ describe('dependencyLoader', () => {
       '/index/de/mo/demo_rs': JSON.stringify({ name: 'demo_rs', vers: '1.0.0', cksum: sha256Hex(CRATES['1.2.0']) }),
       '/dl/crates/demo_rs/demo_rs-1.0.0.crate': CRATES['1.2.0'],
       '/index/sl/ow/slow': { hang: true },
+      // Build metadata is part of a published version, as for the crate `wasi`.
+      '/index/1/w': ['0.10.0', '0.11.0+wasi-snapshot-preview1'].map(vers => JSON.stringify({ name: 'w', vers, cksum: sha256Hex(CRATES['1.2.0']) })).join('\n'),
+      '/dl/crates/w/w-0.11.0%2Bwasi-snapshot-preview1.crate': CRATES['1.2.0'],
       '/index/ti/me/time': ['0.2.27', '0.3.47'].map(vers => JSON.stringify({ name: 'time', vers, cksum: sha256Hex(CRATES['1.2.0']) })).join('\n'),
       '/dl/crates/time/time-0.3.47.crate': CRATES['1.2.0'],
       '/npm/undeprecated': JSON.stringify({ name: 'undeprecated', versions: { '1.0.0': { dist: { integrity: sha512Integrity(PAD) } }, '1.1.0': { dist: { integrity: sha512Integrity(PAD) }, deprecated: '' } } }),
@@ -225,6 +228,7 @@ describe('dependencyLoader', () => {
     });
     const demo = await load('crates.io/demo');
     expect(demo.key).toBe('crates.io/demo@1.2.5');
+    expect((await round({ 'Cargo.toml': '[dependencies]\nw = "0.11"\n' }).load('crates.io/w')).key).toBe('crates.io/w@0.11.0+wasi-snapshot-preview1');
     expect(demo.note).toBe('Manki read `crates.io/demo@1.2.5`, the version a fresh install picks for the requirement `1.2` in `crates/a/Cargo.toml`, since no lockfile covers that manifest. No file of the PR sets another registry for it, so Manki read it from crates.io. Cite its lines as `crates.io/demo@1.2.5:path:line`.');
     const pad = await load('npm/left-pad');
     expect(pad.key).toBe('npm/left-pad@1.2.0');
@@ -669,7 +673,9 @@ describe('pickVersion', () => {
     expect(pickVersion(versions, '^1.2.0-rc.0')?.version).toBe('1.2.0-rc.1');
     expect(pickVersion([{ version: '1.0.0', checksum: 'a', yanked: true }], '^1.0.0')).toBeUndefined();
     // A version reaches the key only as semver spells it.
-    expect(pickVersion([{ version: 'v1.0.0', checksum: 'a' }, { version: ' 1.0.1', checksum: 'b' }], '^1.0.0')).toBeUndefined();
+    expect(pickVersion([{ version: 'v1.0.0', checksum: 'a' }, { version: ' 1.0.1', checksum: 'b' }, { version: 'v1.0.2+b', checksum: 'c' }], '^1.0.0')).toBeUndefined();
+    // Build metadata stays part of the version, and a version with it is picked like any other.
+    expect(pickVersion([{ version: '0.10.0', checksum: 'a' }, { version: '0.11.0+wasi-snapshot-preview1', checksum: 'b' }], '>=0.10')?.version).toBe('0.11.0+wasi-snapshot-preview1');
     // The version marked `latest` wins when it matches and is not deprecated.
     const tagged = [...versions, { version: '1.3.0', checksum: 'd' }];
     expect(pickVersion(tagged, '^1.0.0', '1.0.0')?.version).toBe('1.0.0');
