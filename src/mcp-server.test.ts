@@ -298,7 +298,9 @@ describe('Manki tool server', () => {
     writeFileSync(join(source, 'moved.txt'), 'open line\nsecond\nthird\nfourth\n');
     writeFileSync(join(source, 'old.txt'), 'open line\n');
     git(source, 'commit', '-qam', 'rewrite the moved case');
-    const workspace = await fetchWorkspace(`file://${source}`, git(source, 'rev-parse', 'HEAD'), undefined, ['holdout/**', 'höldout/**']);
+    const workspace = await fetchWorkspace(`file://${source}`, git(source, 'rev-parse', 'HEAD'), undefined, ['holdout/**', 'höldout/**'], {
+      sha: git(source, 'rev-parse', 'HEAD~2'), excludePaths: [],
+    });
     const closedFile = join(base, 'closed-calls');
     const codex = await connect(workspace, { fileTools: true, closedFile });
     try {
@@ -308,6 +310,11 @@ describe('Manki tool server', () => {
       expect((await call(codex, 'git_history', { path: './holdout/moved.txt' })).text).toContain('`closed_paths` holds `holdout/**`');
       expect(await call(codex, 'grep', { text: 'marker' })).toEqual({ text: 'No matches.', isError: false });
       expect(await call(codex, 'glob', { pattern: '**' })).toEqual({ text: 'moved.txt\nold.txt\nopen.txt', isError: false });
+      // git's objects still hold the closed files at the base, so a read there is refused as at the head.
+      for (const path of ['holdout/case.yml', 'holdout\\moved.txt']) {
+        expect(await call(codex, 'read_file', { path, ref: 'base' })).toEqual({ ...refused, text: refused.text.replace('holdout/case.yml', path) });
+      }
+      expect((await call(codex, 'read_file', { path: 'open.txt', ref: 'base' })).text).toBe('1\tfirst open line\n2\t');
       // A file moved out of a closed path gets its commits but no line history.
       expect(await call(codex, 'git_history', { path: 'moved.txt', startLine: 1 })).toEqual({
         text: 'moved.txt was once at a path the repository\'s config closes, so its line history is not shown. Its commits are listed without a line range.', isError: true,
@@ -320,12 +327,12 @@ describe('Manki tool server', () => {
       symlinkSync('moved.txt', join(workspace, 'link.txt'));
       expect(await call(codex, 'read_file', { path: 'link.txt' })).toEqual({ text: 'link.txt goes through a symlink, which no tool follows while the repository\'s config closes paths.', isError: true });
       expect((await call(codex, 'read_file', { path: 'moved.txt' })).text).toContain('open line');
-      expect(readClosedCalls(closedFile)).toBe(3);
+      expect(readClosedCalls(closedFile)).toBe(5);
       // A later server of the same call adds to the count in the file.
       const later = await connect(workspace, { closedFile });
       expect((await call(later, 'ast_grep', { pattern: '$X', path: 'holdout/case.yml' })).isError).toBe(true);
       await later.close();
-      expect(readClosedCalls(closedFile)).toBe(4);
+      expect(readClosedCalls(closedFile)).toBe(6);
     } finally {
       await codex.close();
       rmSync(workspace, { recursive: true, force: true });
