@@ -2148,7 +2148,9 @@ describe('runReview', () => {
 
       // Two finders per round, and both of a round share its state directory. The second read of a round gets what its finders got.
       const reads = jest.mocked(clients.reviewer.sendMessage).mock.calls;
-      expect(reads.filter(call => isSecondRead(call[1])).map(call => call[2]?.repoTools)).toEqual([reads[0][2]?.repoTools, undefined, { root: '/work/pr-head', steps: 40 }]);
+      // A round without related repos still offers the finders the PR's dependencies.
+      const dependenciesOnly = { root: '/work/pr-head', steps: 40, related: { repos: [], cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true } };
+      expect(reads.filter(call => isSecondRead(call[1])).map(call => call[2]?.repoTools)).toEqual([reads[0][2]?.repoTools, undefined, dependenciesOnly]);
       const [first, second, ...rest] = reads.filter(call => !isSecondRead(call[1])).map(call => call[2]?.repoTools);
       expect(first).toEqual({
         root: '/work/pr-head', steps: 40, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true },
@@ -2156,8 +2158,6 @@ describe('runReview', () => {
       expect(second).toEqual(first);
       // No related repo was fetched before the finders ran, so the prompt gets no guide to name.
       expect(first?.related).not.toHaveProperty('guides');
-      // A round without related repos still offers the finders the PR's dependencies.
-      const dependenciesOnly = { root: '/work/pr-head', steps: 40, related: { repos: [], cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true } };
       expect(rest).toEqual([undefined, undefined, dependenciesOnly, dependenciesOnly]);
       // A review of a change made earlier reads the related repos as they were then, and fetches every one before the finders run.
       const requireSpy = jest.spyOn(relatedRepos, 'requireRelatedRepos').mockResolvedValue();
