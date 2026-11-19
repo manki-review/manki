@@ -4,6 +4,7 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { newLineNumbers, repoLocation } from './diff';
 import { checkEach, Checked, CheckOptions } from './pr-claims';
+import { realRepoPath } from './mcp-server';
 import { LLMClient } from './providers';
 import { shownLines } from './refute';
 import { parseFindings, parseLocation } from './review';
@@ -181,11 +182,15 @@ function checkMessage({ at, problem }: ListedFix, rawDiff: string): string {
   return `## Fix\n\nThe first lines of the block are the lines of the fix. The last line is the problem they are meant to solve.\n\n${fenceText(`${at.join('\n')}\n${problem}`)}\n\n${diffSection(rawDiff, true)}`;
 }
 
-/** Whether every line `location` cites is inside a range of `at`. Both name their file by the path from the repository root. */
-function insideFix(location: string, at: readonly string[]): boolean {
+/**
+ * Whether every line `location` cites is inside a range of `at`. Both name their file by the path from the repository
+ * root at `workspace`, and a symlink and its target are one file.
+ */
+function insideFix(location: string, at: readonly string[], workspace: string): boolean {
   const cited = parseLocation(location);
   if (!cited) return false;
-  const ranges = at.flatMap(range => parseLocation(range) ?? []).filter(fix => fix.file === cited.file);
+  const file = realRepoPath(workspace, cited.file);
+  const ranges = at.flatMap(range => parseLocation(range) ?? []).filter(fix => realRepoPath(workspace, fix.file) === file);
   for (let line = cited.start; line <= cited.end; line++) if (!ranges.some(fix => line >= fix.start && line <= fix.end)) return false;
   return true;
 }
@@ -230,7 +235,7 @@ function parseFixCheck(text: string, fix: ListedFix, workspace: string, reviewer
   const stated = STATUSES.find(status => status === parsed.status);
   if (!stated) throw new Error(`the status is ${JSON.stringify(parsed.status)}, not one of ${STATUSES.join(', ')}`);
   const { proof, relatedProof } = stated === 'unchecked' ? { proof: [], relatedProof: [] } : shownLines(parsed.proof, workspace, related);
-  const consistent = stated === 'root_cause' ? parsed.actsAt === 'cause' : parsed.actsAt === 'symptom' && (relatedProof.length > 0 || proof.some(p => !insideFix(p, fix.at)));
+  const consistent = stated === 'root_cause' ? parsed.actsAt === 'cause' : parsed.actsAt === 'symptom' && (relatedProof.length > 0 || proof.some(p => !insideFix(p, fix.at, workspace)));
   const status = consistent && proof.length + relatedProof.length > 0 ? stated : 'unchecked';
   const cause = oneLine(parsed.cause, MAX_ANSWER_CHARS);
   const stillFails = oneLine(parsed.stillFails, MAX_ANSWER_CHARS);

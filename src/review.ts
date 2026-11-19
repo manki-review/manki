@@ -3030,7 +3030,9 @@ function textLines(value: unknown, max = MAX_EVIDENCE_LINES): string[] {
 export function parseProof(value: unknown, workspace: string | undefined): string[] {
   const listed = textLines(value, Infinity).flatMap(entry => {
     const [, file, lines] = entry.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
-    return file ? [lines.split(/, ?/).map(range => `${repoPath(file, workspace)}:${range}`)] : [];
+    if (!file) return [];
+    const path = repoPath(file, workspace);
+    return [lines.split(/, ?/).map(range => `${path}:${range}`)];
   });
   return [...listed.map(([first]) => first), ...listed.flatMap(([, ...more]) => more)].slice(0, MAX_EVIDENCE_LINES);
 }

@@ -57,10 +57,6 @@ interface RepoPath {
 }
 
 /**
- * Resolves `path`, relative to `root` or absolute, to its real path. Refuses a path that does not exist, resolves
- * outside `root`, also through a symlink, or lies in `.git`.
- */
-/**
  * Returns the path from `root` of the file `path` names, with symlinks followed, so a link and its target compare equal.
  * Returns `path` when `root` is unset or `path` names no file inside it.
  */
@@ -73,6 +69,10 @@ export function realRepoPath(root: string | undefined, path: string): string {
   }
 }
 
+/**
+ * Resolves `path`, relative to `root` or absolute, to its real path. Refuses a path that does not exist, resolves
+ * outside `root`, also through a symlink, or lies in `.git`.
+ */
 export function resolveInRoot(root: string, path: string): RepoPath {
   if (path.includes('\0')) throw new Error('the path holds a NUL character');
   const realRoot = realpathSync(root);

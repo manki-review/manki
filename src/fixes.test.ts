@@ -1,4 +1,5 @@
-import { rmSync } from 'fs';
+import { rmSync, symlinkSync } from 'fs';
+import { join } from 'path';
 
 // `review` imports `fixes`, so loading it first is the order of a real run.
 import { titlesMatch } from './review';
@@ -135,6 +136,16 @@ describe('runFixChecks', () => {
     const bare = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2', 'src/report.ts:3'], { finding: { ...finding, proof: [] } }));
     expect((await runFixChecks(() => bare, [guard], { rawDiff, workspace: root })).findings[0].evidence).toEqual({ checks: [], proof: ['src/rate.ts:2', 'src/report.ts:3'] });
     expect(rest.findings).toEqual([]);
+    // A cause cited through a symlink to the fix's own lines is on the fix too.
+    symlinkSync('src', join(root, 'lib'));
+    try {
+      const linked = fakeClient(() => answer('workaround', 'symptom', ['lib/report.ts:3']));
+      expect((await runFixChecks(() => linked, [guard], { rawDiff, workspace: root })).fixes).toEqual([
+        { ...guard, reviewer: 'Fix check 1', status: 'unchecked', ...said, proof: ['lib/report.ts:3'] },
+      ]);
+    } finally {
+      rmSync(join(root, 'lib'));
+    }
     // A workaround that stands without a finding that can be read reports one written from the check's answer.
     for (const [lost, extra, severity] of [[null, {}, 'warning'], [{ severity: 'blocker', file: 'src/rate.ts', line: 2 }, { stillFails: '' }, 'note']] as const) {
       const empty = fakeClient(() => answer('workaround', 'symptom', ['src/rate.ts:2'], { finding: lost, ...extra }));
