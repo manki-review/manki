@@ -22,6 +22,8 @@ function cargoLock(versions: Array<{ version: string; checksum?: string; source?
 }
 
 describe('dependencyLoader', () => {
+  // Each round sets up a git checkout of its own, and some tests run dozens of rounds.
+  jest.setTimeout(30_000);
   let base: string;
   let server: FakeRegistry;
   let registries: Registry[];
