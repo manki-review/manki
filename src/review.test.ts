@@ -216,6 +216,9 @@ describe('parseFindings', () => {
     // Git allows a backslash in a file name, so `src\x.ts` stays that file in the finding, its proof and its evidence.
     const [backslash] = parseFindings(JSON.stringify([{ title: 'Backslash', file: 'src\\x.ts', line: 2, description: 'd', proof: ['src\\x.ts:2'], evidence: ['src\\x.ts:2 reads it'] }]), 'R', checkout);
     expect([backslash.file, backslash.evidence]).toEqual(['src\\x.ts', { checks: ['src\\x.ts:2 reads it'], proof: ['src\\x.ts:2'] }]);
+    // A `$` sequence in a file name is kept as written when the evidence line's path is rewritten.
+    const [dollar] = parseFindings(JSON.stringify([{ title: 'Dollar', file: 'src/a$&b.ts', line: 1, description: 'd', evidence: ['./src/a$&b.ts:1 reads it'] }]), 'R', checkout);
+    expect(dollar.evidence?.checks).toEqual(['src/a$&b.ts:1 reads it']);
   });
 
   it('reads the evidence, keeps only proof entries that start with a location, marks open leads not checked, reads a pre-existing mark with its reason, and keeps a rule only when its loaded file holds the quote', () => {

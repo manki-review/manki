@@ -3046,7 +3046,7 @@ export function parseProof(value: unknown, workspace: string | undefined): strin
 function withRepoPath(check: string, workspace?: string): string {
   const [, file] = check.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
   const path = file && repoPath(file, workspace);
-  return path && path !== file ? check.replace(file, path) : check;
+  return path && path !== file ? check.replace(file, () => path) : check;
 }
 
 /**
