@@ -276,8 +276,8 @@ export async function fetchPrState(owner: string, repo: string, prNumber: number
 
 /**
  * Whether a maintainer put the account with user id `userId` on the token service's allow list for `owner/repo`, so it
- * may use Manki there without write access. Only a run the service dispatched may ask. Any failure is a no, with its
- * cause in a warning.
+ * may use Manki there without write access. Only a `workflow_dispatch` run asks, and the service's `/access` refuses
+ * a run it did not dispatch, such as one started by hand. Any failure is a no, with its cause in a warning.
  */
 export async function isAllowedAccount(owner: string, repo: string, userId: number): Promise<boolean> {
   if (!isDispatchedRun()) return false;

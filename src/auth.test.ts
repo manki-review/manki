@@ -284,7 +284,7 @@ describe('isAllowedAccount', () => {
     expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it('asks nothing in a run the token service did not dispatch', async () => {
+  it('asks nothing in a run on another event than `workflow_dispatch`', async () => {
     process.env.GITHUB_EVENT_NAME = 'issue_comment';
     mockFetch(async () => Response.json({ allowed: true }));
     expect(await isAllowedAccount(OWNER, REPO, 31)).toBe(false);

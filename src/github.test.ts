@@ -6868,7 +6868,7 @@ describe('authorClearRole', () => {
       expect(await hasWriteAccess(clientFor({ permission: 'write', user: { type: 'User', id: 31 } }).octokit, 'o', 'r', 'ally')).toBe(true);
       expect(asked()).toEqual([['access', { owner: 'o', repo: 'r', user_id: 31 }], ['access', { owner: 'o', repo: 'r', user_id: 41 }]]);
 
-      // Only a run the token service dispatched asks, and an answer without a user id asks nothing.
+      // Only a `workflow_dispatch` run asks, and an answer without a user id asks nothing.
       jest.mocked(global.fetch).mockClear();
       expect(await hasWriteAccess(clientFor({ permission: 'read', user: { type: 'User' } }).octokit, 'o', 'r', 'ally')).toBe(false);
       delete process.env.GITHUB_EVENT_NAME;

@@ -41,11 +41,13 @@ jest.mock('./auth', () => ({
 }));
 
 /**
- * Lets `hasWriteAccess` ask GitHub and the token service's allow list for real in a dispatched run, with `ally` (user
- * id 31) holding only read access, and returns the client whose lookup answers so. The allow list says `allowed`.
+ * Lets `hasWriteAccess` and `authorClearRole` ask GitHub and the token service's allow list for real in a dispatched
+ * run, with `ally` (user id 31) holding only read access, and returns the client whose lookup answers so. The allow list
+ * says `allowed`.
  */
 function withAllowList(octokit: ReturnType<typeof createMockOctokit>, allowed: boolean): ReturnType<typeof createMockOctokit> {
   jest.mocked(ghUtils.hasWriteAccess).mockImplementation(jest.requireActual<typeof ghUtils>('./github').hasWriteAccess);
+  jest.mocked(ghUtils.authorClearRole).mockImplementation(jest.requireActual<typeof ghUtils>('./github').authorClearRole);
   process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
   jest.mocked(core.getIDToken).mockResolvedValue('oidc-token');
   global.fetch = jest.fn(async () => Response.json({ allowed })) as jest.Mock;
@@ -501,6 +503,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   global.fetch = realFetch;
   jest.mocked(ghUtils.hasWriteAccess).mockImplementation(async (_octokit, _owner, _repo, login) => login !== 'reader');
+  jest.mocked(ghUtils.authorClearRole).mockResolvedValue(undefined);
   delete process.env.GITHUB_EVENT_NAME;
   setContext();
 });
@@ -1102,27 +1105,55 @@ describe('handleReviewCommentReply', () => {
     expect(jest.mocked(state.reopenThread).mock.calls).toEqual(authorResolved || (resolved && reason) ? [[octokit, 'PRRT_this']] : []);
   });
 
-  it.each([true, false])('settles a finding on the reply of an account a maintainer allowed, which the allow list answers with %s', async allowed => {
+  it.each([
+    ['warning', true], ['blocker', true], ['security', true], ['blocker', false], ['security', false],
+  ] as Array<[FindingKind, boolean]>)('settles a %s finding on the reply of an allowed account other than the PR author as a writer\'s, when the allow list says %s', async (kind, allowed) => {
     setContext({
       comment: { id: 1, body: 'Done in the follow-up.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'NONE' },
       pull_request: { number: 1, user: { login: 'pr-author' } },
       sender: { login: 'ally' },
     });
     const octokit = withAllowList(createMockOctokit(), allowed);
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment(kind), path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Agreed. Deferring it to the follow-up is fine.') });
-    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'This' }]);
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{
+      id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind !== 'warning', isSecurity: kind === 'security', ...(kind === 'warning' && { isWarning: true as const }), findingTitle: 'This',
+    }]);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
 
+    // An allowed account gets what write access gives, so it also clears a blocking or security thread.
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(allowed ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
-    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Agreed', thread: allowed ? 'resolves' : 'no_permission' }]);
+    const fate = allowed ? 'resolves' : kind === 'warning' ? 'no_permission' : 'stays_open';
+    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Agreed', thread: fate }]);
     expect(accessQuestions()).toEqual([{ owner: 'test-owner', repo: 'test-repo', user_id: 31 }]);
-    // Being allowed is never a role, so the PR author's clearing role is not asked for it.
-    expect(ghUtils.authorClearRole).not.toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'ally', expect.anything());
+  });
+
+  it('gives an allowed PR author no role: dismissing a blocking thread on its own PR takes the role GitHub reports', async () => {
+    setContext({
+      comment: { id: 63, body: '/manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'NONE' },
+      pull_request: { number: 1, user: { login: 'ally' } },
+      sender: { login: 'ally' },
+    });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, findingTitle: 'This' }]);
+    const dismiss = async (role: string) => {
+      const octokit = withAllowList(createMockOctokit(), true);
+      octokit.rest.repos.getCollaboratorPermissionLevel.mockResolvedValue({ data: { permission: role === 'maintain' ? 'write' : 'read', role_name: role, user: { type: 'User', id: 31, login: 'ally' } } });
+      octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('blocker'), path: 'src/file.ts', line: 10 } });
+      jest.mocked(state.resolveReviewThread).mockClear();
+      await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('/manki dismiss'), undefined, 'maintain');
+      expect(ghUtils.authorClearRole).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 'ally', 'maintain');
+      return jest.mocked(state.resolveReviewThread).mock.calls;
+    };
+
+    // Allowed but with the `read` role, the PR author's dismissal leaves the thread open.
+    expect(await dismiss('read')).toEqual([]);
+    expect(accessQuestions()).toEqual([{ owner: 'test-owner', repo: 'test-repo', user_id: 31 }]);
+    // With the `maintain` role GitHub reports, the same dismissal clears it.
+    expect((await dismiss('maintain')).map(([, thread]) => thread)).toEqual(['PRRT_this']);
   });
 
   it('settles a warning of the scope reader like any warning: the PR author\'s reason why the change is needed resolves its thread', async () => {
