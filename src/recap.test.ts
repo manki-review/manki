@@ -1473,7 +1473,8 @@ describe('fetchRecapState', () => {
       const typedRecord = answer('Agreed').replace('**Agreed.**', 'Agreed, see below.');
       const dismissed: Array<[string, string]> = [['alice', '@manki dismiss']];
       const decided: Array<[string, string[], Array<[string, string]> | undefined, boolean]> = [
-        ['waived', [answer('Withdrawn')], undefined, true], ['agreed', [answer('Agreed')], undefined, true], ['fixed', [answer('Fixed')], undefined, false],
+        ['waived', [answer('Withdrawn')], undefined, true], ['agreed', [answer('Agreed')], undefined, true],
+        ['ticked Dismiss box', [answer('Agreed').replace('**Agreed.** The caller checks it.', 'Dismissed by `@alice`.')], undefined, true], ['fixed', [answer('Fixed')], undefined, false],
         ['fix confirmed later', [answer('Agreed'), confirmed], undefined, false], ['no record', ['**Withdrawn.** The caller checks it.\n\n<!-- manki -->'], undefined, false],
         ['dismiss without write access', [], [['mallory', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
         ['dismiss whose access cannot be read', [], [['carol', '@manki dismiss'], ['alice', 'The caller checks this.']], false],

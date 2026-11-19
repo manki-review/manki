@@ -1928,6 +1928,8 @@ describe('postReview body lead', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry')], autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **1 warning to address.** Fix it, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     expect(lastBody().split('\n\n')[1]).toBe(listed('Old retry'));
+    // The line names the review box, so the head carries it.
+    expect(lastBody().split('\n\n')[2]).toBe('<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->');
     // A reply never clears a security warning, so the line asks for a fix or a maintainer's resolve, alone or among others.
     const security = warning('Token in log', 3, { tags: ['follow-up', 'security'], origin: 'reviewed' });
     mockCreateReview.mockClear();
@@ -1944,6 +1946,7 @@ describe('postReview body lead', () => {
     expect(unread.approvalHeld).toBe('warnings');
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string }).event).toBe('COMMENT');
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Comment `/manki check`, and Manki approves or says what holds the approval.');
+    expect(lastBody().split('\n\n')[1]).toBe('<!-- manki-issue-box -->\n- [ ] Check approval <!-- manki-box:check -->');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread', autoApprove: false });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('\u26A0\uFE0F **Approval waits on the warning threads.** Manki could not read them, so it does not approve yet. Tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     // A config hold comes first with a line of its own, and the verdict line still says the warnings hold.
@@ -2005,13 +2008,15 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
     const { body, event, approvalHeld } = await postedBody(ready);
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
-    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.\n\n${approved.body}`);
+    // The head ends with the box of the step the hold line names.
+    const withBox = (box: string) => approved.body.replace('\n\n**What this does:**', `\n\n<!-- manki-issue-box -->\n- [ ] ${box}\n\n**What this does:**`);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.\n\n${withBox('Check approval <!-- manki-box:check -->')}`);
 
     // With `auto_approve` off, marking the PR ready approves nothing, so the line names the review box and no check command.
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
     mockCreateReview.mockClear();
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { autoApprove: false });
-    expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n${approved.body}`);
+    expect((mockCreateReview.mock.calls[0][0] as { body: string }).body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n${withBox('Review again <!-- manki-box:again -->')}`);
   });
 
   it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, shows a draft beside it, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
@@ -2268,6 +2273,7 @@ describe('postReview body lead', () => {
       '^\u{1F6D1} \\*\\*Needs a human:\\*\\* 2 blockers came back after a fix\\.',
       '---',
       'Automatic review is paused\\. To get the next round, tick the review box in the settings block, or push and then comment `/manki review`\\.',
+      '<!-- manki-issue-box -->\n- \\[ \\] Review again <!-- manki-box:again -->',
       '- `src/a\\.ts:10`: Cache never invalidated \\(\\[view thread\\]\\(https://github\\.com/o/r/pull/1#t1\\)\\)\\n- No migration',
     ].join('\n\n'), 'u'));
 
@@ -2278,7 +2284,7 @@ describe('postReview body lead', () => {
       needsHuman: { cause: 'budget', blockers: [prior] },
     }, [], undefined, 'A review you start by hand also turns automatic review back on for the next 3 rounds.');
     expect(lead(budgetStuck.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker still open after the last automatic round\./u);
-    expect(budgetStuck.body).toContain('Automatic review is paused. To get the next round, tick the review box in the settings block, or push and then comment `/manki review`. A review you start by hand also turns automatic review back on for the next 3 rounds.\n\n- `src/a.ts:10`: Still open prior');
+    expect(budgetStuck.body).toContain('Automatic review is paused. To get the next round, tick the review box in the settings block, or push and then comment `/manki review`. A review you start by hand also turns automatic review back on for the next 3 rounds.\n\n<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->\n\n- `src/a.ts:10`: Still open prior');
     expect(budgetStuck.body.split('Still open prior')).toHaveLength(2);
     expect(budgetStuck.body).not.toContain('Still open from earlier reviews');
     expect(stuck.body).not.toContain('What this does');
@@ -2475,6 +2481,11 @@ describe('postReview body lead', () => {
   it('opens an INCOMPLETE review with the verdict line and the reason', async () => {
     const { body } = await postedBody({ ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed', findings: [] });
     expect(lead(body)).toBe(`\u23F8\uFE0F **Review incomplete:** The judge failed.\n\n${aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)')}`);
+    // A reason that names the review command to retry carries the Review again box below the verdict line.
+    for (const summary of ['The judge failed. Retry with /manki review.', 'Usage limit reached. Manki starts one more review of this commit on its own within a few minutes. If that one does not finish either, retry with /manki review.']) {
+      const retry = await postedBody({ ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary, findings: [] });
+      expect(lead(retry.body)).toBe(`\u23F8\uFE0F **Review incomplete:** ${summary}\n\n<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->\n\n${aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)')}`);
+    }
 
     // With its record the round shows the same text, where a complete round's record adds its round and models to the fold.
     const incomplete = { ...ready, verdict: 'COMMENT' as const, outcome: 'INCOMPLETE' as const, verdictReport: undefined, summary: 'The judge failed', findings: [] };
@@ -5601,6 +5612,8 @@ describe('postReview non-blocking findings', () => {
     expect(review.comments.map((c: { line: number }) => c.line)).toEqual([9, 7, 5]);
     expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*[^\n]*\n\n\*\*Token compared in variable time\*\*\n\n\*\*Why:\*\* It goes wrong\./u);
     expect(review.comments[0].body).toContain('<!-- manki:note:Token-compared-in-variable-time -->');
+    // A dismiss resolves a security finding's thread without clearing it, so its thread offers no Dismiss box.
+    expect(review.comments[0].body).not.toContain('manki-box:dismiss');
     // A suggestion thread reads like any other finding comment, with GitHub's commit button for a drop-in fix.
     expect(review.comments[2].body).toBe([
       '\u2728 **Suggestion, not blocking** · Maintainability · Quick fix',
@@ -5615,6 +5628,8 @@ describe('postReview non-blocking findings', () => {
       '',
       '<!-- manki-issue-box -->',
       '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:5:00ccf8c29f88 -->',
+      '<!-- manki-issue-box -->',
+      '- [ ] Dismiss this finding <!-- manki-box:dismiss -->',
       '',
       '<!-- manki:note:Extract-helper -->',
       '<!-- manki-finding: {"file":"src/a.ts","line":5,"severity":"note","flaggedBy":[],"title":"Extract helper","fix":"const x = helper();"} -->',

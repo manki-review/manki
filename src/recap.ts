@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient, NotStartedError } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
-import { ISSUE_BOX_ANCHOR } from './issue-box';
+import { BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
@@ -1020,7 +1020,7 @@ function parseFindingFromComment(posted: string): FindingMetadata {
     `\n${FIX_LABEL}`,
     '\n<!-- manki:',
     '\n<!-- manki-finding:',
-    `\n${ISSUE_BOX_ANCHOR}`,
+    `\n${BOX_ANCHOR}`,
   ];
   let earliest = descSlice.length;
   let truncatingStop = false;

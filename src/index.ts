@@ -15,7 +15,7 @@ import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, eventPrClosed, isDispatchedRun, restoreDispatchedEvent, startedByCatchUp } from './dispatch';
 import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
-import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, mentionsMankiUser, parseCommand, isLLMAccessAllowed } from './interaction';
+import { handleBoxCommand, handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, mentionsMankiUser, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
@@ -29,8 +29,8 @@ import { formatRunner, recordQueueWait, runnerDiagnostics, startMemorySampler } 
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
-import { tickedIssueBoxes } from './issue-box';
-import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
+import { tickedIssueBoxes, tickedMessageBoxes, withMessageBoxes } from './issue-box';
+import { handleIssueBoxTick, handleReviewBoxTick, settleTickedBox, TickedMessage } from './issue-tick';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
 import { ConfigSource, DashboardData, disproof, DisprovedFinding, EarlierAttempt, Finding, findingKey, fixThreadFiles, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SCOPE_READER_NAME, SEVERITY_NAME, threadBlocks } from './types';
 import {
@@ -114,9 +114,9 @@ const ALREADY_REVIEWED_TEXT = 'This commit already has a review.';
 
 /**
  * Build `RoundMeta.trigger` from the current GitHub Actions event. The event
- * string folds in the action and, for an edit of the settings block, the box
- * modes of the run, so a `5/5 -> 6/5` jump in the round-cap counter is
- * attributable to the exact box that fired.
+ * string folds in the action and, for an edit of the settings block or a box
+ * in another message, the box modes of the run, so a `5/5 -> 6/5` jump in the
+ * round-cap counter is attributable to the exact box that fired.
  */
 function buildRoundTrigger(modes: ReadonlySet<string> = new Set()): RoundTrigger {
   const eventName = github.context.eventName;
@@ -125,13 +125,14 @@ function buildRoundTrigger(modes: ReadonlySet<string> = new Set()): RoundTrigger
   const sender = payload.sender?.login ?? 'unknown';
 
   let event = action ? `${eventName}:${action}` : eventName;
-  if (eventName === 'issue_comment') {
-    const body = payload.comment?.body ?? '';
-    if (action === 'edited' && body.includes(SETTINGS_MARKER)) {
-      event = [`${event}:settings`, ...(modes.size > 0 ? [[...modes].sort().join(',')] : [])].join(':');
-    } else if (action === 'created' && isReviewRequest(body)) {
-      event = `${event}:/manki review`;
-    }
+  const body = (eventName === 'pull_request_review' ? payload.review?.body : payload.comment?.body) ?? '';
+  const sorted = modes.size > 0 ? [[...modes].sort().join(',')] : [];
+  if (eventName === 'issue_comment' && action === 'edited' && body.includes(SETTINGS_MARKER)) {
+    event = [`${event}:settings`, ...sorted].join(':');
+  } else if (action === 'edited' && sorted.length > 0) {
+    event = [`${event}:box`, ...sorted].join(':');
+  } else if (eventName === 'issue_comment' && action === 'created' && isReviewRequest(body)) {
+    event = `${event}:/manki review`;
   }
   return { event, sender, ...(startedByCatchUp() && { catchUp: true as const }) };
 }
@@ -293,7 +294,8 @@ async function run(): Promise<void> {
   }
 
   let settingsTick = false;
-  let issueTick = false;
+  /** A tick of a finding's issue box or of a box in another message of Manki's than the settings block. */
+  let boxTick = false;
 
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
@@ -314,22 +316,25 @@ async function run(): Promise<void> {
     const body = github.context.payload.comment?.body ?? '';
     const mentioned = hasBotMention(body) || isReviewRequest(body);
     const settingsEdit = action === 'edited' && body.includes(SETTINGS_MARKER);
-    if (!mentioned && !settingsEdit) {
+    const boxEdit = action === 'edited' && !settingsEdit && tickedMessageBoxes(body).length > 0;
+    if (!mentioned && !settingsEdit && !boxEdit) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
     if (!await commenterAllowed()) return;
     const { bot } = await getAuth();
     // A bot's edit never gets here, but Manki on a personal access token edits as that user.
-    settingsTick = settingsEdit && isBotLogin(bot, github.context.payload.comment?.user?.login) && !isBotLogin(bot, github.context.payload.sender?.login);
-    if (!settingsTick && !mentioned) {
+    const tickedOwn = isBotLogin(bot, github.context.payload.comment?.user?.login) && !isBotLogin(bot, github.context.payload.sender?.login);
+    settingsTick = settingsEdit && tickedOwn;
+    boxTick = boxEdit && tickedOwn;
+    if (!settingsTick && !boxTick && !mentioned) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
     const commentId = github.context.payload.comment?.id;
     const issueNumber = github.context.payload.issue?.number;
-    // Every tick in the settings block starts its own run, which the coordinator's modes describe, so none counts as answered.
-    if (commentId && issueNumber && !settingsTick) {
+    // Every tick of a box starts its own run, which the coordinator's modes describe, so none counts as answered.
+    if (commentId && issueNumber && !settingsTick && !boxTick) {
       const { octokit, bot } = await getAuth();
       const { owner, repo } = github.context.repo;
       if (action === 'edited') {
@@ -346,10 +351,10 @@ async function run(): Promise<void> {
     }
   } else if (eventName === 'pull_request_review_comment') {
     if (action === 'edited') {
-      // Only a tick of an issue box in Manki's own comment matters. The editor needs write access.
+      // Only a tick of a box in Manki's own comment matters. The editor needs write access.
       const comment = github.context.payload.comment;
-      if (tickedIssueBoxes(comment?.body ?? '').length === 0) {
-        core.info('Edited review comment has no ticked issue box, ignoring');
+      if (!hasTickedBox(comment?.body ?? '')) {
+        core.info('Edited review comment has no ticked box, ignoring');
         return;
       }
       if (!await commenterAllowed()) return;
@@ -358,24 +363,24 @@ async function run(): Promise<void> {
         core.info('Edited review comment is not one of Manki\'s, ignoring');
         return;
       }
-      issueTick = true;
+      boxTick = true;
     } else if (action !== 'created') {
       core.info(`Ignoring pull_request_review_comment action: ${action}`);
       return;
     }
     // Skip our own review comments
     const commentBody = github.context.payload.comment?.body ?? '';
-    if (!issueTick && commentBody.includes('<!-- manki')) {
+    if (!boxTick && commentBody.includes('<!-- manki')) {
       core.info('Ignoring our own review comment');
       return;
     }
-    if (!issueTick && !await commenterAllowed()) return;
+    if (!boxTick && !await commenterAllowed()) return;
   } else if (eventName === 'pull_request_review') {
     if (action === 'edited') {
-      // Only a tick of an issue box in Manki's own review matters. The editor needs write access.
+      // Only a tick of a box in Manki's own review matters. The editor needs write access.
       const review = github.context.payload.review;
-      if (tickedIssueBoxes(review?.body ?? '').length === 0) {
-        core.info('Edited review has no ticked issue box, ignoring');
+      if (!hasTickedBox(review?.body ?? '')) {
+        core.info('Edited review has no ticked box, ignoring');
         return;
       }
       if (!await commenterAllowed()) return;
@@ -384,7 +389,7 @@ async function run(): Promise<void> {
         core.info('Edited review is not one of Manki\'s, ignoring');
         return;
       }
-      issueTick = true;
+      boxTick = true;
     } else if (action !== 'submitted' && action !== 'dismissed') {
       core.info(`Ignoring pull_request_review action: ${action}`);
       return;
@@ -416,6 +421,8 @@ async function run(): Promise<void> {
       const commentBody = github.context.payload.comment?.body ?? '';
       if (settingsTick && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(true);
+      } else if (boxTick && github.context.payload.issue?.pull_request) {
+        await handleBoxTick();
       } else if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger();
       } else if (isBotMentionNonReview(commentBody) && github.context.payload.issue?.pull_request) {
@@ -427,13 +434,16 @@ async function run(): Promise<void> {
     }
 
     case 'pull_request_review_comment':
-      if (issueTick) await handleIssueTick();
-      else await handleReviewCommentInteraction();
+      if (boxTick) {
+        await handleTicks();
+      } else {
+        await handleReviewCommentInteraction();
+      }
       break;
 
     case 'pull_request_review':
-      if (issueTick) {
-        await handleIssueTick();
+      if (boxTick) {
+        await handleTicks();
         break;
       }
       core.info('Review submitted/dismissed — checking if auto-approve is warranted');
@@ -445,6 +455,11 @@ async function run(): Promise<void> {
       await handleReviewStateCheck();
       break;
   }
+}
+
+/** Whether `body` has a ticked issue box or another ticked box of Manki's outside the settings block. */
+function hasTickedBox(body: string): boolean {
+  return tickedIssueBoxes(body).length > 0 || tickedMessageBoxes(body).length > 0;
 }
 
 /** The state of a PR the coordinator has nothing on: not paused, and no box modes. */
@@ -583,7 +598,7 @@ async function answerAlreadyReviewed(
     core.warning(`Could not read whether automatic review is paused, answering without it: ${error instanceof Error ? error.message : error}`);
   }
   try {
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(parts.join('\n\n'), COMMENT_MARKER) });
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(withMessageBoxes(parts.join('\n\n'), ['again']), COMMENT_MARKER) });
   } catch (error) {
     core.warning(`Failed to answer the review command: ${error instanceof Error ? error.message : error}`);
   }
@@ -698,24 +713,26 @@ async function handleMergedPullRequest(): Promise<void> {
 }
 
 /**
- * Reviews the PR a comment is on, for a review command or, with `settingsTick`, a box ticked in the settings block.
- * A tick reviews only with a mode the coordinator queued for the run.
+ * Reviews the PR a comment is on, for a review command or, with `settingsTick`, a box ticked in the settings block or
+ * the Review again box ticked in another `message`. A tick reviews only with a mode the coordinator queued for the run.
+ * The Review again box of `message` then names who asked for the review, and is unticked again when none was queued.
  */
-async function handleCommentTrigger(settingsTick = false): Promise<void> {
+async function handleCommentTrigger(settingsTick = false, message?: TickedMessage): Promise<void> {
   const payload = github.context.payload;
 
-  if (!payload.issue?.pull_request) {
+  const prNumber: number | undefined = payload.issue ? (payload.issue.pull_request ? payload.issue.number : undefined) : payload.pull_request?.number;
+  if (!prNumber) {
     core.info('Comment is on an issue, not a PR — skipping');
     return;
   }
 
   const owner = github.context.repo.owner;
   const repo = github.context.repo.repo;
-  const prNumber = payload.issue.number;
 
   const { octokit, bot } = await getAuth();
   const settings = await loadSettings(owner, repo, prNumber);
   const { forced, fullReview, deeper } = reviewModes(settings);
+  if (message) await settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, forced ? payload.sender?.login : undefined);
   if (settingsTick && !forced) {
     core.info('The settings box tick queued no review for this run, nothing to do');
     return;
@@ -2386,6 +2403,20 @@ async function handleIssueInteraction(): Promise<void> {
   await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config, held);
 }
 
+/** Runs both tick handlers of an edited review or review comment, so one failing does not skip the other. The first error is rethrown. */
+async function handleTicks(): Promise<void> {
+  const failures: unknown[] = [];
+  for (const handler of [handleIssueTick, handleBoxTick]) {
+    try {
+      await handler();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  for (const later of failures.slice(1)) core.error(`A second tick handler failed too: ${later instanceof Error ? later.message : later}`);
+  if (failures.length > 0) throw failures[0];
+}
+
 /** Files the findings whose issue box the editor ticked in Manki's review comment or review body. */
 async function handleIssueTick(): Promise<void> {
   const { comment, review, pull_request: pr, sender } = github.context.payload;
@@ -2401,6 +2432,64 @@ async function handleIssueTick(): Promise<void> {
   const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(pr.base?.ref, 'base branch'));
   if (held || !config.auto_approve) return;
   if (await checkAndAutoApprove(octokit, bot, owner, repo, pr.number, config)) core.info(`PR #${pr.number} auto-approved after a ticked issue box`);
+}
+
+/**
+ * Acts on each box the editor ticked in Manki's comment, review or review comment, other than an issue box. Review again
+ * reviews as a tick in the settings block does. Every other box runs its command for the editor, then names who asked
+ * for it, or is unticked again when the command did nothing or failed.
+ */
+async function handleBoxTick(): Promise<void> {
+  const { eventName, payload } = github.context;
+  const object = eventName === 'pull_request_review' ? payload.review : payload.comment;
+  const prNumber: number | undefined = payload.pull_request?.number ?? payload.issue?.number;
+  if (!object?.id || !prNumber) return;
+  const message: TickedMessage = { kind: eventName === 'issue_comment' ? 'comment' : eventName === 'pull_request_review' ? 'review' : 'review_comment', id: object.id };
+  const ticked = tickedMessageBoxes(object.body ?? '');
+  const commands = ticked.flatMap(({ box, id }) => (box === 'again' ? [] : [{ box, id }]));
+  const again = ticked.some(({ box }) => box === 'again');
+  const { owner, repo } = github.context.repo;
+  // A Review again run that fails, before or after it settles its box, leaves no ticked box behind.
+  const triggerAgain = async (): Promise<void> => {
+    try {
+      await handleCommentTrigger(true, message);
+    } catch (error) {
+      await getAuth().then(({ octokit }) => settleTickedBox(octokit, owner, repo, prNumber, message, 'again', undefined, undefined), () => undefined);
+      throw error;
+    }
+  };
+  if (commands.length === 0) {
+    if (again) await triggerAgain();
+    return;
+  }
+  const { octokit, bot } = await getAuth();
+  const settled = new Set<(typeof commands)[number]>();
+  const settle = async (command: (typeof commands)[number], editor?: string): Promise<void> => {
+    settled.add(command);
+    await settleTickedBox(octokit, owner, repo, prNumber, message, command.box, command.id, editor);
+  };
+  try {
+    if (again) await triggerAgain();
+    const baseRef: unknown = payload.pull_request?.base?.ref ?? (await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })).data.base.ref;
+    const { config, held } = await loadEventConfig(octokit, owner, repo, eventBranch(baseRef, 'base branch'));
+    const memory = commands.some(({ box }) => box === 'forget') ? (await openMemoryStore(octokit, config.memory, owner, repo, prNumber)).store : undefined;
+    const commentId = message.kind === 'review_comment' ? message.id : undefined;
+    for (const command of commands) {
+      let done = false;
+      try {
+        done = await handleBoxCommand(octokit, bot, owner, repo, prNumber, command.box, command.id, { memory, config, configHeld: held, commentId });
+      } finally {
+        await settle(command, done ? payload.sender?.login : undefined);
+      }
+    }
+    // As after a dismiss reply, the resolved thread may have been the last one that blocked.
+    if (commands.some(({ box }) => box === 'dismiss') && !held && config.auto_approve) {
+      if (await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config)) core.info(`PR #${prNumber} auto-approved after a ticked Dismiss box`);
+    }
+  } finally {
+    // A step that failed before its command ran leaves the box ticked, so each box not settled is put back.
+    for (const command of commands.filter(c => !settled.has(c))) await settle(command);
+  }
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {

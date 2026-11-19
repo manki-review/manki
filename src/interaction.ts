@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
+import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
@@ -17,6 +18,7 @@ import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repo
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, checkReply, statementList, statementRecords, statementSummary } from './reply-check';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage, withReads } from './round-context';
+import { MessageBox } from './settings';
 import { relatedCitations } from './static-signals';
 import { COMMENT_MARKER as BOT_MARKER, redactSecrets, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
@@ -359,7 +361,7 @@ function fixReviewNote(reply: string, file: string, evidenceFiles: string[] = []
 
 /**
  * Saves the learning a withdrawn finding leaves: on `path`, findings like `title` do not apply, for the reason the
- * developer gave. Returns the sentence that tells the developer what was saved and how to remove it.
+ * developer gave. Returns the sentence that tells the developer what was saved and how to remove it, with the box that removes it.
  */
 async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: string, prNumber: number, path: string, title: string, developerReply: string): Promise<string> {
   const id = `learn-${Date.now()}`;
@@ -370,7 +372,7 @@ async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: s
     id, content, scope: 'repo', path, source: `${owner}/${repo}#${prNumber}`, created_at: new Date().toISOString().split('T')[0],
   });
   core.info(`Saved learning ${id} for ${path}`);
-  return `Saved a learning for \`${findingLocation({ file: path, line: 0 })}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.`;
+  return `Saved a learning for \`${findingLocation({ file: path, line: 0 })}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.\n\n${messageBox('forget', id)}`;
 }
 
 const MAX_UNANSWERED_REASON_CHARS = 200;
@@ -399,12 +401,12 @@ async function sayUnanswered(what: 'reply' | 'comment', error: unknown, post: (b
 }
 
 /**
- * Runs `answer` for a comment on PR or issue `issueNumber`. When it throws, says there that the comment got no answer,
- * as `sayUnanswered` does, and throws the error again so the run fails.
+ * Runs `answer` for a comment on PR or issue `issueNumber`, and returns what it returns. When it throws, says there that
+ * the comment got no answer, as `sayUnanswered` does, and throws the error again so the run fails.
  */
-async function answerOrSayWhy(octokit: Octokit, owner: string, repo: string, issueNumber: number, answer: () => Promise<void>): Promise<void> {
+async function answerOrSayWhy<T>(octokit: Octokit, owner: string, repo: string, issueNumber: number, answer: () => Promise<T>): Promise<T> {
   try {
-    await answer();
+    return await answer();
   } catch (error) {
     await sayUnanswered('comment', error, body => octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body }));
     throw error;
@@ -828,21 +830,21 @@ async function handleDismiss(
 }
 
 /**
- * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
- * On a blocking or security thread the PR author may do so too when their role is at least `clearRole`, the repo's `author_clear_role`.
- * Returns whether the thread is resolved, with a note when it is not or when it is a warning that still holds the
- * approval, or `undefined` outside a Manki finding's thread and on a merged or closed PR.
+ * Resolves the Manki thread that review comment `inThread` belongs to, for a dismiss by the sender, who must be someone
+ * who could resolve it by hand. On a blocking or security thread the PR author may do so too when their role is at least
+ * `clearRole`, the repo's `author_clear_role`. Returns whether the thread is resolved and whether the dismiss changed it,
+ * with a note when it is not resolved or when it is a warning that still holds the approval, or `undefined` outside a
+ * Manki finding's thread and on a merged or closed PR.
  */
 async function resolveDismissedThread(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined,
-): Promise<{ resolved: boolean; note?: string } | undefined> {
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined, inThread: number | undefined,
+): Promise<{ resolved: boolean; changed?: boolean; suggestion?: boolean; note?: string } | undefined> {
   const payload = github.context.payload;
-  const inReplyTo = payload.comment?.in_reply_to_id;
-  if (!inReplyTo || eventPrClosed()) return undefined;
+  if (!inThread || eventPrClosed()) return undefined;
   const senderLogin = payload.sender?.login;
   try {
-    const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
-    const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
+    const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inThread });
+    const root = await fetchThreadRoot(octokit, owner, repo, inThread, parent);
     if (!root || !isOwnComment(bot, root.comment)) return undefined;
     const prAuthorLogin: string | undefined = payload.pull_request?.user?.login;
     const { mayResolve, isPrAuthor, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
@@ -856,7 +858,8 @@ async function resolveDismissedThread(
       // A dismissal lifts no warning hold, so the thread is read again as the resolve left it.
       const now = thread.isWarning ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch(() => undefined) : undefined;
       const holds = now && await warningHoldNote(octokit, bot, owner, repo, now, clearRole);
-      return { resolved: true, ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}${clearRole ? ' Reopen the thread before you resolve it by hand.' : ''}` }) };
+      // `resolveThreadOf` leaves a resolved thread as it is unless the resolve did not count.
+      return { resolved: true, changed: !thread.isResolved || held, suggestion: !thread.isWarning && !isGuarded(thread), ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}${clearRole ? ' Reopen the thread before you resolve it by hand.' : ''}` }) };
     }
     // Without an override the PR author may not clear the thread. Anyone else's dismissal failed: an override was not recorded, or the thread was not reopened.
     return { resolved: false, note: authorOverride || mayClear ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false, clearRole, thread.isResolved) };
@@ -961,7 +964,7 @@ async function handleForget(
   issueNumber: number,
   args: string,
   memory?: MemoryStore,
-): Promise<void> {
+): Promise<boolean> {
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
   if (!isTrusted) {
@@ -970,7 +973,7 @@ async function handleForget(
       issue_number: issueNumber,
       body: withMarkers('Only repo collaborators can change review memory.', BOT_MARKER),
     });
-    return;
+    return false;
   }
 
   if (!args || args.trim().length < 3) {
@@ -979,7 +982,7 @@ async function handleForget(
       issue_number: issueNumber,
       body: withMarkers(FORGET_USAGE, BOT_MARKER),
     });
-    return;
+    return false;
   }
 
   if (!memory) {
@@ -988,7 +991,7 @@ async function handleForget(
       issue_number: issueNumber,
       body: withMarkers(MEMORY_DISABLED, BOT_MARKER),
     });
-    return;
+    return false;
   }
 
   const trimmed = args.trim();
@@ -1002,7 +1005,7 @@ async function handleForget(
           issue_number: issueNumber,
           body: withMarkers(FORGET_USAGE, BOT_MARKER),
         });
-        return;
+        return false;
       }
 
       const { removed, remaining } = await removeSuppression(memory, searchPattern);
@@ -1014,6 +1017,7 @@ async function handleForget(
           body: withMarkers(`Removed suppression: ${inline(removed.pattern)} (${remaining} remaining)`, BOT_MARKER),
         });
         core.info(`Removed suppression: "${removed.pattern}"`);
+        return true;
       } else {
         await octokit.rest.issues.createComment({
           owner, repo,
@@ -1031,6 +1035,7 @@ async function handleForget(
           body: withMarkers(`Removed learning: ${inline(removed.content)} (${remaining} remaining)`, BOT_MARKER),
         });
         core.info(`Removed learning: "${removed.content}"`);
+        return true;
       } else {
         await octokit.rest.issues.createComment({
           owner, repo,
@@ -1047,6 +1052,7 @@ async function handleForget(
       body: withMarkers('Could not remove it. The run log has the reason.', BOT_MARKER),
     });
   }
+  return false;
 }
 
 /** The answer to a check while the base branch's config cannot be read or loaded, since it says whether Manki may approve. */
@@ -1060,7 +1066,7 @@ async function handleCheck(
   prNumber: number,
   config?: ReviewConfig,
   configHeld = false,
-): Promise<void> {
+): Promise<boolean> {
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
   if (!isTrusted) {
@@ -1069,12 +1075,12 @@ async function handleCheck(
       issue_number: prNumber,
       body: withMarkers('Only repo collaborators can trigger auto-approve.', BOT_MARKER),
     });
-    return;
+    return false;
   }
 
   if (configHeld) {
     await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(CONFIG_HELD_LINE, BOT_MARKER) });
-    return;
+    return false;
   }
 
   if (!config?.auto_approve) {
@@ -1083,17 +1089,18 @@ async function handleCheck(
       issue_number: prNumber,
       body: withMarkers(`Auto-approve is off. Set \`auto_approve: true\` in \`.manki.yml\` to turn it on.`, BOT_MARKER),
     });
-    return;
+    return false;
   }
 
   const check = await approveOrSayWhy(octokit, bot, owner, repo, prNumber, config);
   // A new approval is its own answer, and so is a notice the check already posted.
-  if (check.approved ? !check.standing : check.answered) return;
+  if (check.approved ? !check.standing : check.answered) return true;
   const reason = check.approved ? 'This PR already has Manki\'s approval.' : await check.why().catch((error: unknown) => {
     core.warning(`Could not tell why the approval did not go through: ${error instanceof Error ? error.message : error}`);
     return 'The approval did not go through. The workflow log has the reason.';
   });
   await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(reason, BOT_MARKER) });
+  return true;
 }
 
 
@@ -1235,7 +1242,7 @@ export async function handleReviewCommentCommand(
   switch (command.type) {
     case 'dismiss': {
       const dismissal = await handleDismiss(octokit, bot, owner, repo, prNumber, command.args, memory);
-      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, clearRole);
+      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, clearRole, github.context.payload.comment?.in_reply_to_id);
       // A resolved thread needs no note unless it still holds the approval, and outside a Manki finding's thread only a named finding can be dismissed.
       // Once the thread is resolved, text that named no posted finding was a remark, not a failed dismiss.
       const threadNote = thread ? thread.note : dismissal ? undefined : DISMISS_NO_FINDING;
@@ -1261,6 +1268,44 @@ export async function handleReviewCommentCommand(
       await reactToReviewComment(octokit, owner, repo, commentId, '+1');
       await handleHelp(octokit, owner, repo, prNumber);
       break;
+  }
+}
+
+/** The reply record of Manki's answer that accepts a dismissal of the thread, as a thread reply that agrees and resolves records it. */
+function boxDismissRecord(prNumber: number): string {
+  return formatReplyRecord({
+    kind: 'thread-reply', prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage([]),
+    decision: { outcome: 'Agreed', thread: 'resolves' },
+  });
+}
+
+/**
+ * Runs the command that the ticked `box` stands for, as the event's sender, who ticked it. Each command checks the
+ * sender as it does for a comment, and answers as it does there. The Dismiss box sits in the review comment
+ * `commentId`, which starts the thread it dismisses, and a note goes into that thread. `configHeld` says that the base
+ * branch's config could not be read or loaded. Returns whether the command acted: it ran the approval check, removed
+ * the learning, or resolved the thread.
+ */
+export async function handleBoxCommand(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, box: Exclude<MessageBox, 'again'>, id: string | undefined,
+  { memory, config, configHeld, commentId }: { memory?: MemoryStore; config: ReviewConfig; configHeld: boolean; commentId?: number },
+): Promise<boolean> {
+  switch (box) {
+    case 'check':
+      return answerOrSayWhy(octokit, owner, repo, prNumber, () => handleCheck(octokit, bot, owner, repo, prNumber, config, configHeld));
+    case 'forget':
+      return handleForget(octokit, owner, repo, prNumber, id ?? '', memory);
+    case 'dismiss': {
+      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, config.author_clear_role, commentId);
+      if (commentId && (thread?.note || thread?.changed)) {
+        // The reply record of an accepted answer is what later rounds and the fix rate read as a dismissal. It would also
+        // lift a warning's hold, so a thread a later round raised to a warning or a blocker gets none.
+        const record = thread.changed && thread.suggestion ? [boxDismissRecord(prNumber)] : [];
+        const text = [thread.changed && `Dismissed by \`@${github.context.payload.sender?.login}\`.`, thread.note].filter(Boolean).join('\n\n');
+        await octokit.rest.pulls.createReplyForReviewComment({ owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(text, BOT_MARKER, ...record) });
+      }
+      return !!thread?.changed;
+    }
   }
 }
 

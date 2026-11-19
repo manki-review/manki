@@ -28,6 +28,10 @@ jest.mock('./github', () => ({
 
 const AUTO_REVIEW_OFF = { ...DEFAULT_CONFIG, auto_review: false };
 const NOT_REVIEWED_YET = 'Manki has not reviewed `bead000` yet, and approval follows from the verdict of that review. If no review of it starts, as for a PR from a fork or one that matches a skip rule, comment `/manki review`.';
+/** The Review again box a message carries below the step it names. */
+const AGAIN_BOX = '\n\n<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->';
+/** The Check approval box a message carries below the step it names. */
+const CHECK_BOX = '\n\n<!-- manki-issue-box -->\n- [ ] Check approval <!-- manki-box:check -->';
 
 const SETTING_REFUSAL = 'GitHub Actions is not permitted to approve pull requests.';
 
@@ -803,7 +807,7 @@ describe('checkAndAutoApprove', () => {
       // The `check` command gets the threads that block, or why resolving threads cannot lift the block.
       const reply = await result.why();
       if (outcome.includes('resolved')) expect(reply).toMatch(/^1 thread blocks the approval:\n- Lock is never released.*\n\nApproval follows once it is resolved by someone allowed to\./);
-      else expect(reply).toBe(`${outcome.startsWith('names') ? 'The record of Manki\'s review of `bead000` ' : ''}${outcome}\n\n${NEXT_ROUND}`);
+      else expect(reply).toBe(`${outcome.startsWith('names') ? 'The record of Manki\'s review of `bead000` ' : ''}${outcome}\n\n${NEXT_ROUND}${AGAIN_BOX}`);
     });
 
     it('approves a blocker left to an open thread at its place once that thread is resolved', async () => {
@@ -952,11 +956,11 @@ describe('checkAndAutoApprove', () => {
         const result = await approveOrSayWhy(makeMockOctokit({ threads: live, prHeadSha: testSha('2'), mergeable: true, createReviewFn: createReviewMock, existingReviews }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
         return result.approved || result.why();
       };
-      expect(await asked(reviews)).toBe(`${told}\n\n${NEXT_ROUND}`);
+      expect(await asked(reviews)).toBe(`${told}\n\n${NEXT_ROUND}${AGAIN_BOX}`);
       const withThread = [{ ...reviews[1], body: roundBody(blockingRound(testSha('2'))) }];
       const own = (commit: string) => [makeGraphqlFetchThreadNode({ isResolved: true, commit })];
       // The same thread on an earlier commit is not that round's.
-      expect(await asked(withThread, own(testSha('1')))).toBe(`The record of Manki's review of \`2000000\` names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (\`src/a.ts\`)\n\n${NEXT_ROUND}`);
+      expect(await asked(withThread, own(testSha('1')))).toBe(`The record of Manki's review of \`2000000\` names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (\`src/a.ts\`)\n\n${NEXT_ROUND}${AGAIN_BOX}`);
       expect(createReviewMock).not.toHaveBeenCalled();
       expect(await asked(withThread, own(testSha('2')))).toBe(true);
 
@@ -987,8 +991,8 @@ describe('checkAndAutoApprove', () => {
     });
 
     it.each<[string, Parameters<typeof makeMockOctokit>[0], string | { approved: true; standing: true }, { auto_approve: boolean }?, ('draft' | 'warnings' | 'conflict' | 'unread' | 'config')?]>([
-      ['a draft', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.', undefined, 'draft'],
-      ['a draft with `auto_approve` off, where marking it ready approves nothing', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.', { auto_approve: false }, 'draft'],
+      ['a draft', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.' + CHECK_BOX, undefined, 'draft'],
+      ['a draft with `auto_approve` off, where marking it ready approves nothing', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.' + AGAIN_BOX, { auto_approve: false }, 'draft'],
       // The title comes from the model, so its links must not reach the comment.
       ['an open blocking thread', { threads: [makeGraphqlFetchThreadNode({ url: 'https://github.com/o/r/pull/1#r1', body: `<!-- manki:blocker:x --> **Blocker**\n\n<!-- manki-finding: ${JSON.stringify({ title: 'Null deref in [`parse`](https://example.com)' })} -->` })] },
         `1 thread blocks the approval:\n- [Null deref in \`parse\`](https://github.com/o/r/pull/1#r1)\n\n${FOLLOWS}`],
@@ -1004,12 +1008,15 @@ describe('checkAndAutoApprove', () => {
       ['open blocking threads beside a blocker no thread carries', {
         threads: [thread('t1', 'blocker'), thread('t2', 'blocker', 'author', { title: 'Second' })],
         existingReviews: [{ id: 7, body: blocked([blocker({ posted: 'thread' }), blocker({ posted: 'thread', title: 'Second' }), blocker({ posted: 'body', title: 'Other', file: 'src/b.ts' })]), state: 'CHANGES_REQUESTED', commit_id: HEAD, user }],
-      }, `2 threads block the approval:\n- Lock is never released\n- Second (resolved by \`author\`, who may not clear it)\n\nThe record of Manki's review of \`bead000\` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Other (\`src/b.ts\`)\n\n${NEXT_ROUND}`],
+      }, `2 threads block the approval:\n- Lock is never released\n- Second (resolved by \`author\`, who may not clear it)\n\nThe record of Manki's review of \`bead000\` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Other (\`src/b.ts\`)\n\n${NEXT_ROUND}${AGAIN_BOX}`],
       ['an open blocking thread on a head no review covers',
         { threads: [thread('t1', 'blocker', undefined, { commit: testSha('01d') })], existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
-        `1 thread blocks the approval:\n- Lock is never released\n\n${NOT_REVIEWED_YET}`],
+        `1 thread blocks the approval:\n- Lock is never released\n\n${NOT_REVIEWED_YET}${AGAIN_BOX}`],
       ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
-        NOT_REVIEWED_YET],
+        NOT_REVIEWED_YET + AGAIN_BOX],
+      // The box sits under the sentence that names the review, and a hold line that names the same step adds no second one.
+      ['a draft head no review covers, with `auto_approve` off', { draft: true, existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
+        `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.`, { auto_approve: false }, 'draft'],
       ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
       // An open blocking or warning thread declines beside an approval that stands, and neither dismisses that approval.
       ['an open blocking thread beside an approval that stands', { threads: [thread('t1', 'blocker')], existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] },
@@ -1030,12 +1037,12 @@ describe('checkAndAutoApprove', () => {
         threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }],
       }, `${WARNING_THREAD}\n\n${HELD_FOR_PERSON}`, undefined, 'warnings'],
       ['an open warning thread beside a warning the review lists with no thread', { threads: [thread('t1', 'warning')], existingReviews: [{ id: 7, body: held([warning('body')]), state: 'COMMENTED', commit_id: HEAD, user }] },
-        `${NO_WARNING_THREAD}\n\n${NEXT_ROUND}\n\n${WARNING_THREAD}`, undefined, 'warnings'],
+        `${NO_WARNING_THREAD}\n\n${NEXT_ROUND}${AGAIN_BOX}\n\n${WARNING_THREAD}`, undefined, 'warnings'],
       ['an open warning thread on a head no review covers',
         { threads: [thread('t1', 'warning', undefined, { commit: testSha('01d') })], existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
-        `${NOT_REVIEWED_YET}\n\n${WARNING_THREAD}`],
+        `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n${WARNING_THREAD}`],
       ['an open blocking thread and an open warning thread on a draft that conflicts', { threads: [thread('t1', 'blocker'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })], draft: true, mergeable: false },
-        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}`, undefined, 'draft'],
+        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}${CHECK_BOX}`, undefined, 'draft'],
       ['an open warning thread on a PR that conflicts', { threads: [thread('t1', 'warning')], mergeable: false },
         `${WARNING_THREAD}\n\n**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment \`/manki review\`.`, undefined, 'warnings'],
     // A rest parameter, since jest takes a named one the row lacks for its `done` callback.
@@ -1057,13 +1064,13 @@ describe('checkAndAutoApprove', () => {
 
     expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('9'))).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
-      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment `/manki check`, and Manki approves or says what holds the approval.\n\n<!-- manki-approval-held:9000000000000000000000000000000000000000 -->',
+      `**Approval held:** this PR is a draft. Mark it ready for review, and Manki approves it if nothing else holds the approval. A head commit without a review is reviewed first. If nothing follows, as for a PR from a fork or a commit pushed while automatic review is off or paused, comment \`/manki check\`, and Manki approves or says what holds the approval.${CHECK_BOX}\n\n<!-- manki-approval-held:9000000000000000000000000000000000000000 -->`,
     ]);
     // With `auto_approve` off the notice promises no approval for marking the PR ready.
     createCommentMock.mockClear();
     expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, testSha('8'), false, false)).toMatchObject({ reason: 'draft', posted: true });
     expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
-      '**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.\n\n<!-- manki-approval-held:8000000000000000000000000000000000000000 -->',
+      `**Approval held:** this PR is a draft. Mark it ready for review, then tick the review box in the settings block. \`auto_approve\` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.${AGAIN_BOX}\n\n<!-- manki-approval-held:8000000000000000000000000000000000000000 -->`,
     ]);
     expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, testSha('9'))).toBe(false);
     const unreadable = makeMockOctokit({ mergeable: true });
@@ -2083,7 +2090,7 @@ describe('checkAndAutoApprove', () => {
       expect(result.approved).toBe(approves);
       expect(createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])).toEqual(approves ? [['APPROVE', REBASED]] : []);
       expect(createCommentMock).not.toHaveBeenCalled();
-      if (!result.approved) expect(await result.why()).toBe(NOT_REVIEWED_YET);
+      if (!result.approved) expect(await result.why()).toBe(NOT_REVIEWED_YET + AGAIN_BOX);
       // The auto-approval names the head it approves.
       else expect(reviewedCommit({ body: createReviewMock.mock.calls[0][0].body as string })).toBe(REBASED);
     });
@@ -2098,16 +2105,17 @@ describe('checkAndAutoApprove', () => {
         .toMatch(/^Manki has not reviewed `bead000`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
       jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
       expect(await asked(staleHeadOctokit(notice(), [])))
-        .toBe('Manki has not reviewed `bead000`. Automatic review is paused in the settings block. Tick the review box there, or comment `/manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.');
+        .toBe(`Manki has not reviewed \`bead000\`. Automatic review is paused in the settings block. Tick the review box there, or comment \`/manki review\`, to review it. Untick **Pause automatic reviews** to lift the pause.${AGAIN_BOX}`);
       expect(await asked(staleHeadOctokit(notice(), [])))
-        .toBe(NOT_REVIEWED_YET);
+        .toBe(NOT_REVIEWED_YET + AGAIN_BOX);
 
       // A token service that cannot say whether the PR is paused must not end in the promise of a push review.
       const unknown = notice();
       jest.mocked(authModule.fetchPrState).mockRejectedValueOnce(new Error('HTTP 503'));
       expect(await asked(staleHeadOctokit(unknown, [])))
-        .toBe('Manki has not reviewed `bead000`. Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick the review box in the settings block, or comment `/manki review`.');
-      expect(unknown.mock.calls[0][0].body).toContain('**Auto-approve withheld** for `bead000`');
+        .toBe(`Manki has not reviewed \`bead000\`. Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick the review box in the settings block, or comment \`/manki review\`.${AGAIN_BOX}`);
+      // The withheld notice names the review command too, so it carries the same box.
+      expect(unknown.mock.calls[0][0].body).toContain(`**Auto-approve withheld** for \`bead000\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`01db000\`.\n\nManki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick the review box in the settings block, or comment \`/manki review\`.${AGAIN_BOX}`);
       expect(unknown.mock.calls[0][0].body).toContain('"reason":"pause_unknown"');
 
       // A pause the rounds show is certain, so it wins over the unknown Pause box.

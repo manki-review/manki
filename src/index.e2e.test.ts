@@ -976,7 +976,7 @@ describe('runFullReview end to end', () => {
       const commands = mockGitHub.comments.filter(c => c.user.login === 'alice');
       const answers = () => mankiComments().slice(comments).map(c => c.body);
       const answered = commands.slice(1).map(command =>
-        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking the review box in the settings block reviews this commit again.${command.body.startsWith('@manki') ? `\n\n${SLASH_HINT}` : ''}\n\n<!-- manki -->\n<!-- manki-answered:${command.id} -->`);
+        `\`${HEAD_SHA.slice(0, 7)}\` already has a review, so this command started no new round. The command starts one after a push, and ticking the review box in the settings block reviews this commit again.\n\n<!-- manki-issue-box -->\n- [ ] Review again <!-- manki-box:again -->${command.body.startsWith('@manki') ? `\n\n${SLASH_HINT}` : ''}\n\n<!-- manki -->\n<!-- manki-answered:${command.id} -->`);
       expect(commands).toHaveLength(3);
       expect(answers()).toEqual(answered);
 

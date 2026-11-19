@@ -3,14 +3,27 @@ export const SETTINGS_MARKER = '<!-- manki-settings -->';
 
 export type SettingsBox = 'pause' | 'again' | 'deeper' | 'cancel' | 'draft';
 
-/** The label of each box, in the order the block lists them. */
-const BOX_LABELS: Record<SettingsBox, string> = {
+/** A box a message carries for the next step it names, which also has a command. */
+export type MessageBox = 'again' | 'check' | 'forget' | 'dismiss';
+
+/** The label of each box. The settings boxes come first, in the order the block lists them. */
+const BOX_LABELS: Record<SettingsBox | MessageBox, string> = {
   pause: 'Pause automatic reviews',
   again: 'Review again',
   deeper: 'Deeper review',
   cancel: 'Cancel this review',
   draft: 'Review this draft',
+  check: 'Check approval',
+  forget: 'Forget this learning',
+  dismiss: 'Dismiss this finding',
 };
+
+const SETTINGS_BOXES: readonly SettingsBox[] = ['pause', 'again', 'deeper', 'cancel', 'draft'];
+
+/** Returns the label of `box`. */
+export function boxLabel(box: SettingsBox | MessageBox): string {
+  return BOX_LABELS[box];
+}
 
 /** What the settings block shows. */
 export interface SettingsView {
@@ -28,7 +41,7 @@ const BLOCK_RE = /(?:^|\n+)---\n(?:Last reviewed `([0-9a-f]+)`|Not reviewed yet)
 const BOX_LINE_RE = /^- \[([ xX])\] [^\n]*<!-- manki-box:(\w+) -->$/gm;
 
 function isSettingsBox(name: string): name is SettingsBox {
-  return Object.hasOwn(BOX_LABELS, name);
+  return (SETTINGS_BOXES as readonly string[]).includes(name);
 }
 
 const short = (sha: string): string => sha.slice(0, 7);
@@ -37,7 +50,7 @@ const short = (sha: string): string => sha.slice(0, 7);
 export function renderSettingsBlock(view: SettingsView): string {
   const reviewed = view.lastReviewed ? `Last reviewed \`${short(view.lastReviewed)}\`` : 'Not reviewed yet';
   const label = (box: SettingsBox): string => (box === 'again' && !view.lastReviewed ? 'Review now' : BOX_LABELS[box]);
-  const boxes = (Object.keys(BOX_LABELS) as SettingsBox[])
+  const boxes = SETTINGS_BOXES
     .filter(box => view.boxes.has(box))
     .map(box => `- [${view.ticked.has(box) ? 'x' : ' '}] ${label(box)} <!-- manki-box:${box} -->`);
   return ['---', `${reviewed} · head \`${short(view.head)}\` · ${view.status}`, ...boxes, SETTINGS_MARKER].join('\n');
