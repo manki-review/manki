@@ -520,13 +520,19 @@ describe('relatedRepoLoader', () => {
       rmSync(root, { recursive: true, force: true });
     }
 
-    // A lockfile that does not parse may lock another commit, so no repo is read at a locked commit.
-    const broken = gitWorkspace({ 'README.md': 'App\n' }, { 'Cargo.lock': cargo([['dashcore', `git+https://github.com/dashpay/rust-dashcore#${a}`]]), 'web/package-lock.json': '{' }).root;
+    // A lockfile that does not parse may lock another commit, so no repo is read at a locked commit. Its path comes from
+    // the PR, so a workflow command in it is cut from the log.
+    const path = 'web\n::warning::forged/package-lock.json';
+    const broken = gitWorkspace({ 'README.md': 'App\n' }, { 'Cargo.lock': cargo([['dashcore', `git+https://github.com/dashpay/rust-dashcore#${a}`]]), [path]: '{' }).root;
+    jest.mocked(core.info).mockClear();
     const unread = (await relatedRepoTools([dependency('dashpay/rust-dashcore')], broken))!;
     try {
       expect(unread.repos).toEqual([dependency('dashpay/rust-dashcore')]);
-      expect(unread.locks).toEqual({ 'dashpay/rust-dashcore': { unlocked: 'the lockfile web/package-lock.json could not be read' } });
-      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Lockfile web\/package-lock\.json is not read: /));
+      expect(unread.locks).toEqual({ 'dashpay/rust-dashcore': { unlocked: `the lockfile ${path} could not be read` } });
+      expect(jest.mocked(core.info).mock.calls.map(([line]) => line)).toEqual([
+        'Lockfile web\n[redacted-workflow-cmd]',
+        'Related repo dashpay/rust-dashcore is read at its default branch: the lockfile web\n[redacted-workflow-cmd]',
+      ]);
     } finally {
       rmSync(unread.stateDir, { recursive: true, force: true });
       rmSync(broken, { recursive: true, force: true });

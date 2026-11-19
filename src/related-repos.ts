@@ -9,6 +9,7 @@ import { makeScratchDir } from './tool-install';
 import { STALE_TIMEOUT_MS } from './tool-steps';
 import { LOCKFILE_NAMES, lockedGitCommits, MAX_LOCKFILE_BYTES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RepoLock, RoundRelatedRepo } from './types';
+import { sanitizeLogOutput } from './utils';
 import { gitEnv } from './workspace';
 
 /** Where every related repo lives. */
@@ -93,7 +94,8 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
       commits = lockedGitCommits(file, readFileSync(path, 'utf-8'));
     } catch (error) {
       unread = `the lockfile ${file} could not be read`;
-      core.info(`Lockfile ${file} is not read: ${error instanceof Error ? error.message : String(error)}`);
+      // The path and a parser's error quote the PR, so the line may hold a workflow command.
+      core.info(sanitizeLogOutput(`Lockfile ${file} is not read: ${error instanceof Error ? error.message : String(error)}`));
       break;
     }
     for (const [repo, shas] of commits) {
@@ -119,7 +121,7 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
     return { ...repo, ref: commit };
   });
   for (const [repo, lock] of Object.entries(locks)) {
-    core.info('lockfile' in lock ? `Related repo ${repo} is read at the commit ${lock.lockfile} locks` : `Related repo ${repo} is read at its default branch: ${lock.unlocked}`);
+    core.info(sanitizeLogOutput('lockfile' in lock ? `Related repo ${repo} is read at the commit ${lock.lockfile} locks` : `Related repo ${repo} is read at its default branch: ${lock.unlocked}`));
   }
   return { repos: lockedRepos, locks };
 }
