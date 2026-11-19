@@ -355,6 +355,10 @@ describe('dependencyLoader', () => {
       [{ 'package.json': manifest({}), '.yarnrc.yml': 'yarnPath: .yarn/releases/yarn-4.5.0.cjs\n' }, '.yarnrc.yml sets `yarnPath`'],
       [{ 'package.json': manifest({ scripts: { 'pnpm:devPreinstall': 'node fix.js' } }) }, 'its `pnpm:devPreinstall` script runs at install'],
       [{ 'package.json': manifest({}), '.npmrc': 'shrinkwrap=false\n' }, '.npmrc sets `shrinkwrap`'],
+      // npm reads `0` and `null` as off too, so any value but `true` turns the lockfile off.
+      [{ 'package.json': manifest({}), '.npmrc': 'package-lock=0\n' }, '.npmrc sets `package-lock`'],
+      [{ 'package.json': manifest({}), '.npmrc': 'lockfile=null\n' }, '.npmrc sets `lockfile`'],
+      [{ 'package.json': manifest({}), 'pnpm-workspace.yaml': 'lockfile: 0\n' }, 'pnpm-workspace.yaml sets `lockfile`'],
       [{ 'package.json': manifest({}), '.yarnrc.yml': 'cacheFolder: ./vendor/cache\n' }, '.yarnrc.yml sets `cacheFolder`'],
       [{ 'package.json': manifest({}), 'web/node_modules/left-pad/index.js': 'module.exports = 1;\n', 'web/package.json': manifest({}) }, 'the checkout holds web/node_modules/left-pad, which the project runs in place of the archive npm publishes'],
       [{ 'package.json': manifest({}), '.yarn/cache/left-pad-npm-1.2.0-abc123-def456.zip': '' }, 'the checkout holds .yarn/cache/left-pad-npm-1.2.0-abc123-def456.zip'],

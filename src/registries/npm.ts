@@ -66,15 +66,18 @@ const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepublish', '
 
 /**
  * The settings that change which lockfile, hook, plugin, package manager or cache of installed packages an install
- * uses, with the value that does when only one does. Each is in lower case, in every spelling of `.npmrc`,
- * `.yarnrc`, `.yarnrc.yml` and `pnpm-workspace.yaml`.
+ * uses, whatever their value. Each is in lower case, in every spelling of `.npmrc`, `.yarnrc`, `.yarnrc.yml` and
+ * `pnpm-workspace.yaml`.
  */
-const LOCKFILE_SETTINGS: ReadonlyArray<[string, string?]> = [
-  ['package-lock', 'false'], ['packagelock', 'false'], ['shrinkwrap', 'false'], ['lockfile', 'false'], ['cachefolder'], ['lockfile-dir'], ['lockfiledir'], ['pnpmfile'], ['global-pnpmfile'], ['globalpnpmfile'],
-  ['--no-lockfile'], ['--install.no-lockfile'], ['no-lockfile'], ['lockfilefilename'], ['yarnpath'], ['yarn-path'], ['--install.yarn-path'],
+const LOCKFILE_SETTINGS = [
+  'cachefolder', 'lockfile-dir', 'lockfiledir', 'pnpmfile', 'global-pnpmfile', 'globalpnpmfile',
+  '--no-lockfile', '--install.no-lockfile', 'no-lockfile', 'lockfilefilename', 'yarnpath', 'yarn-path', '--install.yarn-path',
   // A Yarn plugin runs the file its `path` names, whatever its `spec` says.
-  ['plugins'],
+  'plugins',
 ];
+
+/** The switches that turn the lockfile off, in lower case. npm reads `0`, `null` and other values as off too, so any value but `true` counts. */
+const LOCKFILE_SWITCHES = ['package-lock', 'packagelock', 'shrinkwrap', 'lockfile'];
 
 /** The settings that make a fresh install pick another version than the highest a requirement allows, in lower case. */
 const PICK_SETTINGS = ['before', 'tag', 'resolution-mode', 'resolutionmode', 'min-release-age', 'minimum-release-age', 'minimumreleaseage', 'npmminimalagegate'];
@@ -259,7 +262,8 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
           if (namesPackage(workspace.overrides, name) || namesPackage(workspace.patchedDependencies, name)) return `${shown(file)} overrides or patches it`;
         }
         // A key in lower case matches a known name, so it holds no character `shown` would change.
-        const lockfile = settingsOf(config).find(({ key, value }) => LOCKFILE_SETTINGS.some(([k, v]) => k === key.toLowerCase() && (v === undefined || String(value) === v)));
+        const lockfile = settingsOf(config).find(({ key, value }) => LOCKFILE_SETTINGS.includes(key.toLowerCase())
+          || (LOCKFILE_SWITCHES.includes(key.toLowerCase()) && value !== true && value !== 'true'));
         if (lockfile) return `${shown(file)} sets \`${lockfile.key}\`, so Manki cannot tell what an install runs or which lockfile it reads`;
       }
       return undefined;
