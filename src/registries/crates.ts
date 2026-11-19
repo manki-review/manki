@@ -175,7 +175,8 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     sameName: (a, b) => normalize(a) === normalize(b),
     unreadInstallFiles: [],
     installedCopy: () => undefined,
-    isWorkspaceMember(root, member, text) {
+    isWorkspaceMember(lockfile, member, text) {
+      const root = posix.dirname(lockfile);
       const rootText = text(posix.join(root, 'Cargo.toml'));
       const memberText = text(posix.join(member, 'Cargo.toml'));
       if (rootText === undefined || memberText === undefined) return false;

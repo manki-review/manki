@@ -418,18 +418,30 @@ describe('dependencyLoader', () => {
     const root = (workspaces: unknown) => ({ 'package.json': JSON.stringify({ name: 'root', workspaces }) });
     await expect(round({ ...root(['web']), ...required('web/'), 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {} }) }).load('npm/left-pad'))
       .rejects.toThrow('web/package.json requires it, but package-lock.json, which locks that manifest\'s versions, does not lock it.');
-    for (const files of [root(['apps/*']), root({ packages: ['apps/**'] }), { 'pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - "!apps/legacy"\n' }] as Array<Record<string, string>>) {
-      expect((await round({ ...files, ...required('apps/web/'), 'package-lock.json': lock }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+    // Each package manager reads its own list of members: pnpm its workspace settings, and npm and Yarn the root manifest.
+    const berry = '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"left-pad@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "left-pad@npm:1.2.0"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n';
+    const pnpmLock = `lockfileVersion: '9.0'\n\npackages:\n  left-pad@1.2.0:\n    resolution: {integrity: ${sha512Integrity(PAD)}}\n\nsnapshots:\n  left-pad@1.2.0: {}\n`;
+    const pnpmMembers = (...patterns: string[]) => ({ 'pnpm-workspace.yaml': `packages:\n${patterns.map(p => `  - "${p}"\n`).join('')}` });
+    for (const files of [
+      { ...root(['apps/*']), 'package-lock.json': lock }, { ...root({ packages: ['apps/**'] }), 'yarn.lock': berry }, { ...pnpmMembers('apps/*', '!apps/legacy'), 'pnpm-lock.yaml': pnpmLock },
+    ] as Array<Record<string, string>>) {
+      expect((await round({ ...files, ...required('apps/web/') }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
     }
     // A manifest that is no member of the workspace above it is a project of its own, which that lockfile does not lock.
-    for (const files of [{}, root(['packages/*']), { 'pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - "!apps/web"\n' }] as Array<Record<string, string>>) {
-      await expect(round({ ...files, ...required('apps/web/'), 'package-lock.json': lock }).load('npm/left-pad'))
-        .rejects.toThrow('apps/web/package.json requires it, and Manki cannot tell that it belongs to the project package-lock.json locks.');
+    for (const [files, lockfile] of [
+      [{ 'package-lock.json': lock }, 'package-lock.json'], [{ ...root(['packages/*']), 'package-lock.json': lock }, 'package-lock.json'],
+      [{ ...pnpmMembers('apps/*', '!apps/web'), 'pnpm-lock.yaml': pnpmLock }, 'pnpm-lock.yaml'],
+      // A member list of another package manager counts for none of its lockfiles.
+      [{ ...pnpmMembers('apps/*'), 'package-lock.json': lock }, 'package-lock.json'], [{ ...root(['apps/*']), 'pnpm-lock.yaml': pnpmLock }, 'pnpm-lock.yaml'],
+      // With two lockfiles in one folder, both must count it.
+      [{ ...root(['apps/*']), 'package-lock.json': lock, 'pnpm-lock.yaml': pnpmLock }, 'pnpm-lock.yaml'],
+    ] as Array<[Record<string, string>, string]>) {
+      await expect(round({ ...files, ...required('apps/web/') }).load('npm/left-pad'))
+        .rejects.toThrow(`apps/web/package.json requires it, and Manki cannot tell that it belongs to the project ${lockfile} locks.`);
     }
     await expect(round({ ...root(['apps/{web,api}']), ...required('apps/web/'), 'package-lock.json': lock }).load('npm/left-pad'))
       .rejects.toThrow('Manki cannot read apps/web/package.json with certainty: the workspace pattern "apps/{web,api}" is one Manki does not read.');
     // The lockfile in the nearest folder decides, also below one whose path is longer.
-    const berry = '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"left-pad@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "left-pad@npm:1.2.0"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n';
     expect((await round({ 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {} }), ...required('tools/'), 'tools/yarn.lock': berry }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
     // A member's own lockfile next to the workspace's leaves Manki unsure which one an install reads.
     await expect(round({ ...root(['web']), ...required('web/'), 'package-lock.json': lock, 'web/package-lock.json': lock }).load('npm/left-pad'))

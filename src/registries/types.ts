@@ -84,11 +84,12 @@ export interface Registry {
    */
   overriddenBy(name: string, configs: readonly RegistryConfig[]): string | undefined;
   /**
-   * Whether the manifest in the folder `member` belongs to the project whose lockfile sits in the folder `root` above
-   * it, as a member of its workspace. `text` returns a file of the checkout that Manki read. Throws when Manki cannot
-   * tell with certainty, such as for a workspace pattern it does not read.
+   * Whether the manifest in the folder `member` belongs to the project of the lockfile at `lockfile` above it, as a
+   * member of its workspace, by the member list the package manager of that lockfile reads. `text` returns a file of the
+   * checkout that Manki read. Throws when Manki cannot tell with certainty, such as for a workspace pattern it does not
+   * read.
    */
-  isWorkspaceMember(root: string, member: string, text: (path: string) => string | undefined): boolean;
+  isWorkspaceMember(lockfile: string, member: string, text: (path: string) => string | undefined): boolean;
   /**
    * Returns which of `files`, the settings and manifests of the checkout, makes a fresh install pick another version
    * than the highest a requirement allows, and how, or `undefined`. Throws when Manki cannot read one with certainty.

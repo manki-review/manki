@@ -235,12 +235,12 @@ async function resolveDependency(
 
   const manifests = files.filter(f => registry.manifests.includes(posix.basename(f))).map((file): RegistryConfig => ({ file, text: read(file, 'require or override it') }));
   const texts = new Map([...configs, ...manifests].map(({ file, text }) => [file, text]));
-  // Whether the manifest in `dir` belongs to the project of the lockfile in `root`: always when it sits beside it, and
-  // else only as a provable member of that project's workspace.
-  const belongs = (root: string, dir: string, file: string): boolean => {
-    if (root === dir) return true;
+  // Whether the manifest in `dir` belongs to the project of `lockfile`: always when it sits beside it, and else only as
+  // a provable member of that project's workspace.
+  const belongs = (lockfile: string, dir: string, file: string): boolean => {
+    if (posix.dirname(lockfile) === dir) return true;
     try {
-      return registry.isWorkspaceMember(root, dir, path => texts.get(path));
+      return registry.isWorkspaceMember(lockfile, dir, path => texts.get(path));
     } catch (error) {
       return uncertain(file, error);
     }
@@ -259,10 +259,12 @@ async function resolveDependency(
     const covering = lockfiles.filter(f => within(dir, posix.dirname(f))).sort((a, b) => posix.dirname(b).length - posix.dirname(a).length);
     if (covering.length > 0) {
       const nearest = posix.dirname(covering[0]);
-      if (!belongs(nearest, dir, file)) refuse(`${shown(file)} requires it, and Manki cannot tell that it belongs to the project ${shown(covering[0])} locks`, origin);
-      const further = covering.find(f => posix.dirname(f) !== nearest && belongs(posix.dirname(f), dir, file));
-      if (further) refuse(`${shown(file)} requires it, and both ${shown(covering[0])} and ${shown(further)} can lock that manifest's versions`, origin);
+      // Each lockfile there must count the manifest, since Manki cannot tell which of them an install reads.
       const own = covering.filter(f => posix.dirname(f) === nearest);
+      const outside = own.find(f => !belongs(f, dir, file));
+      if (outside) refuse(`${shown(file)} requires it, and Manki cannot tell that it belongs to the project ${shown(outside)} locks`, origin);
+      const further = covering.find(f => posix.dirname(f) !== nearest && belongs(f, dir, file));
+      if (further) refuse(`${shown(file)} requires it, and both ${shown(own[0])} and ${shown(further)} can lock that manifest's versions`, origin);
       if (!locked.some(p => own.includes(p.file))) refuse(`${shown(file)} requires it, but ${shown(own[0])}, which locks that manifest's versions, does not lock it`, origin);
       return [];
     }
