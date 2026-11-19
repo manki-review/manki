@@ -274,11 +274,20 @@ function treePath(path: string): string {
 }
 
 /**
- * Returns lines `offset` to `offset + limit - 1` of the file `path` as it is at the PR's base commit, which
- * `fetchWorkspace` put at `BASE_REF`, each prefixed with its number and a tab. It reads git's objects, never the
- * checkout, so a symlink there is its text, as in the checkout. A path `excludePaths` matches is refused.
+ * Returns lines `offset` to `offset + limit - 1` of the file `path` as it is at the PR's base commit, each prefixed
+ * with its number and a tab, from `readBaseText`.
  */
 async function readBaseFile(root: string, { path, offset, limit }: ReadFileArgs, excludePaths: readonly string[]): Promise<string> {
+  const { file, text } = await readBaseText(root, path, excludePaths);
+  return numberedLines(text, { path: file, offset, limit });
+}
+
+/**
+ * Returns the text of the file `path` as it is at the PR's base commit, which `fetchWorkspace` put at `BASE_REF`, with
+ * the path in git's form. It reads git's objects, never the checkout, so a symlink there is its text, as in the
+ * checkout. A path `excludePaths` matches is refused, and so is a file that is missing, binary or over `MAX_FILE_BYTES`.
+ */
+export async function readBaseText(root: string, path: string, excludePaths: readonly string[]): Promise<{ file: string; text: string }> {
   const file = treePath(path);
   const pattern = findExcludePattern(file, [...excludePaths]);
   if (pattern) throw new Error(`${path} matches ${pattern} in exclude_paths, so it is not read at the PR's base`);
@@ -292,7 +301,7 @@ async function readBaseFile(root: string, { path, offset, limit }: ReadFileArgs,
   if (Number((await git(['cat-file', '-s', oid])).trim()) > MAX_FILE_BYTES) throw new Error(`${path} is over ${MAX_FILE_BYTES / 1024} KB at the PR's base`);
   const text = await git(['cat-file', 'blob', oid], MAX_FILE_BYTES + 1);
   if (text.slice(0, 8000).includes('\0')) throw new Error(`${path} is binary at the PR's base`);
-  return numberedLines(text, { path: file, offset, limit });
+  return { file, text };
 }
 
 const MAX_GLOB_CHARS = 200;
