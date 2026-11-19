@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
-import { isAbsolute, join, relative, resolve, sep } from 'path';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'path';
 import { promisify } from 'util';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
