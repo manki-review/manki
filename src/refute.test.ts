@@ -1184,6 +1184,7 @@ describe('refuteBlockers', () => {
     const message = (title: string) => client.calls.find(([t]) => t === title)![2];
     const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
     expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, false]);
+    expect(client.messages[0][0]).toContain('read that file at the base with `read_file` and `ref` set to `base`, or how this PR changed those lines with `git_history`');
     // A check that asks shows the PR's change to the cited files and names the other files the PR changes.
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
     expect(message('Pending blocker')).toContain('- **Other files this PR changes**');
