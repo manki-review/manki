@@ -199,14 +199,17 @@ export async function loadConfigWithOverrides(repoRoot: string, base: string, ov
   return loadOverlaidConfig(content, own ? 'the config given' : configPath, overrides).config;
 }
 
-/** Applies `patch` to the checkout at `dir`, or with `index` to that index file alone. Throws when it does not apply. */
+/**
+ * Applies `patch` to the checkout at `dir` and its index, or with `index` to that index file alone. Throws when it does
+ * not apply.
+ */
 async function applyPatch(dir: string, patch: string, head: string, index?: string): Promise<void> {
   const file = index ? `${index}.patch` : join(dir, '.git', 'manki-review.patch');
   // `git apply` reads a patch without its final newline as corrupt.
   writeFileSync(file, patch.endsWith('\n') ? patch : `${patch}\n`);
   const env = index ? { ...gitEnv(), GIT_INDEX_FILE: index } : gitEnv();
   // A symlink the patch adds is written as a plain file holding its target, as `fetchWorkspace` checks one out.
-  await runGit(dir, ['-c', 'core.symlinks=false', 'apply', ...(index ? ['--cached'] : []), '--whitespace=nowarn', file], env).catch((error: Error) => {
+  await runGit(dir, ['-c', 'core.symlinks=false', 'apply', index ? '--cached' : '--index', '--whitespace=nowarn', file], env).catch((error: Error) => {
     throw new Error(`The patch does not apply to ${head.slice(0, 7)}: ${error.message}`);
   });
 }
