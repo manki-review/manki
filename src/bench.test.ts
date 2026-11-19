@@ -10,7 +10,7 @@ import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
 import { cutLegacyCommands, sanitizeLogOutput } from './providers';
 import type { LLMClient } from './providers';
-import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING } from './review';
+import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
 import { PRE_EXISTING_TAG, VERDICT_READER_NAME } from './types';
@@ -735,6 +735,8 @@ describe('scoreRun on a follow-up case', () => {
     });
     kept.result.threadEvaluations = [{ threadId: 'P2', status: 'partly_addressed', reason: `Part remains${UNCONFIRMED_FIX_ENDING}`, grade: 'note' }];
     expect((await scoreRun(followUp, kept, matcher)).followUp?.threads).toEqual([{ id: 'P1', status: 'none', findings: ['blocker', 'blocker'] }, { id: 'P2', status: 'partly_addressed', grade: 'note' }]);
+    kept.result.threadEvaluations = [{ threadId: 'P2', status: 'partly_addressed', reason: WORKAROUND_REASON, remaining: 'r', grade: 'warning' }];
+    expect((await scoreRun(followUp, kept, matcher)).followUp?.threads?.[1]).toEqual({ id: 'P2', status: 'partly_addressed', keptOpenBy: 'workaround', grade: 'warning' });
     expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
     // No model raised a blocker the review lists again from an earlier round, so it is neither a finding nor a repeat.
     const relisting = review();
