@@ -428,6 +428,9 @@ describe('dependencyLoader', () => {
     }
     await expect(round({ ...root(['apps/{web,api}']), ...required('apps/web/'), 'package-lock.json': lock }).load('npm/left-pad'))
       .rejects.toThrow('Manki cannot read apps/web/package.json with certainty: the workspace pattern "apps/{web,api}" is one Manki does not read.');
+    // The lockfile in the nearest folder decides, also below one whose path is longer.
+    const berry = '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"left-pad@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "left-pad@npm:1.2.0"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n';
+    expect((await round({ 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {} }), ...required('tools/'), 'tools/yarn.lock': berry }).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
     // A member's own lockfile next to the workspace's leaves Manki unsure which one an install reads.
     await expect(round({ ...root(['web']), ...required('web/'), 'package-lock.json': lock, 'web/package-lock.json': lock }).load('npm/left-pad'))
       .rejects.toThrow('web/package.json requires it, and both web/package-lock.json and package-lock.json can lock that manifest\'s versions.');
