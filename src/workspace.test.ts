@@ -101,6 +101,8 @@ describe('fetchWorkspace', () => {
     expect(closedPathsOf(closed)).toEqual(['bench/holdout/**', 'secret.txt']);
     // git reads a tracked file it no longer finds as deleted, so a search of the checkout finds nothing in it.
     expect(git(closed, 'grep', '-l', 'closed marker').split('\n')).toEqual(['bench/cases/a.yml', 'data/open.txt', 'src/a.ts']);
+    // A tool that lists tracked files reads the index, which names no closed file either.
+    expect(git(closed, 'ls-files').split('\n')).toEqual(['bench/cases/a.yml', 'data/open.txt', 'src/a.ts']);
 
     const open = await fetchWorkspace(`file://${source}`, sha, undefined, []);
     expect(listed(open)).toEqual([...files].sort());
@@ -121,12 +123,12 @@ describe('fetchWorkspace', () => {
 
     // A symlink that got into a checkout by other means is deleted, wherever it points.
     const checkout = mkdtempSync(join(tmpdir(), 'manki-close-'));
-    mkdirSync(join(checkout, '.git'));
+    execFileSync('git', ['init', '-q', checkout]);
     mkdirSync(join(checkout, 'src'));
     writeFileSync(join(checkout, 'src/a.ts'), 'open\n');
     symlinkSync(join(source, 'bench/holdout/case.yml'), join(checkout, 'src/outside.yml'));
     symlinkSync('a.ts', join(checkout, 'src/inside.ts'));
-    closePaths(checkout, ['bench/holdout/**']);
+    await closePaths(checkout, ['bench/holdout/**']);
     expect(readdirSync(join(checkout, 'src'))).toEqual(['a.ts']);
     rmSync(checkout, { recursive: true, force: true });
   }, GIT_TEST_TIMEOUT_MS);

@@ -280,7 +280,7 @@ describe('reviewLocal', () => {
       const workspace = options.workspace!;
       workspaceSeen = {
         content: readFileSync(join(workspace, 'src/a.ts'), 'utf-8'), env: existsSync(join(workspace, '.env')), linkIsFile: lstatSync(join(workspace, 'link')).isFile(),
-        // Tools that list tracked files read the index, so it holds the files and the symlink the patch adds.
+        // Tools that list tracked files read the index, so it holds the symlink the patch adds and no closed file.
         indexed: git(workspace, 'ls-files', '-s', '--', 'docs/x.md', 'link').replace(/ [0-9a-f]+ /g, ' '),
         closed: existsSync(join(workspace, 'docs')), patch: readdirSync(join(workspace, '.git')).some(name => name.endsWith('.patch')),
       };
@@ -300,7 +300,7 @@ describe('reviewLocal', () => {
 
     const options = jest.mocked(runReview).mock.calls[0][1];
     // The closed files the patch changes are deleted after it applies, and the patch file, which holds their lines, with them.
-    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true, indexed: '100644 0\tdocs/x.md\n120000 0\tlink', closed: false, patch: false });
+    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true, indexed: '120000 0\tlink', closed: false, patch: false });
     expect(options.workspace).not.toBe(repo);
     expect(existsSync(options.workspace!)).toBe(false);
     expect(options.rawDiff).not.toContain('docs/x.md');

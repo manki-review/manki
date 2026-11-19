@@ -55,7 +55,7 @@ export async function fetchWorkspace(url: string, sha: string, token?: string, c
     await git(['fetch', '-q', '--no-tags', `--depth=${WORKSPACE_DEPTH}`, url, sha], gitEnv(auth));
     // Symlinks are checked out as plain files holding their target, so none of them points out of the workspace.
     await git(['-c', 'core.symlinks=false', 'checkout', '-q', '--detach', sha]);
-    closePaths(dir, closedPaths);
+    await closePaths(dir, closedPaths);
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
     throw error;
@@ -68,10 +68,10 @@ const CLOSED_PATHS_FILE = 'manki-closed-paths.json';
 
 /**
  * Deletes every file and folder of the checkout at `dir` that `closedPaths` closes, every symlink, whose target could be
- * closed, and the folders that leaves empty, so no tool that reads the checkout finds them. Keeps the patterns in `.git`
- * for `closedPathsOf`.
+ * closed, and the folders that leaves empty, so no tool that reads the checkout finds them. Drops the closed files from
+ * the index too, so no tool that lists tracked files names them. Keeps the patterns in `.git` for `closedPathsOf`.
  */
-export function closePaths(dir: string, closedPaths: readonly string[]): void {
+export async function closePaths(dir: string, closedPaths: readonly string[]): Promise<void> {
   if (closedPaths.length === 0) return;
   // Returns whether deleting closed paths left the folder `rel` empty.
   const close = (rel: string): boolean => {
@@ -91,6 +91,18 @@ export function closePaths(dir: string, closedPaths: readonly string[]): void {
     return emptied && left === 0;
   };
   close('');
+  // The git directory is named, so a checkout without one fails instead of changing a repository above it.
+  const git = (args: string[]) => runGit(dir, ['--git-dir', join(dir, '.git'), '--work-tree', dir, '--literal-pathspecs', ...args]);
+  const indexed = (await git(['ls-files', '-z'])).split('\0').filter(path => path && findClosedPattern(path, closedPaths));
+  if (indexed.length > 0) {
+    const list = join(dir, '.git', 'manki-closed-index');
+    writeFileSync(list, `${indexed.join('\0')}\0`);
+    try {
+      await git(['rm', '--cached', '-f', '-q', '--pathspec-from-file', list, '--pathspec-file-nul']);
+    } finally {
+      rmSync(list, { force: true });
+    }
+  }
   writeFileSync(join(dir, '.git', CLOSED_PATHS_FILE), JSON.stringify(closedPaths));
 }
 

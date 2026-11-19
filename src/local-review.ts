@@ -368,7 +368,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       workspace = await fetchWorkspace(pathToFileURL(repoRoot).href, head);
       if (patch !== undefined) await applyPatch(workspace, patch, head);
       // Closed after the patch, which can add or change a closed file.
-      closePaths(workspace, config.closed_paths ?? []);
+      await closePaths(workspace, config.closed_paths ?? []);
     }
     signal?.throwIfAborted();
     const result = await runReview(clients, {

@@ -34,7 +34,7 @@ type Files = Record<string, string>;
 async function timedUses(base: Files, head: Files, excludePaths: string[] = [], dependencyNames = false, closedPaths: string[] = []): Promise<{ uses: UsesOutsideDiff; ms: number }> {
   const { root, diff } = gitWorkspace(base, head);
   try {
-    closePaths(root, closedPaths);
+    await closePaths(root, closedPaths);
     const started = performance.now();
     const uses = await listUsesOutsideDiff(root, diff, { loadApi, excludePaths, dependencyNames });
     return { uses, ms: performance.now() - started };
