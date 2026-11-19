@@ -66,7 +66,7 @@ interface RelatedWorkTarget {
  * Lists the open PRs that change a file this PR changes, most shared files first, and the open issues a search for
  * the declared names and the title's words finds, without the issues the body links. A list that fails, or that is
  * not done within `LOOKUP_TIMEOUT_MS`, is left out and named in `skipped`. Each item a person with write access
- * opened is marked `byWriter`, and a permission that cannot be read marks none.
+ * opened is marked `byWriter`, within the same deadline. A permission that cannot be read in time marks none.
  */
 export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarget): Promise<RelatedWork> {
   // The review waits for the lookup. Each request also stops at the deadline and is never retried or held for a rate
@@ -82,14 +82,15 @@ export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarge
   });
   const lists = [findOverlappingPrs(octokit, target, request), searchIssues(octokit, target, request)];
   const [prs, issues] = await Promise.allSettled(lists.map(list => Promise.race([list, deadline])));
+  const items = [...(prs.status === 'fulfilled' ? prs.value : []), ...(issues.status === 'fulfilled' ? issues.value : [])];
+  // `hasWriteAccess` takes no signal, so a lookup still running at the deadline is left behind and counts as no access.
+  const byWriter = await Promise.all(items.map(item => !!item.author && Promise.race([hasWriteAccess(octokit, target.owner, target.repo, item.author), deadline]).catch(() => false)));
   clearTimeout(timer);
   const skipped = [
     ...(prs.status === 'rejected' ? [`open PRs: ${skipReason(prs.reason)}`] : []),
     ...(issues.status === 'rejected' ? [`issue search: ${skipReason(issues.reason)}`] : []),
   ];
   for (const reason of skipped) core.warning(`Related work skips the ${reason}`);
-  const items = [...(prs.status === 'fulfilled' ? prs.value : []), ...(issues.status === 'fulfilled' ? issues.value : [])];
-  const byWriter = await Promise.all(items.map(item => !!item.author && hasWriteAccess(octokit, target.owner, target.repo, item.author)));
   return {
     items: items.map((item, i) => (byWriter[i] ? { ...item, byWriter: true as const } : item)),
     ...(skipped.length > 0 && { skipped }),

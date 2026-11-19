@@ -137,6 +137,16 @@ describe('findRelatedWork', () => {
       expect(jest.getTimerCount()).toBe(0);
       // The deadline aborts the requests too, so the one still waiting does not keep the run open.
       expect((jest.mocked(octokit.graphql).mock.calls.at(-1)![1] as { request: { signal: AbortSignal } }).request.signal.aborted).toBe(true);
+
+      // A write access lookup still running at the deadline counts as none, and the lookup ends on time.
+      const slow = makeOctokit([], [{ number: 43, title: 'Slow author', body: '', user: { login: 'slow' } }, { number: 44, title: 'Quick author', body: '', user: { login: 'quick' } }], { quick: 'write' });
+      slow.permission.mockImplementation(async ({ username }: { username: string }) => username === 'slow'
+        ? new Promise<never>(() => {})
+        : { data: { permission: 'write', user: { type: 'User' } } });
+      const waiting = findRelatedWork(slow.octokit, target(diffOf(file('src/a.ts'))));
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect((await waiting).items.map(i => [i.number, i.byWriter])).toEqual([[43, undefined], [44, true]]);
+      expect(jest.getTimerCount()).toBe(0);
     } finally {
       jest.useRealTimers();
     }
