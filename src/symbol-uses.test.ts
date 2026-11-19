@@ -630,7 +630,8 @@ describe('listUsesOutsideDiff', () => {
       'src/shapes.ts': 'export function perimeter() {\n  return 2;\n}\n\nexport class Circle {\n  draw() {\n    return 2;\n  }\n}\n\n/** A square, drawn from its corner. */\nexport class Square {\n  draw() {\n    return 2;\n  }\n}\n\nexport const scale = (n: number) => n * 2;\n',
       'src/engine.rs': 'pub struct Engine;\n\nimpl Engine {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n\npub struct Motor;\n\nimpl Motor {\n    pub fn run(&self) -> u8 {\n        2\n    }\n}\n',
       'cmd/shop.swift': 'func total() -> Int { return 2 }\nfunc outer() {\n}\n',
-      'src/outer.ts': 'export function outer() {\n  function inner() {}\n  class Local {\n    size = 1;\n  }\n  return 2;\n}\n',
+      'src/outer.ts': 'export function outer() {\n  function inner() {}\n  class Local {\n    size = 1;\n  }\n  return 2;\n}\n\nexport const run = () => {\n  function step() {}\n};\n',
+      'src/hooks.go': 'package hooks\n\nvar Handle = func() {\n\ttype event struct{ ID int }\n}\n',
       'src/job.py': 'class Job:\n    def __init__(self):\n        self.size = 1\n        self.cost = 2\n\n    def run(self):\n        def step():\n            pass\n',
     });
     const deleted = parsePRDiff('diff --git a/src/legacy.ts b/src/legacy.ts\ndeleted file mode 100644\n--- a/src/legacy.ts\n+++ /dev/null\n@@ -1,4 +0,0 @@\n-export function legacyParse(): void {\n-  const indented = 2;\n-}\n-const TOP_LEVEL = 1;').files;
@@ -660,8 +661,10 @@ describe('listUsesOutsideDiff', () => {
         { file: 'src/job.py', symbol: 'function Job.__init__', change: 'body changed' },
         { file: 'src/job.py', symbol: 'field Job.cost', change: 'added' },
         { file: 'src/job.py', symbol: 'function Job.run', change: 'added' },
-        // A function or type declared in a function, and the fields of such a type, are never named.
+        // A function or type declared in a function, an arrow function or a Go function literal, and the fields of such a
+        // type, are never named.
         { file: 'src/outer.ts', symbol: 'function outer', change: 'body changed' },
+        { file: 'src/outer.ts', symbol: 'constant run', change: 'added' },
         { file: 'src/shapes.ts', symbol: 'function area', change: 'removed' },
         { file: 'src/shapes.ts', symbol: 'type Square', change: 'declaration changed' },
         { file: 'src/shapes.ts', symbol: 'type Circle', change: 'body changed' },

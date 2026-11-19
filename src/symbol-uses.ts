@@ -210,6 +210,8 @@ interface FamilyRules {
   names?: (node: SgNode) => SgNode[];
   /** Whether a node is a module of tests, whose code is never compared. */
   testModule?: (node: SgNode) => boolean;
+  /** Functions that declare no name, such as a TypeScript arrow function. A declaration inside one is local to it. */
+  functions?: string[];
 }
 
 const RULES: Record<Family, FamilyRules> = {
@@ -229,6 +231,7 @@ const RULES: Record<Family, FamilyRules> = {
     owners: { impl_item: { type: 'type', trait: 'trait' } },
     selfName: () => 'self',
     testModule: node => node.kind() === 'mod_item' && /^tests?$/.test(node.field('name')?.text() ?? ''),
+    functions: ['closure_expression'],
   },
   typescript: {
     declarations: {
@@ -253,6 +256,7 @@ const RULES: Record<Family, FamilyRules> = {
         'class', 'class_declaration', 'abstract_class_declaration',
       ],
     },
+    functions: ['arrow_function', 'function_expression', 'generator_function'],
     // A class names its bases in `extends` and `implements` clauses, an interface in one `extends` clause, and a type
     // alias anywhere in its value, such as `Base & { extra: number }`.
     bases: scope => scope.kind() === 'type_alias_declaration'
@@ -315,6 +319,7 @@ const RULES: Record<Family, FamilyRules> = {
       },
     },
     names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
+    functions: ['func_literal'],
   },
 };
 
@@ -1936,7 +1941,7 @@ class ParsedFile {
     const container = at >= 0 ? ancestors[at] : undefined;
     // A member is local only when its type is, so a field Python assigns in `__init__` is not.
     const from = kind === 'field' || kind === 'variant' ? at : -1;
-    const local = ancestors.some((a, i) => i > from && this.rules.declarations[a.kind()] === 'function');
+    const local = ancestors.some((a, i) => i > from && (this.rules.declarations[a.kind()] === 'function' || !!this.rules.functions?.includes(String(a.kind()))));
     const { line: start, column: startColumn } = this.leadingStart(node);
     return {
       node, name, kind, start, startColumn, headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
