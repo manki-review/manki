@@ -297,6 +297,8 @@ describe('checkFixedElsewhere', () => {
   const OTHER_HEAD = 'b'.repeat(40);
   const MERGE = 'c'.repeat(40);
   const FIX = 'd'.repeat(40);
+  // The commit a detached thread was posted on, which this PR's head holds.
+  const POSTED = 'f'.repeat(40);
   // What GitHub's merge of this PR changes against its head: the finding's line 2 is replaced by two lines.
   const SINCE_HEAD = { filename: 'src/ledger.rs', status: 'modified', patch: '@@ -1,2 +1,3 @@\n pub struct Ledger;\n-impl Ledger {}\n+impl Ledger {\n+  fn check() {}' };
   // #7 replaced line 2 of the base with the same two lines.
@@ -322,8 +324,8 @@ describe('checkFixedElsewhere', () => {
   const stacked: Pull = { state: 'open', merged: false, head: { sha: OTHER_HEAD }, base: { ref: 'feature' }, merge_commit_sha: 'e'.repeat(40), changed_files: 1 };
 
   /** `holds` lists the `ancestor..commit` pairs where the commit holds the ancestor, and the comparison of `failing` throws. */
-  function setup(other: Pull | Error, { holds = [`${HEAD}..${OTHER_HEAD}`, `${HEAD}..${MERGE}`, `${FIX}..${MERGE}`], failing = '', files = [FILE] as object[], ownFiles = [OWN_FILE] as object[], sinceHead = [SINCE_HEAD] as object[], answer = '' as string | Error, checkout = true as boolean | 'none', line = 2, ownBase = 'main' }: {
-    holds?: string[]; failing?: string; files?: object[] | Error; ownFiles?: object[]; sinceHead?: object[]; answer?: string | Error; checkout?: boolean | 'none'; line?: number; ownBase?: string;
+  function setup(other: Pull | Error, { holds = [`${HEAD}..${OTHER_HEAD}`, `${HEAD}..${MERGE}`, `${FIX}..${MERGE}`, `${POSTED}..${HEAD}`], failing = '', files = [FILE] as object[], ownFiles = [OWN_FILE] as object[], sinceHead = [SINCE_HEAD] as object[], answer = '' as string | Error, checkout = true as boolean | 'none', line = 2, ownBase = 'main', postedOn, sincePosted = [] as object[] }: {
+    holds?: string[]; failing?: string; files?: object[] | Error; ownFiles?: object[]; sinceHead?: object[]; answer?: string | Error; checkout?: boolean | 'none'; line?: number; ownBase?: string; postedOn?: string; sincePosted?: object[];
   } = {}) {
     const octokit = {
       rest: {
@@ -340,7 +342,7 @@ describe('checkFixedElsewhere', () => {
           compareCommits: jest.fn(async ({ base, head }: { base: string; head: string }) => {
             if (`${base}..${head}` === failing) throw new Error('compare failed');
             return {
-              data: { status: holds.includes(`${base}..${head}`) ? 'ahead' : 'diverged', ...(base === HEAD && head === MERGE && { files: sinceHead }) },
+              data: { status: holds.includes(`${base}..${head}`) ? 'ahead' : 'diverged', ...(base === HEAD && head === MERGE && { files: sinceHead }), ...(base === POSTED && { files: sincePosted }) },
             };
           }),
         },
@@ -355,6 +357,7 @@ describe('checkFixedElsewhere', () => {
     const checkoutFn = jest.fn().mockResolvedValue(checkout ? workspace : undefined);
     const sources: ElsewhereSources = {
       octokit: octokit as unknown as ElsewhereSources['octokit'], owner: 'acme', repo: 'ledger', prNumber: 1, file: 'src/ledger.rs', line, evidenceFiles: [], ask,
+      ...(postedOn && { postedOn }),
       ...(checkout !== 'none' && { checkout: checkoutFn }),
     };
     return { sources, ask, checkout: checkoutFn };
@@ -367,6 +370,18 @@ describe('checkFixedElsewhere', () => {
     expect(checkout).toHaveBeenCalledWith(MERGE);
     // The model sees what the other pull request changes in the finding's files, never its text.
     expect(ask).toHaveBeenCalledWith(workspace, expect.stringContaining('+  fn check() {}'), 7, [2, 3]);
+  });
+
+  // A detached thread names line 1 of the commit it was posted on. This PR has since put line 1 back above it, so the
+  // finding's line is line 2 at the head, which #7 replaced.
+  it('confirms a fix on the line a detached finding moved to at this PR\'s head', async () => {
+    const { sources, ask } = setup(merged, { line: 1, postedOn: POSTED, sincePosted: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -0,0 +1,1 @@\n+pub struct Ledger;' }] });
+
+    expect(await checkFixedElsewhere(7, sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
+    expect(ask).toHaveBeenCalledWith(workspace, expect.any(String), 7, [2, 3]);
+    // A line posted on the head, or in a file this PR has not changed since, keeps its number.
+    expect(await checkFixedElsewhere(7, setup(merged, { postedOn: HEAD }).sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
+    expect(await checkFixedElsewhere(7, setup(merged, { postedOn: POSTED, sincePosted: [OTHER_CHANGE] }).sources)).toEqual({ pr: 7, base: 'main', answer: 'The ledger now checks the key.' });
   });
 
   // #7 changed the file under the name it has on the base, before this PR renamed it.
@@ -392,6 +407,7 @@ describe('checkFixedElsewhere', () => {
     ['files that cannot be read', merged, { files: new Error('boom') }, 'the files this PR and #7 change could not be read', 'in a few minutes', 'Failed to list the files of #7: boom'],
     ['a checkout that fails', merged, { checkout: false }, 'the merge with #7 could not be checked out', 'in a few minutes', undefined],
     ['a check of the merge that fails', merged, { answer: new Error('timed out') }, 'the check of the merge with #7 failed', 'in a few minutes', 'Failed to check the merge with #7: timed out'],
+    ['a detached finding whose line at the head cannot be read', merged, { postedOn: POSTED, failing: `${POSTED}..${HEAD}` }, 'where `src/ledger.rs:2` is at this PR\'s head could not be read', 'in a few minutes', `Failed to compare ${POSTED} with this PR's head: compare failed`],
   ])('confirms nothing yet for %s', async (_name, other, options, why, retry, logged) => {
     const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const { sources } = setup(other, options);
@@ -431,6 +447,11 @@ describe('checkFixedElsewhere', () => {
     // This PR removed the first 10 lines, so the finding's line 2 was line 12 on the base, far from #7's change to line 1.
     ['a change #7 made where the finding\'s line was not on the base', merged, { ownFiles: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -1,10 +0,0 @@\n' + '-x\n'.repeat(10).trimEnd() }] }, '#7 does not replace `src/ledger.rs:2`'],
     ['a line this PR adds', merged, { ownFiles: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -1,1 +1,2 @@\n pub struct Ledger;\n+impl Ledger {}' }] }, '#7 does not replace `src/ledger.rs:2`'],
+    // Where a detached finding's line is now is not certain, so its claim is never confirmed.
+    ['a detached finding whose line this PR changed since', merged, { postedOn: POSTED, sincePosted: [{ filename: 'src/ledger.rs', status: 'modified', patch: '@@ -2,1 +2,1 @@\n-impl Ledger {}\n+impl Ledger { }' }] }, 'this PR changed `src/ledger.rs:2` or its file since this finding was posted, so where the line is now is not certain'],
+    ['a detached finding whose file this PR renamed since', merged, { postedOn: POSTED, sincePosted: [{ filename: 'src/book.rs', previous_filename: 'src/ledger.rs', status: 'renamed', changes: 0 }] }, 'this PR changed `src/ledger.rs:2` or its file since this finding was posted, so where the line is now is not certain'],
+    ['a detached finding posted on a commit a force push dropped', merged, { postedOn: POSTED, holds: [`${HEAD}..${MERGE}`, `${FIX}..${MERGE}`] }, 'this PR\'s head no longer holds the commit this finding was posted on, so where `src/ledger.rs:2` is now is not certain'],
+    ['a detached finding whose file GitHub does not list since', merged, { postedOn: POSTED, sincePosted: Array.from({ length: 300 }, (_, i) => ({ ...OTHER_CHANGE, filename: `src/f${i}.rs` })) }, 'GitHub lists only 300 of the files this PR changed since this finding was posted, so where `src/ledger.rs:2` is now is not certain'],
     ['a check that keeps the finding', merged, { answer: JSON.stringify({ outcome: 'Kept', answer: 'Still there.', proof: ['src/ledger.rs:2'] }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
     ['a fix on a line that does not exist', merged, { answer: JSON.stringify({ outcome: 'Fixed', answer: 'Gone.', proof: ['src/ledger.rs:99'] }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],
     ['a fix on lines the merge added for another pull request', merged, { sinceHead: [SINCE_HEAD, OTHER_CHANGE], answer: JSON.stringify({ outcome: 'Fixed', answer: 'Gone.', proof: ['src/ledger.rs:2', 'src/other.rs:1'] }) }, 'the check of the merge with #7 did not show the defect gone on the lines #7 put there'],

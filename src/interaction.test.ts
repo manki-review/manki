@@ -1447,8 +1447,9 @@ describe('handleReviewCommentReply', () => {
   const FIX_STACKED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: #7 targets `feature`, not the default branch `main`. A maintainer should decide and resolve this thread.';
   const FIX_CHECK_FAILED = 'Unverified. You name #7. I could not check #7 yet: the check of the merge with #7 failed. This thread stays as it is. Reply again in a few minutes.';
   const FIX_PR_CLOSED = 'Unverified. You name #7. I could not confirm that #7 fixes this finding: this PR is no longer open. A maintainer should decide and resolve this thread.';
+  const FIX_UNCHECKED = 'Unverified. You name #7. I check a fix in another pull request only for a blocker or a security finding, so I did not check #7. This thread stays as it is.';
   const MERGED = { state: 'closed', merged: true, base: { ref: 'main' }, merge_commit_sha: 'd'.repeat(40) };
-  it.each<[string, Record<string, unknown>, string, boolean, boolean?, boolean?, string?]>([
+  it.each<[string, Record<string, unknown>, string, boolean, boolean?, boolean?, string?, ('blocker' | 'warning' | 'detached')?]>([
     ['a pull request merged into this PR\'s base', MERGED, FIX_CONFIRMED, true],
     ['a pull request merged into this PR\'s base, named by a maintainer', MERGED, FIX_CONFIRMED, true, false, false, 'alice'],
     ['a throwaway pull request stacked on this one', { state: 'open', merged: false, base: { ref: 'feature' }, merge_commit_sha: 'e'.repeat(40) }, FIX_STACKED, false],
@@ -1458,7 +1459,12 @@ describe('handleReviewCommentReply', () => {
     ['a merged pull request whose check fails', MERGED, FIX_CHECK_FAILED, false, true],
     // A merged or closed PR keeps its threads as they are, so nothing reads the other pull request.
     ['a reply on this PR once it is merged', MERGED, FIX_PR_CLOSED, false, false, true],
-  ])('answers a claim that another pull request fixes a blocker, and never clears the thread: %s', async (_name, otherState, answer, confirmed, checkFails = false, prClosed = false, sender = 'pr-author') => {
+    // GitHub moves no line of a thread on another file. This PR added a line above the finding's line 10 since the
+    // thread was posted, so the line #7 has to replace is line 11.
+    ['a detached blocker whose line this PR moved', MERGED, FIX_CONFIRMED, true, false, false, 'pr-author', 'detached'],
+    // Nothing reads the check of a thread that does not block, so it makes no checkout and no second call.
+    ['a warning', MERGED, FIX_UNCHECKED, false, false, false, 'pr-author', 'warning'],
+  ])('answers a claim that another pull request fixes a finding, and never clears the thread: %s', async (_name, otherState, answer, confirmed, checkFails = false, prClosed = false, sender = 'pr-author', kind = 'blocker') => {
     const root = mkdtempSync(join(tmpdir(), 'manki-elsewhere-'));
     mkdirSync(join(root, 'src'));
     writeFileSync(join(root, 'src/file.ts'), Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -1469,16 +1475,23 @@ describe('handleReviewCommentReply', () => {
         sender: { login: sender },
       });
       const octokit = createMockOctokit();
-      octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('blocker'), path: 'src/file.ts', line: 10 } });
+      const posted = 'f'.repeat(40);
+      octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: kind === 'detached'
+        ? { user: MANKI_USER, body: findingComment('blocker', true), path: 'src/other.ts', line: 3, original_line: 3, original_commit_id: posted }
+        : { user: MANKI_USER, body: findingComment(kind === 'warning' ? 'warning' : 'blocker'), path: 'src/file.ts', line: 10 } });
       octokit.rest.pulls.get.mockImplementation(async ({ pull_number }: { pull_number: number }) => ({ data: pull_number === 7
         ? { ...otherState, head: { sha: 'b'.repeat(40) }, changed_files: 1 }
         : { title: 'Retry uploads', body: '', state: 'open', merged: false, head: { sha: 'a'.repeat(40) }, base: { ref: 'main' }, merge_commit_sha: 'c'.repeat(40), changed_files: 1 } }));
       octokit.rest.pulls.listFiles = jest.fn();
-      const change = [{ filename: 'src/file.ts', status: 'modified', patch: '@@ -10,1 +10,1 @@\n-log(token)\n+check(token)' }];
-      // This PR's head holds none of the other commits, and every other commit compared holds the one before it.
+      const at = kind === 'detached' ? 11 : 10;
+      const change = [{ filename: 'src/file.ts', status: 'modified', patch: `@@ -${at},1 +${at},1 @@\n-log(token)\n+check(token)` }];
+      const sincePosted = [{ filename: 'src/file.ts', status: 'modified', patch: '@@ -0,0 +1,1 @@\n+// header' }];
+      // This PR's head holds none of the other commits but the one the thread was posted on, and every other commit compared holds the one before it.
       octokit.rest.repos = {
         get: jest.fn().mockResolvedValue({ data: { default_branch: 'main' } }),
-        compareCommits: jest.fn(async ({ head }: { head: string }) => ({ data: { status: head === 'a'.repeat(40) ? 'diverged' : 'ahead', files: change } })),
+        compareCommits: jest.fn(async ({ base, head }: { base: string; head: string }) => ({
+          data: { status: head === 'a'.repeat(40) && base !== posted ? 'diverged' : 'ahead', files: base === posted ? sincePosted : change },
+        })),
       };
       octokit.paginate = jest.fn(async (_list: unknown, { pull_number }: { pull_number: number }) => (pull_number === 7 ? change : [{ filename: 'src/other.ts', status: 'modified', patch: '@@ -1,1 +1,1 @@\n-a\n+b' }]));
       const client = { ...createMockClient(), repoTools: true } as LLMClient;
@@ -1486,10 +1499,10 @@ describe('handleReviewCommentReply', () => {
         .mockResolvedValueOnce({ content: JSON.stringify({ outcome: 'FixedElsewhere', answer: 'You name #7.', fixed_in: 7 }) })
         .mockImplementationOnce(async () => {
           if (checkFails) throw new Error('timed out');
-          return { content: JSON.stringify({ outcome: 'Fixed', answer: '`src/file.ts:10` checks the token first.', proof: ['src/file.ts:10'] }) };
+          return { content: JSON.stringify({ outcome: 'Fixed', answer: '`src/file.ts:10` checks the token first.', proof: [`src/file.ts:${at}`] }) };
         });
       const loadWorkspace = jest.fn().mockResolvedValue(root);
-      jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, findingTitle: 'This' }]);
+      jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind !== 'warning', findingTitle: 'This' }]);
       jest.mocked(state.resolveReviewThread).mockClear();
 
       await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace, CONFIG);
@@ -1502,7 +1515,7 @@ describe('handleReviewCommentReply', () => {
       expect(state.resolveReviewThread).not.toHaveBeenCalled();
       // The marker of the check is what the dismissal note reads. A merged or closed PR checks nothing, so it gets none.
       const marker = body.match(/<!-- manki-fix-claim:[^>]*-->/g);
-      expect(marker).toEqual(prClosed ? null : [`<!-- manki-fix-claim:7:${confirmed ? 'confirmed' : 'unconfirmed'} -->`]);
+      expect(marker).toEqual(prClosed || kind === 'warning' ? null : [`<!-- manki-fix-claim:7:${confirmed ? 'confirmed' : 'unconfirmed'} -->`]);
       if (confirmed) {
         // The second call reads GitHub's merge of this PR with the same tools, sees only #7's change to the finding's file, and counts in the same record.
         expect(loadWorkspace.mock.calls).toEqual([[], ['c'.repeat(40)]]);
@@ -1517,7 +1530,8 @@ describe('handleReviewCommentReply', () => {
         expect(record.usage.calls).toBe(2);
       } else {
         expect(client.sendMessage).toHaveBeenCalledTimes(checkFails ? 2 : 1);
-        if (prClosed) expect(octokit.rest.pulls.get).not.toHaveBeenCalledWith(expect.objectContaining({ pull_number: 7 }));
+        if (prClosed || kind === 'warning') expect(octokit.rest.pulls.get).not.toHaveBeenCalledWith(expect.objectContaining({ pull_number: 7 }));
+        if (kind === 'warning') expect(loadWorkspace.mock.calls).toEqual([[]]);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });

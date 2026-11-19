@@ -1003,6 +1003,8 @@ describe('oldLineOf, replacementOf and changesNextTo', () => {
 
   it('maps a line of the new file to the line it was, through the hunks before it', () => {
     expect([1, 2, 3, 4, 5, 10, 11, 12, 20].map(line => oldLineOf(file, line))).toEqual([1, undefined, undefined, 3, 4, 9, 11, 12, 20]);
+    // The other way, a line of the old file maps to the line it became, and a removed line to none.
+    expect([1, 2, 3, 4, 9, 10, 11, 20].map(line => oldLineOf(file, line, 'old'))).toEqual([1, undefined, 4, 5, 10, undefined, 11, 20]);
   });
 
   it('maps a line past a hunk that only adds or only removes lines', () => {
@@ -1011,6 +1013,9 @@ describe('oldLineOf, replacementOf and changesNextTo', () => {
     expect([5, 6, 7, 8].map(line => oldLineOf(only('@@ -5,0 +6,2 @@\n+a\n+b'), line))).toEqual([5, undefined, undefined, 6]);
     expect([1, 2].map(line => oldLineOf(only('@@ -1,3 +0,0 @@\n-a\n-b\n-c'), line))).toEqual([4, 5]);
     expect([3, 4].map(line => oldLineOf(only('@@ -4,2 +3,0 @@\n-a\n-b'), line))).toEqual([3, 6]);
+    expect([5, 6].map(line => oldLineOf(only('@@ -5,0 +6,2 @@\n+a\n+b'), line, 'old'))).toEqual([5, 8]);
+    expect([1, 3, 4].map(line => oldLineOf(only('@@ -1,3 +0,0 @@\n-a\n-b\n-c'), line, 'old'))).toEqual([undefined, undefined, 1]);
+    expect([3, 4, 6].map(line => oldLineOf(only('@@ -4,2 +3,0 @@\n-a\n-b'), line, 'old'))).toEqual([3, undefined, 4]);
   });
 
   it('returns the new lines that replace a removed old line, and none for a line the diff keeps', () => {

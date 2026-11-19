@@ -337,9 +337,11 @@ export interface ElsewhereSources {
   owner: string;
   repo: string;
   prNumber: number;
-  /** The finding's file and line at this PR's head. */
+  /** The finding's file and line at this PR's head, or at `postedOn` when given. */
   file: string;
   line: number | undefined;
+  /** The commit `line` is a line of, when it may not be this PR's head, such as the commit a detached thread was posted on. */
+  postedOn?: string;
   /** The other files the finding cited as evidence. */
   evidenceFiles: readonly string[];
   /** Checks out `commit` of the repository for the tools, or returns `undefined` when it cannot. Absent without tools. */
@@ -391,6 +393,26 @@ async function holds(octokit: Octokit, owner: string, repo: string, ancestor: st
     .catch(logFailure(`compare ${ancestor} with ${commit}`));
 }
 
+/**
+ * Returns the line at this PR's head `head` that line `line` of the finding's file at `s.postedOn` became, or why that
+ * line is not certain. Only a line the PR left as it was since then maps.
+ */
+async function lineAtHead(s: ElsewhereSources, line: number, head: string): Promise<number | UnconfirmedElsewhere> {
+  if (!s.postedOn || s.postedOn === head) return line;
+  const place = inline(`${s.file}:${line}`);
+  const since = await s.octokit.rest.repos.compareCommits({ owner: s.owner, repo: s.repo, base: s.postedOn, head }).then(r => r.data)
+    .catch(logFailure(`compare ${s.postedOn} with this PR's head`));
+  if (!since) return { why: `where ${place} is at this PR's head could not be read`, retry: RETRY_SOON };
+  // After a force push the head may not hold the commit, and the comparison then runs from another base.
+  if (since.status !== 'ahead' && since.status !== 'identical') return { why: `this PR's head no longer holds the commit this finding was posted on, so where ${place} is now is not certain` };
+  const files = since.files ?? [];
+  const change = files.find(f => f.filename === s.file || f.previous_filename === s.file);
+  if (!change && files.length >= MAX_COMPARED_FILES) return { why: `GitHub lists only ${MAX_COMPARED_FILES} of the files this PR changed since this finding was posted, so where ${place} is now is not certain` };
+  if (!change) return line;
+  const diff = change.status === 'modified' ? parsePRDiff(listedFilesDiff([change])).files[0] : undefined;
+  return (diff && oldLineOf(diff, line, 'old')) ?? { why: `this PR changed ${place} or its file since this finding was posted, so where the line is now is not certain` };
+}
+
 /** Returns every file pull request `pr` changes, by GitHub's list, `'cut'` when GitHub lists fewer, or `undefined` when the list fails. */
 async function everyListedFile(s: ElsewhereSources, pr: number, changedFiles: number) {
   const listed = await s.octokit.paginate(s.octokit.rest.pulls.listFiles, { owner: s.owner, repo: s.repo, pull_number: pr, per_page: 100 }).catch(logFailure(`list the files of #${pr}`));
@@ -404,9 +426,10 @@ async function everyListedFile(s: ElsewhereSources, pr: number, changedFiles: nu
  * pull request merged into it, GitHub's merge of this PR into its base holds this PR's head and `pr`'s merge while this
  * PR's head does not, `pr` changes the finding's file or a file the finding cited, `pr`'s own diff replaces the finding's
  * line at its place on the base, the lines that replace it in that merge are the lines `pr`'s diff put there, and the
- * model with tools on that merge answers Fixed citing only those lines. Returns why otherwise, and when to reply again for
- * a reason that can pass later. The other pull request's title and description are never read. A confirmation only
- * answers the reply: this PR's own code still has the defect.
+ * model with tools on that merge answers Fixed citing only those lines. A line from `postedOn` counts only where this PR
+ * has left it as it was since then. Returns why otherwise, and when to reply again for a reason that can pass later.
+ * The other pull request's title and description are never read. A confirmation only answers the reply: this PR's own
+ * code still has the defect.
  */
 export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Promise<ElsewhereCheck> {
   if (pr === s.prNumber) return { why: 'it names this pull request' };
@@ -439,6 +462,8 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   const inHead = await holds(octokit, owner, repo, fix, own.head.sha);
   if (inHead === undefined) return { why: `whether this PR's head holds #${pr} could not be read`, retry: RETRY_SOON };
   if (inHead) return { why: `this PR's head already holds #${pr}, so #${pr} cannot be what fixes it` };
+  const line = await lineAtHead(s, s.line, own.head.sha);
+  if (typeof line !== 'number') return line;
   const [ownFiles, otherFiles] = await Promise.all([everyListedFile(s, s.prNumber, own.changed_files), everyListedFile(s, pr, other.changed_files)]);
   if (ownFiles === 'cut' || otherFiles === 'cut') return { why: `GitHub does not list every file this PR and #${pr} change` };
   if (!ownFiles || !otherFiles) return { why: `the files this PR and #${pr} change could not be read`, retry: RETRY_SOON };
@@ -447,7 +472,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   const cited = [s.file, ...s.evidenceFiles].flatMap(path => [path, baseName(path)]);
   const covered = otherFiles.filter(f => cited.includes(f.filename) || (!!f.previous_filename && cited.includes(f.previous_filename)));
   if (covered.length === 0) return { why: `#${pr} changes none of the files this finding cites` };
-  const place = inline(`${s.file}:${s.line}`);
+  const place = inline(`${s.file}:${line}`);
   const file = inline(s.file);
   // What the merge changes against this PR's head, which holds the defect: the finding's line has to be among the lines it replaces.
   const sinceHeadFiles = sinceHead.files ?? [];
@@ -456,9 +481,9 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   const findingFile = headChange && parsePRDiff(listedFilesDiff([headChange])).files[0];
   if (headChange && !findingFile) return { why: `GitHub shows no lines of the change the merge with #${pr} makes to ${file}` };
   if (findingFile?.changeType === 'deleted') return { why: `the merge with #${pr} deletes ${file}` };
-  const merged = findingFile && replacementOf(findingFile, s.line);
+  const merged = findingFile && replacementOf(findingFile, line);
   if (!merged) {
-    const beside = findingFile && changesNextTo(findingFile, s.line);
+    const beside = findingFile && changesNextTo(findingFile, line);
     return { why: beside ? `the merge with #${pr} changes only the lines next to ${place}, and the check needs ${place} itself replaced` : `the merge with #${pr} leaves ${place} as it is` };
   }
   // The merge holds every change on the base since this PR branched, so only a line `pr`'s own diff replaced, with the
@@ -466,7 +491,7 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
   const ownFile = ownFiles.find(f => f.filename === s.file && !(f.status === 'renamed' && f.changes === 0));
   const ownDiff = ownFile && parsePRDiff(listedFilesDiff([ownFile])).files[0];
   if (ownFile && !ownDiff) return { why: `GitHub shows no lines of this PR's change to ${file}` };
-  const baseLine = ownDiff ? oldLineOf(ownDiff, s.line) : s.line;
+  const baseLine = ownDiff ? oldLineOf(ownDiff, line) : line;
   const otherFile = otherFiles.find(f => (f.previous_filename ?? f.filename) === baseName(s.file));
   const otherDiff = otherFile && parsePRDiff(listedFilesDiff([otherFile])).files[0];
   if (otherFile && !otherDiff) return { why: `GitHub shows no lines of the change #${pr} makes to ${file}` };
@@ -504,13 +529,15 @@ export async function checkFixedElsewhere(pr: number, s: ElsewhereSources): Prom
 
 /**
  * Returns the answer to a reply whose `fixedIn` `checkFixedElsewhere` checked: "Confirmed:" when `result` confirms the
- * fix, and "Unverified." with the reason otherwise. Neither settles the thread, since this PR's own code still has the defect.
+ * fix, and "Unverified." with the reason otherwise. Without `result`, the finding is neither a blocker nor a security
+ * finding, so nothing checked `fixedIn`. None of these settles the thread, since this PR's own code still has the defect.
  */
-export function fixedElsewhereText(checked: CheckedReply, result: ElsewhereCheck): string {
+export function fixedElsewhereText(checked: CheckedReply, result?: ElsewhereCheck): string {
+  const pr = checked.fixedIn!;
+  if (!result) return `Unverified. ${checked.answer} I check a fix in another pull request only for a blocker or a security finding, so I did not check #${pr}. This thread stays as it is.`;
   if ('answer' in result) {
     return `Confirmed: #${result.pr}, merged into ${inline(result.base)}, replaced the cited line. ${result.answer} This PR's own code still has the defect, so this thread stays as it is. Update this branch with ${inline(result.base)}, and the next review checks the fix here.`;
   }
-  const pr = checked.fixedIn!;
   const why = result.retry
     ? `I could not check #${pr} yet: ${result.why}. This thread stays as it is. Reply again ${result.retry}.`
     : `I could not confirm that #${pr} fixes this finding: ${result.why}. A maintainer should decide and resolve this thread.`;

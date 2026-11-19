@@ -503,24 +503,32 @@ export function removedOldLines(file: DiffFile): Map<number, string> {
   return removed;
 }
 
-/** Returns the line of the old file that `line` of the new file was, or `undefined` when the diff adds that line. */
-export function oldLineOf(file: DiffFile, line: number): number | undefined {
+/**
+ * Returns the line of the old file that `line` of the new file was, or `undefined` when the diff adds that line. With
+ * `from` set to `'old'`, returns the line of the new file that `line` of the old file became, or `undefined` when the
+ * diff removes that line.
+ */
+export function oldLineOf(file: DiffFile, line: number, from: 'new' | 'old' = 'new'): number | undefined {
+  const [gone, added] = from === 'new' ? ['-', '+'] : ['+', '-'];
   let shift = 0;
   for (const hunk of file.hunks) {
+    const [toStart, toLines, fromStart, fromLines] = from === 'new'
+      ? [hunk.oldStart, hunk.oldLines, hunk.newStart, hunk.newLines]
+      : [hunk.newStart, hunk.newLines, hunk.oldStart, hunk.oldLines];
     // A side with no lines names the line before the hunk, not its first line.
-    let [oldLine, newLine] = [hunk.oldStart + (hunk.oldLines === 0 ? 1 : 0), hunk.newStart + (hunk.newLines === 0 ? 1 : 0)];
-    if (line < newLine) break;
+    let [toLine, fromLine] = [toStart + (toLines === 0 ? 1 : 0), fromStart + (fromLines === 0 ? 1 : 0)];
+    if (line < fromLine) break;
     for (const content of hunk.content.split('\n')) {
       if (content.startsWith('\\')) continue;
-      if (content.startsWith('-')) {
-        oldLine++;
+      if (content.startsWith(gone)) {
+        toLine++;
         continue;
       }
-      if (newLine === line) return content.startsWith('+') ? undefined : oldLine;
-      if (!content.startsWith('+')) oldLine++;
-      newLine++;
+      if (fromLine === line) return content.startsWith(added) ? undefined : toLine;
+      if (!content.startsWith(added)) toLine++;
+      fromLine++;
     }
-    shift = oldLine - newLine;
+    shift = toLine - fromLine;
   }
   return line + shift;
 }

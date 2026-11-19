@@ -545,25 +545,12 @@ export async function handleReviewCommentReply(
     const relatedNames = config?.related_repos?.map(r => r.repo) ?? [];
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
     const checked = checkReply(response.content, comment.body ?? '', { workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber });
-    const evidenceFiles = parseFindingData(findingBody)?.evidenceFiles;
-    const line = currentFindingLine(place);
+    const findingData = parseFindingData(findingBody);
+    const evidenceFiles = findingData?.evidenceFiles;
     // Without the thread, nothing below reopens it, resolves it or says when it clears.
     const closed = eventPrClosed();
-    // A merged or closed PR keeps its threads as they are, so a fix elsewhere is not checked there.
-    const elsewhere = checked.fixedIn === undefined ? undefined : closed ? { why: 'this PR is no longer open' } : await checkFixedElsewhere(checked.fixedIn, {
-      octokit, owner, repo, prNumber, file: filePath, line, evidenceFiles: evidenceFiles ?? [],
-      ...(client.repoTools && loadWorkspace && { checkout: async (commit: string) => loadWorkspace(commit) }),
-      ask: async (checkout, change, pr, lines) => (await response.recorded.sendMessage(FIXED_ELSEWHERE_SYSTEM_PROMPT, fixedElsewhereContext(findingBody, filePath, lines, change, pr), {
-        timeoutMs: REPLY_TIMEOUT_MS, repoTools: repoTools(checkout, REPLY_STEPS, undefined, 'check'),
-      })).content,
-    });
-    const fixClaim = elsewhere && !closed ? { pr: checked.fixedIn!, status: 'answer' in elsewhere ? 'confirmed' as const : 'unconfirmed' as const } : undefined;
-    const answerText = elsewhere ? fixedElsewhereText(checked, elsewhere) : checked.text;
-    // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const reply = requireNewProof(highlightCode(sanitizeMarkdown(answerText).trim(), codeTokens), findingBody, filePath, relatedNames);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
-    const outcome = replyOutcome(reply);
     // The live thread also counts a found-again reply that made it block, which the first comment does not show.
     let lookupFailed = false;
     const live = closed ? undefined : await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
@@ -571,6 +558,23 @@ export async function handleReviewCommentReply(
       lookupFailed = true;
       return undefined;
     });
+    // Only a blocking or security thread reads the result, so no other thread is checked. A thread that could not be read may be one.
+    const checksElsewhere = checked.fixedIn !== undefined && (!live || isGuarded(live));
+    // A merged or closed PR keeps its threads as they are, so a fix elsewhere is not checked there. GitHub moves no line
+    // of a detached thread, so its line is the one on the commit it was posted on.
+    const elsewhere = !checksElsewhere ? undefined : closed ? { why: 'this PR is no longer open' } : await checkFixedElsewhere(checked.fixedIn!, {
+      octokit, owner, repo, prNumber, file: filePath, line: currentFindingLine(place), evidenceFiles: evidenceFiles ?? [],
+      ...(findingData?.detached && { postedOn: root.comment.original_commit_id }),
+      ...(client.repoTools && loadWorkspace && { checkout: async (commit: string) => loadWorkspace(commit) }),
+      ask: async (checkout, change, pr, lines) => (await response.recorded.sendMessage(FIXED_ELSEWHERE_SYSTEM_PROMPT, fixedElsewhereContext(findingBody, filePath, lines, change, pr), {
+        timeoutMs: REPLY_TIMEOUT_MS, repoTools: repoTools(checkout, REPLY_STEPS, undefined, 'check'),
+      })).content,
+    });
+    const fixClaim = elsewhere && !closed ? { pr: checked.fixedIn!, status: 'answer' in elsewhere ? 'confirmed' as const : 'unconfirmed' as const } : undefined;
+    const answerText = checked.fixedIn === undefined ? checked.text : fixedElsewhereText(checked, elsewhere);
+    // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
+    const reply = requireNewProof(highlightCode(sanitizeMarkdown(answerText).trim(), codeTokens), findingBody, filePath, relatedNames);
+    const outcome = replyOutcome(reply);
     const thread = outcome ? live : undefined;
     const head: string | undefined = github.context.payload.pull_request?.head?.sha;
     // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
