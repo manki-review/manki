@@ -212,6 +212,8 @@ interface FamilyRules {
   testModule?: (node: SgNode) => boolean;
   /** Functions that declare no name, such as a TypeScript arrow function. A declaration inside one is local to it. */
   functions?: string[];
+  /** The field holding the body or value of a declaration node that has no `body` or `value` field, such as `type` on a Go `type_spec`. */
+  bodies?: Record<string, string>;
 }
 
 const RULES: Record<Family, FamilyRules> = {
@@ -232,6 +234,7 @@ const RULES: Record<Family, FamilyRules> = {
     selfName: () => 'self',
     testModule: node => node.kind() === 'mod_item' && /^tests?$/.test(node.field('name')?.text() ?? ''),
     functions: ['closure_expression'],
+    bodies: { type_item: 'type' },
   },
   typescript: {
     declarations: {
@@ -286,6 +289,7 @@ const RULES: Record<Family, FamilyRules> = {
     },
     bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
+    bodies: { assignment: 'right' },
     valueType: node => {
       const value = node.field('right');
       if (value?.kind() !== 'call') return value ? PYTHON_LITERALS[value.kind()] : undefined;
@@ -320,6 +324,7 @@ const RULES: Record<Family, FamilyRules> = {
     },
     names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
     functions: ['func_literal'],
+    bodies: { type_spec: 'type' },
   },
 };
 
@@ -1633,7 +1638,7 @@ function keywordViews(file: DiffFile, lines: ReadonlyMap<number, string>): { all
   for (const { name, kind, line } of keywordDeclarations(file, lines)) {
     const text = lines.get(line)!;
     // An indented declaration is most often local to a function, but an indented config key is nested in a section.
-    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: signatureOf(text), local: kind !== 'key' && /^\s/.test(text) });
+    if (IDENTIFIER.test(name) && !all.has(`${kind} ${name}`)) all.set(`${kind} ${name}`, { label: `${KIND_LABEL[kind]} ${name}`, signature: kind === 'key' ? name : signatureOf(text), local: kind !== 'key' && /^\s/.test(text) });
   }
   return { all, touched: all };
 }
@@ -1925,7 +1930,9 @@ class ParsedFile {
 
   /** Returns the source of `decl` before its body or value, from its doc and attributes on. */
   headerText(decl: Declaration): string {
-    const end = (decl.node.field('body') ?? decl.node.field('value'))?.range().start ?? decl.node.range().end;
+    const field = this.rules.bodies?.[decl.node.kind()];
+    const body = decl.node.field('body') ?? decl.node.field('value') ?? (field ? decl.node.field(field) : null);
+    const end = body?.range().start ?? decl.node.range().end;
     const lines = this.lines.slice(decl.start - 1, end.line + 1);
     lines[lines.length - 1] = lines[lines.length - 1].slice(0, end.column);
     lines[0] = lines[0].slice(decl.startColumn);
