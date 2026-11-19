@@ -504,14 +504,14 @@ export function gitBlobSha(bytes: Buffer): string {
 /** The answer of the contents API for one path, as far as Manki reads it. */
 type ContentAnswer = { type: string; sha: string; content?: string; encoding?: string } | unknown[];
 
+/** Thrown when a file exists but was not read: a symlink whose target is never read, or content GitHub or git did not give. */
+export class UnreadFileError extends Error {}
+
 /**
  * Returns the bytes of a contents API answer when they are the file at the path asked for. GitHub answers a symlink to a
  * file with the target's content and the type `file`, but with the blob id of the link itself, so content whose blob id
  * differs from the one reported is a followed symlink and gives none. So does a `symlink` answer, which has no content.
  */
-/** Thrown when a file exists but was not read: a symlink whose target is never read, or content GitHub or git did not give. */
-export class UnreadFileError extends Error {}
-
 function ownContent(data: ContentAnswer): Buffer | undefined {
   if (Array.isArray(data) || data.type !== 'file' || typeof data.content !== 'string' || data.encoding !== 'base64') return undefined;
   const bytes = Buffer.from(data.content, 'base64');

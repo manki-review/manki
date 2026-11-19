@@ -129,8 +129,9 @@ function capOutput(text: string): string {
 
 /** Returns each path the file at `path` had in the history of the checkout at `root`, as git's rename detection follows it. */
 async function earlierNames(root: string, path: string): Promise<string[]> {
-  const { stdout } = await execFileAsync('git', ['log', '--follow', '--name-only', '--format=', '--', path], { cwd: root, env: gitEnv(), timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
-  return [...new Set(stdout.split('\n').filter(Boolean))];
+  // `-z` prints each name as it is. Without it, git quotes a name with a non-ASCII byte, a quote or a backslash.
+  const { stdout } = await execFileAsync('git', ['log', '-z', '--follow', '--name-only', '--format=', '--', path], { cwd: root, env: gitEnv(), timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
+  return [...new Set(stdout.split('\0').filter(Boolean))];
 }
 
 export interface GitHistoryArgs {

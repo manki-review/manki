@@ -3615,7 +3615,7 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
   });
 }
 
-/** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself, each with a `citedLine`. */
+/** Returns the warnings the last of `priorRounds` listed only in its review body or carried itself: each with a `citedLine`, or marked `unread`. */
 export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEntry[] {
   const last = priorRounds.at(-1);
   return last ? [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => (e.citedLine || e.unread) && !e.threadId) : [];
@@ -3625,7 +3625,8 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
  * Sets `result.carried` to the `bodyWarnings` of `priorRounds`, so a warning does not vanish because no finder raised
  * it again. A warning leaves the list only for certain, and `result.carriedEnded` says why: a finding the judge graded
  * this round names its problem, kept or not, or the file at the head has fewer places reading like its `citedLine` than
- * when it was listed, or is gone, or the judge found it fixed (`result.carriedFixed`).
+ * when it was listed, or is gone, or the judge found it fixed (`result.carriedFixed`). An `unread` warning has no line
+ * to compare, so only the judge or a fix ends it, also when its file is gone.
  * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
  * pre-existing warning the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like

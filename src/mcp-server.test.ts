@@ -286,14 +286,19 @@ describe('Manki tool server', () => {
     writeFileSync(join(source, 'holdout', 'case.yml'), 'hold-out marker\n');
     writeFileSync(join(source, 'holdout', 'moved.txt'), 'hold-out marker\nsecond\nthird\nfourth\n');
     writeFileSync(join(source, 'open.txt'), 'first open line\n');
+    // Git quotes a name with a non-ASCII byte unless it prints names NUL-separated.
+    mkdirSync(join(source, 'höldout'));
+    writeFileSync(join(source, 'höldout', 'old.txt'), 'hold-out marker\n');
     git(source, 'add', '.');
     git(source, 'commit', '-qm', 'add the cases');
     // The move and the edit are separate commits, so the edit's patch removes the closed file's line.
     git(source, 'mv', 'holdout/moved.txt', 'moved.txt');
+    git(source, 'mv', 'höldout/old.txt', 'old.txt');
     git(source, 'commit', '-qm', 'move a case out');
     writeFileSync(join(source, 'moved.txt'), 'open line\nsecond\nthird\nfourth\n');
+    writeFileSync(join(source, 'old.txt'), 'open line\n');
     git(source, 'commit', '-qam', 'rewrite the moved case');
-    const workspace = await fetchWorkspace(`file://${source}`, git(source, 'rev-parse', 'HEAD'), undefined, ['holdout/**']);
+    const workspace = await fetchWorkspace(`file://${source}`, git(source, 'rev-parse', 'HEAD'), undefined, ['holdout/**', 'höldout/**']);
     const closedFile = join(base, 'closed-calls');
     const codex = await connect(workspace, { fileTools: true, closedFile });
     try {
@@ -302,11 +307,12 @@ describe('Manki tool server', () => {
       expect(await call(codex, 'grep', { text: 'marker', path: join(workspace, 'holdout', 'case.yml') })).toEqual({ ...refused, text: refused.text.replace('holdout/case.yml', join(workspace, 'holdout', 'case.yml')) });
       expect((await call(codex, 'git_history', { path: './holdout/moved.txt' })).text).toContain('`closed_paths` holds `holdout/**`');
       expect(await call(codex, 'grep', { text: 'marker' })).toEqual({ text: 'No matches.', isError: false });
-      expect(await call(codex, 'glob', { pattern: '**' })).toEqual({ text: 'moved.txt\nopen.txt', isError: false });
+      expect(await call(codex, 'glob', { pattern: '**' })).toEqual({ text: 'moved.txt\nold.txt\nopen.txt', isError: false });
       // A file moved out of a closed path gets its commits but no line history.
       expect(await call(codex, 'git_history', { path: 'moved.txt', startLine: 1 })).toEqual({
         text: 'moved.txt was once at a path the repository\'s config closes, so its line history is not shown. Its commits are listed without a line range.', isError: true,
       });
+      expect((await call(codex, 'git_history', { path: 'old.txt', startLine: 1 })).text).toContain('old.txt was once at a path the repository\'s config closes');
       const commits = await call(codex, 'git_history', { path: 'moved.txt' });
       expect([commits.text.includes('rewrite the moved case'), commits.text.includes('marker')]).toEqual([true, false]);
       expect((await call(codex, 'git_history', { path: 'open.txt', startLine: 1 })).text).toContain('+first open line');
