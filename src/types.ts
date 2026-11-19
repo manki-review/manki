@@ -564,6 +564,10 @@ export interface RoundRelatedRepo {
   guide?: string;
   /** The commit the round checked out, when it fetched the repo. */
   commit?: string;
+  /** For a `dependency` repo without a configured `ref`, the lockfile that locked its `ref`. */
+  lockfile?: string;
+  /** For a `dependency` repo without a configured `ref`, why no lockfile decided it, so it was read at its default branch. */
+  unlocked?: string;
   /** The time the round read the repo as of, when it did not read the newest commit. */
   asOf?: string;
 }
@@ -1679,7 +1683,12 @@ export interface RelatedRepoTools {
    * its `ref`. Unset reads the newest commit, as a pull request round does.
    */
   asOf?: string;
+  /** How the `ref` of each `dependency` repo that the config gives none was chosen, by `owner/name`. */
+  locks?: Record<string, RepoLock>;
 }
+
+/** The lockfile that locked a dependency repo's commit, or why the repo is read at its default branch instead. */
+export type RepoLock = { lockfile: string } | { unlocked: string };
 
 export interface StaticAnalysisConfig {
   checks: boolean;

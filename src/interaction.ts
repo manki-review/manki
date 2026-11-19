@@ -507,7 +507,7 @@ export async function handleReviewCommentReply(
 
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
     // No repo is fetched up front: the tool server fetches one the first time the model names it.
-    const related = workspace ? relatedRepoTools(config?.related_repos) : undefined;
+    const related = workspace ? await relatedRepoTools(config?.related_repos, workspace) : undefined;
     const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, related, 'check') } : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools, related);
     const findingBody = root.comment.body ?? '';

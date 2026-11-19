@@ -81,6 +81,27 @@ export function isParsedLockfile(path: string): boolean {
   return Object.hasOwn(PARSERS, posix.basename(path));
 }
 
+// A git source on github.com, as `git+https://github.com/<owner>/<name>?rev=..#<commit>`, `git+ssh://git@github.com/<owner>/<name>.git#<commit>` or `github:<owner>/<name>#<commit>`.
+const GITHUB_GIT_SOURCE = /^(?:git\+)?(?:(?:https|ssh|git):\/\/(?:[^@/]+@)?github\.com[/:]|git@github\.com:|github:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?(?:\?[^#]*)?#([0-9a-f]{40})$/i;
+
+/**
+ * Returns the commits that the lockfile at `path` locks for each repository on github.com its packages come from, keyed
+ * by `owner/name` in lower case. Only the full commit after `#` counts, never a branch or tag the source names. Throws
+ * when the file does not parse.
+ */
+export function lockedGitCommits(path: string, text: string): Map<string, Set<string>> {
+  const locked = new Map<string, Set<string>>();
+  const parse = PARSERS[posix.basename(path)];
+  if (!parse) return locked;
+  for (const { isPackage, source } of parseContent(parse, text)) {
+    const match = isPackage && source ? GITHUB_GIT_SOURCE.exec(source) : null;
+    if (!match) continue;
+    const repo = `${match[1]}/${match[2]}`.toLowerCase();
+    locked.set(repo, (locked.get(repo) ?? new Set()).add(match[3].toLowerCase()));
+  }
+  return locked;
+}
+
 /**
  * Returns the package changes of each changed lockfile Manki parses. `contents` holds each lockfile on one `side` of the
  * diff, the PR head by default, and the other side is rebuilt from it by replaying the diff. A lockfile that is missing

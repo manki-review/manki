@@ -7,7 +7,8 @@ import { runTool } from './binary-analyzers';
 import { RepoTools } from './providers/types';
 import { makeScratchDir } from './tool-install';
 import { STALE_TIMEOUT_MS } from './tool-steps';
-import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
+import { lockedGitCommits } from './lockfile';
+import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RepoLock, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
 /** Where every related repo lives. */
@@ -49,9 +50,68 @@ export function relatedReposCacheDir(): string {
   return join(process.env.RUNNER_TEMP || tmpdir(), 'manki-related-repos');
 }
 
-/** Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined` without repos. */
-export function relatedRepoTools(repos: RelatedRepo[] | undefined, asOf?: string): RelatedRepoTools | undefined {
-  return repos?.length ? { repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }) } : undefined;
+/**
+ * Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined`
+ * without repos. A `dependency` repo without a `ref` gets the commit the lockfiles of the checkout at `workspace` lock.
+ */
+export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspace: string, asOf?: string): Promise<RelatedRepoTools | undefined> {
+  if (!repos?.length) return undefined;
+  const locked = await lockedRelatedRepos(repos, workspace);
+  return { repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }), ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }) };
+}
+
+const LOCKFILE_NAMES = ['Cargo.lock', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml'];
+const MAX_LOCKFILES = 50;
+
+/**
+ * Returns `repos` with the `ref` of each `dependency` repo that names none set to the commit that the lockfiles of the
+ * checkout at `workspace` lock for it, and how each such `ref` was chosen. A repo that no lockfile locks, or that two
+ * lockfiles lock at different commits, keeps its default branch. Only lockfiles git tracks count, outside
+ * `node_modules` and `target`.
+ */
+async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Promise<{ repos: RelatedRepo[]; locks: Record<string, RepoLock> }> {
+  const open = repos.filter(r => r.kind === 'dependency' && !r.ref);
+  if (open.length === 0) return { repos, locks: {} };
+  // Each commit a lockfile locks, by `owner/name` in lower case, with the first lockfile that locks it.
+  const found = new Map<string, Map<string, string>>();
+  let unread: string | undefined;
+  const listed = await runTool('git', ['ls-files', '-z', '--', ...LOCKFILE_NAMES.map(name => `:(glob)**/${name}`)], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
+  if (listed.code !== 0) unread = 'the lockfiles of the checkout could not be listed';
+  const files = listed.code === 0 ? listed.stdout.split('\0').filter(f => f && !f.split('/').some(part => part === 'node_modules' || part === 'target')) : [];
+  for (const file of files.slice(0, MAX_LOCKFILES)) {
+    let commits: Map<string, Set<string>>;
+    try {
+      commits = lockedGitCommits(file, readFileSync(join(workspace, file), 'utf-8'));
+    } catch {
+      // A lockfile that is gone, such as one under a closed path, or that does not parse locks nothing Manki can tell.
+      continue;
+    }
+    for (const [repo, shas] of commits) {
+      const seen = found.get(repo) ?? new Map<string, string>();
+      for (const sha of shas) if (!seen.has(sha)) seen.set(sha, file);
+      found.set(repo, seen);
+    }
+  }
+  const locks: Record<string, RepoLock> = {};
+  const lockedRepos = repos.map(repo => {
+    if (!open.includes(repo)) return repo;
+    const commits = found.get(repo.repo.toLowerCase());
+    if (!commits) {
+      locks[repo.repo] = { unlocked: unread ?? 'no lockfile of the checkout locks it at a commit' };
+      return repo;
+    }
+    if (commits.size > 1) {
+      locks[repo.repo] = { unlocked: `the lockfiles lock it at ${commits.size} different commits` };
+      return repo;
+    }
+    const [[commit, lockfile]] = commits;
+    locks[repo.repo] = { lockfile };
+    return { ...repo, ref: commit };
+  });
+  for (const [repo, lock] of Object.entries(locks)) {
+    core.info('lockfile' in lock ? `Related repo ${repo} is read at the commit ${lock.lockfile} locks` : `Related repo ${repo} is read at its default branch: ${lock.unlocked}`);
+  }
+  return { repos: lockedRepos, locks };
 }
 
 /** Returns what `related` offers a model, without the directories of the run, so the same offer in two runs compares equal. */
@@ -236,11 +296,11 @@ const MAX_REASON_CHARS = 300;
  * `guides` the finders were pointed to, and the `asOf` time the round read the repos at. Warns about each repo it could
  * not fetch.
  */
-export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guides: Record<string, string> = {}, asOf?: string): RoundRelatedRepo[] {
+export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guides: Record<string, string> = {}, asOf?: string, locks: Record<string, RepoLock> = {}): RoundRelatedRepo[] {
   const files = new Set(readdirSync(stateDir));
   return repos.map(({ repo, ref }) => {
     const marker = encodeURIComponent(repo);
-    const base = { repo, ...(ref && { ref }), ...(asOf && { asOf }), ...(guides[repo] && { guide: guides[repo] }) };
+    const base = { repo, ...(ref && { ref }), ...locks[repo], ...(asOf && { asOf }), ...(guides[repo] && { guide: guides[repo] }) };
     if (!files.has(`${marker}.lock`)) return { ...base, status: 'unused' as const };
     let takeovers = 0;
     while (files.has(lockPath(marker, takeovers + 1))) takeovers++;
