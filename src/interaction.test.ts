@@ -1406,8 +1406,10 @@ describe('handleReviewCommentReply', () => {
   it('lets the tools of a reply read the related repos of the config, fetches none up front, and records one that could not be fetched', async () => {
     setContext({ comment: { id: 1, body: 'The reports importer reads this column as text.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
-    const related_repos = [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }];
+    const related_repos = [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }, { repo: 'acme/lib', kind: 'dependency' as const }];
     const config = { ...DEFAULT_CONFIG, related_repos };
+    // `/work/head` is no checkout, so no lockfile picks the commit of `acme/lib`, and the record says why.
+    const locks = { 'acme/lib': { unlocked: 'the lockfiles of the checkout could not be listed' } };
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos');
     const stateDirs: string[] = [];
@@ -1431,7 +1433,7 @@ describe('handleReviewCommentReply', () => {
 
       const [withRelated, noWorkspace] = jest.mocked(client.sendMessage).mock.calls.map(call => call[2]);
       const tools = withRelated!.repoTools!;
-      expect(tools).toEqual({ root: '/work/head', steps: 15, checking: true, related: { repos: related_repos, cacheDir: relatedRepos.relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') } });
+      expect(tools).toEqual({ root: '/work/head', steps: 15, checking: true, related: { repos: related_repos, cacheDir: relatedRepos.relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), locks } });
       expect(noWorkspace).toEqual({ timeoutMs: 300_000 });
       expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toEqual({ timeoutMs: 300_000 });
       expect(fetchSpy).not.toHaveBeenCalled();
@@ -1446,6 +1448,7 @@ describe('handleReviewCommentReply', () => {
       expect(record(first).relatedRepos).toEqual([
         { repo: 'acme/reports', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
         { repo: 'acme/billing', status: 'unused' },
+        { repo: 'acme/lib', unlocked: locks['acme/lib'].unlocked, status: 'unused' },
       ]);
       expect(record(second).relatedRepos).toBeUndefined();
       expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo acme/reports, which must be public on github.com: fatal: repository not found');

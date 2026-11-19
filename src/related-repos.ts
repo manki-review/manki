@@ -7,7 +7,7 @@ import { runTool } from './binary-analyzers';
 import { RepoTools } from './providers/types';
 import { makeScratchDir } from './tool-install';
 import { STALE_TIMEOUT_MS } from './tool-steps';
-import { lockedGitCommits } from './lockfile';
+import { LOCKFILE_NAMES, lockedGitCommits } from './lockfile';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RepoLock, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -60,14 +60,14 @@ export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspa
   return { repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }), ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }) };
 }
 
-const LOCKFILE_NAMES = ['Cargo.lock', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml'];
-const MAX_LOCKFILES = 50;
+// The bytes of lockfiles one round reads at most, so a PR cannot make a round parse more.
+const MAX_LOCKFILE_BYTES = 32 * 1024 * 1024;
 
 /**
  * Returns `repos` with the `ref` of each `dependency` repo that names none set to the commit that the lockfiles of the
  * checkout at `workspace` lock for it, and how each such `ref` was chosen. A repo that no lockfile locks, or that two
- * lockfiles lock at different commits, keeps its default branch. Only lockfiles git tracks count, outside
- * `node_modules` and `target`.
+ * lockfiles lock at different commits, keeps its default branch. So does every repo when a lockfile could not be read,
+ * since it may lock another commit. Only regular files git tracks count, outside `node_modules` and `target`.
  */
 async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Promise<{ repos: RelatedRepo[]; locks: Record<string, RepoLock> }> {
   const open = repos.filter(r => r.kind === 'dependency' && !r.ref);
@@ -78,13 +78,21 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   const listed = await runTool('git', ['ls-files', '-z', '--', ...LOCKFILE_NAMES.map(name => `:(glob)**/${name}`)], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
   if (listed.code !== 0) unread = 'the lockfiles of the checkout could not be listed';
   const files = listed.code === 0 ? listed.stdout.split('\0').filter(f => f && !f.split('/').some(part => part === 'node_modules' || part === 'target')) : [];
-  for (const file of files.slice(0, MAX_LOCKFILES)) {
+  let budget = MAX_LOCKFILE_BYTES;
+  for (const file of files) {
     let commits: Map<string, Set<string>>;
     try {
-      commits = lockedGitCommits(file, readFileSync(join(workspace, file), 'utf-8'));
-    } catch {
-      // A lockfile that is gone, such as one under a closed path, or that does not parse locks nothing Manki can tell.
-      continue;
+      const path = join(workspace, file);
+      // A lockfile that is gone, such as one under a closed path, or a symlink is no lockfile of the checkout.
+      const stat = existsSync(path) ? lstatSync(path) : undefined;
+      if (!stat?.isFile()) continue;
+      if (stat.size > budget) throw new Error(`the lockfiles are over the ${MAX_LOCKFILE_BYTES / 1024 / 1024} MB a round reads`);
+      budget -= stat.size;
+      commits = lockedGitCommits(file, readFileSync(path, 'utf-8'));
+    } catch (error) {
+      unread = `the lockfile ${file} could not be read`;
+      core.info(`Lockfile ${file} is not read: ${error instanceof Error ? error.message : String(error)}`);
+      break;
     }
     for (const [repo, shas] of commits) {
       const seen = found.get(repo) ?? new Map<string, string>();
@@ -96,7 +104,7 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   const lockedRepos = repos.map(repo => {
     if (!open.includes(repo)) return repo;
     const commits = found.get(repo.repo.toLowerCase());
-    if (!commits) {
+    if (unread || !commits) {
       locks[repo.repo] = { unlocked: unread ?? 'no lockfile of the checkout locks it at a commit' };
       return repo;
     }

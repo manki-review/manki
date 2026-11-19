@@ -287,7 +287,7 @@ async function askWithRecord(
   const calls: LLMCall[] = [];
   const response = await recordCalls(client, { stage: 'reply' }, calls).sendMessage(systemPrompt, userMessage, { timeoutMs: REPLY_TIMEOUT_MS, ...options });
   const tokenService = tokenServiceCalls();
-  const relatedRepos = related && relatedRepoOutcomes(related.repos, related.stateDir).map(repo => withReads(repo, calls));
+  const relatedRepos = related && relatedRepoOutcomes(related.repos, related.stateDir, related.guides, related.asOf, related.locks).map(repo => withReads(repo, calls));
   const record = (decision?: ReplyDecision, checks?: StatementChecks) => formatReplyRecord({
     kind, prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage(calls),
     ...(tokenService.length > 0 && { tokenService }), ...(relatedRepos && { relatedRepos }), ...(decision && { decision }), ...checks,
