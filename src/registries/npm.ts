@@ -160,8 +160,8 @@ function iniSettings(text: string): Array<{ key: string; value: string }> {
 }
 
 /**
- * Returns the settings of a Yarn 1 `.yarnrc`, as `key value` or `key=value`, either side optionally quoted. It splits
- * each line at the first `=` or space with plain string search, so no line can make it slow.
+ * Returns the settings of a Yarn 1 `.yarnrc`, as `key value`, `key: value` or `key=value`, either side optionally quoted. It splits
+ * each line at the first `=`, `:` or space with plain string search, so no line can make it slow.
  */
 function lineSettings(text: string): Array<{ key: string; value: string }> {
   return text.split('\n').flatMap(raw => {
@@ -172,11 +172,11 @@ function lineSettings(text: string): Array<{ key: string; value: string }> {
       end = line.indexOf('"', 1) + 1;
       if (end === 0) return [];
     } else {
-      end = [...line].findIndex(c => c === '=' || c === ' ' || c === '\t');
+      end = [...line].findIndex(c => c === '=' || c === ':' || c === ' ' || c === '\t');
       if (end < 0) end = line.length;
     }
     let value = line.slice(end).trim();
-    if (value.startsWith('=')) value = value.slice(1).trim();
+    if (value.startsWith('=') || value.startsWith(':')) value = value.slice(1).trim();
     return [{ key: unquoted(line.slice(0, end)), value: unquoted(value) }];
   });
 }

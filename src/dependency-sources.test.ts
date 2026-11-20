@@ -285,7 +285,7 @@ describe('dependencyLoader', () => {
     expect(dependencyOutcomes(npmrc.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', status: 'refused' })]);
     // Yarn 1 reads a `.yarnrc` with its own parser and `--registry` as a flag, so any registry line there refuses, even the public one.
     await expect(round({ ...required, 'web/.yarnrc': '"@corp:registry" "https://npm.corp.example"\nregistry "https://npm.corp.example"\n' }).load('npm/left-pad')).rejects.toThrow('web/.yarnrc sets `registry`, which Manki does not read with certainty in a Yarn 1 `.yarnrc`');
-    for (const line of ['--registry "https://registry.npmjs.org/"', '--install.registry https://npm.corp.example', 'REGISTRY https://registry.yarnpkg.com']) {
+    for (const line of ['--registry "https://registry.npmjs.org/"', '--install.registry https://npm.corp.example', 'REGISTRY https://registry.yarnpkg.com', 'registry: "https://npm.corp.example"', 'registry:"https://npm.corp.example"', '"registry": https://npm.corp.example']) {
       await expect(round({ ...required, '.yarnrc': `${line}\n` }).load('npm/left-pad')).rejects.toThrow('which Manki does not read with certainty in a Yarn 1 `.yarnrc`');
     }
     // pnpm reads registries from its workspace settings too.
