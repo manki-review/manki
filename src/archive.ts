@@ -168,7 +168,8 @@ function gunzipOne(archive: Buffer, maxBytes: number): Buffer {
 /**
  * Unpacks the gzipped tar `archive` into the new folder `dest`. Reads only what npm (node-tar) and Cargo (the tar crate)
  * read the same way: regular files and folders, each path once, with pax and GNU long-name headers. Refuses every
- * other archive whole, such as one with a link, a device, a second header for one entry, or an entry after a zero block.
+ * other archive whole, such as one with a link, a device, a folder with data, a second header for one entry, or an
+ * entry after a zero block.
  * Writes no file mode, so nothing it writes can point outside `dest` or run. Drops the top folder every package archive
  * has. Throws, and the caller discards `dest`, when the archive is not a tar archive, holds a path that leaves `dest`,
  * or passes any cap of `limits`: the bytes it unpacks to, the files and folders it creates, its headers of any kind, the
@@ -222,6 +223,7 @@ export function extractTarGz(archive: Buffer, dest: string, {
     if (paxSize !== undefined && !/^\d{1,15}$/.test(paxSize)) throw new Error('the archive has a pax size that is no decimal number');
     const size = paxSize !== undefined ? Number(paxSize) : octal(header, 124, 12);
     if (extension && size > maxHeaderData) throw new Error(`the archive has a long-name or pax header of more than ${maxHeaderData} bytes`);
+    if (type === '5' && size > 0) throw new Error('the archive has a folder entry with data');
     const dataStart = at + BLOCK;
     if (dataStart + size > tar.length) throw new Error('the archive ends inside a file');
     const data = tar.subarray(dataStart, dataStart + size);

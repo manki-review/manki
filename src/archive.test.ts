@@ -89,6 +89,8 @@ describe('extractTarGz', () => {
     ['a folder at the path of a file', [file('package/a'), { name: 'package/a/', type: '5' }], 'holds "a" twice'],
     ['a file at the path of a folder', [{ name: 'package/a/', type: '5' }, file('package/a')], 'holds "a" twice'],
     ['a file inside a file', [file('package/a'), file('package/a/b')], 'holds "a" as a file and as a folder'],
+    ['a folder with data', [{ name: 'package/a/', type: '5', data: 'x' }], 'a folder entry with data'],
+    ['a folder with a pax size', [header('x', record('size', '1')), { name: 'package/a/', type: '5', data: 'x', size: 0 }], 'a folder entry with data'],
     ['one folder listed twice', [{ name: 'package/a/', type: '5' }, { name: 'package/a/', type: '5' }], 'holds "a" twice'],
     // node-tar keeps the bytes after a NUL that follow a line break, and the tar crate drops them.
     ['a name with a line break after its end', [file('package/a\0b\nc')], 'a path field with bytes after its end'],
