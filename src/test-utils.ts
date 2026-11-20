@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -8,6 +8,7 @@ import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RoundContext } from './types';
 import { BotIdentity, CodeLinks, gitBlobSha, reviewedCommit, titleToSlug } from './github';
 import { parsePRDiff } from './diff';
+import { BASE_READS_FILE, BASE_REF } from './workspace';
 import type { LLMClient, LLMResponse, SendMessageOptions } from './providers';
 
 /** Time limit for a test that starts real `git` processes. Under parallel load each one can take far longer than alone. */
@@ -18,8 +19,11 @@ export function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
 }
 
-/** Commits `base` in a new git repo, writes `head` over it and returns the repo with the staged diff between the two. */
-export function gitWorkspace(base: Record<string, string>, head: Record<string, string>): { root: string; diff: ParsedDiff } {
+/**
+ * Commits `base` in a new git repo, writes `head` over it and returns the repo with the staged diff between the two.
+ * With `baseExcludes`, the repo holds the base commit at `BASE_REF` for reads at the base, which leave out those paths.
+ */
+export function gitWorkspace(base: Record<string, string>, head: Record<string, string>, baseExcludes?: readonly string[]): { root: string; diff: ParsedDiff } {
   const root = mkdtempSync(join(tmpdir(), 'manki-workspace-'));
   const write = (files: Record<string, string>) => {
     for (const [path, content] of Object.entries(files)) {
@@ -31,9 +35,65 @@ export function gitWorkspace(base: Record<string, string>, head: Record<string, 
   git(root, 'init', '-q');
   git(root, 'add', '-A');
   git(root, 'commit', '-qm', 'base');
+  if (baseExcludes) {
+    git(root, 'update-ref', BASE_REF, 'HEAD');
+    writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: baseExcludes }));
+  }
   write(head);
   git(root, 'add', '-A');
   return { root, diff: parsePRDiff(git(root, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
+}
+
+/** A recorded round whose blockers a refuter checked against the PR's base, from `src/refute.fixtures`. */
+export interface BaseProofFixture {
+  repository: string;
+  base: string;
+  head: string;
+  /** How many lines each file holds at the base and the head, which size the files of `baseProofWorkspace`. */
+  lineCounts: Record<string, { base: number | null; head: number | null }>;
+  /** The headers of the PR's diff of each file without context, as `-start,count +start,count`. */
+  hunks: Record<string, string[]>;
+  findings: Array<{
+    title: string; file: string; line: number; description: string; security?: true; proof: string[];
+    /** What two refuters on different models that both give the recorded answer post: a pre-existing warning, or the blocker. */
+    expected: 'pre-existing' | 'blocker';
+    /** The refuter's answer, with its answer about the base from the code at the base commit. */
+    recorded: Record<string, unknown>;
+  }>;
+}
+
+/** Returns the fixture `name` of `src/refute.fixtures`. */
+export function baseProofFixture(name: string): BaseProofFixture {
+  return JSON.parse(readFileSync(join(__dirname, 'refute.fixtures', `${name}.json`), 'utf8')) as BaseProofFixture;
+}
+
+/**
+ * Returns a workspace for `fixture` with the base at `BASE_REF`, without its code. Each line of the base names its own
+ * number, and the head is the base with the lines `fixture.hunks` removes dropped and the lines it adds written new.
+ * So the diff of the workspace places every line as the PR's diff does.
+ */
+export function baseProofWorkspace(fixture: BaseProofFixture): { root: string; diff: ParsedDiff } {
+  const base: Record<string, string> = {};
+  const head: Record<string, string> = {};
+  for (const [path, counts] of Object.entries(fixture.lineCounts)) {
+    const old = Array.from({ length: counts.base ?? 0 }, (_, i) => `// base line ${i + 1}`);
+    const next: string[] = [];
+    let at = 0;
+    for (const header of fixture.hunks[path] ?? []) {
+      const [, oldStart, oldCount = '1', newStart, newCount = '1'] = header.match(/^-(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?$/)!;
+      // A side with no lines names the line before the hunk.
+      const removedFrom = Number(oldCount) === 0 ? Number(oldStart) : Number(oldStart) - 1;
+      next.push(...old.slice(at, removedFrom));
+      const addedFrom = Number(newCount) === 0 ? Number(newStart) : Number(newStart) - 1;
+      next.push(...Array.from({ length: Number(newCount) }, (_, i) => `// head line ${addedFrom + i + 1}`));
+      at = removedFrom + Number(oldCount);
+    }
+    next.push(...old.slice(at));
+    if (counts.base !== null) base[path] = `${old.join('\n')}\n`;
+    if (counts.head !== null) head[path] = `${next.join('\n')}\n`;
+    if (counts.head !== null && next.length !== counts.head) throw new Error(`the hunks of ${path} give ${next.length} lines, not ${counts.head}`);
+  }
+  return gitWorkspace(base, head, []);
 }
 
 /** How many times larger the large input of `expectLinearTime` is than the small one, unless the caller gives both. */
@@ -307,9 +367,12 @@ export function namingCommit<R extends { body?: string | null; commit_id?: strin
 
 const numberedLines = (count: number): string[] => Array.from({ length: count }, (_, i) => `line ${i + 1}`);
 
-/** Links a finding comment's code to a fixed commit, with the lines of two files. */
+const testLinkAt = (commit: string): CodeLinks['linkTo'] => (file, line, end = line) => `https://github.com/o/r/blob/${commit}/${file}#L${line}${end > line ? `-L${end}` : ''}`;
+
+/** Links a finding comment's code to a fixed commit, or to another one with `linkAt`, with the lines of two files. */
 export const TEST_LINKS: CodeLinks = {
-  linkTo: (file, line, end = line) => `https://github.com/o/r/blob/sha/${file}#L${line}${end > line ? `-L${end}` : ''}`,
+  linkTo: testLinkAt('sha'),
+  linkAt: testLinkAt,
   files: new Map([['src/main.ts', numberedLines(60)], ['src/util.ts', numberedLines(30)]]),
   related: new Map(),
 };

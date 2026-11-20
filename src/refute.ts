@@ -4,10 +4,10 @@ import { readFileSync } from 'fs';
 import * as core from '@actions/core';
 
 import { holdsLines } from './code-window';
-import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { isLineInDiff, oldLineOf, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
-import { readFileInRoot, resolveInRoot } from './mcp-server';
+import { readBaseText, readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, LLMResponse, NotStartedError } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
@@ -16,7 +16,7 @@ import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } fro
 import { wrapUpNoted } from './tool-steps';
 import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
-import { baseReadsOf } from './workspace';
+import { BASE_REF, baseReadsOf, runGit } from './workspace';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
 const REFUTE_STEPS = 15;
@@ -60,7 +60,7 @@ To refute it:
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
-- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does, or the change shown is cut, answer \`base\` unsettled. In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
+- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does${readsBase ? '' : ', or the change shown is cut'}, answer \`base\` unsettled.${readsBase ? ' When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.' : ''} In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path${readsBase ? ' at the base, with the line the finding flags as it is numbered at the base. Only a flagged line this PR left unchanged can fail the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them, and a line the base does not hold leaves the answer unsettled' : ''}. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
 - **confirmed**: the failure path holds. Cite the lines that show the failure in \`proof\`.
@@ -147,13 +147,40 @@ function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] 
 }
 
 /**
- * Returns the lines a refuter's `proof` list cites that are there: `proof` in the PR's workspace, `relatedProof` in the
- * related checkouts. An entry that starts with a line of a related repo is never read as a line of the PR as well.
+ * Splits a refuter's `proof` list into the locations it cites in the PR's repository, not checked yet, and the lines of
+ * related repos that `relatedLocations` keeps. An entry that starts with a line of a related repo is never read as a
+ * line of the PR as well.
  */
-export function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
+function citedLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { own: string[]; relatedProof: string[] } {
   const names = related?.repos.map(r => r.repo) ?? [];
   const own = Array.isArray(proof) ? proof.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, names)) : proof;
-  return { proof: existingLocations(workspace, parseProof(own, workspace)), relatedProof: relatedLocations(proof, related) };
+  return { own: parseProof(own, workspace), relatedProof: relatedLocations(proof, related) };
+}
+
+/** Returns the lines a refuter's `proof` list cites that are there: `proof` in the PR's workspace, `relatedProof` in the related checkouts. */
+export function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
+  const { own, relatedProof } = citedLines(proof, workspace, related);
+  return { proof: existingLocations(workspace, own), relatedProof };
+}
+
+/**
+ * Returns the locations of `proof` whose lines their file holds at the PR's base in `workspace`, each with the path in
+ * git's form and the text of its lines there. A file that cannot be read there, such as one the PR added or one
+ * `exclude_paths` matches, holds no line.
+ */
+async function linesAtBase(workspace: string, proof: readonly string[], excludePaths: readonly string[]): Promise<Array<{ location: string; lines: string[] }>> {
+  const files = [...new Set(proof.map(locationFile))];
+  const read = await Promise.all(files.map(file => readBaseText(workspace, file, excludePaths).then(
+    ({ file: path, text }) => ({ path, lines: text.replace(/\n$/, '').split('\n') }),
+    () => undefined,
+  )));
+  const held = new Map(files.map((file, i) => [file, read[i]]));
+  return proof.flatMap(location => {
+    const at = held.get(locationFile(location));
+    const [start, end] = locationLines(location);
+    if (!at || !holdsLines(at.lines.length, start, end)) return [];
+    return [{ location: `${at.path}${location.slice(locationFile(location).length)}`, lines: at.lines.slice(start - 1, end) }];
+  });
 }
 
 /** Whether `refutation` rests on a line of a related repo, in its own answer or in a premise. */
@@ -236,12 +263,13 @@ function otherChangedPaths(finding: Finding, diff: ParsedDiff | undefined, exclu
 
 /**
  * Whether the message about `finding` leaves part of the PR's change out: other changed files past `MAX_CHANGED_PATHS`,
- * or a change to the cited files past `MAX_FILE_CHANGE_CHARS`. A change left out looks the same at the base.
+ * or a change to the cited files past `MAX_FILE_CHANGE_CHARS`. A change left out looks the same at the base. With
+ * `readsBase`, the refuter reads the cited files at the base itself, so only the cut list of other files counts.
  */
-function hidesChange(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): boolean {
+function hidesChange(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[], readsBase: boolean): boolean {
   const shown = shownChanges(finding, diff).map(shortenLongLines);
   return otherChangedPaths(finding, diff, excludedPaths).length > MAX_CHANGED_PATHS
-    || (!!diff && shown.length > 0 && rebuildRawDiff({ ...diff, files: shown }).length > MAX_FILE_CHANGE_CHARS);
+    || (!readsBase && !!diff && shown.length > 0 && rebuildRawDiff({ ...diff, files: shown }).length > MAX_FILE_CHANGE_CHARS);
 }
 
 /** Returns the line that names the other files this PR changes, at most `MAX_CHANGED_PATHS`. */
@@ -302,17 +330,69 @@ function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck
   return checks.every(c => towardFinding(c) === 'confirmed') ? 'confirmed' : 'unsettled';
 }
 
-/** Returns the answer to `BASE_QUESTION` in `answer`, settled by `settle` like a premise. A reply without one leaves it unsettled. */
-function parseBase(answer: unknown, settle: (outcome: RefutationOutcome, proof: string[], relatedProof: string[]) => RefutationOutcome, workspace: string, related?: RelatedRepoTools): PremiseCheck {
+/**
+ * Returns the answer to `BASE_QUESTION` in `answer` as the refuter gave it. Its `proof` holds lines of the PR's base,
+ * which `checkBase` has yet to find there. A reply without one leaves it unsettled, and so does one to a message that
+ * `hidesChange`, since a change the message leaves out looks the same at the base.
+ */
+function parseBase(answer: unknown, cut: boolean, workspace: string, related?: RelatedRepoTools): PremiseCheck {
   const fields = (answer && typeof answer === 'object' ? answer : {}) as Record<string, unknown>;
-  const { proof, relatedProof } = shownLines(fields.proof, workspace, related);
+  const { own, relatedProof } = citedLines(fields.proof, workspace, related);
   return {
-    premise: BASE_QUESTION, outcome: settle(OUTCOMES.find(o => o === fields.outcome) ?? 'unsettled', proof, relatedProof), reason: replyText(fields.reason),
-    ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }),
+    premise: BASE_QUESTION, outcome: cut ? 'unsettled' : OUTCOMES.find(o => o === fields.outcome) ?? 'unsettled', reason: replyText(fields.reason),
+    ...(own.length > 0 && { proof: own }), ...(relatedProof.length > 0 && { relatedProof }),
   };
 }
 
-function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools, excludedPaths: readonly string[] = []): Refutation {
+/**
+ * Returns where the line `finding` flags sat at the PR's base, as git's path and line, when the PR left that line as it
+ * was. A line the PR added or changed, a file the PR added, and a change the diff does not show have no such line. A
+ * changed file whose patch GitHub left out, as `binarySkipped` or as a file listed without lines, is one of those.
+ */
+function flaggedLineAtBase(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { file: string; line: number } | undefined {
+  if (!diff || excludedPaths.includes(finding.file) || diff.binarySkipped?.some(f => f.path === finding.file)) return undefined;
+  const changed = diff.files.find(f => f.path === finding.file);
+  if (!changed) return { file: finding.file, line: finding.line };
+  const line = changed.changeType === 'added' || changed.hunks.length === 0 ? undefined : oldLineOf(changed, finding.line);
+  return line === undefined ? undefined : { file: changed.oldPath ?? changed.path, line };
+}
+
+/**
+ * Returns `check` with its `base` answer checked against the PR's base commit, which `BASE_REF` in `workspace` points
+ * at. Only the `proof` lines that their file holds there are kept, with the `commit` they were found at. A disproof
+ * lowers a blocker, so it stands only when every line it cites is there and one of them is the line the finding flags,
+ * which the PR left unchanged, at its place in the base with the same text. So a line the PR added or changed is never
+ * lowered. Any doubt leaves it unsettled: a workspace without a base, a file that cannot be read there, a line it does
+ * not hold, or no citation of the flagged line. An answer that the failure is the PR's own stands as given, since it
+ * keeps the blocker. An unsettled answer needs one line that is there, or a line of a related repo, as a premise does.
+ */
+async function checkBase(check: Refutation, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): Promise<Refutation> {
+  const { base } = check;
+  if (!base) return check;
+  const excludePaths = baseReadsOf(workspace);
+  const commit = excludePaths && await runGit(workspace, ['rev-parse', '--verify', '-q', `${BASE_REF}^{commit}`]).then(out => out.trim(), () => undefined);
+  const cited = base.proof ?? [];
+  const held = excludePaths && commit ? await linesAtBase(workspace, cited, excludePaths) : [];
+  const found = held.map(h => h.location);
+  const citesFlaggedLine = (): boolean => {
+    const at = flaggedLineAtBase(finding, diff, excludedPaths);
+    const file = readFileInRoot(workspace, finding.file);
+    const text = file && file !== 'too large' ? file.lines[finding.line - 1] : undefined;
+    return !!at && text !== undefined && held.some(h => {
+      const [start, end] = locationLines(h.location);
+      return locationFile(h.location) === at.file && start <= at.line && at.line <= end && h.lines[at.line - start] === text;
+    });
+  };
+  const outcome = !commit ? 'unsettled'
+    : base.outcome === 'disproved'
+      ? found.length > 0 && found.length === cited.length && citesFlaggedLine() ? 'disproved' : 'unsettled'
+      // An answer that the failure is the PR's own keeps the blocker, so it stands without a line of the base.
+      : base.outcome !== 'confirmed' && found.length + (base.relatedProof?.length ?? 0) === 0 ? 'unsettled' : base.outcome;
+  const { proof: _proof, ...answer } = base;
+  return { ...check, base: { ...answer, outcome, ...(found.length > 0 && { proof: found, commit }) } };
+}
+
+function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools, excludedPaths: readonly string[] = [], readsBase = false): Refutation {
   const parsed = JSON.parse(extractJSON(text)) as Record<string, unknown>;
   // Either verdict has to cite the code that decides it, so one without real proving lines settles nothing. A line of a
   // related repo counts as such a line. A disproof lifts a finding, so it still needs a line of the finding's own file
@@ -351,9 +431,9 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
     // The answer's own lines come first, so the cut drops lines of a premise before a line that decides the defect.
     relatedProof = [...new Set([...(ownAnswer ? shownRelated : []), ...premises.flatMap((p, i) => cites(p, i) ? p.relatedProof ?? [] : [])])].slice(0, MAX_RELATED_PROOF);
   }
-  const cut = hidesChange(finding, diff, excludedPaths);
-  const base = asksBase(finding) ? parseBase(parsed.base, (outcome, proof, relatedProof) => (cut ? 'unsettled' : settle(outcome, proof, relatedProof)), workspace, related) : undefined;
-  const files = refutationFiles(finding.file, [...proof, ...(base?.proof ?? [])]);
+  const base = asksBase(finding) ? parseBase(parsed.base, hidesChange(finding, diff, excludedPaths, readsBase), workspace, related) : undefined;
+  // The answer about the base cites lines of the base, which a later push to the head does not change.
+  const files = refutationFiles(finding.file, proof);
   return {
     outcome, defect, reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }), ...(premises && { premises }),
     ...(base && { base }), files, codeDigest: codeDigest(workspace, files) ?? '',
@@ -706,7 +786,8 @@ export interface RefuteOptions {
  * refuter, or to the judge. With `roundEnd` it makes only the checks `doubtsToCheck` picks.
  */
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, roundEnd, rules, progress, excludedPaths }: RefuteOptions): Promise<Finding[]> {
-  const systemPrompt = refuteSystemPrompt(baseReadsOf(workspace) !== undefined);
+  const readsBase = baseReadsOf(workspace) !== undefined;
+  const systemPrompt = refuteSystemPrompt(readsBase);
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
@@ -724,9 +805,9 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
           ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
           ...(finding.reviewers.some(isSweepName) && { sweep: true as const }),
         }),
-        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related, excludedPaths), ...(reply.model && { model: reply.model }) }, reply),
+        reply => withStepsUsedUp({ ...parseRefutation(reply.content, workspace, finding, diff, related, excludedPaths, readsBase), ...(reply.model && { model: reply.model }) }, reply),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
-      );
+      ).then(parsed => checkBase(parsed, finding, workspace, diff, excludedPaths ?? []));
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
       return refutation;
     } catch (error) {

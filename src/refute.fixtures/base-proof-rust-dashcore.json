@@ -1,0 +1,364 @@
+{
+  "about": "Round 3 of a rust-dashcore PR, whose six blockers Manki posted on code the base already had in five cases. Each finding holds the answer a refuter gave about the base, recorded from the code at the base commit. `lineCounts` sizes the files of the offline workspace at the base and the head, and `hunks` holds the headers of the PR's diff of each file without context, which place the lines it removes and adds. The check of the base passes only when this PR left the flagged line unchanged and the answer cites that line at its place in the base. That holds for the finding on `masternodes/manager.rs` and the security finding on `instantsend/manager.rs`, which two refuters on different models make pre-existing. The other four flag lines this PR added or changed and keep blocking.",
+  "repository": "https://github.com/dashpay/rust-dashcore.git",
+  "base": "d9e4ce3fddb5c246a702f8afa99bab14e9cc46af",
+  "head": "696b9fd48bc7818ff38c46b91fe34fa26634a3f7",
+  "lineCounts": {
+    "dash-spv/src/sml_engine.rs": {
+      "base": 3315,
+      "head": 3483
+    },
+    "dash-spv/src/sync/instantsend/manager.rs": {
+      "base": 771,
+      "head": 880
+    },
+    "dash-spv/src/sync/masternodes/manager.rs": {
+      "base": 1108,
+      "head": 1107
+    },
+    "dash-spv/src/validation/instantlock.rs": {
+      "base": 213,
+      "head": 275
+    }
+  },
+  "hunks": {
+    "dash-spv/src/sml_engine.rs": [
+      "-46,0 +47,2",
+      "-58,0 +61,19",
+      "-401,0 +423,11",
+      "-662,2 +694,2",
+      "-705,2 +737,3",
+      "-708,5 +741,4",
+      "-734,3 +766,2",
+      "-743,4 +774",
+      "-749 +777,3",
+      "-752,2 +782,19",
+      "-802 +849",
+      "-812,2 +859,6",
+      "-815 +866",
+      "-818 +869",
+      "-825 +876",
+      "-936,3 +987,3",
+      "-977,0 +1029,2",
+      "-983,0 +1037",
+      "-1138 +1192",
+      "-1173,0 +1228,5",
+      "-1399,3 +1458,2",
+      "-1403 +1461",
+      "-1407 +1465",
+      "-1583 +1641",
+      "-1586,0 +1645",
+      "-1831 +1890,11",
+      "-1833,2 +1902,2",
+      "-1856,0 +1926,10",
+      "-2059 +2138",
+      "-2074 +2153,7",
+      "-2088,0 +2174,6",
+      "-2564,3 +2655,82",
+      "-2599,21 +2768,0",
+      "-2623 +2772",
+      "-2644 +2793",
+      "-3314,0 +3464,19"
+    ],
+    "dash-spv/src/sync/instantsend/manager.rs": [
+      "-16 +16",
+      "-156,12 +156,5",
+      "-169,2 +162,7",
+      "-172,0 +171,5",
+      "-175,10 +177,0",
+      "-197,0 +191,10",
+      "-236,2 +239,3",
+      "-248 +252",
+      "-249,0 +254",
+      "-251 +256",
+      "-260,11 +265,11",
+      "-272,5 +276,0",
+      "-278 +278,15",
+      "-281,0 +296,7",
+      "-368 +389",
+      "-374 +395",
+      "-506,0 +528,88"
+    ],
+    "dash-spv/src/sync/masternodes/manager.rs": [
+      "-120,4 +120,2",
+      "-363,2 +361,2",
+      "-366,4 +364,2",
+      "-395,5 +391,2",
+      "-439,4 +432",
+      "-925,0 +916,4",
+      "-973,0 +968,5"
+    ],
+    "dash-spv/src/validation/instantlock.rs": [
+      "-1 +1",
+      "-3,0 +4",
+      "-8,0 +10",
+      "-10,0 +13,4",
+      "-36,0 +43,13",
+      "-54,2 +73",
+      "-57,2 +75",
+      "-63,5 +80,11",
+      "-72 +95,2",
+      "-74 +98",
+      "-86 +110",
+      "-140,2 +164,2",
+      "-143 +167",
+      "-144,0 +169",
+      "-147,5 +171,0",
+      "-154,0 +175,5",
+      "-160,0 +186,2",
+      "-170,0 +198,30",
+      "-174 +231",
+      "-176 +233",
+      "-204 +261",
+      "-206 +263,6"
+    ]
+  },
+  "findings": [
+    {
+      "title": "A cycle with a failed DKG slot never completes, so its forged locks are never refuted",
+      "file": "dash-spv/src/validation/instantlock.rs",
+      "line": 86,
+      "description": "The validator refutes a lock only when `cycle.complete` is true, even when the slot the lock selects already holds this cycle's own verified quorum. That quorum is never replaced, so a failed signature against it is already final. When a DKG fails, the slot keeps an older cycle's quorum for good.",
+      "proof": [
+        "dash-spv/src/validation/instantlock.rs:86",
+        "dash-spv/src/sml_engine.rs:69",
+        "dash-spv/src/sync/instantsend/manager.rs:143",
+        "dash-spv/src/sync/instantsend/manager.rs:162",
+        "dash-spv/src/sync/instantsend/manager.rs:183",
+        "dash-spv/src/sml_engine.rs:1890",
+        "dash-spv/src/validation/instantlock.rs:125-127",
+        "dash-spv/src/sml_engine.rs:72-78",
+        "dash-spv/src/sml_engine.rs:424-431",
+        "dash-spv/src/sml_engine.rs:782-799",
+        "dash-spv/src/sml_engine.rs:1890-1892",
+        "dash-spv/src/sync/instantsend/manager.rs:143-146",
+        "dash-spv/src/sync/instantsend/manager.rs:162-169",
+        "dash-spv/src/sync/instantsend/manager.rs:179-183",
+        "dash-spv/src/sync/instantsend/manager.rs:278"
+      ],
+      "expected": "blocker",
+      "recorded": {
+        "outcome": "confirmed",
+        "reason": "The validator turns any signature failure into MissingQuorumData whenever `cycle.complete` is false, even when the slot the lock selects holds this cycle's own verified quorum.",
+        "proof": [
+          "dash-spv/src/validation/instantlock.rs:86",
+          "dash-spv/src/validation/instantlock.rs:125-127"
+        ],
+        "base": {
+          "outcome": "confirmed",
+          "reason": "The base validator turns every signature failure into `InvalidSignature`, so the base refutes such a lock. The deferral to `MissingQuorumData` on an incomplete cycle is this PR's own.",
+          "proof": [
+            "dash-spv/src/validation/instantlock.rs:61-69"
+          ]
+        }
+      }
+    },
+    {
+      "title": "An unverified lock can still suppress the genuine lock for its transaction",
+      "file": "dash-spv/src/sync/instantsend/manager.rs",
+      "line": 162,
+      "description": "A peer's undecided lock reserves its `txid` before its signature is verified. The genuine lock is then dropped before signature verification, even if its own cycle is already complete. Refuting the queued lock later does not recover the genuine lock, and queue eviction or expiry can leave the unverified cache entry behind.",
+      "proof": [
+        "dash-spv/src/sync/instantsend/manager.rs:143",
+        "dash-spv/src/sync/instantsend/manager.rs:162",
+        "dash-spv/src/sync/instantsend/manager.rs:183",
+        "dash-spv/src/sync/instantsend/manager.rs:197",
+        "dash-spv/src/sync/instantsend/manager.rs:205",
+        "dash-spv/src/sync/instantsend/manager.rs:260",
+        "dash-spv/src/sync/instantsend/manager.rs:289",
+        "dash-spv/src/sync/instantsend/manager.rs:346",
+        "dash-spv/src/validation/instantlock.rs:88",
+        "dash-spv/src/sync/instantsend/manager.rs:145",
+        "dash-spv/src/sync/instantsend/manager.rs:150",
+        "dash-spv/src/sync/instantsend/manager.rs:164",
+        "dash-spv/src/sync/instantsend/manager.rs:181",
+        "dash-spv/src/sync/instantsend/manager.rs:196"
+      ],
+      "expected": "blocker",
+      "recorded": {
+        "outcome": "confirmed",
+        "reason": "process_instantlock caches a lock under its txid even when verification returned MissingQuorumData (validated=false).",
+        "proof": [
+          "dash-spv/src/sync/instantsend/manager.rs:143",
+          "dash-spv/src/sync/instantsend/manager.rs:145",
+          "dash-spv/src/sync/instantsend/manager.rs:150"
+        ],
+        "base": {
+          "outcome": "disproved",
+          "reason": "The base checks `contains_key(&txid)` before verification, keeps a lock of an unknown cycle pending and caches it with `validated: false` the same way, so a later genuine lock for the txid is dropped there too.",
+          "proof": [
+            "dash-spv/src/sync/instantsend/manager.rs:143-146",
+            "dash-spv/src/sync/instantsend/manager.rs:169-173",
+            "dash-spv/src/sync/instantsend/manager.rs:186-190"
+          ]
+        }
+      }
+    },
+    {
+      "title": "A fresh sync discards verified older quorums that current Dash Core can still use",
+      "file": "dash-spv/src/sml_engine.rs",
+      "line": 789,
+      "description": "When an active quorum has survived failed rotations, a fresh sync can verify its commitment but discard it because it belongs to neither the newest cycle in the tip set nor the newest cycle in the work-block list. Current Dash Core can still sign with that quorum and labels the lock with the quorum's original cycle hash. The client leaves that genuine lock undecided despite having verified its signing quorum.",
+      "proof": [
+        "dash-spv/src/sml_engine.rs:694",
+        "dash-spv/src/sml_engine.rs:727",
+        "dash-spv/src/sml_engine.rs:789",
+        "dash-spv/src/sml_engine.rs:870",
+        "dash-spv/src/sml_engine.rs:984",
+        "dash-spv/src/sync/instantsend/manager.rs:196",
+        "dash-spv/src/sml_engine.rs:797",
+        "dash-spv/src/sml_engine.rs:873",
+        "dash-spv/src/sml_engine.rs:997",
+        "dash-spv/src/sml_engine.rs:785-793",
+        "dash-spv/src/sml_engine.rs:866-876",
+        "dash-spv/src/sml_engine.rs:987-989",
+        "dash-spv/src/sml_engine.rs:1017-1024"
+      ],
+      "expected": "blocker",
+      "recorded": {
+        "outcome": "confirmed",
+        "reason": "Only two places store a cycle: the tip set (sml_engine.rs:1019) and the work-block list at h (sml_engine.rs:727).",
+        "proof": [
+          "dash-spv/src/sml_engine.rs:789",
+          "dash-spv/src/sml_engine.rs:797",
+          "dash-spv/src/sml_engine.rs:873"
+        ],
+        "base": {
+          "outcome": "disproved",
+          "reason": "The base stores a cycle only under the cycle key of the set it verified, so a quorum that survived failed rotations is stored under no cycle hash of its own there either.",
+          "proof": [
+            "dash-spv/src/sml_engine.rs:743-752"
+          ]
+        }
+      }
+    },
+    {
+      "title": "Crossing a cycle boundary skips the catch-up for the cycle that just ended",
+      "file": "dash-spv/src/sync/masternodes/manager.rs",
+      "line": 374,
+      "description": "If headers jump from an early mining-window tip to a tip before the next cycle's window, the selector drops the old cycle's attempt record before checking whether that cycle needs a catch-up. It sends only a list diff, so locks signed by commitments mined after the early request can wait until the next cycle's QRInfo.",
+      "proof": [
+        "dash-spv/src/sync/masternodes/manager.rs:370",
+        "dash-spv/src/sync/masternodes/manager.rs:374",
+        "dash-spv/src/sync/masternodes/manager.rs:387",
+        "dash-spv/src/sync/masternodes/manager.rs:394",
+        "dash-spv/src/sml_engine.rs:1044",
+        "dash-spv/src/sync/block_headers/manager.rs:428",
+        "dash-spv/src/sync/block_headers/manager.rs:429",
+        "dash-spv/src/sync/masternodes/sync_manager.rs:254",
+        "dash-spv/src/sync/masternodes/sync_manager.rs:263",
+        "dash-spv/src/sync/masternodes/sync_manager.rs:267",
+        "dash-spv/src/sync/masternodes/sync_manager.rs:343",
+        "dash-spv/src/sync/masternodes/sync_manager.rs:354",
+        "dash-spv/src/sync/sync_manager.rs:160",
+        "dash-spv/src/sync/masternodes/manager.rs:377",
+        "dash-spv/src/sync/masternodes/manager.rs:386",
+        "dash-spv/src/sync/masternodes/manager.rs:392",
+        "dash-spv/src/sync/masternodes/sync_manager.rs:293"
+      ],
+      "expected": "pre-existing",
+      "recorded": {
+        "outcome": "confirmed",
+        "reason": "On a tip in a new cycle, next_pipeline_mode clears last_window_qrinfo_tip (manager.rs:374-377) and returns Incremental before the new window opens (manager.rs:386-387).",
+        "proof": [
+          "dash-spv/src/sync/masternodes/manager.rs:370",
+          "dash-spv/src/sync/masternodes/manager.rs:374",
+          "dash-spv/src/sync/masternodes/manager.rs:377"
+        ],
+        "base": {
+          "outcome": "disproved",
+          "reason": "The base selector resets the cycle record on a new cycle and returns `Incremental` before the new window the same way, so the old cycle gets no catch-up there either.",
+          "proof": [
+            "dash-spv/src/sync/masternodes/manager.rs:378-383",
+            "dash-spv/src/sync/masternodes/manager.rs:390-392"
+          ]
+        }
+      }
+    },
+    {
+      "title": "Pending InstantLocks can retain about 0.88 GB of peer-supplied input vectors",
+      "file": "dash-spv/src/validation/instantlock.rs",
+      "line": 43,
+      "description": "The new per-lock cap still allows `48,780` inputs, and the pending queue retains up to `500` full locks. At 36 bytes per outpoint, the input vectors alone can retain about 0.88 GB, enough to exhaust memory on a resource-constrained client. An unknown cycle takes the pending path without proving the signature.",
+      "security": true,
+      "proof": [
+        "dash-spv/src/validation/instantlock.rs:15",
+        "dash-spv/src/validation/instantlock.rs:43",
+        "dash-spv/src/sync/instantsend/manager.rs:21",
+        "dash-spv/src/sync/instantsend/manager.rs:165",
+        "dash-spv/src/sync/instantsend/manager.rs:197",
+        "dash-spv/src/sync/instantsend/manager.rs:204",
+        "dash/src/blockdata/constants.rs:30",
+        "dash/src/network/message.rs:45",
+        "dash/src/ephemerealdata/instant_lock.rs:36",
+        "dash-spv/src/sml_engine.rs:425",
+        "dash-spv/src/sync/instantsend/manager.rs:143",
+        "dash-spv/src/sync/instantsend/manager.rs:162"
+      ],
+      "expected": "blocker",
+      "recorded": {
+        "outcome": "confirmed",
+        "reason": "The structure check lets a lock carry up to 2,000,000/41 = 48,780 inputs.",
+        "proof": [
+          "dash-spv/src/validation/instantlock.rs:15",
+          "dash-spv/src/validation/instantlock.rs:43"
+        ],
+        "base": {
+          "outcome": "disproved",
+          "reason": "The base structure check caps no input count at all, and its pending queue holds 500 whole locks, so a peer could make it hold more before this PR.",
+          "proof": [
+            "dash-spv/src/validation/instantlock.rs:17-47",
+            "dash-spv/src/sync/instantsend/manager.rs:21"
+          ]
+        }
+      }
+    },
+    {
+      "title": "Sync event buffer can hold up to 10000 full peer-supplied InstantLocks of up to 48,780 inputs each",
+      "file": "dash-spv/src/sync/instantsend/manager.rs",
+      "line": 185,
+      "description": "Each lock that passes the structure check emits an `InstantLockReceived` event that carries a full clone of the lock, including locks of an unknown cycle that were never signature checked. The sync event broadcast channel has 10000 slots and keeps each value until every subscriber has read it. With a slow subscriber, attacker locks near the new 48,780 input cap (about 1.75 MB of outpoints each) can hold many gigabytes, far more than the 500-entry pending queue.",
+      "security": true,
+      "proof": [
+        "dash-spv/src/sync/instantsend/manager.rs:185",
+        "dash-spv/src/sync/instantsend/manager.rs:186",
+        "dash-spv/src/sync/sync_coordinator.rs:31",
+        "dash-spv/src/validation/instantlock.rs:15",
+        "dash-spv/src/validation/instantlock.rs:43",
+        "dash-spv/src/sync/instantsend/manager.rs:169",
+        "dash-spv/src/sync/sync_manager.rs:236",
+        "dash-spv/src/sync/sync_coordinator.rs:159",
+        "dash-spv/src/sync/sync_manager.rs:300",
+        "dash-spv/src/sync/sync_manager.rs:302",
+        "dash-spv/src/sync/sync_manager.rs:257",
+        "dash-spv/src/sync/sync_manager.rs:279",
+        "dash-spv/src/client/event_handler.rs:29",
+        "dash-spv/src/client/event_handler.rs:68",
+        "dash-spv/src/client/event_handler.rs:71",
+        "dash-spv/src/client/event_handler.rs:78",
+        "dash-spv/src/client/sync_coordinator.rs:62",
+        "dash-spv/src/client/sync_coordinator.rs:65",
+        "dash-spv/src/sync/instantsend/manager.rs:162",
+        "dash-spv/src/sync/instantsend/manager.rs:197",
+        "dash-spv/src/sync/events.rs:158"
+      ],
+      "expected": "pre-existing",
+      "recorded": {
+        "outcome": "confirmed",
+        "reason": "Locks of an unknown cycle get MissingQuorumData, are queued and then fall through to emit InstantLockReceived carrying a full clone of the peer-supplied lock.",
+        "proof": [
+          "dash-spv/src/sync/instantsend/manager.rs:162",
+          "dash-spv/src/sync/instantsend/manager.rs:169",
+          "dash-spv/src/sync/instantsend/manager.rs:185"
+        ],
+        "base": {
+          "outcome": "disproved",
+          "reason": "The base emits `InstantLockReceived` with a full clone of every lock that passes the structure check, unverified ones included, through the same event buffer.",
+          "proof": [
+            "dash-spv/src/sync/instantsend/manager.rs:192-195"
+          ]
+        }
+      }
+    }
+  ]
+}

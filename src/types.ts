@@ -431,6 +431,8 @@ export interface Finding {
   preExistingCheck?: PreExistingCheck;
   /** The rule of an instruction file the reviewer says the change breaks. Only a `confirmed` one counts in the grade. */
   rule?: RuleMark;
+  /** The open issue or PR of related work that describes this finding, which the review shows with it. It changes nothing else. */
+  trackedIn?: Pick<RelatedItem, 'kind' | 'number'>;
 }
 
 /**
@@ -520,6 +522,10 @@ export interface RelatedItem {
   /** For a PR, how many of its files the PR under review changes too. */
   sharedFiles?: number;
   draft?: boolean;
+  /** The login that opened it. */
+  author?: string;
+  /** Set when `hasWriteAccess` confirms that a person who can push to the repository opened it. Only such an item tracks a finding. */
+  byWriter?: true;
   /** Unset until the dedup model classified it, and when the classification failed. */
   relation?: RelatedRelation;
   /** The dedup model's one line of reasoning. */
@@ -997,6 +1003,8 @@ export interface PremiseCheck {
   proof?: string[];
   /** The lines of related repos that decide it, as `owner/name:path:line`. They can confirm, and never count toward a disproof. */
   relatedProof?: string[];
+  /** The PR's base commit that holds the `proof` lines of an answer to `BASE_QUESTION`, set once the code found them there. */
+  commit?: string;
 }
 
 /** The outcome of the judge's attempt to refute a finding with tools. */
@@ -1074,16 +1082,31 @@ export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts
   return check.defect === 'confirmed' && !check.premises?.some(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade');
 }
 
+/** Whether `check` answers that the code at the PR's base fails the same way, with lines the code found at the base `commit`. */
+function failsOnBase(check: Refutation | undefined): check is Refutation & { base: PremiseCheck } {
+  return check?.base?.outcome === 'disproved' && !!check.base.proof?.length && !!check.base.commit;
+}
+
 /**
  * Returns the answer that shows the code at the PR's base fails the same way as `finding`, when both refuters, on
- * different models, disproved `BASE_QUESTION` with proof lines. One model's answer, read from files the PR author
- * controls, never lowers a blocker, so one refuter alone, or one whose call failed, keeps the finding as it is.
+ * different known models, give such an answer (`failsOnBase`). One model's answer, read from files the PR author
+ * controls, never lowers a blocker, so one refuter alone, one whose call failed, or two on one model keep the finding as
+ * it is.
  */
 export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
   const { refutation, pairRefutation } = finding;
   if (!refutation?.model || !pairRefutation?.model || refutation.model === pairRefutation.model) return undefined;
-  const same = (r: Refutation): boolean => r.base?.outcome === 'disproved' && !!r.base.proof?.length;
-  return same(refutation) && same(pairRefutation) ? refutation.base : undefined;
+  return failsOnBase(refutation) && failsOnBase(pairRefutation) ? refutation.base : undefined;
+}
+
+/**
+ * Returns the answer of one check that the code at the PR's base fails the same way as `finding`, when `sameOnBase`
+ * does not make it pre-existing and neither check found the failure the PR's own. It changes no grade. The finding
+ * only notes that it may be older than this PR.
+ */
+export function oneCheckOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
+  if (sameOnBase(finding) || [finding.refutation, finding.pairRefutation].some(check => check?.base?.outcome === 'confirmed')) return undefined;
+  return [finding.refutation, finding.pairRefutation].find(failsOnBase)?.base;
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */

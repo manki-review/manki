@@ -41,7 +41,7 @@ import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { BASE_QUESTION, CELL_GRADES, cellGrade, EarlierAttempt, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, Refutation, RefutationOutcome, ReviewResult, RoundContext, RoundLead, RoundNotStarted, RoundScope, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewRoutingConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG, SweepMode } from './types';
 import { citedLine } from './finding-fingerprint';
-import { expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { baseProofFixture, baseProofWorkspace, expectLinearTime, fingerprintEntriesFromLegacy, git, GIT_TEST_TIMEOUT_MS, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -3712,36 +3712,39 @@ describe('runReview', () => {
     expect(result.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck])).toEqual([['Loader ignores the lock entry', 'pre_existing']]);
   });
 
-  it('posts a blocker the judge calls pre-existing on a re-indented line as a pre-existing warning once a check finds the same failure before this PR', async () => {
+  it('posts a blocker the judge calls pre-existing next to a re-indented line as a pre-existing warning once two checks find the same failure before this PR', async () => {
     // The PR only adds a comment and re-indents the loop, so the loop that never ends was there before.
     const before = 'export function drain(queue: number[]) {\n  while (queue.length > 0) {\n  queue.at(0);\n  }\n}\n';
     const after = 'export function drain(queue: number[]) {\n  // Reads the queue until it is empty.\n  while (queue.length > 0) {\n    queue.at(0);\n  }\n}\n';
     const title = 'Drain loop never ends';
-    const found = [{
-      severity: 'blocker', title, file: 'src/queue.ts', line: 4, description: 'Nothing removes an entry, so the loop never ends.', evidence: ['src/queue.ts:4 only reads the entry'], proof: ['src/queue.ts:3', 'src/queue.ts:4'],
+    const found = (line: number) => [{
+      severity: 'blocker', title, file: 'src/queue.ts', line, description: 'Nothing removes an entry, so the loop never ends.', evidence: ['src/queue.ts:4 only reads the entry'], proof: ['src/queue.ts:3', 'src/queue.ts:4'],
       preExisting: true, preExistingReason: 'The loop read the queue the same way before this PR.',
     }];
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     // `sameBefore` is each check's answer whether the failure is the PR's own: disproved when the loop failed the same
-    // way before. `pairModel` is the second refuter's model, `failed` when its call fails, or none without a second refuter.
-    const run = async (sameBefore: RefutationOutcome, { repoTools = true, pairModel = 'pair-model' }: { repoTools?: boolean; pairModel?: string | null } = {}) => {
-      const { root, diff } = gitWorkspace({ 'src/queue.ts': before }, { 'src/queue.ts': after });
+    // way before. `pairModel` is the second refuter's model, `failed` when its call fails, or none without a second
+    // refuter. `readsBase` says the workspace holds the base, whose lines `baseProof` cites. The finding flags `line`,
+    // by default the loop's head, which the PR left as it was at base line 2.
+    type Options = { repoTools?: boolean; pairModel?: string | null; readsBase?: boolean; baseProof?: string[]; security?: boolean; line?: number };
+    const run = async (sameBefore: RefutationOutcome, { repoTools = true, pairModel = 'pair-model', readsBase = true, baseProof = ['src/queue.ts:2', 'src/queue.ts:3'], security = false, line = 3 }: Options = {}) => {
+      const { root, diff } = gitWorkspace({ 'src/queue.ts': before }, { 'src/queue.ts': after }, readsBase ? [] : undefined);
       const refuterMessages: string[] = [];
       const reply = (model: string) => ({
         model, content: JSON.stringify({
           outcome: 'confirmed', reason: 'Nothing removes an entry.', proof: ['src/queue.ts:4'],
-          base: { outcome: sameBefore, reason: 'The loop before this PR also only read the entry.', proof: ['src/queue.ts:3', 'src/queue.ts:4'] },
+          base: { outcome: sameBefore, reason: 'The loop before this PR also only read the entry.', proof: baseProof },
         }),
       });
       const pair = pairModel === null ? undefined : {
         repoTools: true, sendMessage: pairModel === 'failed' ? jest.fn().mockRejectedValue(new Error('timed out')) : jest.fn().mockResolvedValue(reply(pairModel)),
       } as unknown as LLMClient;
       const clients = { ...makeClients(), ...(pair && { refuterPair: pair }) };
-      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found(line)) });
       Object.assign(clients.judge, { repoTools });
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You are a code review judge')) {
-          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row: 'severe', preExisting: true, reasoning: 'Pre-existing: the loop is only re-indented.' }] }) };
+          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row: 'severe', preExisting: true, ...(security && { security: true }), reasoning: 'Pre-existing: the loop is only re-indented.' }] }) };
         }
         if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
         refuterMessages.push(user);
@@ -3767,19 +3770,88 @@ describe('runReview', () => {
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([[title, 'warning', 'blocker', ['pre-existing', 'follow-up'], 'touches_diff']]);
     expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
 
-    // The judge's pre-existing call alone lowers nothing, and neither does one refuter's answer. Checks that find the
-    // failure the PR's own or leave it open, one refuter only, two on the same model, a second call that failed, and a
-    // round with no check at all keep the blocker its cell gives.
-    const kept: Array<[RefutationOutcome, { repoTools?: boolean; pairModel?: string | null }]> = [
-      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: null }], ['disproved', { pairModel: 'judge-model' }], ['disproved', { pairModel: 'failed' }],
-      ['disproved', { repoTools: false }],
+    expect(formatFindingComment(result.findings[0], TEST_LINKS)).toContain('**Already broken before this PR.** Two checks found the same problem on the base branch at ');
+
+    // The base answer cites base line 2, where the flagged head line 3 sat before this PR. One refuter's answer, alone,
+    // beside a second call that failed, or beside a second answer on the same model, changes no grade. The blocker only
+    // notes in its thread that it may be older than this PR.
+    for (const options of [{ pairModel: null }, { pairModel: 'failed' }, { pairModel: 'judge-model' }, { pairModel: null, security: true }]) {
+      const round = await run('disproved', options);
+      const [kept] = round.result.findings;
+      expect([options, round.result.outcome, kept.severity, kept.tags?.filter(t => t !== 'security')]).toEqual([options, 'ADDRESS_FIRST', 'blocker', options.security ? [] : undefined]);
+      expect(formatFindingComment(kept, TEST_LINKS)).toContain('**Possibly older than this PR.** One check found the same problem on the base branch before this PR, at ');
+    }
+
+    // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
+    // security finding without both refuters, a workspace without the base, a line the base
+    // does not hold, no citation of the flagged line at its base line, a flagged line the PR re-indented, and a round with
+    // no check at all keep the blocker its cell gives.
+    const kept: Array<[RefutationOutcome, Options]> = [
+      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: 'judge-model', security: true }],
+      ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
+      ['disproved', { baseProof: ['src/queue.ts:3'] }], ['disproved', { line: 4 }], ['disproved', { repoTools: false }],
     ];
     for (const [sameBefore, options] of kept) {
       const round = await run(sameBefore, options);
-      expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.gradeIfConfirmed, f.tags])]).toEqual([options, 'ADDRESS_FIRST', [['blocker', undefined, undefined]]]);
+      expect([options, round.result.outcome, round.result.findings.map(f => [f.severity, f.gradeIfConfirmed, f.tags?.filter(t => t !== 'security')])])
+        .toEqual([options, 'ADDRESS_FIRST', [['blocker', undefined, options.security ? [] : undefined]]]);
       expect(round.refuterMessages).toHaveLength(options.repoTools === false ? 0 : 1);
     }
-  });
+    // Both refuters, on different models, lower a security blocker.
+    const both = await run('disproved', { security: true });
+    expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
+  }, GIT_TEST_TIMEOUT_MS);
+
+  it('replays a rust-dashcore round: a blocker whose flagged line this PR left unchanged and the base already had is pre-existing with two refuters, and only noted with one', async () => {
+    const fixture = baseProofFixture('base-proof-rust-dashcore');
+    const found = fixture.findings.map(f => ({
+      severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, evidence: [`${f.file}:${f.line} shows it`], proof: f.proof,
+    }));
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    // Each refuter gives the recorded answer of the finding whose location its message names. `answer` can change it.
+    const run = async ({ pair = false, answer = (recorded: Record<string, unknown>) => recorded }: { pair?: boolean; answer?: (recorded: Record<string, unknown>, title: string) => Record<string, unknown> } = {}) => {
+      const { root, diff } = baseProofWorkspace(fixture);
+      const reply = (model: string) => async (system: string, user: string) => {
+        const f = fixture.findings.find(x => user.includes(`- **Location**: ${x.file}:${x.line}\n`))!;
+        return { model, content: JSON.stringify(answer(f.recorded, f.title)) };
+      };
+      const refuterPair = pair ? { repoTools: true, sendMessage: jest.fn(reply('pair-model')) } as unknown as LLMClient : undefined;
+      const clients = { ...makeClients(), ...(refuterPair && { refuterPair }) };
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+      Object.assign(clients.judge, { repoTools: true });
+      const refute = reply('judge-model');
+      jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
+        if (system.startsWith('You are a code review judge')) {
+          return { content: JSON.stringify({ summary: 's', findings: fixture.findings.map((f, i) => ({ id: i + 1, title: f.title, row: 'severe', ...(f.security && { security: true }), reasoning: 'r' })) }) };
+        }
+        if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+        return refute(system, user);
+      });
+      try {
+        const { findings } = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+        return fixture.findings.map(f => {
+          const posted = findings.find(p => p.title === f.title)!;
+          // A blocker whose thread says it may be older than this PR reads as `older`.
+          const older = posted.severity === 'blocker' && formatFindingComment(posted, TEST_LINKS).includes('**Possibly older than this PR.**');
+          return [f.title, posted.severity === 'warning' && !!posted.tags?.includes('pre-existing') ? 'pre-existing' : older ? 'older' : posted.severity];
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+
+    // Only the findings on `masternodes/manager.rs` and on `instantsend/manager.rs` line 185 flag a line this PR left
+    // unchanged, and their answers cite it at its place in the base. Two refuters on different models make both
+    // pre-existing, the security one too. The others flag lines this PR added or changed and keep blocking.
+    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
+    expect(await run({ pair: true })).toEqual(fixture.findings.map(f => [f.title, f.expected]));
+    // One refuter changes no grade. Both blockers only note that they may be older than this PR.
+    expect((await run()).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'older', 'blocker', 'older']);
+    // The flagged line cited at its head number, which is another line at the base, proves nothing, so the blocker stays.
+    const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[3].title
+      ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[3].file}:${fixture.findings[3].line}`] } } : recorded;
+    expect((await run({ pair: true, answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker', 'pre-existing']);
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {
     const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
@@ -5008,17 +5080,16 @@ describe('runReview', () => {
     ]);
 
     // A finding on a changed line is pre-existing when both refuters, on different models, found the same failure before
-    // this PR with proof lines, a security finding as any other. It posts only what would block had this PR caused it,
-    // as a warning. An answer left open, one that found the PR makes the failure newly reachable, or one refuter alone
-    // keeps the blocker.
+    // this PR, with lines the code found at the base. It posts only what would block had this PR caused it, as a warning.
+    // One check, two on one model, an answer left open, one the code did not check at the base, or one without lines
+    // keep the blocker.
     const check = (base: RefutationOutcome, model = 'first-model'): Refutation => ({
       outcome: 'confirmed', defect: 'confirmed', reason: 'It fails.', files: ['src/a.ts'], codeDigest: 'abc', model,
-      base: { premise: BASE_QUESTION, outcome: base, reason: base === 'disproved' ? 'The same queue had no cap before this PR.' : 'r', proof: ['src/a.ts:11'] },
+      base: { premise: BASE_QUESTION, outcome: base, reason: base === 'disproved' ? 'The same queue had no cap before this PR.' : 'r', proof: ['src/a.ts:11'], commit: 'base' },
     });
     const onLine = (title: string, extra: Partial<Finding> = {}) => blocker(title, 'src/a.ts', 12, { preExisting: undefined, refutation: check('disproved'), pairRefutation: check('disproved', 'pair-model'), ...extra });
     const based = [
       onLine('Queue holds unverified entries'),
-      onLine('Peer can fill the queue', { tags: ['security'] }),
       onLine('Queue may grow', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'Entries arrive faster than they drain', decides: 'defect' }], refutation: { ...check('disproved'), outcome: 'unsettled' } }),
     ];
     mockedRunJudgeAgent.mockResolvedValue({ findings: based, summary: 'Old defects on changed lines.' });
@@ -5026,15 +5097,14 @@ describe('runReview', () => {
     expect(onBase.outcome).toBe('READY');
     expect(onBase.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, f.preExistingCheck])).toEqual([
       ['Queue holds unverified entries', 'warning', 'blocker', ['pre-existing', 'follow-up'], undefined],
-      ['Peer can fill the queue', 'warning', 'blocker', ['security', 'pre-existing', 'follow-up'], undefined],
     ]);
     expect(onBase.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: 'the code before this PR fails the same way: The same queue had no cap before this PR.' });
     expect(onBase.unpostedPreExisting?.map(f => [f.title, f.severity, f.tags])).toEqual([['Queue may grow', 'warning', ['pre-existing']]]);
     const keptBlockers = [
-      onLine('Left open', { refutation: check('unsettled') }), onLine('Newly reachable', { pairRefutation: check('confirmed', 'pair-model') }),
+      onLine('Left open', { refutation: check('unsettled') }), onLine('Newly reachable', { refutation: check('confirmed') }),
       onLine('Not asked', { refutation: { ...check('disproved'), base: undefined } }), onLine('No proof', { refutation: { ...check('disproved'), base: { ...check('disproved').base!, proof: [] } } }),
-      onLine('One check', { pairRefutation: undefined }), onLine('On one model', { pairRefutation: check('disproved') }),
-      onLine('Security with one check', { tags: ['security'], pairRefutation: undefined }), onLine('Security on one model', { tags: ['security'], pairRefutation: check('disproved') }),
+      onLine('Not checked at the base', { refutation: { ...check('disproved'), base: { ...check('disproved').base!, commit: undefined } } }),
+      onLine('One check', { pairRefutation: undefined }), onLine('Two checks on one model', { pairRefutation: check('disproved') }), onLine('Security with one check', { tags: ['security'], pairRefutation: undefined }),
     ];
     for (const kept of keptBlockers) {
       mockedRunJudgeAgent.mockResolvedValue({ findings: [kept], summary: 'One defect.' });
@@ -6673,6 +6743,18 @@ describe('runReview', () => {
     expect(related.llmDedupCount).toBe(0);
     expect(related.relatedWork).toEqual({ items: [{ ...relatedWork.items[0], relation: 'duplicate', reason: 'Same fix.' }] });
     expect(related.llmCalls?.filter(c => c.stage === 'related')).toHaveLength(1);
+
+    // An open issue a person with write access opened is matched to the findings once they are graded, on the dedup
+    // model. The finding this PR introduces keeps its grade, and the round still blocks.
+    jest.mocked(clients.dedup!.sendMessage).mockImplementation(async (system: string) => ({
+      content: JSON.stringify(system.startsWith('You match the findings') ? [{ finding: 1, candidate: 1 }] : [{ index: 1, relation: 'overlapping', reason: 'Same bug.' }]),
+    }));
+    const tracking = { items: [{ kind: 'issue' as const, number: 17, title: 'A bug in a.ts', excerpt: '', author: 'maintainer', byWriter: true as const }] };
+    mockedRunJudgeAgent.mockResolvedValueOnce({ findings: [{ severity: 'blocker', title: 'A bug', file: 'src/a.ts', line: 10, description: 'Bug.', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:10'] } }], summary: 'One bug.' });
+    const tracked = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', prContext, relatedWork: tracking });
+    expect(tracked.findings.map(f => [f.title, f.severity, f.trackedIn])).toEqual([['A bug', 'blocker', { kind: 'issue', number: 17 }]]);
+    expect(tracked.outcome).toBe('ADDRESS_FIRST');
+    expect(tracked.llmCalls?.filter(c => c.stage === 'related')).toHaveLength(2);
   });
 
   it('returns reviewComplete false when judge fails', async () => {

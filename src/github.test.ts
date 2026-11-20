@@ -561,18 +561,48 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, toolSource: 'CodeQL' })).not.toContain(unchecked);
     expect(render({ ...baseFinding, reviewers: [] })).not.toContain(unchecked);
 
-    // A finding posted as pre-existing because the code before this PR fails the same way says so, with the lines the check read.
-    const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'] };
+    // A finding two checks on different models found at the base says so under its title, with the lines they read
+    // there, linked to the base commit, and the branch the PR merges into.
+    const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'], commit: 'base' };
+    const baseLink = links.linkAt!('base')('src/main.ts', 40);
+    const onMain = (finding: Finding, extra: Partial<typeof links> = {}): string => formatFindingComment(finding, { ...links, baseBranch: 'main', ...extra });
     const confirmedBefore: Finding = {
       ...baseFinding, severity: 'warning', tags: ['pre-existing'], evidence: { checks: [], proof: ['src/main.ts:42'] },
       refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'first-model', base: same },
       pairRefutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'pair-model', base: same },
     };
-    expect(render(confirmedBefore)).toContain(`**Same before this PR**\nManki read the code before this PR and found it fails the same way, so this PR did not cause it. The queue had no cap before this PR. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
-    expect(render(confirmedBefore)).toContain('double-checked, same before this PR</summary>');
-    // Without the pre-existing mark, or with an answer left open, nothing says so.
-    expect(render({ ...confirmedBefore, tags: undefined })).not.toContain('Same before this PR');
-    expect(render({ ...confirmedBefore, refutation: { ...confirmedBefore.refutation!, base: { ...same, outcome: 'unsettled' } } })).not.toContain('Same before this PR');
+    const broken = `**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}), so it doesn't block this PR.`;
+    const older = `**Possibly older than this PR.** One check found the same problem on \`main\` before this PR, at [\`src/main.ts:40\`](${baseLink}). If that's right, a maintainer can dismiss this thread.`;
+    expect(baseLink).toContain('/blob/base/');
+    expect(onMain(confirmedBefore)).toContain(`**${baseFinding.title}**\n\n${broken}\n\n`);
+    expect(onMain(confirmedBefore)).toContain('double-checked, same before this PR</summary>');
+    expect(onMain(confirmedBefore)).not.toContain('Manki read the code before this PR');
+    expect(parseFindingFromComment(onMain(confirmedBefore)).description).toBe(baseFinding.description);
+    // One check, two on one model, or a second check that failed, leaves the blocker as it is with a note that it may be
+    // older, on a security finding too.
+    const blocking: Finding = { ...confirmedBefore, severity: 'blocker', tags: undefined };
+    for (const one of [{ ...blocking, pairRefutation: undefined }, { ...blocking, pairRefutation: { ...blocking.pairRefutation!, model: 'first-model' } }, { ...blocking, tags: ['security'], pairRefutation: undefined }]) {
+      expect(onMain(one)).toContain(`**${baseFinding.title}**\n\n${older}\n\n`);
+      expect(onMain(one)).not.toContain('Already broken');
+    }
+    // A pre-existing security blocker on code the PR did not touch still blocks. Both checks say it was already broken,
+    // and that a maintainer decides, never that it does not block, and the summary agrees.
+    const stillBlocking = onMain({ ...confirmedBefore, severity: 'blocker', tags: ['pre-existing', 'security'] });
+    expect(stillBlocking).toContain(`**${baseFinding.title}**\n\n**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}). It still blocks because it is a security finding, so a maintainer decides.\n\n`);
+    expect(stillBlocking).not.toMatch(/Possibly older|doesn't block/);
+    expect(stillBlocking).toContain('double-checked, same before this PR</summary>');
+    expect(parseFindingFromComment(stillBlocking).description).toBe(baseFinding.description);
+    // Without a way to link the base commit, the lines show unlinked rather than as lines of the head, and without the
+    // branch name the note names the base branch.
+    expect(onMain(confirmedBefore, { linkAt: undefined })).toContain('on `main` at `src/main.ts:40`, so it');
+    expect(render(confirmedBefore)).toContain('on the base branch at');
+    // With an answer left open, a second check that found the failure the PR's own, or lines the code never found at the
+    // base, no note says so.
+    for (const none of [
+      { ...blocking, refutation: { ...blocking.refutation!, base: { ...same, outcome: 'unsettled' as const } }, pairRefutation: undefined },
+      { ...blocking, pairRefutation: { ...blocking.pairRefutation!, base: { ...same, outcome: 'confirmed' as const } } },
+      { ...blocking, refutation: { ...blocking.refutation!, base: { ...same, commit: undefined } }, pairRefutation: undefined },
+    ]) expect(onMain(none)).not.toMatch(/Possibly older|Already broken/);
 
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
     const disprovedFinding: Finding = {
@@ -6250,22 +6280,22 @@ describe('postReview non-blocking findings', () => {
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
       nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'] }),
-      nonBlocking('warning', 'On old code', 3, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed' }),
+      nonBlocking('warning', 'On old code', 3, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed', trackedIn: { kind: 'issue', number: 17 } }),
       nonBlocking('warning', 'Old code off the diff', 40, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed' }),
       nonBlocking('note', 'Untouched file', 3, { file: 'src/b.ts', origin: 'reviewed', tags: ['security'] }),
       nonBlocking('note', 'Token logged on old code', 5, { origin: 'reviewed', tags: ['security'] }),
       nonBlocking('note', 'Note on old code', 4, { origin: 'reviewed' }),
       nonBlocking('blocker', 'Old blocker', 3, { origin: 'reviewed' }),
       // A blocker on code the PR did not change, lowered to a warning without the follow-up tag a verdict reader blocker lacks.
-      nonBlocking('warning', 'Old race in the pool', 90, { origin: 'reviewed', tags: ['pre-existing'], originalSeverity: 'blocker' }),
+      nonBlocking('warning', 'Old race in the pool', 90, { origin: 'reviewed', tags: ['pre-existing'], originalSeverity: 'blocker', trackedIn: { kind: 'pr', number: 23 } }),
     ]), quoting);
 
     const review = createReview.mock.calls[0][0];
-    // A warning on reviewed code gets its thread like one on new code, and says under its title why it comes late. Each
-    // note is posted as written, so the next round reads the description without them.
+    // A warning on reviewed code gets its thread like one on new code, and says under its title why it comes late, and
+    // which open issue tracks it. Each note is posted as written, so the next round reads the description without them.
     const threads: string[] = review.comments.map((c: { body: string }) => c.body);
     expect(threads.map(body => body.split('\n')[2])).toEqual(['**On new code**', '**On old code**', '**Old code off the diff**', '**Old blocker**']);
-    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
+    expect(threads[1].startsWith(`\u26A0\uFE0F **Warning**\n\n**On old code**\n\n${unconfirmedNote}\n\nTracked in #17.\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
     expect(parseFindingFromComment(threads[1]).description).toBe('It goes wrong. Second sentence. Third sentence.');
     expect([threads[0], threads[3]].join('\n')).not.toContain('An earlier round');
     // A late warning off the changed lines gets its thread in the review on the first changed line, with the same notes.
@@ -6284,6 +6314,9 @@ describe('postReview non-blocking findings', () => {
     // A note on reviewed code gets no thread, even on a changed line, and sits in the section of listed suggestions.
     expect(review.body).toMatch(/### Pre-existing[\s\S]*\n\n---\n\n<details>\n<summary><b>1 suggestion<\/b> · not blocking<\/summary>\n\n<details>\n<summary>\u2728 <b>Note on old code<\/b>/u);
     expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nIt sits on code this PR did not change, or the code before this PR fails the same way, so it doesn't block\. If it is a blocker, it is listed as a warning\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
+    // A pre-existing finding in the body names the open PR that tracks it, and one no issue tracks names none.
+    expect(review.body).toMatch(/<b>Old race in the pool<\/b>[^\n]*<\/summary>\n\nTracked in #23\.\n\n\*\*What goes wrong:\*\*/u);
+    expect(review.body.match(/Tracked in #/g)).toHaveLength(1);
     expect(review.body.indexOf('Missed by an earlier review')).toBeLessThan(review.body.indexOf('### Pre-existing'));
     // One missed finding reads as singular, and several pre-existing ones as plural.
     const counting = makeOctokit();
