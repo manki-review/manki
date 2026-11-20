@@ -919,6 +919,10 @@ async function resolveDismissedThread(
     const authorOverride = role && senderLogin ? { login: senderLogin, role } : undefined;
     const held = await resolveIsHeld(octokit, bot, owner, repo, thread, prAuthorLogin, clearRole);
     if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, authorOverride, held)) {
+      // Manki records a maintainer's dismissal of a guarded thread it resolved, once, so later rounds read it as settled without a fix.
+      if (mayClear && isGuarded(thread) && (!thread.isResolved || held) && senderLogin && thread.recordedOverride?.login !== senderLogin) {
+        await announceSecurityOverrides(octokit, [{ thread: thread.id, login: senderLogin, via: 'dismiss', ...(thread.fixClaim && { fixClaim: thread.fixClaim }) }]);
+      }
       // A dismissal lifts no warning hold, so the thread is read again as the resolve left it.
       const now = thread.isWarning ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch(() => undefined) : undefined;
       const holds = now && await warningHoldNote(octokit, bot, owner, repo, now, clearRole);

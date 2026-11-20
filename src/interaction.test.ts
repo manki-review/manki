@@ -2282,7 +2282,10 @@ describe('handleReviewCommentCommand', () => {
     const guardedByAuthor = kind !== 'warning' && sender === 'pr-author';
     // The lookup gets the level of the base branch's config, and only the PR author's own dismissal of a guarded thread needs it.
     expect(jest.mocked(ghUtils.authorClearRole).mock.calls).toEqual(guardedByAuthor ? [[octokit, 'test-owner', 'test-repo', 'pr-author', 'maintain']] : []);
-    const overrides = mayClear && guardedByAuthor ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', role: 'maintain', via: 'dismiss', fixClaim: { pr: 7, status: 'confirmed' } }]]] : [];
+    // Manki records the PR author's dismissal before it resolves, and a maintainer's once it resolved the thread.
+    const byMaintainer = resolves && kind !== 'warning' && sender !== 'pr-author';
+    const record = (role?: string) => [[octokit, [{ thread: 'PRRT_this', login: sender, ...(role && { role }), via: 'dismiss', fixClaim: { pr: 7, status: 'confirmed' } }]]];
+    const overrides = mayClear && guardedByAuthor ? record('maintain') : byMaintainer ? record() : [];
     expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toEqual(overrides);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolves ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     // A resolved thread speaks for itself. One left open says why in the thread, and nothing goes to the PR.
@@ -2352,7 +2355,8 @@ describe('handleReviewCommentCommand', () => {
 
     expect(jest.mocked(state.reopenThread).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this']] : []);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(result === 'cleared' ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
-    expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
+    // Manki records a maintainer's dismissal only on a thread it resolved itself.
+    expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toEqual(result === 'cleared' ? [[octokit, [{ thread: 'PRRT_this', login: 'someone', via: 'dismiss' }]]] : []);
     // A thread that stays resolved by the PR author still blocks, so the dismissal says it did not work.
     const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
     const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
@@ -2387,6 +2391,19 @@ describe('handleReviewCommentCommand', () => {
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'), undefined, 'maintain');
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this', 'WONT_FIX');
+
+    // A maintainer's dismissal is recorded once too: a repeat dismiss on a thread that carries that record adds none.
+    setContext({
+      comment: { id: 63, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: 'someone' },
+    });
+    for (const [recordedOverride, records] of [[undefined, 1], [{ login: 'someone', via: 'dismiss' }, 0]] as const) {
+      jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ ...thread, ...(recordedOverride && { recordedOverride }) }]);
+      jest.mocked(state.announceSecurityOverrides).mockClear();
+      await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'), undefined, 'maintain');
+      expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toHaveLength(records);
+    }
   });
 
   it('posts no note when a thread dismiss with a remark resolves the thread', async () => {

@@ -1509,6 +1509,7 @@ describe('fetchRecapState', () => {
         ['dismiss whose access cannot be read', [], [['carol', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
         ['record typed by a person', [], [['alice', typedRecord]], false],
         ['dismiss by a writer', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, false],
+        ['dismiss Manki recorded', [`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'alice')}`], dismissed, true],
         ['dismiss then confirmed fix', [confirmed], dismissed, false],
         // A reopen by Manki ends the waiver before it, and only a waiver after it counts.
         ['waived, then reopened', [answer('Withdrawn'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], undefined, false],

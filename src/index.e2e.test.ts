@@ -1876,9 +1876,9 @@ describe('runFullReview end to end', () => {
 
       expect(core.setFailed).not.toHaveBeenCalled();
       const note = clears ? '' : `\n\n${REOPENED} ${PUSH_A_FIX}`;
-      // A dismissal that resolves the thread gets no answer.
+      // A dismissal that resolves the thread gets no answer, only Manki's record of it.
       expect(thread.comments.slice(before + 1).map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''))).toEqual(
-        body.startsWith('@manki') ? [] : [`${agreed}${note}\n\n<!-- manki -->${clears ? '' : `\n${REOPENED_MARKER}`}`],
+        body.startsWith('@manki') ? ['Finding dismissed by `@bob`, who has write access to this repository.\n\n<!-- manki -->\n<!-- manki-security-override:dismiss:bob -->'] : [`${agreed}${note}\n\n<!-- manki -->${clears ? '' : `\n${REOPENED_MARKER}`}`],
       );
       // Manki resolves the thread itself, since alice's own resolve never counts for the approval.
       expect([thread.isResolved, thread.resolvedBy?.login]).toEqual(clears ? [true, APP_LOGIN] : [false, undefined]);
@@ -1975,10 +1975,10 @@ describe('runFullReview end to end', () => {
       expect(postedReviews().map(r => r.state)).toEqual(reviews);
     });
 
-    it.each<[string, string, string, boolean]>([
-      ['dismissed it, and pauses automatic review', '@manki dismiss', '', true],
-      ['replied and Manki withdrew it, and blocks without a pause', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.', false],
-    ])('counts a security blocker as settled once a maintainer %s when it comes back', async (_label, reply, answer, pauses) => {
+    it.each<[string, string, string]>([
+      ['dismissed it', '@manki dismiss', ''],
+      ['replied and Manki withdrew it', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.'],
+    ])('counts a security blocker as settled once a maintainer %s, and blocks without a pause when it comes back', async (_label, reply, answer) => {
       const security = (sameAs?: string) => JSON.stringify({
         summary: 'One blocker.',
         findings: [{ id: 1, title: BLOCKER.title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
@@ -2003,9 +2003,8 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.asked.judge).not.toContain('PRRT_1');
 
       // The next push renames the variable and leaves the sum unchecked, and the round raises the blocker again. Neither
-      // an agreement nor Manki's own answer drops a blocker on code the push changed. Manki's answer recorded that the
-      // thread was settled without a fix, so no fix came back and automatic review goes on. A dismiss command leaves
-      // no record of Manki's, so its thread counts as a claimed fix.
+      // an agreement nor Manki's own answer drops a blocker on code the push changed. Manki recorded that the thread was
+      // settled without a fix, in its answer or its record of the dismissal, so no fix came back and automatic review goes on.
       const renamed = ['+  const sum = a + b;\n+  return sum;', '+  const total = a + b;\n+  return total;'] as const;
       mockGitHub.headSha = 'f6'.repeat(20);
       mockGitHub.mathAt[mockGitHub.headSha] = MATH_TS.replace('const sum = a + b;\n  return sum;', 'const total = a + b;\n  return total;');
@@ -2016,10 +2015,10 @@ describe('runFullReview end to end', () => {
 
       const again = postedReviews().at(-1)!;
       expect(core.setFailed).not.toHaveBeenCalled();
-      expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', pauses ? 'NOT_CONVERGING' : 'ADDRESS_FIRST']);
+      expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', 'ADDRESS_FIRST']);
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', title: BLOCKER.title })]);
-      expect(again.body.includes('Needs a human')).toBe(pauses);
-      expect(mockGitHub.roundContext(again).judge.fixClaimedThreads).toEqual(pauses ? [thread.id] : []);
+      expect(again.body).not.toContain('Needs a human');
+      expect(mockGitHub.roundContext(again).judge.fixClaimedThreads).toEqual([]);
     });
 
     it.each<[string, boolean]>([

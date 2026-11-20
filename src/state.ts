@@ -382,14 +382,16 @@ function fixClaimLine({ pr, status }: FixClaim): string {
 
 /**
  * Replies once on each thread to record a security override, and says what the thread's `fixClaim` was. The reply's
- * marker is what later rounds read the override from. Returns the overrides it could record.
+ * marker is what later rounds read the override from. An override without `role` is a dismissal by someone other than
+ * the PR author with write access. Returns the overrides it could record.
  */
-async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Required<SecurityOverride> & { fixClaim?: FixClaim }>): Promise<SecurityOverride[]> {
+async function announceSecurityOverrides(octokit: Octokit, overrides: Array<SecurityOverride & { fixClaim?: FixClaim }>): Promise<SecurityOverride[]> {
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
       const claim = o.fixClaim ? ` ${fixClaimLine(o.fixClaim)}` : '';
-      await replyToReviewThread(octokit, o.thread, `Finding dismissed by \`@${o.login}\`, the PR author, who has ${rolePhrase(o.role)} on this repository.${claim}`, securityOverrideMarker(o.via, o.login));
+      const who = o.role ? `the PR author, who has ${rolePhrase(o.role)} on this repository` : 'who has write access to this repository';
+      await replyToReviewThread(octokit, o.thread, `Finding dismissed by \`@${o.login}\`, ${who}.${claim}`, securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {

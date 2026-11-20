@@ -798,14 +798,15 @@ function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boole
 
 /**
  * Whether the latest settlement of the resolved thread `t` waived it, so the resolve that holds now is that waiver's:
- * Manki resolved it on its own answer that accepted no fix, or recorded the PR author's clearing with `override` and the
- * author's resolve or Manki's own still holds. A later resolve by anyone else, as after a reopen and a fix, waives nothing.
+ * Manki resolved it on its own answer that accepted no fix or on a dismiss it recorded, or recorded the PR author's own
+ * resolve with `override` and that resolve still holds. A later resolve by anyone else, as after a reopen and a fix,
+ * waives nothing.
  */
 function waivedNow(t: ReviewThread, s: Settlement, override: ThreadSecurityOverride | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
   if (!t.isResolved) return false;
   const byManki = isBotLogin(bot, t.resolvedByLogin);
-  if (s.latestWaiver === 'answer') return byManki;
-  return s.latestWaiver === 'override' && !!override && (byManki || isLogin(t.resolvedByLogin, prAuthorLogin));
+  if (s.latestWaiver === 'answer' || s.latestWaiver === 'dismiss') return byManki;
+  return s.latestWaiver === 'override' && !!override && isLogin(t.resolvedByLogin, prAuthorLogin);
 }
 
 /** What the review round and the approval check both read to decide whether a resolved thread is settled. */
@@ -824,10 +825,10 @@ interface Settlement {
   fixAnswered: boolean;
   /**
    * Manki's latest settling comment since it last reopened the thread, when that comment settled it without a fix:
-   * `answer`, its reply record says it accepted an answer that accepted no fix, or `override`, its record of the PR
-   * author's clearing with a role.
+   * `answer`, its reply record says it accepted an answer that accepted no fix, `dismiss`, its record of a dismiss it
+   * accepted and resolved the thread on, or `override`, its record of the PR author's own resolve with a role.
    */
-  latestWaiver?: 'answer' | 'override';
+  latestWaiver?: 'answer' | 'dismiss' | 'override';
 }
 
 /**
@@ -838,10 +839,11 @@ function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement
   const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
   const fix = (body: string) => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined;
   const reopened = own.reduce((at, body, i) => hasOwnMarker(body, REOPENED_MARKER, COMMENT_MARKER) ? i : at, -1);
-  const latest = own.slice(reopened + 1).flatMap((body): Array<'fix' | 'answer' | 'override'> => {
+  const latest = own.slice(reopened + 1).flatMap((body): Array<'fix' | 'answer' | 'dismiss' | 'override'> => {
     if (fix(body)) return ['fix'];
     if (settlingDecision(body)) return ['answer'];
-    return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
+    const via = ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER)?.match(/^(resolve|dismiss):/)?.[1];
+    return via === 'dismiss' ? ['dismiss'] : via ? ['override'] : [];
   }).at(-1);
   return { fixAnswered: own.some(fix), ...(latest && latest !== 'fix' && { latestWaiver: latest }) };
 }
