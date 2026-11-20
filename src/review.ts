@@ -1285,7 +1285,7 @@ export async function runReview(
   const fixClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'fixes'), comparisonDeadline.signal);
   const fixChecksPromise = (checksFixes ? listFixes(fixClient, rawDiff, diff) : Promise.resolve({ fixes: [] })).then(async ({ fixes, ...listed }) => {
     const checked = await runFixChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'fix_check', reviewer), fixes, {
-      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, signal: comparisonDeadline.signal, progress: sideProgress('fix'), earlier: earlierOf(kept?.fixes),
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related: withoutDependencies(related), signal: comparisonDeadline.signal, progress: sideProgress('fix'), earlier: earlierOf(kept?.fixes),
     });
     return { findings: checked.findings, record: fixesRecord(listed, checked.fixes) };
   });
