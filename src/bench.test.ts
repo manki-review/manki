@@ -541,10 +541,10 @@ describe('scoreRun', () => {
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
 
-    // An incomplete run counts in no row. Neither does the warning.
+    // An incomplete run counts in no row. Neither does the warning. The last run is one the matcher failed on, which keeps its findings.
     const report = (runs: Array<typeof score>) => buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs }] }]);
     const table = (rows: string[]) => ['| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
-    const routed = report([score, { ...score, complete: false }]);
+    const routed = report([score, { ...score, complete: false }, { ...score, complete: false, matches: [], unexpectedWarnings: 0 }]);
     expect(formatBlockerRoutes(routed.variants)).toBe(table([
       '| base: filed by a finder and kept | 1 | 0 | 0 | 1 | 2 |',
       '| base: raised by the judge | 0 | 1 | 0 | 0 | 1 |',
@@ -556,7 +556,7 @@ describe('scoreRun', () => {
       '| base: other | 0 | 0 | 0 | 1 | 1 |',
     ]));
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatBlockerRoutes(routed.variants)}\n`);
-    // The unexpected warning counts in every run, as in the variant's figure of unexpected warnings.
+    // The unexpected warning counts in every run the variant's figure of unexpected warnings counts it in, and not in the run the matcher failed on.
     const sources = (row: string) => ['| Raised an unexpected warning | Warnings |', '| --- | --- |', row].join('\n');
     expect(routed.variants[0].summary.unexpectedWarnings).toBe(2);
     expect(formatWarningSources(routed.variants)).toBe(sources('| base: finder, second read, sibling comparison, pattern check, related repo check, sweep, tool result, scope reader | 2 |'));

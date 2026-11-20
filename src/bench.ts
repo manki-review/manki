@@ -1173,7 +1173,12 @@ function matchedKeyGrade(c: CaseReport, run: RunScore, n: number): KeySeverity |
 
 /** The warning findings of a reported run that match no key item. They are counted from the run's findings and matches when its ref did not score them. */
 function unexpectedWarnings(c: CaseReport, run: RunScore): number {
-  return run.unexpectedWarnings ?? unmatchedFindings(c, run).filter(f => f.severity === 'warning').length;
+  return run.unexpectedWarnings ?? unexpectedWarningFindings(c, run).length;
+}
+
+/** The findings `unexpectedWarnings` counts. A run that stored none, such as one the matcher failed on, has none, whatever its findings. */
+function unexpectedWarningFindings(c: CaseReport, run: RunScore): RunScore['findings'] {
+  return run.unexpectedWarnings === 0 ? [] : unmatchedFindings(c, run).filter(f => f.severity === 'warning');
 }
 
 export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
@@ -1749,7 +1754,7 @@ export function formatWarningSources(variants: VariantReport[]): string {
     const counts = new Map<string, number>();
     for (const c of v.cases.filter(c => c.set === set)) {
       for (const run of c.runs) {
-        for (const f of unmatchedFindings(c, run).filter(f => f.severity === 'warning')) {
+        for (const f of unexpectedWarningFindings(c, run)) {
           const kinds = f.route?.raisedBy?.map(kind => RAISED_BY[kind]).join(', ') || 'unknown';
           counts.set(kinds, (counts.get(kinds) ?? 0) + 1);
         }

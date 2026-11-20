@@ -46,7 +46,7 @@ describe('formatReportSummary and the commands on a stored report', () => {
       const [scored] = report.variants[0].cases;
       const finding = { severity: 'blocker' as const, title: `title ${text}`, file: `src/${text}.rs`, line: 3, description: `description ${text}` };
       const warning = { severity: 'warning' as const, title: `warning ${text}`, file: `src/${text}.rs`, line: 4, description: `warned ${text}`, route: { finderGrade: 'warning' as const, raisedBy: ['finder' as const, 'comparison' as const] } };
-      scored.runs = [{ ...scored.runs[0], outcome: 'ADDRESS_FIRST', complete: true, findings: [finding, warning], falseBlockers: 1, extraFindings: 2 }, { ...scored.runs[0], error: `failed on ${text}` }];
+      scored.runs = [{ ...scored.runs[0], outcome: 'ADDRESS_FIRST', complete: true, findings: [finding, warning], falseBlockers: 1, unexpectedWarnings: 1, extraFindings: 2 }, { ...scored.runs[0], error: `failed on ${text}` }];
       return report;
     };
     const summaryOf = (benchCase: BenchCase, text: string) => formatReportSummary(reportOf(benchCase, text));
