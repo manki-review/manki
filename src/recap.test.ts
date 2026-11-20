@@ -1508,6 +1508,9 @@ describe('fetchRecapState', () => {
         ['record typed by a person', [], [['alice', typedRecord]], false],
         ['verified dismiss', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, true],
         ['dismiss then confirmed fix', [confirmed], dismissed, false],
+        // A reopen by Manki ends the waiver before it, and only a waiver after it counts.
+        ['waived, then reopened', [answer('Withdrawn'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], undefined, false],
+        ['reopened, then waived', [`Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`, answer('Withdrawn')], undefined, true],
       ];
       for (const [why, replies, people, without] of decided) {
         const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');

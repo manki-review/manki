@@ -2021,7 +2021,10 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.roundContext(again).judge.fixClaimedThreads).toEqual([]);
     });
 
-    it('pauses automatic review when a blocker a maintainer resolved comes back, also after a reply that names another PR', async () => {
+    it.each<[string, boolean]>([
+      ['after a reply that names another PR', false],
+      ['after Manki withdrew it, a maintainer reopened it and the author pushed a fix', true],
+    ])('pauses automatic review when a blocker a maintainer resolved comes back, %s', async (_label, waivedFirst) => {
       const security = (sameAs?: string, title = BLOCKER.title) => JSON.stringify({
         summary: 'One blocker.',
         findings: [{ id: 1, title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
@@ -2030,6 +2033,13 @@ describe('runFullReview end to end', () => {
       await reviewRound();
       const [thread] = mockGitHub.threads;
 
+      if (waivedFirst) {
+        // The waiver was the thread's settlement once. A maintainer's later resolve is the settlement that holds now.
+        await replyInThread(thread, 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.', 'bob');
+        expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, APP_LOGIN]);
+        Object.assign(thread, { isResolved: false, resolvedBy: null });
+        await dispatch({ event: 'pull_request_review_thread', action: 'unresolved', pr: String(PR_NUMBER) });
+      }
       // Text in a reply is no record of Manki's: naming another PR settles nothing, so the maintainer's resolve claims a fix.
       thread.comments.push({ databaseId: 9100, body: 'Fixed in this PR, which closes #45.', url: `${thread.comments[0].url}-9100`, authorAssociation: 'MEMBER', author: { login: 'bob' } });
       await resolveThread(thread, 'bob');

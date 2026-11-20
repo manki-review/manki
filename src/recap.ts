@@ -730,7 +730,7 @@ async function fetchRecapState(
       ...(t.gradeUnknown && { gradeUnknown: true }),
       status,
       ...(facts.addressed && status !== 'open' && status !== 'replied' && { fixed: true }),
-      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && (t.settlement.decidedByAnswer || facts.writerDismissed || securityOverride) && { decidedWithoutFix: true }),
+      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && waivedNow(t, t.settlement, facts.writerDismissed, securityOverride, bot, prAuthorLogin) && { decidedWithoutFix: true }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -797,6 +797,21 @@ function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boole
   return authorCannotClear(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && isLogin(t.resolvedByLogin, prAuthorLogin);
 }
 
+/**
+ * Whether the latest settlement of the resolved thread `t` waived it, so the resolve that holds now is that waiver's:
+ * Manki resolved it on its own answer or on a dismiss command `writerDismissed` confirms, or the PR author cleared it
+ * with `override`, by its own resolve or by a dismiss that Manki recorded and resolved. A later resolve by anyone else,
+ * as after a reopen and a fix, waives nothing.
+ */
+function waivedNow(
+  t: ReviewThread, s: Settlement, writerDismissed: boolean | undefined, override: ThreadSecurityOverride | undefined, bot: BotIdentity, prAuthorLogin: string | undefined,
+): boolean {
+  if (!t.isResolved) return false;
+  const byManki = isBotLogin(bot, t.resolvedByLogin);
+  if (byManki && (s.latestWaiver === 'answer' || (s.latestWaiver === 'dismiss' && writerDismissed))) return true;
+  return !!override && (isLogin(t.resolvedByLogin, prAuthorLogin) || (byManki && s.latestWaiver === 'override'));
+}
+
 /** What the review round and the approval check both read to decide whether a resolved thread is settled. */
 interface ThreadFacts extends OverrideCandidate {
   /** The latest round that evaluated the thread marked it addressed. */
@@ -813,19 +828,40 @@ interface ThreadFacts extends OverrideCandidate {
 interface Settlement {
   /** A reply of Manki's accepted or confirmed a fix. */
   fixAnswered: boolean;
-  /** Manki's own reply record says it accepted an answer that accepted no fix and settled the thread. */
-  decidedByAnswer: boolean;
-  /** Who posted a dismiss command in the thread. Only one with write access counts, which `resolveBacking` checks. */
+  /**
+   * The latest settling comment since Manki last reopened the thread, when it settled it without a fix: `answer`, Manki's
+   * reply record says it accepted an answer that accepted no fix, `dismiss`, a person's dismiss command, or `override`,
+   * Manki's record of the PR author's clearing with a role.
+   */
+  latestWaiver?: 'answer' | 'dismiss' | 'override';
+  /** Who posted the dismiss commands of a `dismiss` waiver. Only one with write access counts, which `resolveBacking` checks. */
   dismissLogins: string[];
 }
 
-/** Returns how the comments of a thread settled it. Of a person's text only the dismiss command counts, with its sender. */
+/**
+ * Returns how the comments of a thread settled it. Of a person's text only the dismiss command counts, with its sender.
+ * A reopen by Manki ends every settlement before it, so only the comments after it can waive the thread.
+ */
 function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement {
-  const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
+  const replies = comments.slice(1);
+  const own = (c: ThreadCommentNode) => isBotLogin(bot, c.author?.login);
+  const fix = (body: string) => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined;
+  const reopened = replies.reduce((at, c, i) => own(c) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER) ? i : at, -1);
+  const people = new Set(personReplies(bot, comments));
+  const events = replies.slice(reopened + 1).flatMap((c): Array<{ kind: 'fix' | 'answer' | 'dismiss' | 'override'; login?: string }> => {
+    const body = c.body ?? '';
+    if (people.has(c)) return DISMISS_COMMAND_RE.test(body) && c.author?.login ? [{ kind: 'dismiss', login: c.author.login }] : [];
+    if (!own(c)) return [];
+    if (fix(body)) return [{ kind: 'fix' }];
+    if (settlingDecision(body)) return [{ kind: 'answer' }];
+    return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? [{ kind: 'override' }] : [];
+  });
+  const latest = events.at(-1)?.kind;
+  const lastOther = events.reduce((at, e, i) => e.kind !== 'dismiss' ? i : at, -1);
   return {
-    fixAnswered: own.some(body => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined),
-    decidedByAnswer: own.some(body => !!settlingDecision(body)),
-    dismissLogins: personReplies(bot, comments).flatMap(c => c.author?.login && DISMISS_COMMAND_RE.test(c.body ?? '') ? [c.author.login] : []),
+    fixAnswered: replies.some(c => own(c) && fix(c.body ?? '')),
+    ...(latest && latest !== 'fix' && { latestWaiver: latest }),
+    dismissLogins: latest === 'dismiss' ? events.slice(lastOther + 1).flatMap(e => e.login ?? []) : [],
   };
 }
 
