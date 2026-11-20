@@ -1,5 +1,5 @@
 import { Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
+import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -1017,19 +1017,39 @@ describe('fetchRecapState', () => {
 
   it('carries the fix claim of Manki\'s own answer on a blocker the PR author dismissed, and none from a thread not read in full', async () => {
     const claim = (login: string, body = 'Unverified. You name #7.\n\n<!-- manki -->\n<!-- manki-fix-claim:7:confirmed -->') => ({ body, author: { login } });
-    const override = async (reply: ReturnType<typeof claim>, pageInfo: { hasNextPage: boolean; endCursor: string | null } = LAST_PAGE) => {
+    const cleared = async (reply: ReturnType<typeof claim>, pageInfo: { hasNextPage: boolean; endCursor: string | null } = LAST_PAGE) => {
       const nodes = [...makeThread().comments.nodes, reply];
       const octokit = mockOctokit([makeThread({ id: 'tc', isResolved: true, resolvedBy: { login: 'author' }, comments: { pageInfo, nodes } })]);
       Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'maintain', role_name: 'maintain', user: { type: 'User' } } })) } });
-      return (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain')).previousFindings[0].securityOverride;
+      return (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain')).previousFindings[0];
     };
+    const override = async (...args: Parameters<typeof cleared>) => (await cleared(...args)).securityOverride;
 
     expect(await override(claim('manki-review[bot]'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 7, status: 'confirmed' } });
     // The marker counts only in Manki's own reply. A person's reply that names another pull request is a claim Manki did not check.
     expect(await override(claim('author'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 7, status: 'unchecked' } });
     expect(await override(claim('reader', 'Fixed in https://github.com/owner/repo/pull/12, see `#13` and #1.'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 12, status: 'unchecked' } });
+    // A maintainer's dismiss record is no override, so the author's override recorded after it still counts as announced.
+    const dismissRecord = claim('manki-review[bot]', `Finding dismissed by \`@bob\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('bob')}`);
+    const recorded = claim('manki-review[bot]', `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`);
+    const afterRecord = async (nodes: Array<ReturnType<typeof claim>>) => {
+      const octokit = mockOctokit([makeThread({ id: 'tc', isResolved: true, resolvedBy: { login: 'author' }, comments: { pageInfo: LAST_PAGE, nodes: [...makeThread().comments.nodes, ...nodes] } })]);
+      Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'maintain', role_name: 'maintain', user: { type: 'User' } } })) } });
+      return (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain')).previousFindings[0].securityOverride;
+    };
+    expect(await afterRecord([dismissRecord, recorded])).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: true });
+    expect(await afterRecord([dismissRecord])).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false });
     // A later answer may be missing, so the thread names no claim.
     expect(await override(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false });
+
+    // The PR author's clearing with a role settles the thread without a fix, unless an answer of Manki's confirmed one.
+    // Only a thread read in full says so.
+    // Only Manki's record of the clearing counts, so a clearing Manki has not recorded yet waives nothing.
+    const settled = async (...args: Parameters<typeof cleared>) => (await cleared(...args)).decidedWithoutFix ?? false;
+    expect(await settled(claim('manki-review[bot]', `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`))).toBe(true);
+    expect(await settled(claim('manki-review[bot]'))).toBe(false);
+    expect(await settled(claim('manki-review[bot]', `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`))).toBe(false);
+    expect(await settled(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toBe(false);
   });
 
   it('populates lineStart from startLine when present for multi-line annotations', async () => {
@@ -1487,8 +1507,8 @@ describe('fetchRecapState', () => {
         answered.comments.nodes.push(...people.map(([login, body]) => ({ body, author: { login } })), ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
         return answered;
       };
-      // Of a person's text, only a dismiss command counts, and only from someone with write access, as the dismiss
-      // handler requires. A reply record a person typed never counts.
+      // Only Manki's own comments count. No person's text does, a dismiss command or a reply record a person typed
+      // included, whoever wrote it.
       const typedRecord = answer('Agreed').replace('**Agreed.**', 'Agreed, see below.');
       const dismissed: Array<[string, string]> = [['alice', '@manki dismiss']];
       const decided: Array<[string, string[], Array<[string, string]> | undefined, boolean]> = [
@@ -1498,13 +1518,37 @@ describe('fetchRecapState', () => {
         ['dismiss without write access', [], [['mallory', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
         ['dismiss whose access cannot be read', [], [['carol', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
         ['record typed by a person', [], [['alice', typedRecord]], false],
-        ['verified dismiss', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, true],
+        ['dismiss by a writer', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, false],
+        ['dismiss Manki recorded', [`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`], dismissed, true],
         ['dismiss then confirmed fix', [confirmed], dismissed, false],
+        // A reopen by Manki ends the waiver before it, and only a waiver after it counts.
+        ['waived, then reopened', [answer('Withdrawn'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], undefined, false],
+        ['reopened, then waived', [`Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`, answer('Withdrawn')], undefined, true],
       ];
       for (const [why, replies, people, without] of decided) {
         const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
         expect([why, read.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])]).toEqual([why, [['auto-resolved', without]]]);
       }
+      // A dismiss command after Manki's answer cancels nothing, whoever sent it.
+      const dismissedLater = answeredWith('T_BOT', files.bot, [answer('Withdrawn')]);
+      dismissedLater.comments.nodes.push({ body: '@manki dismiss', author: { login: 'mallory' } });
+      const afterDismiss = await fetchRecapState(withWriter(mockOctokit([dismissedLater], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(afterDismiss.previousFindings.map(f => f.decidedWithoutFix ?? false)).toEqual([true]);
+      // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.
+      const dismissedWarning = makeThread({
+        id: 'T_WARN', isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: files.bot, line: 10,
+        comments: { nodes: [
+          { body: `**Warning**: ${title}\n\n<!-- manki:warning:${slug} -->`, author: { login: BOT_LOGIN } },
+          { body: '@manki dismiss', author: { login: 'alice' } },
+          { body: `Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`, author: { login: BOT_LOGIN } },
+        ] },
+      });
+      const warned = await fetchRecapState(withWriter(mockOctokit([dismissedWarning], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(warned.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])).toEqual([['auto-resolved', true]]);
+      const sameDefect = { sendMessage: jest.fn().mockResolvedValue({ content: '[{ "index": 1, "matchedResolved": 1 }]' }) } as unknown as import('./providers').LLMClient;
+      const repeat = makeFinding({ severity: 'warning', title: 'Null input is not rejected', file: files.bot, line: 10 });
+      const deduped = await llmDeduplicateFindings([repeat], warned.previousFindings, sameDefect, undefined, () => false);
+      expect([deduped.unique, deduped.duplicates.map(d => d.matchedTitle)]).toEqual([[], [title]]);
 
       // A later round that found the thread open again takes the earlier `addressed` away, so Manki's resolve has nothing
       // to back it. A warning thread Manki resolved on an `addressed` record counts as resolved and fixed.

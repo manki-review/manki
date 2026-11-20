@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { dismissRecordLogins, dismissRecordMarker, FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -87,6 +87,8 @@ interface ReviewThread {
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
+  /** Who Manki recorded a dismissal for on this thread since its last reopen, by `dismissRecordLogins`. */
+  dismissRecords?: string[];
   /** The fix in another pull request that a reply in the thread named, and whether Manki checked it, by `fixClaimOf`. */
   fixClaim?: FixClaim;
   findingTitle: string;
@@ -240,6 +242,7 @@ async function fetchBotReviewThreads(
       const resolvedByLogin = thread.resolvedBy?.login;
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
+      const dismissRecords = dismissRecordLogins(bot, thread.comments.nodes);
       // A thread at the comment limit may hide a later answer, so it names no claim.
       const fixClaim = (isSecurity || isBlocking) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
@@ -259,6 +262,7 @@ async function fetchBotReviewThreads(
         ...(holdLifted && { holdLifted }),
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
+        ...(dismissRecords.length > 0 && { dismissRecords }),
         ...(fixClaim && { fixClaim }),
         findingTitle,
         ...(place && { place }),
@@ -374,6 +378,27 @@ async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean
  * Says which pull request a reply in the thread named, and whether Manki confirmed it as the fix. Only Manki's check
  * reads a reply as naming the fix, so an unchecked one only names the pull request.
  */
+/** The note that records a dismissal by `login`, who is the PR author with `role`, the PR author, or someone with write access. */
+function dismissalNote(login: string, who: { role?: AuthorClearRole; prAuthor?: boolean }, fixClaim: FixClaim | undefined): string {
+  const by = who.role ? `, the PR author, who has ${rolePhrase(who.role)} on this repository` : who.prAuthor ? ', the PR author' : ', who has write access to this repository';
+  return `Finding dismissed by \`@${login}\`${by}.${fixClaim ? ` ${fixClaimLine(fixClaim)}` : ''}`;
+}
+
+/**
+ * Replies on `thread` to record the dismissal by `login` that Manki accepted, with its own marker that no reader of
+ * security overrides sees, and with `markers`. Returns whether the reply was posted.
+ */
+async function recordDismissal(octokit: Octokit, thread: string, login: string, prAuthor: boolean, fixClaim: FixClaim | undefined, ...markers: string[]): Promise<boolean> {
+  try {
+    await replyToReviewThread(octokit, thread, dismissalNote(login, { prAuthor }, fixClaim), dismissRecordMarker(login), ...markers);
+    core.info(`Recorded the dismissal by ${login} on thread ${thread}`);
+    return true;
+  } catch (error) {
+    core.warning(`Failed to record the dismissal on thread ${thread}: ${error}`);
+    return false;
+  }
+}
+
 function fixClaimLine({ pr, status }: FixClaim): string {
   if (status === 'confirmed') return `A reply here named #${pr} as the fix, and Manki confirmed that #${pr} replaced the cited line on the default branch.`;
   if (status === 'unconfirmed') return `A reply here named #${pr} as the fix. Manki could not confirm that #${pr} fixes this finding.`;
@@ -388,8 +413,7 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Requ
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
-      const claim = o.fixClaim ? ` ${fixClaimLine(o.fixClaim)}` : '';
-      await replyToReviewThread(octokit, o.thread, `Finding dismissed by \`@${o.login}\`, the PR author, who has ${rolePhrase(o.role)} on this repository.${claim}`, securityOverrideMarker(o.via, o.login));
+      await replyToReviewThread(octokit, o.thread, dismissalNote(o.login, { role: o.role }, o.fixClaim), securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {
@@ -1158,4 +1182,4 @@ async function approveOrSayWhy(
   return refusal ? heldBy(refusal) : { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, recordDismissal, approveOrSayWhy, authorClearLine, authorResolvedNote, autoReviewHalt, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fetchHeldWarnings, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, warningHoldNote, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX, TRACKED_MARKER };

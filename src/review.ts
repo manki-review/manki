@@ -6,7 +6,7 @@ import { appendTo, digestOf, escapeRegExp, formatDuration, jsonOnlyReply, mapWit
 import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDiff, interRoundDiffFirst, MAX_INTER_ROUND_DIFF_CHARS, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
-import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType } from './recap';
+import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
 import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
@@ -2030,6 +2030,13 @@ export async function runReview(
     }
   }
   if (stopped) return incompleteAfterJudge(stopped);
+  if (previousFindings && previousFindings.length > 0) {
+    const threadByKey = new Map((priorRounds ?? []).flatMap(r => r.findings.entries).flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
+    const restated = dropWaivedRestatements(finalFindings, previousFindings, key => threadByKey.get(key), threadMayHaveChanged(priorRounds ?? [], interRoundDiff));
+    // Listed as drops but not counted in `llmDedupCount`, since the judge returned them and `allJudgedFindings` keeps them.
+    for (const d of restated.duplicates) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
+    finalFindings = restated.unique;
+  }
 
   // Memory suppressions apply after the judge, so the judge's severity and security tag decide what they may hide.
   let suppressionCount = 0;
@@ -3415,18 +3422,20 @@ function citedFiles(f: { file: string; evidence?: FindingEvidence }): string[] {
  * Returns the IDs of the threads where a fix was claimed: an earlier round confirmed the fix, the thread counts as
  * resolved or is gone, or someone who may clear it agreed it away, which leaves a security thread `replied`. No other
  * reply claims a fix. Neither does the PR author resolving a guarded thread, which keeps the status `open` or `replied`.
+ * Unless an earlier round confirmed a fix, a thread `decidedWithoutFix` claims none, since pausing needs a sure claim.
  * With `openThreads` unknown, a thread missing from it proves nothing.
  */
 function fixClaimedThreadIds(previousFindings: PreviousFinding[] | undefined, openThreads: OpenThread[] | null | undefined, priorRounds: RoundContext[]): Set<string> {
   const claimed = judgeAddressedThreadIds(priorRounds);
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
+  const waived = new Set((previousFindings ?? []).flatMap(f => f.threadId && f.decidedWithoutFix ? [f.threadId] : []));
   for (const f of previousFindings ?? []) {
     const cleared = (f.status !== 'open' && f.status !== 'replied') || (!!f.authorReplyMayClear && replyClassOf(f) === 'agree');
-    if (f.threadId && cleared) claimed.add(f.threadId);
+    if (f.threadId && cleared && !waived.has(f.threadId)) claimed.add(f.threadId);
   }
   if (openThreads) {
     for (const p of priorRounds.flatMap(r => r.findings.entries)) {
-      if (p.threadId && !openThreadIds.has(p.threadId)) claimed.add(p.threadId);
+      if (p.threadId && !openThreadIds.has(p.threadId) && !waived.has(p.threadId)) claimed.add(p.threadId);
     }
   }
   return claimed;
