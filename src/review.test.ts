@@ -3771,25 +3771,22 @@ describe('runReview', () => {
     expect(result.findings[0].gradePath?.map(step => [step.from, step.to, step.by])).toEqual([['blocker', 'warning', 'pre_existing']]);
 
     expect(result.findings.map(holdsApproval)).toEqual([false]);
-    // Two refuters on the same model make it pre-existing as well. The base answer cites base line 2, where the flagged
-    // head line 3 sat before this PR.
-    const sameModel = await run('disproved', { pairModel: 'judge-model' });
-    expect([sameModel.result.outcome, sameModel.result.findings.map(f => [f.severity, f.tags, holdsApproval(f)])]).toEqual(['READY', [['warning', ['pre-existing', 'follow-up'], false]]]);
-    // One refuter's answer, alone or beside a second call that failed, lowers the blocker to a warning that still holds
-    // the approval, so one steered model never releases it. Its thread still shows the lines of the base.
-    for (const options of [{ pairModel: null }, { pairModel: 'failed' }]) {
+    // The base answer cites base line 2, where the flagged head line 3 sat before this PR. One refuter's answer, alone,
+    // beside a second call that failed, or beside a second answer on the same model, lowers the blocker to a warning
+    // that still holds the approval, so one steered model never releases it. Its thread still shows the lines of the base.
+    for (const options of [{ pairModel: null }, { pairModel: 'failed' }, { pairModel: 'judge-model' }]) {
       const round = await run('disproved', options);
       const [lowered] = round.result.findings;
-      expect([options, round.result.outcome, lowered.severity, lowered.originalSeverity, lowered.tags?.includes('pre-existing'), holdsApproval(lowered)]).toEqual([options, 'READY', 'warning', 'blocker', false, true]);
+      expect([options, round.result.outcome, lowered.severity, lowered.originalSeverity, lowered.tags?.includes('pre-existing'), lowered.tags?.includes('guarded'), holdsApproval(lowered)]).toEqual([options, 'READY', 'warning', 'blocker', false, true, true]);
       expect(formatFindingComment(lowered, TEST_LINKS)).toContain('Same before this PR');
     }
 
     // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
-    // security finding without both refuters, a workspace without the base, a line the base
+    // security finding without both refuters on two models, a workspace without the base, a line the base
     // does not hold, no citation of the flagged line at its base line, a flagged line the PR re-indented, and a round with
     // no check at all keep the blocker its cell gives.
     const kept: Array<[RefutationOutcome, Options]> = [
-      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: null, security: true }], ['disproved', { pairModel: 'failed', security: true }],
+      ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: null, security: true }], ['disproved', { pairModel: 'failed', security: true }], ['disproved', { pairModel: 'judge-model', security: true }],
       ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
       ['disproved', { baseProof: ['src/queue.ts:3'] }], ['disproved', { line: 4 }], ['disproved', { repoTools: false }],
     ];
@@ -5098,7 +5095,7 @@ describe('runReview', () => {
     const onBase = await run(makeClients());
     expect(onBase.outcome).toBe('READY');
     expect(onBase.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags, holdsApproval(f)])).toEqual([
-      ['Queue holds unverified entries', 'warning', 'blocker', ['follow-up'], true],
+      ['Queue holds unverified entries', 'warning', 'blocker', ['guarded', 'follow-up'], true],
       ['Queue may grow', 'warning', undefined, ['follow-up'], true],
     ]);
     expect(onBase.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: 'the code before this PR fails the same way: The same queue had no cap before this PR.' });

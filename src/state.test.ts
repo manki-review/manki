@@ -1378,6 +1378,10 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread whose reply by someone without write access Manki accepted', [warning('t1', { replies: [reply('bob'), accepted('Agreed', 'no_permission')] })]],
       ['a security warning thread whose reply by the PR author Manki accepted', [warning('t1', { replies: [reply('author'), accepted()] }, ['security'])]],
       ['a security warning thread the PR author resolved without the role', [warning('t1', { isResolved: true, resolvedBy: 'author' }, ['security'])]],
+      // A warning one refuter lowered from a blocker clears only by someone other than the PR author, as a security one.
+      ['a guarded warning thread whose reply by the PR author Manki accepted', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('author'), accepted()] }, ['guarded'])]],
+      ['a guarded warning thread the PR author tracked with its issue box', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply(manki, tracked)] }, ['guarded'])]],
+      ['a guarded warning thread the PR author resolved without the role', [warning('t1', { isResolved: true, resolvedBy: 'author' }, ['guarded'])]],
       ['a second warning thread nobody answered', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('author'), accepted()] }), warning('t2')]],
       ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
         body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
@@ -1423,6 +1427,8 @@ describe('checkAndAutoApprove', () => {
       ['resolved by a person with the role `author_clear_role` allows', [warning('t1', { isResolved: true, resolvedBy: 'maria' })], 'maintain'],
       ['resolved by a PR author with the role', [warning('t1', { isResolved: true, resolvedBy: 'author', replies: [reply('author'), kept] })], 'admin'],
       ['a security warning a maintainer resolved', [warning('t1', { isResolved: true, resolvedBy: 'maria' }, ['security'])]],
+      ['a guarded warning a maintainer resolved', [warning('t1', { isResolved: true, resolvedBy: 'maria' }, ['guarded'])]],
+      ['a guarded warning Manki resolved on a maintainer\'s accepted reply', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('maria'), accepted()] }, ['guarded'])]],
       ['the last of several, each cleared its own way', [warning('t1', { isResolved: true, resolvedBy: 'maria' }), warning('t2', { replies: [reply('author'), accepted()] })], 'maintain'],
       // Neither a pre-existing defect nor a suggestion holds, though nobody answered them.
       ['answered, beside an open pre-existing warning and an open suggestion', [
