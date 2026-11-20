@@ -205,6 +205,9 @@ describe('dependencyLoader', () => {
       }
       // A link to a plain file of the checkout, under a name Manki does not read, changes no install.
       expect((await linked({ 'docs/README.md': '../README.md' }, plain).load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
+      // A link named `node_modules`, or a scope inside one, can hold any package below it.
+      await expect(linked({ 'web/node_modules': '../README.md' }, plain).load('npm/left-pad')).rejects.toThrow('the checkout holds web/node_modules, which the project runs');
+      await expect(linked({ 'node_modules/@corp': '../README.md' }, plain).load('npm/@corp/pad')).rejects.toThrow('the checkout holds node_modules/@corp, which the project runs');
     }
     // A lockfile or a Cargo manifest that does not name the package, in any spelling or through an escape, cannot change it.
     const unrelated = round({ 'a/Cargo.toml': '[dependencies]\nother = ', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) });
