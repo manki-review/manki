@@ -1975,10 +1975,10 @@ describe('runFullReview end to end', () => {
       expect(postedReviews().map(r => r.state)).toEqual(reviews);
     });
 
-    it.each<[string, string, string]>([
-      ['dismissed it', '@manki dismiss', ''],
-      ['replied and Manki withdrew it', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.'],
-    ])('counts a security blocker as settled once a maintainer %s, and blocks without a pause when it comes back', async (_label, reply, answer) => {
+    it.each<[string, string, string, boolean]>([
+      ['dismissed it, and pauses automatic review', '@manki dismiss', '', true],
+      ['replied and Manki withdrew it, and blocks without a pause', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.', false],
+    ])('counts a security blocker as settled once a maintainer %s when it comes back', async (_label, reply, answer, pauses) => {
       const security = (sameAs?: string) => JSON.stringify({
         summary: 'One blocker.',
         findings: [{ id: 1, title: BLOCKER.title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
@@ -2003,8 +2003,9 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.asked.judge).not.toContain('PRRT_1');
 
       // The next push renames the variable and leaves the sum unchecked, and the round raises the blocker again. Neither
-      // an agreement nor Manki's own answer drops a blocker on code the push changed. The thread was settled without a
-      // fix, so no fix came back and automatic review goes on.
+      // an agreement nor Manki's own answer drops a blocker on code the push changed. Manki's answer recorded that the
+      // thread was settled without a fix, so no fix came back and automatic review goes on. A dismiss command leaves
+      // no record of Manki's, so its thread counts as a claimed fix.
       const renamed = ['+  const sum = a + b;\n+  return sum;', '+  const total = a + b;\n+  return total;'] as const;
       mockGitHub.headSha = 'f6'.repeat(20);
       mockGitHub.mathAt[mockGitHub.headSha] = MATH_TS.replace('const sum = a + b;\n  return sum;', 'const total = a + b;\n  return total;');
@@ -2015,10 +2016,10 @@ describe('runFullReview end to end', () => {
 
       const again = postedReviews().at(-1)!;
       expect(core.setFailed).not.toHaveBeenCalled();
-      expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', 'ADDRESS_FIRST']);
+      expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', pauses ? 'NOT_CONVERGING' : 'ADDRESS_FIRST']);
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', title: BLOCKER.title })]);
-      expect(again.body).not.toContain('Needs a human');
-      expect(mockGitHub.roundContext(again).judge.fixClaimedThreads).toEqual([]);
+      expect(again.body.includes('Needs a human')).toBe(pauses);
+      expect(mockGitHub.roundContext(again).judge.fixClaimedThreads).toEqual(pauses ? [thread.id] : []);
     });
 
     it.each<[string, boolean]>([

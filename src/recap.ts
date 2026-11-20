@@ -441,9 +441,9 @@ interface PreviousFinding extends FindingMetadata {
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
   fixed?: boolean;
   /**
-   * Settled without a fix: Manki accepted an answer that accepted no fix, as its reply record says, someone with write
-   * access posted a dismiss command, or the PR author cleared it with a role `author_clear_role` allows. No reply of
-   * Manki's accepted or confirmed a fix, and no round's judge found it fixed.
+   * Settled without a fix, by Manki's latest settling comment since its last reopen: Manki accepted an answer that
+   * accepted no fix, as its reply record says, or recorded the PR author's clearing with a role `author_clear_role`
+   * allows. That resolve still holds, no reply of Manki's accepted or confirmed a fix, and no round's judge found it fixed.
    */
   decidedWithoutFix?: boolean;
   threadId?: string;
@@ -709,7 +709,6 @@ async function fetchRecapState(
     id: t.threadId,
     ...(authorCannotClear(t) && !t.commentsIncomplete && t.authorReplyLogin && { latestReplyLogin: t.authorReplyLogin }),
     ...(authorCannotClear(t) && t.resolvedByHuman && t.resolvedByLogin && { resolverLogin: t.resolvedByLogin }),
-    ...(t.isResolved && !t.resolvedByHuman && t.settlement?.dismissLogins.length && { dismissLogins: t.settlement.dismissLogins }),
   })));
 
   const everAddressed = judgeAddressedThreadIds(priorRounds);
@@ -730,7 +729,7 @@ async function fetchRecapState(
       ...(t.gradeUnknown && { gradeUnknown: true }),
       status,
       ...(facts.addressed && status !== 'open' && status !== 'replied' && { fixed: true }),
-      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && waivedNow(t, t.settlement, facts.writerDismissed, securityOverride, bot, prAuthorLogin) && { decidedWithoutFix: true }),
+      ...(t.settlement && !t.settlement.fixAnswered && !everAddressed.has(t.threadId) && waivedNow(t, t.settlement, securityOverride, bot, prAuthorLogin) && { decidedWithoutFix: true }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -799,17 +798,14 @@ function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boole
 
 /**
  * Whether the latest settlement of the resolved thread `t` waived it, so the resolve that holds now is that waiver's:
- * Manki resolved it on its own answer or on a dismiss command `writerDismissed` confirms, or the PR author cleared it
- * with `override`, by its own resolve or by a dismiss that Manki recorded and resolved. A later resolve by anyone else,
- * as after a reopen and a fix, waives nothing.
+ * Manki resolved it on its own answer that accepted no fix, or recorded the PR author's clearing with `override` and the
+ * author's resolve or Manki's own still holds. A later resolve by anyone else, as after a reopen and a fix, waives nothing.
  */
-function waivedNow(
-  t: ReviewThread, s: Settlement, writerDismissed: boolean | undefined, override: ThreadSecurityOverride | undefined, bot: BotIdentity, prAuthorLogin: string | undefined,
-): boolean {
+function waivedNow(t: ReviewThread, s: Settlement, override: ThreadSecurityOverride | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
   if (!t.isResolved) return false;
   const byManki = isBotLogin(bot, t.resolvedByLogin);
-  if (byManki && (s.latestWaiver === 'answer' || (s.latestWaiver === 'dismiss' && writerDismissed))) return true;
-  return !!override && (isLogin(t.resolvedByLogin, prAuthorLogin) || (byManki && s.latestWaiver === 'override'));
+  if (s.latestWaiver === 'answer') return byManki;
+  return s.latestWaiver === 'override' && !!override && (byManki || isLogin(t.resolvedByLogin, prAuthorLogin));
 }
 
 /** What the review round and the approval check both read to decide whether a resolved thread is settled. */
@@ -820,49 +816,34 @@ interface ThreadFacts extends OverrideCandidate {
   writerReplyLogin?: string;
   /** Who resolved the thread, when `hasWriteAccess` confirms a person with write access. GraphQL types every resolver as `User`, a bot included. */
   writerResolverLogin?: string;
-  /** Whether `hasWriteAccess` confirms someone who posted a dismiss command in the thread, as the dismiss handler requires. */
-  writerDismissed?: boolean;
 }
 
-/** How the comments of a thread settled it, which `decidedWithoutFix` of `PreviousFinding` is made of. */
+/** How Manki's own comments in a thread settled it, which `decidedWithoutFix` of `PreviousFinding` is made of. */
 interface Settlement {
   /** A reply of Manki's accepted or confirmed a fix. */
   fixAnswered: boolean;
   /**
-   * The latest settling comment since Manki last reopened the thread, when it settled it without a fix: `answer`, Manki's
-   * reply record says it accepted an answer that accepted no fix, `dismiss`, a person's dismiss command, or `override`,
-   * Manki's record of the PR author's clearing with a role.
+   * Manki's latest settling comment since it last reopened the thread, when that comment settled it without a fix:
+   * `answer`, its reply record says it accepted an answer that accepted no fix, or `override`, its record of the PR
+   * author's clearing with a role.
    */
-  latestWaiver?: 'answer' | 'dismiss' | 'override';
-  /** Who posted the dismiss commands of a `dismiss` waiver. Only one with write access counts, which `resolveBacking` checks. */
-  dismissLogins: string[];
+  latestWaiver?: 'answer' | 'override';
 }
 
 /**
- * Returns how the comments of a thread settled it. Of a person's text only the dismiss command counts, with its sender.
- * A reopen by Manki ends every settlement before it, so only the comments after it can waive the thread.
+ * Returns how Manki's own comments settled a thread. No person's comment counts, whoever wrote it. A reopen by Manki
+ * ends every settlement before it, so only Manki's comments after it can waive the thread.
  */
 function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement {
-  const replies = comments.slice(1);
-  const own = (c: ThreadCommentNode) => isBotLogin(bot, c.author?.login);
+  const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
   const fix = (body: string) => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined;
-  const reopened = replies.reduce((at, c, i) => own(c) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER) ? i : at, -1);
-  const people = new Set(personReplies(bot, comments));
-  const events = replies.slice(reopened + 1).flatMap((c): Array<{ kind: 'fix' | 'answer' | 'dismiss' | 'override'; login?: string }> => {
-    const body = c.body ?? '';
-    if (people.has(c)) return DISMISS_COMMAND_RE.test(body) && c.author?.login ? [{ kind: 'dismiss', login: c.author.login }] : [];
-    if (!own(c)) return [];
-    if (fix(body)) return [{ kind: 'fix' }];
-    if (settlingDecision(body)) return [{ kind: 'answer' }];
-    return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? [{ kind: 'override' }] : [];
-  });
-  const latest = events.at(-1)?.kind;
-  const lastOther = events.reduce((at, e, i) => e.kind !== 'dismiss' ? i : at, -1);
-  return {
-    fixAnswered: replies.some(c => own(c) && fix(c.body ?? '')),
-    ...(latest && latest !== 'fix' && { latestWaiver: latest }),
-    dismissLogins: latest === 'dismiss' ? events.slice(lastOther + 1).flatMap(e => e.login ?? []) : [],
-  };
+  const reopened = own.reduce((at, body, i) => hasOwnMarker(body, REOPENED_MARKER, COMMENT_MARKER) ? i : at, -1);
+  const latest = own.slice(reopened + 1).flatMap((body): Array<'fix' | 'answer' | 'override'> => {
+    if (fix(body)) return ['fix'];
+    if (settlingDecision(body)) return ['answer'];
+    return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
+  }).at(-1);
+  return { fixAnswered: own.some(fix), ...(latest && latest !== 'fix' && { latestWaiver: latest }) };
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
@@ -876,22 +857,21 @@ function latestPersonReply<T extends { author?: { login: string; __typename?: st
 }
 
 /**
- * Returns `addressed`, `writerReplyLogin`, `writerResolverLogin` and `writerDismissed` of `ThreadFacts` for each thread.
+ * Returns `addressed`, `writerReplyLogin` and `writerResolverLogin` of `ThreadFacts` for each thread.
  * A caller leaves out `latestReplyLogin` when it did not read every comment of the thread, since a later reply may be
  * hidden. A login whose access cannot be read counts as without write access.
  */
 async function resolveBacking(
   octokit: Octokit, owner: string, repo: string, priorRounds: RoundContext[],
-  threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string; dismissLogins?: string[] }>,
-): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin' | 'writerDismissed'>>> {
+  threads: Array<{ id: string; latestReplyLogin?: string; resolverLogin?: string }>,
+): Promise<Map<string, Pick<ThreadFacts, 'addressed' | 'writerReplyLogin' | 'writerResolverLogin'>>> {
   const addressed = judgeAddressedThreadIds(priorRounds, true);
-  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? [], t.dismissLogins ?? []].flat()))];
+  const logins = [...new Set(threads.flatMap(t => [t.latestReplyLogin ?? [], t.resolverLogin ?? []].flat()))];
   const writers = new Set((await Promise.all(logins.map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
   return new Map(threads.map(t => [t.id, {
     ...(addressed.has(t.id) && { addressed: true }),
     ...(t.latestReplyLogin && writers.has(t.latestReplyLogin) && { writerReplyLogin: t.latestReplyLogin }),
     ...(t.resolverLogin && writers.has(t.resolverLogin) && { writerResolverLogin: t.resolverLogin }),
-    ...(t.dismissLogins?.some(login => writers.has(login)) && { writerDismissed: true }),
   }]));
 }
 

@@ -1034,8 +1034,10 @@ describe('fetchRecapState', () => {
 
     // The PR author's clearing with a role settles the thread without a fix, unless an answer of Manki's confirmed one.
     // Only a thread read in full says so.
+    // Only Manki's record of the clearing counts, so a clearing Manki has not recorded yet waives nothing.
     const settled = async (...args: Parameters<typeof cleared>) => (await cleared(...args)).decidedWithoutFix ?? false;
-    expect(await settled(claim('manki-review[bot]'))).toBe(true);
+    expect(await settled(claim('manki-review[bot]', `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`))).toBe(true);
+    expect(await settled(claim('manki-review[bot]'))).toBe(false);
     expect(await settled(claim('manki-review[bot]', `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`))).toBe(false);
     expect(await settled(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toBe(false);
   });
@@ -1495,8 +1497,8 @@ describe('fetchRecapState', () => {
         answered.comments.nodes.push(...people.map(([login, body]) => ({ body, author: { login } })), ...replies.map(body => ({ body, author: { login: BOT_LOGIN } })));
         return answered;
       };
-      // Of a person's text, only a dismiss command counts, and only from someone with write access, as the dismiss
-      // handler requires. A reply record a person typed never counts.
+      // Only Manki's own comments count. No person's text does, a dismiss command or a reply record a person typed
+      // included, whoever wrote it.
       const typedRecord = answer('Agreed').replace('**Agreed.**', 'Agreed, see below.');
       const dismissed: Array<[string, string]> = [['alice', '@manki dismiss']];
       const decided: Array<[string, string[], Array<[string, string]> | undefined, boolean]> = [
@@ -1506,7 +1508,7 @@ describe('fetchRecapState', () => {
         ['dismiss without write access', [], [['mallory', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
         ['dismiss whose access cannot be read', [], [['carol', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
         ['record typed by a person', [], [['alice', typedRecord]], false],
-        ['verified dismiss', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, true],
+        ['dismiss by a writer', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, false],
         ['dismiss then confirmed fix', [confirmed], dismissed, false],
         // A reopen by Manki ends the waiver before it, and only a waiver after it counts.
         ['waived, then reopened', [answer('Withdrawn'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], undefined, false],
@@ -1516,6 +1518,11 @@ describe('fetchRecapState', () => {
         const read = await fetchRecapState(withWriter(mockOctokit([answeredWith('T_BOT', files.bot, replies, people)], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
         expect([why, read.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])]).toEqual([why, [['auto-resolved', without]]]);
       }
+      // A dismiss command after Manki's answer cancels nothing, whoever sent it.
+      const dismissedLater = answeredWith('T_BOT', files.bot, [answer('Withdrawn')]);
+      dismissedLater.comments.nodes.push({ body: '@manki dismiss', author: { login: 'mallory' } });
+      const afterDismiss = await fetchRecapState(withWriter(mockOctokit([dismissedLater], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(afterDismiss.previousFindings.map(f => f.decidedWithoutFix ?? false)).toEqual([true]);
 
       // A later round that found the thread open again takes the earlier `addressed` away, so Manki's resolve has nothing
       // to back it. A warning thread Manki resolved on an `addressed` record counts as resolved and fixed.
