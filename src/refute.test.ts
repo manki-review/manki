@@ -1545,7 +1545,7 @@ describe('refuteBlockers', () => {
 
   it('lets a line of a dependency the round read confirm a check like a related line, and no line of one it did not read', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'manki-refute-packages-'));
-    for (const [name, file] of [['crates.io/demo@1.0.0', 'src/lib.rs'], ['npm/@scope/pad@1.2.0', 'index.js']]) {
+    for (const [name, file] of [['crates.io/demo@1.0.0', 'src/lib.rs'], ['npm/@s~cope/pa~d@1.2.0', 'index.js']]) {
       const dir = join(stateDir, 'packages', name.replace(/\W/g, '-'));
       mkdirSync(join(dir, 'src'), { recursive: true });
       writeFileSync(join(dir, file), 'pub fn parse() -> u8 {\n    panic!("out of range")\n}\n');
@@ -1554,7 +1554,7 @@ describe('refuteBlockers', () => {
     const related = { repos: [], cacheDir: '/cache', stateDir, dependencies: true as const };
     const client = fakeClient({
       'Crate line confirms': { outcome: 'confirmed', reason: 'r', proof: ['crates.io/demo@1.0.0:src/lib.rs:2'] },
-      'Scoped npm line confirms': { outcome: 'confirmed', reason: 'r', proof: ['npm/@scope/pad@1.2.0:index.js:1'] },
+      'Scoped npm line confirms': { outcome: 'confirmed', reason: 'r', proof: ['npm/@s~cope/pa~d@1.2.0:index.js:1'] },
       'Version the round did not read': { outcome: 'confirmed', reason: 'r', proof: ['crates.io/demo@2.0.0:src/lib.rs:2'] },
       'Package line alone disproves': { outcome: 'disproved', reason: 'r', proof: ['crates.io/demo@1.0.0:src/lib.rs:2'] },
     });
@@ -1563,7 +1563,7 @@ describe('refuteBlockers', () => {
       const checked = await refuteBlockers(client, ['Crate line confirms', 'Scoped npm line confirms', 'Version the round did not read', 'Package line alone disproves'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(checked.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([
         ['confirmed', ['crates.io/demo@1.0.0:src/lib.rs:2']],
-        ['confirmed', ['npm/@scope/pad@1.2.0:index.js:1']],
+        ['confirmed', ['npm/@s~cope/pa~d@1.2.0:index.js:1']],
         ['unsettled', undefined],
         // A disproof lifts a finding, so a package line alone settles nothing, as a related line alone does not.
         ['unsettled', ['crates.io/demo@1.0.0:src/lib.rs:2']],

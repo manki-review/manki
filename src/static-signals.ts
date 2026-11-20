@@ -32,7 +32,7 @@ const MAX_QUOTED_RANGE = 2 * QUOTE_LINE_WINDOW + 1;
 const MIN_QUOTE_CHARS = 6;
 // `owner/name:path:line` or `owner/name:path:start-end`, the form reviewers cite a related repo's code in.
 // The name is a related repo's `owner/name`, or a package's `<registry>/<name>@<version>`, whose name can have an npm scope.
-const RELATED_CITATION = /(?<![\w./-])([\w.-]+\/(?:@[\w.-]+\/)?[\w.-]+(?:@[\w.+-]+)?):([^\s:`'"()<>]+):(\d+)(?:-(\d+))?/g;
+const RELATED_CITATION = /(?<![\w./~-])([\w.-]+\/(?:@[\w.~-]+\/)?[\w.~-]+(?:@[\w.+-]+)?):([^\s:`'"()<>]+):(\d+)(?:-(\d+))?/g;
 const CHECK_POLL_MS = 15_000;
 /** How long `waitForChecks` waits for the checks in `wait_for_checks` before reading what is there. */
 const WAIT_TIMEOUT_SECONDS = 300;
