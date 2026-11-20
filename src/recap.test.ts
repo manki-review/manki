@@ -1033,14 +1033,11 @@ describe('fetchRecapState', () => {
     expect(await override(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false });
 
     // The PR author's clearing with a role settles the thread without a fix, unless an answer of Manki's confirmed one.
-    // Only a thread read in full says so, and names the claim on the finding too.
-    const settled = async (...args: Parameters<typeof cleared>) => {
-      const f = await cleared(...args);
-      return [f.decidedWithoutFix ?? false, f.fixClaim];
-    };
-    expect(await settled(claim('manki-review[bot]'))).toEqual([true, { pr: 7, status: 'confirmed' }]);
-    expect(await settled(claim('manki-review[bot]', `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`))).toEqual([false, undefined]);
-    expect(await settled(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toEqual([false, undefined]);
+    // Only a thread read in full says so.
+    const settled = async (...args: Parameters<typeof cleared>) => (await cleared(...args)).decidedWithoutFix ?? false;
+    expect(await settled(claim('manki-review[bot]'))).toBe(true);
+    expect(await settled(claim('manki-review[bot]', `Fixed by the commits up to abc1234.\n\n<!-- manki -->\n${fixedMarker('a'.repeat(40))}`))).toBe(false);
+    expect(await settled(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toBe(false);
   });
 
   it('populates lineStart from startLine when present for multi-line annotations', async () => {

@@ -1978,7 +1978,7 @@ describe('runFullReview end to end', () => {
     it.each<[string, string, string]>([
       ['dismissed it', '@manki dismiss', ''],
       ['replied and Manki withdrew it', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.'],
-    ])('counts a security blocker as settled once a maintainer %s, and pauses automatic review when it comes back', async (_label, reply, answer) => {
+    ])('counts a security blocker as settled once a maintainer %s, and blocks without a pause when it comes back', async (_label, reply, answer) => {
       const security = (sameAs?: string) => JSON.stringify({
         summary: 'One blocker.',
         findings: [{ id: 1, title: BLOCKER.title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
@@ -2003,7 +2003,8 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.asked.judge).not.toContain('PRRT_1');
 
       // The next push renames the variable and leaves the sum unchecked, and the round raises the blocker again. Neither
-      // an agreement nor Manki's own answer drops a blocker on code the push changed.
+      // an agreement nor Manki's own answer drops a blocker on code the push changed. The thread was settled without a
+      // fix, so no fix came back and automatic review goes on.
       const renamed = ['+  const sum = a + b;\n+  return sum;', '+  const total = a + b;\n+  return total;'] as const;
       mockGitHub.headSha = 'f6'.repeat(20);
       mockGitHub.mathAt[mockGitHub.headSha] = MATH_TS.replace('const sum = a + b;\n  return sum;', 'const total = a + b;\n  return total;');
@@ -2014,8 +2015,38 @@ describe('runFullReview end to end', () => {
 
       const again = postedReviews().at(-1)!;
       expect(core.setFailed).not.toHaveBeenCalled();
-      expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', 'NOT_CONVERGING']);
+      expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', 'ADDRESS_FIRST']);
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', title: BLOCKER.title })]);
+      expect(again.body).not.toContain('Needs a human');
+      expect(mockGitHub.roundContext(again).judge.fixClaimedThreads).toEqual([]);
+    });
+
+    it('pauses automatic review when a blocker a maintainer resolved comes back, also after a reply that names another PR', async () => {
+      const security = (sameAs?: string, title = BLOCKER.title) => JSON.stringify({
+        summary: 'One blocker.',
+        findings: [{ id: 1, title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
+      });
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: security() });
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      // Text in a reply is no record of Manki's: naming another PR settles nothing, so the maintainer's resolve claims a fix.
+      thread.comments.push({ databaseId: 9100, body: 'Fixed in this PR, which closes #45.', url: `${thread.comments[0].url}-9100`, authorAssociation: 'MEMBER', author: { login: 'bob' } });
+      await resolveThread(thread, 'bob');
+
+      mockGitHub.headSha = 'f6'.repeat(20);
+      const renamed = ['+  const sum = a + b;\n+  return sum;', '+  const total = a + b;\n+  return total;'] as const;
+      mockGitHub.mathAt[mockGitHub.headSha] = MATH_TS.replace('const sum = a + b;\n  return sum;', 'const total = a + b;\n  return total;');
+      mockGitHub.prDiffs[mockGitHub.headSha] = PR_DIFF.replace(...renamed);
+      mockGitHub.commitDiffs[mockGitHub.headSha] = `diff --git a/src/math.ts b/src/math.ts\n--- a/src/math.ts\n+++ b/src/math.ts\n@@ -2,2 +2,2 @@\n${renamed[0].replace(/^\+/gm, '-')}\n${renamed[1]}\n`;
+      // The blocker comes back under a new title, so only the judge's `sameAs` names the thread.
+      const title = 'Large sums wrap around';
+      Object.assign(mockLLM.replies, { reviewer: JSON.stringify([{ ...BLOCKER, title }]), judge: security('P1', title) });
+      await reviewRound();
+
+      const again = postedReviews().at(-1)!;
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect([again.state, mockGitHub.roundContext(again).meta.outcome, mockGitHub.roundContext(again).judge.fixClaimedThreads]).toEqual(['CHANGES_REQUESTED', 'NOT_CONVERGING', [thread.id]]);
       expect(again.body).toContain('Needs a human');
     });
 
