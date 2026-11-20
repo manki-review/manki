@@ -516,6 +516,17 @@ describe('dependencyLoader', () => {
     // A root lockfile's folder `.` is as long as a one-letter folder, which is still the nearer one.
     const oneLetter = round({ 'Cargo.lock': '[[package]]\nname = "other"\nversion = "1.0.0"\n', 'a/Cargo.toml': '[dependencies]\ndemo = "1.2"\n', 'a/Cargo.lock': cargoLock([{ version: '1.2.0' }]) });
     expect((await oneLetter.load('crates.io/demo')).key).toBe('crates.io/demo@1.2.0');
+    // An install drops a locked version the requirement no longer allows, as Cargo's caret default and npm's ranges read it.
+    for (const [files, spec, requirement] of [
+      [{ 'Cargo.toml': '[dependencies]\ndemo = "1.3"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }, 'crates.io/demo', '1.3'],
+      [{ 'Cargo.toml': '[dependencies]\ndemo = "1.2"\n', 'Cargo.lock': cargoLock([{ version: '2.0.0' }]) }, 'crates.io/demo', '1.2'],
+      [{ 'package.json': JSON.stringify({ dependencies: { 'left-pad': '^2.0.0' } }), 'package-lock.json': lock }, 'npm/left-pad', '^2.0.0'],
+    ] as Array<[Record<string, string>, string, string]>) {
+      await expect(round(files).load(spec)).rejects.toThrow(`requires it as \`${requirement}\`, which no version`);
+    }
+    await expect(round({ 'Cargo.toml': '[dependencies]\ndemo = "1.2, >1.2.0"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }).load('crates.io/demo')).rejects.toThrow('which no version Cargo.lock locks meets');
+    await expect(round({ 'Cargo.toml': '[dependencies]\ndemo = "1.*.2"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }).load('crates.io/demo')).rejects.toThrow('requires it as `1.*.2`, a form Manki does not read with certainty');
+    expect((await round({ 'Cargo.toml': '[dependencies]\ndemo = "1"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.0');
     // A member's own lockfile next to the workspace's leaves Manki unsure which one an install reads.
     await expect(round({ ...root(['web']), ...required('web/'), 'package-lock.json': lock, 'web/package-lock.json': lock }).load('npm/left-pad'))
       .rejects.toThrow('web/package.json requires it, and both web/package-lock.json and package-lock.json can lock that manifest\'s versions.');

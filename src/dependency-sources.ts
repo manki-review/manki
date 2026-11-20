@@ -272,7 +272,14 @@ async function resolveDependency(
       if (outside) refuse(`${shown(file)} requires it, and Manki cannot tell that it belongs to the project ${shown(outside)} locks`, origin);
       const further = covering.find(f => posix.dirname(f) !== nearest && belongs(f, dir, file));
       if (further) refuse(`${shown(file)} requires it, and both ${shown(own[0])} and ${shown(further)} can lock that manifest's versions`, origin);
-      if (!locked.some(p => own.includes(p.file))) refuse(`${shown(file)} requires it, but ${shown(own[0])}, which locks that manifest's versions, does not lock it`, origin);
+      const lockedHere = locked.filter(p => own.includes(p.file));
+      if (lockedHere.length === 0) refuse(`${shown(file)} requires it, but ${shown(own[0])}, which locks that manifest's versions, does not lock it`, origin);
+      // An install drops a locked version the requirement no longer allows, so the lockfile does not show what it gets.
+      for (const { requirement } of stated) {
+        const range = registry.range(requirement);
+        if (range === undefined) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, a form Manki does not read with certainty`, { ...origin, requirement });
+        if (!lockedHere.some(p => satisfies(p.version, range!))) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, which no version ${shown(own[0])} locks meets`, { ...origin, requirement });
+      }
       return [];
     }
     if (lockedElsewhere) refuse(`${shown(file)} requires it, but ${lockedElsewhere}`, origin);
