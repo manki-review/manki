@@ -1,5 +1,5 @@
 import { Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
+import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -1029,6 +1029,16 @@ describe('fetchRecapState', () => {
     // The marker counts only in Manki's own reply. A person's reply that names another pull request is a claim Manki did not check.
     expect(await override(claim('author'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 7, status: 'unchecked' } });
     expect(await override(claim('reader', 'Fixed in https://github.com/owner/repo/pull/12, see `#13` and #1.'))).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false, fixClaim: { pr: 12, status: 'unchecked' } });
+    // A maintainer's dismiss record is no override, so the author's override recorded after it still counts as announced.
+    const dismissRecord = claim('manki-review[bot]', `Finding dismissed by \`@bob\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('bob')}`);
+    const recorded = claim('manki-review[bot]', `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`);
+    const afterRecord = async (nodes: Array<ReturnType<typeof claim>>) => {
+      const octokit = mockOctokit([makeThread({ id: 'tc', isResolved: true, resolvedBy: { login: 'author' }, comments: { pageInfo: LAST_PAGE, nodes: [...makeThread().comments.nodes, ...nodes] } })]);
+      Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'maintain', role_name: 'maintain', user: { type: 'User' } } })) } });
+      return (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain')).previousFindings[0].securityOverride;
+    };
+    expect(await afterRecord([dismissRecord, recorded])).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: true });
+    expect(await afterRecord([dismissRecord])).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false });
     // A later answer may be missing, so the thread names no claim.
     expect(await override(claim('manki-review[bot]'), { hasNextPage: true, endCursor: 'c1' })).toEqual({ login: 'author', via: 'resolve', role: 'maintain', announced: false });
 
@@ -1509,7 +1519,7 @@ describe('fetchRecapState', () => {
         ['dismiss whose access cannot be read', [], [['carol', '@manki dismiss'], ['alice', 'The caller checks this.']], false],
         ['record typed by a person', [], [['alice', typedRecord]], false],
         ['dismiss by a writer', ['Dismissed: the null check.\n\n<!-- manki -->'], dismissed, false],
-        ['dismiss Manki recorded', [`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'alice')}`], dismissed, true],
+        ['dismiss Manki recorded', [`Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`], dismissed, true],
         ['dismiss then confirmed fix', [confirmed], dismissed, false],
         // A reopen by Manki ends the waiver before it, and only a waiver after it counts.
         ['waived, then reopened', [answer('Withdrawn'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], undefined, false],

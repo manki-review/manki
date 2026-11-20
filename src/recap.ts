@@ -187,6 +187,31 @@ function recordedSecurityOverride(
   return undefined;
 }
 
+const DISMISS_RECORD_OPENER = '<!-- manki-dismiss-record:';
+
+/**
+ * Marks Manki's reply that records a dismissal it accepted from `login`, someone other than the PR author with write
+ * access, on a guarded thread. Only `settlement` and `dismissRecordLogins` read it, never as a security override.
+ */
+function dismissRecordMarker(login: string): string {
+  return `${DISMISS_RECORD_OPENER}${login} -->`;
+}
+
+/** Returns the comments of a thread after Manki's last reopen marker. A reopen ends every settlement before it. */
+function sinceLastReopen<T extends { body?: string | null; author?: { login: string } | null }>(bot: BotIdentity, comments: readonly T[]): T[] {
+  const replies = comments.slice(1);
+  const reopened = replies.reduce((at, c, i) => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER) ? i : at, -1);
+  return replies.slice(reopened + 1);
+}
+
+/** Returns who Manki recorded a dismissal for in a thread since its last reopen. */
+function dismissRecordLogins(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author?: { login: string } | null }>): string[] {
+  return sinceLastReopen(bot, comments).flatMap(c => {
+    const login = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', DISMISS_RECORD_OPENER, COMMENT_MARKER)?.match(/^[\w-]+$/)?.[0] : undefined;
+    return login ? [login] : [];
+  });
+}
+
 const FIX_CLAIM_OPENER = '<!-- manki-fix-claim:';
 
 /** Marks Manki's answer to a reply that named pull request `pr` as the fix, with whether Manki confirmed that `pr` replaced the cited line. */
@@ -798,15 +823,15 @@ function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boole
 
 /**
  * Whether the latest settlement of the resolved thread `t` waived it, so the resolve that holds now is that waiver's:
- * Manki resolved it on its own answer that accepted no fix or on a dismiss it recorded, or recorded the PR author's own
- * resolve with `override` and that resolve still holds. A later resolve by anyone else, as after a reopen and a fix,
- * waives nothing.
+ * Manki resolved it on its own answer that accepted no fix or on a maintainer's dismiss it recorded, or recorded the PR
+ * author's clearing with `override` and the author's resolve or Manki's own still holds. A later resolve by anyone
+ * else, as after a reopen and a fix, waives nothing.
  */
 function waivedNow(t: ReviewThread, s: Settlement, override: ThreadSecurityOverride | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
   if (!t.isResolved) return false;
   const byManki = isBotLogin(bot, t.resolvedByLogin);
   if (s.latestWaiver === 'answer' || s.latestWaiver === 'dismiss') return byManki;
-  return s.latestWaiver === 'override' && !!override && isLogin(t.resolvedByLogin, prAuthorLogin);
+  return s.latestWaiver === 'override' && !!override && (byManki || isLogin(t.resolvedByLogin, prAuthorLogin));
 }
 
 /** What the review round and the approval check both read to decide whether a resolved thread is settled. */
@@ -825,8 +850,8 @@ interface Settlement {
   fixAnswered: boolean;
   /**
    * Manki's latest settling comment since it last reopened the thread, when that comment settled it without a fix:
-   * `answer`, its reply record says it accepted an answer that accepted no fix, `dismiss`, its record of a dismiss it
-   * accepted and resolved the thread on, or `override`, its record of the PR author's own resolve with a role.
+   * `answer`, its reply record says it accepted an answer that accepted no fix, `dismiss`, its record of a maintainer's
+   * dismiss it accepted, or `override`, its record of the PR author's clearing with a role.
    */
   latestWaiver?: 'answer' | 'dismiss' | 'override';
 }
@@ -836,16 +861,15 @@ interface Settlement {
  * ends every settlement before it, so only Manki's comments after it can waive the thread.
  */
 function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement {
-  const own = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login)).map(c => c.body ?? '');
+  const own = (c: ThreadCommentNode) => isBotLogin(bot, c.author?.login);
   const fix = (body: string) => settlingDecision(body)?.outcome === 'Fixed' || ownMarker(body, FIXED_MARKER_OPENER, COMMENT_MARKER) !== undefined;
-  const reopened = own.reduce((at, body, i) => hasOwnMarker(body, REOPENED_MARKER, COMMENT_MARKER) ? i : at, -1);
-  const latest = own.slice(reopened + 1).flatMap((body): Array<'fix' | 'answer' | 'dismiss' | 'override'> => {
+  const latest = sinceLastReopen(bot, comments).filter(own).map(c => c.body ?? '').flatMap((body): Array<'fix' | 'answer' | 'dismiss' | 'override'> => {
     if (fix(body)) return ['fix'];
     if (settlingDecision(body)) return ['answer'];
-    const via = ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER)?.match(/^(resolve|dismiss):/)?.[1];
-    return via === 'dismiss' ? ['dismiss'] : via ? ['override'] : [];
+    if (ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER) !== undefined) return ['dismiss'];
+    return ownMarker(body, SECURITY_OVERRIDE_OPENER, COMMENT_MARKER) !== undefined ? ['override'] : [];
   }).at(-1);
-  return { fixAnswered: own.some(fix), ...(latest && latest !== 'fix' && { latestWaiver: latest }) };
+  return { fixAnswered: comments.slice(1).some(c => own(c) && fix(c.body ?? '')), ...(latest && latest !== 'fix' && { latestWaiver: latest }) };
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
@@ -1594,4 +1618,4 @@ function dropWaivedRestatements(
   return { unique, duplicates };
 }
 
-export { BOT_PREFIX_PATTERN, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, dismissRecordLogins, dismissRecordMarker, dropWaivedRestatements, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

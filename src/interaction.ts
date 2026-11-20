@@ -12,7 +12,7 @@ import { closeRawDiff, diffSections, parsePRDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, fixClaimMarker, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { CheckedReply, MAX_REPLY_STATEMENTS, MAX_TERM_CHARS, MIN_TERM_CHARS, checkFixedElsewhere, checkReply, fixedElsewhereText, statementList, statementRecords, statementSummary } from './reply-check';
@@ -256,12 +256,15 @@ async function resolveIsHeld(
  * With `held`, the thread is resolved in a way that does not clear it, so it is reopened first. Manki's own resolve then
  * counts, backed by the maintainer's comment or by the recorded override.
  * With `authorOverride`, the PR author clears such a thread with a role that allows it, and Manki records that in the thread first.
+ * With `dismissedBy`, someone who may clear it dismissed it, and Manki records that once since its last reopen, first too.
  * Returns whether the thread is resolved.
  */
 async function resolveThreadOf(
-  octokit: Octokit, thread: ReviewThread, reason: ResolutionReason, mayClear: boolean, authorOverride?: { login: string; role: AuthorClearRole }, held = false,
+  octokit: Octokit, thread: ReviewThread, reason: ResolutionReason, mayClear: boolean, authorOverride?: { login: string; role: AuthorClearRole }, held = false, dismissedBy?: string,
 ): Promise<boolean> {
   if (thread.isResolved && !held) return true;
+  // The record is what lets later rounds read the dismissal as settled without a fix, so without it the thread stays open.
+  if (isGuarded(thread) && mayClear && dismissedBy && !thread.dismissRecords?.includes(dismissedBy) && !await recordDismissal(octokit, thread.id, dismissedBy, thread.fixClaim)) return false;
   if ((held || isGuarded(thread)) && !mayClear) {
     if (!authorOverride) {
       core.info(`Left thread ${thread.id} as it is, since the sender may not dismiss a blocking or security finding`);
@@ -918,11 +921,7 @@ async function resolveDismissedThread(
     const role = isGuarded(thread) && !mayClear && isPrAuthor && senderLogin ? await authorClearRole(octokit, owner, repo, senderLogin, clearRole) : undefined;
     const authorOverride = role && senderLogin ? { login: senderLogin, role } : undefined;
     const held = await resolveIsHeld(octokit, bot, owner, repo, thread, prAuthorLogin, clearRole);
-    if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, authorOverride, held)) {
-      // Manki records a maintainer's dismissal of a guarded thread it resolved, once, so later rounds read it as settled without a fix.
-      if (mayClear && isGuarded(thread) && (!thread.isResolved || held) && senderLogin && thread.recordedOverride?.login !== senderLogin) {
-        await announceSecurityOverrides(octokit, [{ thread: thread.id, login: senderLogin, via: 'dismiss', ...(thread.fixClaim && { fixClaim: thread.fixClaim }) }]);
-      }
+    if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, authorOverride, held, senderLogin)) {
       // A dismissal lifts no warning hold, so the thread is read again as the resolve left it.
       const now = thread.isWarning ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch(() => undefined) : undefined;
       const holds = now && await warningHoldNote(octokit, bot, owner, repo, now, clearRole);
