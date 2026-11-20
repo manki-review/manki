@@ -45,7 +45,8 @@ describe('formatReportSummary and the commands on a stored report', () => {
       const report = mergeReports([part], [{ ...benchCase, source: `source ${text}` }], { ref: 'main' });
       const [scored] = report.variants[0].cases;
       const finding = { severity: 'blocker' as const, title: `title ${text}`, file: `src/${text}.rs`, line: 3, description: `description ${text}` };
-      scored.runs = [{ ...scored.runs[0], outcome: 'ADDRESS_FIRST', complete: true, findings: [finding], falseBlockers: 1, extraFindings: 1 }, { ...scored.runs[0], error: `failed on ${text}` }];
+      const warning = { severity: 'warning' as const, title: `warning ${text}`, file: `src/${text}.rs`, line: 4, description: `warned ${text}`, route: { finderGrade: 'warning' as const, raisedBy: ['finder' as const, 'comparison' as const] } };
+      scored.runs = [{ ...scored.runs[0], outcome: 'ADDRESS_FIRST', complete: true, findings: [finding, warning], falseBlockers: 1, unexpectedWarnings: 1, extraFindings: 2 }, { ...scored.runs[0], error: `failed on ${text}` }];
       return report;
     };
     const summaryOf = (benchCase: BenchCase, text: string) => formatReportSummary(reportOf(benchCase, text));
@@ -53,9 +54,12 @@ describe('formatReportSummary and the commands on a stored report', () => {
     for (const text of ['(source SHOWN-TEXT)', 'src/SHOWN-TEXT.rs:3: title SHOWN-TEXT', '    | description SHOWN-TEXT', 'run 2: FAILED: failed on SHOWN-TEXT']) expect(shown).toContain(text);
     // The findings hold no route, as in the report of a ref that stored none.
     const routes = (name: string) => `\n\n| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |\n| --- | --- | --- | --- | --- | --- |\n| ${name}: unknown | 0 | 0 | 0 | 1 | 1 |\n\n`;
+    const sources = (name: string) => `\n\n| Raised an unexpected warning | Warnings |\n| --- | --- |\n| ${name}: finder, sibling comparison | 1 |\n\n`;
     expect(shown).toContain(routes('base'));
+    expect(shown).toContain(sources('base'));
     const held = summaryOf({ ...tuning, set: 'holdout' }, 'HOLDOUT-TEXT');
     expect(held).toContain(routes('base holdout'));
+    expect(held).toContain(sources('base holdout'));
     expect(held).toContain('\nrdc-1295\n');
     expect(held).toContain('  run 2: FAILED: the reason is in the report\n');
     expect(held).not.toContain('HOLDOUT-TEXT');

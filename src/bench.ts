@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'path';
 import { parse as parseYaml } from 'yaml';
 
 import { runCliCommand } from './cli';
+import { isComparison, isPatternCheck, isRelatedCheck } from './compare';
 import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
 import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
@@ -14,8 +15,8 @@ import type { LLMClient, ProviderInputs } from './providers';
 import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, leftOutUnproven,
-  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SEVERITY_ORDER, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
+  migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
 import { runGit } from './workspace';
@@ -455,6 +456,39 @@ interface GradeRoute {
   byClaimCheck?: true;
   /** Set on a finding that only fix checks reported. */
   byFixCheck?: true;
+  /** The kinds of step that reported the finding, in the order of `RAISED_BY`. Left out of a finding no step names. */
+  raisedBy?: RaisedBy[];
+}
+
+/** The kinds of step that report findings, in pipeline order, by the label a report prints. */
+const RAISED_BY = {
+  finder: 'finder',
+  second_read: 'second read',
+  comparison: 'sibling comparison',
+  pattern: 'pattern check',
+  related: 'related repo check',
+  claim: 'claim check',
+  fix: 'fix check',
+  sweep: 'sweep',
+  tool: 'tool result',
+  scope: 'scope reader',
+  reader: 'verdict reader',
+} as const satisfies Record<'finder' | SideCheckKind | 'tool' | 'scope' | 'reader', string>;
+type RaisedBy = keyof typeof RAISED_BY;
+
+/** Returns the kind of step `reviewer` names on finding `f`. A name no other step uses is a finder's. */
+function raisedBy(reviewer: string, f: Finding): RaisedBy {
+  if (reviewer === VERDICT_READER_NAME) return 'reader';
+  if (reviewer === SCOPE_READER_NAME) return 'scope';
+  if (reviewer === f.toolSource) return 'tool';
+  if (isSecondReadName(reviewer)) return 'second_read';
+  if (isComparison(reviewer)) return 'comparison';
+  if (isPatternCheck(reviewer)) return 'pattern';
+  if (isRelatedCheck(reviewer)) return 'related';
+  if (isClaimCheck(reviewer)) return 'claim';
+  if (isFixCheck(reviewer)) return 'fix';
+  if (isSweepName(reviewer)) return 'sweep';
+  return 'finder';
 }
 
 /** Where a finding a finder reported left the review, by the round record. */
@@ -872,6 +906,7 @@ function threadOutcomes(benchCase: BenchCase, review: LocalReview): ThreadOutcom
 function gradeRoute(f: Finding): GradeRoute {
   const { cell, gradeIfConfirmed, judgeIfConfirmed, gradePath, doubts = [], refutation, checkStatus } = f;
   const doubtsOf = (decides: Doubt['decides']) => doubts.filter(d => d.decides === decides).length;
+  const kinds = new Set(f.reviewers.map(reviewer => raisedBy(reviewer, f)));
   return {
     finderGrade: finderGrade(f),
     ...(f.lowestReviewerSeverity && { lowestFinderGrade: f.lowestReviewerSeverity }),
@@ -889,6 +924,7 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(isSecurityFinding(f.tags, f.reviewers) && { security: true as const }),
     ...(f.reviewers.length > 0 && f.reviewers.every(isClaimCheck) && { byClaimCheck: true as const }),
     ...(f.reviewers.length > 0 && f.reviewers.every(isFixCheck) && { byFixCheck: true as const }),
+    ...(kinds.size > 0 && { raisedBy: (Object.keys(RAISED_BY) as RaisedBy[]).filter(kind => kinds.has(kind)) }),
   };
 }
 
@@ -1137,7 +1173,12 @@ function matchedKeyGrade(c: CaseReport, run: RunScore, n: number): KeySeverity |
 
 /** The warning findings of a reported run that match no key item. They are counted from the run's findings and matches when its ref did not score them. */
 function unexpectedWarnings(c: CaseReport, run: RunScore): number {
-  return run.unexpectedWarnings ?? unmatchedFindings(c, run).filter(f => f.severity === 'warning').length;
+  return run.unexpectedWarnings ?? unexpectedWarningFindings(c, run).length;
+}
+
+/** The findings `unexpectedWarnings` counts. A run that stored none, such as one the matcher failed on, has none, whatever its findings. */
+function unexpectedWarningFindings(c: CaseReport, run: RunScore): RunScore['findings'] {
+  return run.unexpectedWarnings === 0 ? [] : unmatchedFindings(c, run).filter(f => f.severity === 'warning');
 }
 
 export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
@@ -1703,6 +1744,28 @@ export function formatBlockerRoutes(variants: VariantReport[]): string {
   return ['| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
 }
 
+/**
+ * Returns a Markdown table of the unexpected warnings of every run, by variant and set: how many each set of `raisedBy`
+ * kinds reported, so the rows of a variant and set add up to its unexpected warnings. It holds counts only, so it covers
+ * hold-out cases. A finding without a stored `raisedBy` counts as `unknown`. Returns an empty string without such a warning.
+ */
+export function formatWarningSources(variants: VariantReport[]): string {
+  const rows = variants.flatMap(v => setSummaries(v).flatMap(({ label, set }) => {
+    const counts = new Map<string, number>();
+    for (const c of v.cases.filter(c => c.set === set)) {
+      for (const run of c.runs) {
+        for (const f of unexpectedWarningFindings(c, run)) {
+          const kinds = f.route?.raisedBy?.map(kind => RAISED_BY[kind]).join(', ') || 'unknown';
+          counts.set(kinds, (counts.get(kinds) ?? 0) + 1);
+        }
+      }
+    }
+    return [...counts].sort((a, b) => b[1] - a[1]).map(([kinds, n]) => `| ${label ? `${v.name} ${label}` : v.name}: ${kinds} | ${n} |`);
+  }));
+  if (rows.length === 0) return '';
+  return ['| Raised an unexpected warning | Warnings |', '| --- | --- |', ...rows].join('\n');
+}
+
 /** Returns one line of counts: the must-catch items the finders found, the ones the review found, the ones it missed by exit, and what matching the finders' findings cost. */
 function formatRawSummary(raw: RawSummary): string {
   const lost = (Object.keys(RAW_EXITS) as RawExit[]).flatMap(exit => (raw.lost[exit] ? [`${RAW_EXITS[exit]} ${raw.lost[exit]}`] : []));
@@ -1747,8 +1810,7 @@ export function formatBenchSummary(report: BenchReport): string {
     lines.push('');
   }
   lines.push(formatComparison(report.variants));
-  const routes = formatBlockerRoutes(report.variants);
-  if (routes) lines.push('', routes);
+  for (const table of [formatBlockerRoutes(report.variants), formatWarningSources(report.variants)]) if (table) lines.push('', table);
   return `${lines.join('\n')}\n`;
 }
 
