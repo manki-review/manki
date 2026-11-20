@@ -165,8 +165,8 @@ function linksToPlainFile(root: string, link: string, plainFiles: ReadonlySet<st
  * checkout holds a committed install or an install file Manki does not read, a file that can lock, require or override
  * it could not be read with certainty, a setting may take it from another registry or changes the lockfile, a manifest
  * overrides or patches it or takes it from elsewhere, a lockfile locks it from another source, with a patch or at
- * several versions, or the manifests state several requirements, one Manki does not read, or one a fresh install may
- * not meet with the newest version. Throws, naming why, when the PR does not use the package or another version.
+ * several versions, a manifest states a requirement that no locked version meets, or the manifests state several
+ * requirements, one Manki does not read, or one a fresh install may not meet with the newest version. Throws, naming why, when the PR does not use the package or another version.
  */
 async function resolveDependency(
   root: string, { files, installed, cut }: Listing, registry: Registry, name: string, version: string | undefined, fetch: RegistryFetch, budget: ReadBudget,
@@ -223,6 +223,13 @@ async function resolveDependency(
       if (reason) refuse(reason, { ...(VERSION.test(p.version) && { version: p.version }), source: 'lockfile', file: p.file });
     }
     const where = locked.map(p => `${p.version} in ${shown(p.file)}`).join(', ');
+    // An install drops a locked version that a manifest's requirement no longer allows, so the lockfile is stale for it.
+    for (const { file, requirement } of requirements) {
+      const range = registry.range(requirement);
+      const origin = { source: 'requirement' as const, file, requirement };
+      if (range === undefined) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, a form Manki does not read with certainty`, origin);
+      if (!locked.some(p => satisfies(p.version, range!))) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, which no version its lockfiles lock meets (${where})`, origin);
+    }
     const chosen = version === undefined ? locked[0] : locked.find(p => p.version === version);
     if (!chosen) throw new Error(`The PR does not use ${label}@${version}. Its lockfiles lock ${where}.`);
     if (version === undefined && locked.some(p => p.version !== chosen.version)) {
