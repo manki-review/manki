@@ -20,8 +20,6 @@ export interface ManifestFacts {
   overridden?: string;
   /** Set, to how, when the manifest takes the package from somewhere other than the registry, or states it in a way Manki does not read. */
   otherSource?: string;
-  /** Set, to why, when the manifest takes its versions from a lockfile outside its own folder and the folders above it. */
-  lockedElsewhere?: string;
 }
 
 /** One published version of a package, with the checksum the registry states for its archive. */
@@ -45,11 +43,9 @@ export interface Registry {
   origins: readonly string[];
   /** The file names of the manifests that state requirements. */
   manifests: readonly string[];
-  /** Whether a manifest can change every package without naming one, such as through an install script, so one Manki cannot read refuses any package. */
-  manifestsChangeAll: boolean;
   /** The file names of the lockfiles that lock versions. `lockedPackages` parses each of them. */
   lockfiles: readonly string[];
-  /** The file names of lockfiles and install settings Manki does not read, which decide the packages of the manifests in their folder and below. */
+  /** The file names of lockfiles and install settings Manki does not read, which can decide what an install gets. */
   unreadInstallFiles: readonly string[];
   /** The name of the folders that hold the build output, such as Cargo's `target`, whose files of this registry no install reads. */
   buildFolder?: string;
@@ -87,13 +83,6 @@ export interface Registry {
    * Manki cannot read one of them with certainty.
    */
   overriddenBy(name: string, configs: readonly RegistryConfig[]): string | undefined;
-  /**
-   * Whether the manifest in the folder `member` belongs to the project of the lockfile at `lockfile` above it, as a
-   * member of its workspace, by the member list the package manager of that lockfile reads. `text` returns a file of the
-   * checkout that Manki read. Throws when Manki cannot tell with certainty, such as for a workspace pattern it does not
-   * read.
-   */
-  isWorkspaceMember(lockfile: string, member: string, text: (path: string) => string | undefined): boolean;
   /**
    * Returns which of `files`, the settings and manifests of the checkout, makes a fresh install pick another version
    * than the highest a requirement allows, and how, or `undefined`. Throws when Manki cannot read one with certainty.

@@ -4,7 +4,6 @@ import { parse } from 'yaml';
 
 import { namesTarball } from '../lockfile';
 import { shown } from './shown';
-import { matchesWorkspace } from './workspace';
 import { PublishedVersion, Registry, RegistryConfig } from './types';
 
 /** The host of the npm registry. */
@@ -248,27 +247,8 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
     id: 'npm',
     origins: [new URL(registry).origin],
     manifests: ['package.json'],
-    manifestsChangeAll: true,
     lockfiles: ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml'],
     unreadInstallFiles: UNREAD_INSTALL_FILES,
-    isWorkspaceMember(lockfile, member, text) {
-      // pnpm lists a workspace's members in its workspace settings only, and npm and Yarn in the root manifest's `workspaces` only.
-      const root = posix.dirname(lockfile);
-      const patterns: unknown[] = [];
-      if (posix.basename(lockfile) === 'pnpm-lock.yaml') {
-        for (const file of PNPM_WORKSPACE) {
-          const settings = text(posix.join(root, file));
-          const packages = settings === undefined ? undefined : yamlSettings(settings).packages;
-          if (Array.isArray(packages)) patterns.push(...packages);
-        }
-      } else {
-        const manifest = text(posix.join(root, 'package.json'));
-        const data = manifest === undefined ? undefined : parseManifest(manifest);
-        const workspaces = isObject(data) ? data.workspaces : undefined;
-        patterns.push(...(Array.isArray(workspaces) ? workspaces : isObject(workspaces) && Array.isArray(workspaces.packages) ? workspaces.packages : []));
-      }
-      return matchesWorkspace(patterns, posix.relative(root, member));
-    },
     // A committed `node_modules` in any folder, since Node looks for one in every folder above a file, or Yarn's
     // committed cache, is what the project runs, whatever the lockfile says.
     installedCopy: paths => paths[0],

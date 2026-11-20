@@ -382,18 +382,15 @@ export const TEST_LINKS: CodeLinks = {
 };
 
 /**
- * One entry of a test tar archive: a file by default, or a hard link (`1`), symlink (`2`), device (`3`), folder (`5`),
- * pax header (`x`), global pax header (`g`) or GNU long name (`L`). `size` states another size in the header than the
- * data's, `gnu` writes GNU's magic instead of POSIX's, `prefix` fills the bytes POSIX keeps a path's prefix in, and
- * `mode` sets the file mode, `0o644` by default.
+ * One entry of a test tar archive: a file by default, or a hard link (`1`), symlink (`2`), device (`3`), folder (`5`)
+ * or pax header (`x`). `prefix` fills the bytes POSIX keeps a path's prefix in, and `mode` sets the file mode, `0o644`
+ * by default.
  */
 export interface TarEntry {
   name: string;
   data?: string | Buffer;
-  type?: '0' | '1' | '2' | '3' | '5' | '7' | 'x' | 'g' | 'L' | 'K';
+  type?: '0' | '1' | '2' | '3' | '5' | 'x';
   linkname?: string;
-  size?: number;
-  gnu?: true;
   prefix?: string;
   mode?: number;
 }
@@ -401,18 +398,18 @@ export interface TarEntry {
 /** Builds a gzipped ustar archive of `entries`, as a package registry serves one. */
 export function tarGz(entries: TarEntry[]): Buffer {
   const blocks: Buffer[] = [];
-  for (const { name, data = '', type = '0', linkname = '', size, gnu, prefix = '', mode = 0o644 } of entries) {
+  for (const { name, data = '', type = '0', linkname = '', prefix = '', mode = 0o644 } of entries) {
     const body = Buffer.from(data);
     const header = Buffer.alloc(512);
     header.write(name, 0, 100);
     header.write(`${mode.toString(8).padStart(7, '0')}\0`, 100);
     header.write('0000000\0', 108);
     header.write('0000000\0', 116);
-    header.write(`${(size ?? body.length).toString(8).padStart(11, '0')}\0`, 124);
+    header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124);
     header.write('00000000000\0', 136);
     header.write(type, 156);
     header.write(linkname, 157, 100);
-    header.write(gnu ? 'ustar  \0' : 'ustar\x0000', 257);
+    header.write('ustar\x0000', 257);
     header.write(prefix, 345, 155);
     header.fill(0x20, 148, 156);
     const sum = header.reduce((total, byte) => total + byte, 0);

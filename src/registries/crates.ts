@@ -1,9 +1,7 @@
-import { posix } from 'path';
 import { validRange } from 'semver';
 import { parse } from 'smol-toml';
 
 import { shown } from './shown';
-import { matchesWorkspace } from './workspace';
 import { ManifestFacts, PublishedVersion, Registry, RegistryConfig, Requirement } from './types';
 
 /** The hosts of crates.io: its sparse index, and the host its archives are served from. */
@@ -71,9 +69,9 @@ function replacedCrate(spec: string): string | undefined {
 }
 
 /**
- * Returns what a `Cargo.toml` says of the crate `name`: each requirement it states from crates.io, whether `[patch]`
- * or `[replace]` swaps the crate, and whether a workspace root elsewhere locks its versions. An entry that inherits from `[workspace.dependencies]` is stated
- * there. One from a path, a git repository or another registry, or with a field Manki does not know, sets `otherSource`.
+ * Returns what a `Cargo.toml` says of the crate `name`: each requirement it states from crates.io, and whether
+ * `[patch]` or `[replace]` swaps the crate. An entry that inherits from `[workspace.dependencies]` is stated there.
+ * One from a path, a git repository or another registry, or with a field Manki does not know, sets `otherSource`.
  */
 function cargoManifest(text: string, name: string): ManifestFacts {
   const manifest = parse(text);
@@ -95,12 +93,10 @@ function cargoManifest(text: string, name: string): ManifestFacts {
   const patched = Object.values(tableOf(manifest.patch)).some(source => Object.entries(tableOf(source)).some(([key, entry]) => normalize(crateOf(key, entry)) === normalize(name)));
   const replacedNames = Object.keys(tableOf(manifest.replace)).map(replacedCrate);
   const replaced = replacedNames.some(crate => crate === undefined || normalize(crate) === normalize(name));
-  const root = tableOf(manifest.package).workspace;
   return {
     requirements,
     ...(otherSource && { otherSource }),
     ...((patched || replaced) && { overridden: `its \`[${patched ? 'patch' : 'replace'}]\` swaps the crate` }),
-    ...(typeof root === 'string' && { lockedElsewhere: 'its `package.workspace` names a workspace root elsewhere, whose lockfile decides its versions' }),
   };
 }
 
@@ -177,38 +173,12 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     id: 'crates.io',
     origins: [new URL(index).origin, new URL(download).origin],
     manifests: ['Cargo.toml'],
-    manifestsChangeAll: false,
     lockfiles: ['Cargo.lock'],
     validName: name => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name),
     sameName: (a, b) => normalize(a) === normalize(b),
     unreadInstallFiles: [],
     buildFolder: 'target',
     installedCopy: () => undefined,
-    isWorkspaceMember(lockfile, member, text) {
-      const root = posix.dirname(lockfile);
-      const rootText = text(posix.join(root, 'Cargo.toml'));
-      const memberText = text(posix.join(member, 'Cargo.toml'));
-      if (rootText === undefined || memberText === undefined) return false;
-      // A manifest with a `[workspace]` of its own is the root of its own workspace.
-      if (Object.hasOwn(parse(memberText), 'workspace')) return false;
-      const manifest = parse(rootText);
-      const relative = posix.relative(root, member);
-      // A path dependency of the root shares its lockfile, with or without a `[workspace]`.
-      const pathDependency = dependencyTables(manifest).some(table => Object.values(table).some(entry => {
-        const path = tableOf(entry).path;
-        return typeof path === 'string' && posix.normalize(path).split('/').filter(Boolean).join('/') === relative;
-      }));
-      if (pathDependency) return true;
-      if (!Object.hasOwn(manifest, 'workspace')) return false;
-      const workspace = tableOf(manifest.workspace);
-      const list = (value: unknown): unknown[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
-      const excluded = list(workspace.exclude).some(path => {
-        if (typeof path !== 'string') throw new Error('an `exclude` entry is not a string');
-        const prefix = posix.normalize(path).split('/').filter(Boolean).join('/');
-        return relative === prefix || relative.startsWith(`${prefix}/`);
-      });
-      return !excluded && matchesWorkspace(list(workspace.members), relative);
-    },
     isRegistrySource: source => source !== undefined && CRATES_IO_SOURCES.includes(source),
     namesHost: () => true,
     isConfigFile: path => CARGO_CONFIGS.test(path),
