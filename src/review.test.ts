@@ -2148,15 +2148,17 @@ describe('runReview', () => {
 
       // Two finders per round, and both of a round share its state directory. The second read of a round gets what its finders got.
       const reads = jest.mocked(clients.reviewer.sendMessage).mock.calls;
-      expect(reads.filter(call => isSecondRead(call[1])).map(call => call[2]?.repoTools)).toEqual([reads[0][2]?.repoTools, undefined, { root: '/work/pr-head', steps: 40 }]);
+      // A round without related repos still offers the finders the PR's dependencies.
+      const dependenciesOnly = { root: '/work/pr-head', steps: 40, related: { repos: [], cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true } };
+      expect(reads.filter(call => isSecondRead(call[1])).map(call => call[2]?.repoTools)).toEqual([reads[0][2]?.repoTools, undefined, dependenciesOnly]);
       const [first, second, ...rest] = reads.filter(call => !isSecondRead(call[1])).map(call => call[2]?.repoTools);
       expect(first).toEqual({
-        root: '/work/pr-head', steps: 40, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') },
+        root: '/work/pr-head', steps: 40, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true },
       });
       expect(second).toEqual(first);
       // No related repo was fetched before the finders ran, so the prompt gets no guide to name.
       expect(first?.related).not.toHaveProperty('guides');
-      expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 40 }, { root: '/work/pr-head', steps: 40 }]);
+      expect(rest).toEqual([undefined, undefined, dependenciesOnly, dependenciesOnly]);
       // A review of a change made earlier reads the related repos as they were then, and fetches every one before the finders run.
       const requireSpy = jest.spyOn(relatedRepos, 'requireRelatedRepos').mockResolvedValue();
       const asOf = '2026-10-03T11:20:50Z';
@@ -2241,9 +2243,15 @@ describe('runReview', () => {
         }
         if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
         tools.set('refute', options?.repoTools);
-        // The refuter is the first to read the other repo, after the finders are done.
-        fetched(options!.repoTools!.related!.stateDir, 'acme/billing');
-        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof: ['src/queue.ts:6', 'acme/billing:src/import.ts:2'] }), relatedReads: { 'acme/billing': 2 } };
+        // The refuter is the first to read the other repo, after the finders are done, and reads a dependency of the PR too.
+        const { stateDir } = options!.repoTools!.related!;
+        fetched(stateDir, 'acme/billing');
+        // A package keeps its markers in a folder of its own.
+        mkdirSync(join(stateDir, 'dependencies'));
+        fetched(join(stateDir, 'dependencies'), 'crates.io/demo@1.0.0');
+        writeFileSync(join(stateDir, 'dependencies', `${encodeURIComponent('crates.io/demo@1.0.0')}.from`), JSON.stringify({ registry: 'crates.io', name: 'demo', version: '1.0.0', source: 'lockfile', file: 'Cargo.lock' }));
+        const proof = ['src/queue.ts:6', 'acme/billing:src/import.ts:2', 'crates.io/demo@1.0.0:src/import.ts:1'];
+        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof }), relatedReads: { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 } };
       });
       mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
       try {
@@ -2261,13 +2269,15 @@ describe('runReview', () => {
 
       // One state directory for the round, so a repo is fetched once whichever stage names it first.
       const related = tools.get('finder')!.related!;
-      expect(related).toEqual({ repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') });
-      // The finder's message lists files, so its prompt tells it to open them. No other stage is told so.
+      expect(related).toEqual({ repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true });
+      const reposOnly = { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: related.stateDir };
+      // The finder's message lists files, so its prompt tells it to open them. No other stage is told so. The comparisons
+      // and sweeps read the related repos only, and every other stage reads the PR's dependencies too.
       expect(Object.fromEntries(tools)).toEqual({
         finder: { root, steps: expect.any(Number), related, listed: true },
-        compare: { root, steps: 12, related },
+        compare: { root, steps: 12, related: reposOnly },
         claim: { root, steps: 12, related },
-        sweep: { root, steps: 15, related },
+        sweep: { root, steps: 15, related: reposOnly },
         judge: { root, steps: 5, related, checking: true },
         refute: { root, steps: 15, related, checking: true },
       });
@@ -2281,16 +2291,21 @@ describe('runReview', () => {
         { repo: 'acme/reports', status: 'fetched', durationMs: expect.any(Number) },
         { repo: 'acme/billing', status: 'fetched', durationMs: expect.any(Number) },
       ]);
-      expect(result.llmCalls?.filter(c => c.relatedReads).map(c => [c.stage, c.agent, c.relatedReads])).toEqual([['judge', 'refute', { 'acme/billing': 2 }]]);
-      // The line the refuter cites in the repo it fetched counts, since the round holds that checkout by then.
+      expect(result.llmCalls?.filter(c => c.relatedReads).map(c => [c.stage, c.agent, c.relatedReads])).toEqual([['judge', 'refute', { 'acme/billing': 2, 'crates.io/demo@1.0.0': 1 }]]);
+      // So does the package the refuter read, with where its version came from.
+      expect(result.dependencySources).toEqual([{
+        package: 'crates.io/demo@1.0.0', registry: 'crates.io', name: 'demo', version: '1.0.0', source: 'lockfile', file: 'Cargo.lock', status: 'fetched', durationMs: expect.any(Number),
+      }]);
+      // The lines the refuter cites in the repo and the package it fetched count, since the round holds both by then.
+      const relatedProof = ['acme/billing:src/import.ts:2', 'crates.io/demo@1.0.0:src/import.ts:1'];
       expect(result.findings.map(f => [f.title, f.severity, f.checkStatus, f.refutation?.proof, f.refutation?.relatedProof, f.evidence?.relatedProof])).toEqual([
-        [blocker.title, 'blocker', 'confirmed', ['src/queue.ts:6'], ['acme/billing:src/import.ts:2'], ['acme/billing:src/import.ts:2']],
+        [blocker.title, 'blocker', 'confirmed', ['src/queue.ts:6'], relatedProof, relatedProof],
       ]);
 
       // A round whose finders have no tools still offers the repos to the stages that have them.
       const judgeOnly = await run(false);
       expect(['finder', 'compare', 'claim', 'sweep'].map(stage => judgeOnly.tools.get(stage))).toEqual([undefined, undefined, undefined, undefined]);
-      const offered = { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') };
+      const offered = { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true };
       expect(judgeOnly.tools.get('judge')).toEqual({ root: judgeOnly.root, steps: 5, related: offered, checking: true });
       expect(judgeOnly.tools.get('refute')).toEqual({ root: judgeOnly.root, steps: 15, related: offered, checking: true });
       expect(judgeOnly.result.relatedRepos).toEqual([{ repo: 'acme/reports', status: 'unused' }, { repo: 'acme/billing', status: 'fetched', durationMs: expect.any(Number) }]);
@@ -2426,6 +2441,9 @@ describe('runReview', () => {
     ]);
     expect(checks[0][1]).toContain('```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\no/ref:legacy.cpp:1: int CalcFee(int n);\n```');
     expect(checks.map(([, , sent]) => sent?.repoTools?.related?.guides)).toEqual([{ 'o/ref': 'AGENTS.md' }, { 'o/ref': 'AGENTS.md' }]);
+    // Only the refuters, the claim checks and the finders read dependencies, so a check of a related repo cites none.
+    const patterns = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(([system]) => isPatternCheck(system));
+    expect([...checks, ...patterns].map(([, , sent]) => sent?.repoTools?.related?.dependencies)).toEqual([undefined, undefined, undefined, undefined]);
     const reviewers = ['Reference check: ComputeFee', 'Consumer check: ComputeFee'];
     expect(result.comparisons).toEqual([
       { kind: 'reference', reviewer: reviewers[0], at: ['o/ref:fee.cpp:1', 'o/ref:legacy.cpp:1'], status: 'answered', findings: 1, inputDigest: expect.any(String) },
@@ -3179,7 +3197,8 @@ describe('runReview', () => {
         expect(user).not.toContain('Drops the sort');
         expect(user).not.toContain(prContext.title);
         expect(user).toContain('## Pull Request Diff');
-        expect(options).toEqual({ effort: 'high', signal: expect.any(AbortSignal), repoTools: { root, steps: 12 }, timeoutMs: 600_000 });
+        const related = { repos: [], cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-'), dependencies: true };
+        expect(options).toEqual({ effort: 'high', signal: expect.any(AbortSignal), repoTools: { root, steps: 12, related }, timeoutMs: 600_000 });
       }
       // The finders and their second read read the description, and nothing about the claims or their checks.
       const finders = reviewerCalls(clients).filter(([system]) => !isCheck(system) && !isPatternCheck(system));
@@ -3227,8 +3246,10 @@ describe('runReview', () => {
           prClaims,
           checks: reviewerCalls(clients).filter(([system]) => isCheck(system)).length,
           stages: llmCalls?.map(c => c.stage).filter(stage => stage !== 'claims' && stage !== 'claim_check' && stage !== 'fixes'),
-          // What every call but a claim check was sent, and how the round ended.
-          finders: reviewerCalls(clients).filter(([system]) => !isCheck(system)),
+          // What every call but a claim check was sent, and how the round ended. Each round has a state folder of its own.
+          finders: reviewerCalls(clients).filter(([system]) => !isCheck(system)).map(([system, user, options]) => [system, user, options?.repoTools?.related
+            ? { ...options, repoTools: { ...options.repoTools, related: { ...options.repoTools.related, stateDir: 'the round\'s own' } } }
+            : options]),
           judge: JSON.parse(JSON.stringify(mockedRunJudgeAgent.mock.calls.map(call => call[2]))),
           reader: jest.mocked(clients.judge.sendMessage).mock.calls,
           result: JSON.parse(JSON.stringify(result)),

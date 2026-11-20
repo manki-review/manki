@@ -578,6 +578,34 @@ export interface RoundRelatedRepo {
   asOf?: string;
 }
 
+/** A dependency's published source that the round's reviewer tools read, or tried to read. */
+export interface RoundDependencySource {
+  /** The package as `<registry>/<name>@<version>`, as a check cites its lines. Without a version when none could be resolved. */
+  package: string;
+  /** The registry it comes from, such as `crates.io` or `npm`. */
+  registry: string;
+  name: string;
+  version?: string;
+  /** Where the version comes from: a lockfile that locks it, or a manifest's requirement it was resolved from. */
+  source?: 'lockfile' | 'requirement';
+  /** That lockfile or manifest, or the file that made Manki refuse the package, as a path in the PR's repository. */
+  file?: string;
+  /** The manifest's requirement, when the version was resolved from one. */
+  requirement?: string;
+  /**
+   * `fetched`, `failed` with the `reason`, `mismatch` when its archive did not match its checksum and was not read, or
+   * `refused` with the `reason` when the code the PR uses is not the registry's archive, such as a patched or git package.
+   */
+  status: 'fetched' | 'failed' | 'mismatch' | 'refused';
+  reason?: string;
+  /** How long the fetch took, when it ended. */
+  durationMs?: number;
+  /** Tool calls that read the package, over every call of the round. */
+  reads?: number;
+  /** Those tool calls by the stage that made them, with the refuters as `refute` and `refute_pair`. */
+  readsByStage?: Record<string, number>;
+}
+
 /** What the "Uses Outside the Diff" section showed the finders, as locations without the quoted code. */
 export interface RoundUses {
   /** Why the search of the PR's head commit failed, which leaves the lists of that search unset and the finders without the section. */
@@ -1367,6 +1395,8 @@ export interface ReviewResult {
   relatedRepos?: RoundRelatedRepo[];
   /** What the finders were shown as uses outside the diff. */
   usesOutsideDiff?: RoundUses;
+  /** Each dependency's source the reviewer tools read or tried to read, with its version and where that came from. */
+  dependencySources?: RoundDependencySource[];
   /** The open PRs and issues that may relate to this PR, classified. Unset when the round looked at none. */
   relatedWork?: RelatedWork;
   /** Each sibling comparison the round found, asked or cut. */
@@ -1751,12 +1781,13 @@ export interface RelatedRepo {
   paths?: string[];
 }
 
-/** The related repos one review round offers its reviewer tools, each fetched on first use. */
+/** The related repos, and with `dependencies` the dependencies, one review round offers its reviewer tools, each fetched on first use. */
 export interface RelatedRepoTools {
+  /** The configured related repos. Empty when the round offers only `dependencies`. */
   repos: RelatedRepo[];
   /** Directory the repos are cloned into, one `owner/name` directory each. A workflow can keep it between runs with `actions/cache`. */
   cacheDir: string;
-  /** The round's own directory, where the tool servers record which repo one of them fetched or failed to fetch. */
+  /** The round's own directory, where the tool servers record which repo or package one of them fetched or failed to fetch. */
   stateDir: string;
   /** The guide file at the root of each repo fetched before the finders run, by `owner/name`. Only the prompt uses it. */
   guides?: Record<string, string>;
@@ -1767,6 +1798,11 @@ export interface RelatedRepoTools {
   asOf?: string;
   /** How the `ref` of each `dependency` repo that the config gives none was chosen, by `owner/name`. */
   locks?: Record<string, RepoLock>;
+  /**
+   * Lets the tools also read a dependency the PR's own lockfiles or manifests name, at the version they lock or allow.
+   * Only the refuters, the claim checks and the finders are offered it.
+   */
+  dependencies?: true;
 }
 
 /** The lockfile that locked a dependency repo's commit, or why the repo is read at its default branch instead. */
@@ -2142,6 +2178,8 @@ export interface RoundContext {
   usesOutsideDiff?: RoundUses;
   /** The units of the change the finders answered for. Each finder's lines are in `reviewers.agentMetrics`. */
   units?: RoundUnits;
+  /** Each dependency's source the reviewer tools read or tried to read, with its version and where that came from. */
+  dependencySources?: RoundDependencySource[];
   /** The open PRs and issues that may relate to this PR, with their classification. */
   relatedWork?: RoundRelatedWork;
   /** Each sibling comparison the round found, asked or cut. */

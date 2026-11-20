@@ -439,6 +439,14 @@ describe('formatFindingComment', () => {
     // A fetched repo with no commit recorded shows the location alone.
     const noCommit = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched' }]) };
     expect(formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2', ...hidden]), noCommit)).toContain('**Checked in the code**\nIn a related repository: `acme/reports:src/import.ts:2`\n\n**Double-checked**');
+    // A line of a dependency the round read shows as its location, with the package and version, on a line of its own.
+    const packages = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched', commit }], [
+      { package: 'crates.io/time@0.3.47', registry: 'crates.io', name: 'time', version: '0.3.47', source: 'lockfile', file: 'Cargo.lock', status: 'fetched' },
+      { package: 'npm/left-pad@1.3.0', registry: 'npm', name: 'left-pad', version: '1.3.0', source: 'lockfile', file: 'package-lock.json', status: 'mismatch' },
+    ]) };
+    expect(formatFindingComment(confirmedBy(['crates.io/time@0.3.47:src/date.rs:120', 'acme/reports:src/import.ts:2', 'npm/left-pad@1.3.0:index.js:1']), packages)).toContain(
+      `**Checked in the code**\nIn a related repository: ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}\n\nIn a dependency's published source: \`crates.io/time@0.3.47:src/date.rs:120\`\n\n**Double-checked**`,
+    );
     // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo. A location of that
     // form never links to that file of the PR or shows its text: as a check it is plain text, and as related proof it links to the related repo.
     const prFile = 'acme/reports:src/import.ts';
@@ -453,6 +461,10 @@ describe('formatFindingComment', () => {
     const earlier = ['acme/reports:src/import.ts:2', 'acme/unused:lib/rows.py:9', ...hidden];
     const relisted = formatFindingComment({ ...baseFinding, relisted: true, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched);
     expect(relisted).toContain('In a related repository, as an earlier round read it: `acme/reports:src/import.ts:2`, `acme/unused:lib/rows.py:9`\n');
+    // So does a line of a package this round did not read.
+    const relistedPackage = formatFindingComment({ ...baseFinding, relisted: true, evidence: { checks: [], proof: [], relatedProof: ['npm/@scope/pad@1.2.0:index.js:3'] } }, fetched);
+    expect(relistedPackage).toContain('In a dependency\'s published source, as an earlier round read it: `npm/@scope/pad@1.2.0:index.js:3`\n');
+    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [], relatedProof: ['npm/@scope/pad@1.2.0:index.js:3'] } }, fetched)).not.toContain('npm/@scope/pad');
     expect(relisted).not.toContain('https://github.com/acme');
     expect(relisted).not.toContain('Not checked against the code');
     expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched)).not.toContain('acme/unused');

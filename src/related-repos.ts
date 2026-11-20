@@ -7,7 +7,7 @@ import { runTool } from './binary-analyzers';
 import { RepoTools } from './providers/types';
 import { makeScratchDir } from './tool-install';
 import { STALE_TIMEOUT_MS } from './tool-steps';
-import { LOCKFILE_NAMES, lockedGitCommits, MAX_LOCKFILE_BYTES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
+import { LOCKFILE_NAMES, lockedGitCommits, MAX_LOCKFILE_BYTES, MAX_LOCKFILES, MAX_LOCKFILES_TOTAL_BYTES } from './lockfile';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RepoLock, RoundRelatedRepo } from './types';
 import { sanitizeLogOutput } from './utils';
 import { gitEnv } from './workspace';
@@ -16,8 +16,8 @@ import { gitEnv } from './workspace';
 export const RELATED_REPO_HOST = 'https://github.com';
 // A tool call must end before `STALE_TIMEOUT_MS`. It can wait for another's fetch and then fetch in its place, so
 // `sharedCheckout` begins a fetch only while one still fits into the call, and stops waiting before the limit.
-const FETCH_TIMEOUT_MS = 60_000;
-const WAIT_SLACK_MS = 2_000;
+export const FETCH_TIMEOUT_MS = 60_000;
+export const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
 /** Commits the first fetch of an older history reaches back. Each further fetch reaches twice as far. */
 const AS_OF_DEPTH = 64;
@@ -52,16 +52,41 @@ export function relatedReposCacheDir(): string {
 }
 
 /**
- * Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined`
- * without repos. A `dependency` repo without a `ref` gets the commit the lockfiles of the checkout at `workspace` lock.
+ * Returns what one round or one reply offers its tools of `repos`, and of the PR's `dependencies` when set, with a state
+ * directory of its own, or `undefined` when it offers neither. A `dependency` repo without a `ref` gets the commit the
+ * lockfiles of the checkout at `workspace` lock.
  */
-export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspace: string, asOf?: string): Promise<RelatedRepoTools | undefined> {
-  if (!repos?.length) return undefined;
-  const locked = await lockedRelatedRepos(repos, workspace);
-  return { repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }), ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }) };
+export async function relatedRepoTools(repos: RelatedRepo[] | undefined, workspace: string, asOf?: string, dependencies = false): Promise<RelatedRepoTools | undefined> {
+  if (!repos?.length && !dependencies) return undefined;
+  const locked = await lockedRelatedRepos(repos ?? [], workspace);
+  return {
+    repos: locked.repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }),
+    ...(Object.keys(locked.locks).length > 0 && { locks: locked.locks }), ...(dependencies && { dependencies: true as const }),
+  };
 }
 
-const MAX_LOCKFILES = 50;
+/** A file git tracks in a checkout, and whether git holds it as a symlink. */
+export interface TrackedFile {
+  path: string;
+  /** A checkout with `core.symlinks=false` writes a symlink as a file that holds the link's target. */
+  symlink: boolean;
+  /** Whether git holds it as a submodule, whose files the checkout does not track itself. */
+  submodule: boolean;
+}
+
+/**
+ * Returns the files git tracks in the checkout at `workspace` that `pathspecs` match, all of them without any, outside
+ * the folders named in `skipped`. Returns `undefined` when git cannot list them.
+ */
+export async function trackedFiles(
+  workspace: string, pathspecs: readonly string[] = [], skipped: readonly string[] = ['node_modules', 'target'],
+): Promise<TrackedFile[] | undefined> {
+  const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...pathspecs], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
+  if (listed.code !== 0) return undefined;
+  // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, mode `120000` is a symlink and `160000` a submodule.
+  return listed.stdout.split('\0').filter(Boolean).map(entry => ({ path: entry.slice(entry.indexOf('\t') + 1), symlink: entry.startsWith('120000 '), submodule: entry.startsWith('160000 ') }))
+    .filter(({ path }) => path && !path.split('/').some(part => skipped.includes(part)));
+}
 
 /**
  * Returns `repos` with the `ref` of each `dependency` repo that names none set to the commit that the lockfiles of the
@@ -76,12 +101,9 @@ async function lockedRelatedRepos(repos: RelatedRepo[], workspace: string): Prom
   // Each commit a lockfile locks, by `owner/name` in lower case, with the first lockfile that locks it.
   const found = new Map<string, Map<string, string>>();
   let unread: string | undefined;
-  const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...LOCKFILE_NAMES.map(name => `:(glob)**/${name}`)], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
-  if (listed.code !== 0) unread = 'the lockfiles of the checkout could not be listed';
-  // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, and mode `120000` is a symlink.
-  const entries = listed.code === 0 ? listed.stdout.split('\0').filter(Boolean) : [];
-  const files = entries.filter(entry => !entry.startsWith('120000 ')).map(entry => entry.slice(entry.indexOf('\t') + 1))
-    .filter(f => f && !f.split('/').some(part => part === 'node_modules' || part === 'target'));
+  const tracked = await trackedFiles(workspace, LOCKFILE_NAMES.map(name => `:(glob)**/${name}`));
+  if (!tracked) unread = 'the lockfiles of the checkout could not be listed';
+  const files = (tracked ?? []).filter(f => !f.symlink).map(f => f.path);
   // A lockfile past the cap may lock another commit, so it counts as one that could not be read.
   if (files.length > MAX_LOCKFILES) unread ??= `the checkout holds ${files.length} lockfiles, more than the ${MAX_LOCKFILES} a round reads`;
   let budget = MAX_LOCKFILES_TOTAL_BYTES;
@@ -135,6 +157,21 @@ export function offeredRepos(related: RelatedRepoTools | undefined): Pick<Relate
   return related ? { repos: related.repos, guides: related.guides, asOf: related.asOf } : null;
 }
 
+/** Returns `related` without its dependencies, for a stage that reads only the related repos, or `undefined` when it has no repo. */
+export function withoutDependencies(related: RelatedRepoTools | undefined): RelatedRepoTools | undefined {
+  if (!related?.repos.length) return undefined;
+  const { dependencies: _, ...repos } = related;
+  return repos;
+}
+
+/**
+ * Returns the names a check may cite lines of: each configured related repo, and each repo or package a tool server
+ * of the round fetched. A package is named as `<registry>/<name>@<version>`.
+ */
+export function relatedNames(related: RelatedRepoTools): string[] {
+  return [...new Set([...related.repos.map(r => r.repo), ...fetchedRelatedRepos(related.stateDir).keys()])];
+}
+
 /**
  * Returns the read-only tools of a call on the checkout at `root`. Every stage builds its `RepoTools` here, so each one
  * states its related repos. `use` is `check` for a call that checks one finding or statement, `find` for one that reports
@@ -162,7 +199,7 @@ export function relatedRepoLoader(
     if (!repo) return Promise.reject(new Error(`${name} is not a related repo`));
     let checkout = checkouts.get(name);
     if (!checkout) {
-      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), { timeoutMs, callLimitMs }, takeovers => checkoutRelatedRepo(repo, cloneRoot(takeovers), timeoutMs, run, log, asOf))
+      checkout = sharedCheckout(repo.repo, join(stateDir, encodeURIComponent(name)), { timeoutMs, callLimitMs }, takeovers => checkoutRelatedRepo(repo, cloneRoot(takeovers), timeoutMs, run, log, asOf))
         .catch((error: unknown) => {
           // The repo has no outcome yet, so the next call asks again.
           if (error instanceof RelatedRepoPending) checkouts.delete(name);
@@ -180,7 +217,7 @@ function lockPath(marker: string, takeovers: number): string {
 }
 
 /**
- * Runs `checkout` in the one process that holds the lock of `marker`, which records the outcome in `<marker>.done` or
+ * Runs `checkout` of `name` in the one process that holds the lock of `marker`, which records the outcome in `<marker>.done` or
  * `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits for that outcome.
  * A lock holds its creator's PID. When a holder stopped and left no outcome, the next lock of `lockPath` takes its
  * place. No lock is ever removed or renamed, and a lock is created only if it does not exist, so one process holds each.
@@ -188,8 +225,8 @@ function lockPath(marker: string, takeovers: number): string {
  * `RelatedRepoPending`, and records nothing, when a holder stopped too late in the call for a fetch to fit, or when
  * the call's limit comes before the outcome of another's fetch.
  */
-async function sharedCheckout(
-  repo: RelatedRepo, marker: string, { timeoutMs, callLimitMs }: { timeoutMs: number; callLimitMs: number },
+export async function sharedCheckout(
+  name: string, marker: string, { timeoutMs, callLimitMs }: { timeoutMs: number; callLimitMs: number },
   checkout: (takeovers: number) => Promise<{ dir: string; commit: string }>,
 ): Promise<string> {
   const started = Date.now();
@@ -204,7 +241,7 @@ async function sharedCheckout(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    const outcome = await waitForCheckout(repo, marker, lock, timeoutMs, started + callLimitMs - WAIT_SLACK_MS);
+    const outcome = await waitForCheckout(name, marker, lock, timeoutMs, started + callLimitMs - WAIT_SLACK_MS);
     if (outcome !== undefined) return outcome;
   }
   try {
@@ -213,15 +250,22 @@ async function sharedCheckout(
     writeMarker(`${marker}.done`, dir);
     return dir;
   } catch (error) {
-    writeMarker(`${marker}.failed`, messageOf(error));
+    // A fetch that only ran out of time releases its lock, so the next call takes over with the whole time again.
+    if (error instanceof RetryableFetch) writeFileSync(`${lockPath(marker, takeovers)}.released`, error.message);
+    else writeMarker(`${marker}.failed`, messageOf(error));
     throw error;
   }
 }
 
+/** A failure of a fetch that a later call can retry, such as one that ran out of time. `sharedCheckout` records no outcome for it. */
+export class RetryableFetch extends Error {}
+
 /** Writes `text` to `path` through a rename, so a waiting process never reads it half written. */
-function writeMarker(path: string, text: string): void {
-  writeFileSync(`${path}.tmp`, text);
-  renameSync(`${path}.tmp`, path);
+export function writeMarker(path: string, text: string): void {
+  // A name of its own per process, so two processes that write the same file never rename each other's.
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, text);
+  renameSync(temp, path);
 }
 
 /**
@@ -229,7 +273,7 @@ function writeMarker(path: string, text: string): void {
  * holder stopped and left no outcome. Throws the recorded failure, and records one when the holder runs out of time.
  * Throws `RelatedRepoPending` when the time `until` comes first, which says nothing about the holder.
  */
-async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, timeoutMs: number, until: number): Promise<string | undefined> {
+async function waitForCheckout(name: string, marker: string, lock: string, timeoutMs: number, until: number): Promise<string | undefined> {
   const outcome = (): string | undefined => {
     if (existsSync(`${marker}.done`)) return readFileSync(`${marker}.done`, 'utf-8');
     if (existsSync(`${marker}.failed`)) throw new Error(readFileSync(`${marker}.failed`, 'utf-8'));
@@ -245,13 +289,14 @@ async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, 
     await new Promise(done => setTimeout(done, WAIT_POLL_MS));
   }
   if (until < deadline) throw new RelatedRepoPending();
-  const reason = `another reviewer's fetch of ${repo.repo} did not finish in time`;
+  const reason = `another reviewer's fetch of ${name} did not finish in time`;
   writeMarker(`${marker}.failed`, reason);
   throw new Error(reason);
 }
 
 /** Whether the process whose PID the lock holds still runs. A lock whose PID is not written yet counts as held. */
 function isHolderAlive(lock: string): boolean {
+  if (existsSync(`${lock}.released`)) return false;
   const pid = Number(readFileSync(lock, 'utf-8'));
   if (!pid) return true;
   try {
@@ -298,46 +343,70 @@ export function relatedRepoGuides(checkouts: RelatedCheckout[]): Record<string, 
   return guides.length > 0 ? Object.fromEntries(guides) : undefined;
 }
 
-/** Returns the checkout directory of each related repo a tool server of the round in `stateDir` fetched, by `owner/name`. */
+/** The folder of a round's `stateDir` that holds the markers of its dependencies, apart from a related repo's of the same name. */
+export const DEPENDENCY_STATE = 'dependencies';
+
+/** Returns the checkout directory of each related repo or package a tool server of the round in `stateDir` fetched, by its name. */
 export function fetchedRelatedRepos(stateDir: string): Map<string, string> {
-  const done = readdirSync(stateDir).filter(f => f.endsWith('.done'));
-  return new Map(done.map(f => [decodeURIComponent(f.slice(0, -'.done'.length)), readFileSync(join(stateDir, f), 'utf-8')]));
+  const done = (dir: string) => (existsSync(dir) ? readdirSync(dir) : []).filter(f => f.endsWith('.done'))
+    .map((f): [string, string] => [decodeURIComponent(f.slice(0, -'.done'.length)), readFileSync(join(dir, f), 'utf-8')]);
+  return new Map([...done(stateDir), ...done(join(stateDir, DEPENDENCY_STATE))]);
 }
 
 const MAX_REASON_CHARS = 300;
 
+/** How the fetch of one repo or package fared in a round, as `fetchOutcome` reads it from the round's markers. */
+export interface FetchOutcome {
+  status: 'fetched' | 'failed' | 'unused';
+  reason?: string;
+  /** How long the fetch took from its lock to its outcome, when it recorded one. */
+  durationMs?: number;
+  commit?: string;
+  /** Set when the fetch recorded no outcome, so its `reason` says why none is known. */
+  unfinished?: true;
+}
+
 /**
- * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when nothing
- * asked for it, with how long the fetch took from its lock to its outcome, the commit a fetch checked out, the guide of
- * `guides` the finders were pointed to, and the `asOf` time the round read the repos at. Warns about each repo it could
- * not fetch.
+ * Returns how the fetch of `name` fared in the round in `stateDir`, whose files are `files`: fetched, failed with the
+ * reason, or unused when nothing asked for it.
+ */
+export function fetchOutcome(stateDir: string, files: ReadonlySet<string>, name: string): FetchOutcome {
+  const marker = encodeURIComponent(name);
+  if (!files.has(`${marker}.lock`)) return { status: 'unused' };
+  let takeovers = 0;
+  while (files.has(lockPath(marker, takeovers + 1))) takeovers++;
+  // The newest lock is the one whose holder recorded the outcome, or was the last to try.
+  const lock = join(stateDir, lockPath(marker, takeovers));
+  const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(lock).mtimeMs)) });
+  if (files.has(`${marker}.done`)) {
+    const commit = files.has(`${marker}.commit`) ? readFileSync(join(stateDir, `${marker}.commit`), 'utf-8') : '';
+    return { status: 'fetched', ...(commit && { commit }), ...took(`${marker}.done`) };
+  }
+  if (files.has(`${marker}.failed`)) {
+    return { status: 'failed', reason: readFileSync(join(stateDir, `${marker}.failed`), 'utf-8').slice(0, MAX_REASON_CHARS), ...took(`${marker}.failed`) };
+  }
+  // No outcome says nothing about the fetch: the stage that held the newest lock did not get to the end of it.
+  const released = files.has(`${lockPath(marker, takeovers)}.released`) ? readFileSync(`${lock}.released`, 'utf-8') : undefined;
+  const reason = released !== undefined ? `${released.slice(0, MAX_REASON_CHARS)}, and no later call fetched it`
+    : isHolderAlive(lock)
+      ? 'the fetch was still running when the round ended'
+      : 'the stage fetching it was stopped before the fetch finished, and no later call fetched it';
+  return { status: 'failed', reason, unfinished: true };
+}
+
+/**
+ * Returns how each of `repos` fared in the round in `stateDir`, as `fetchOutcome` reads it, with the guide of `guides`
+ * the finders were pointed to, and the `asOf` time the round read the repos at. Warns about each repo it could not fetch.
  */
 export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guides: Record<string, string> = {}, asOf?: string, locks: Record<string, RepoLock> = {}): RoundRelatedRepo[] {
   const files = new Set(readdirSync(stateDir));
   return repos.map(({ repo, ref }) => {
-    const marker = encodeURIComponent(repo);
     const base = { repo, ...(ref && { ref }), ...locks[repo], ...(asOf && { asOf }), ...(guides[repo] && { guide: guides[repo] }) };
-    if (!files.has(`${marker}.lock`)) return { ...base, status: 'unused' as const };
-    let takeovers = 0;
-    while (files.has(lockPath(marker, takeovers + 1))) takeovers++;
-    // The newest lock is the one whose holder recorded the outcome, or was the last to try.
-    const lock = join(stateDir, lockPath(marker, takeovers));
-    const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(lock).mtimeMs)) });
-    if (files.has(`${marker}.done`)) {
-      const commit = files.has(`${marker}.commit`) ? readFileSync(join(stateDir, `${marker}.commit`), 'utf-8') : '';
-      return { ...base, status: 'fetched' as const, ...(commit && { commit }), ...took(`${marker}.done`) };
+    const { unfinished, ...outcome } = fetchOutcome(stateDir, files, repo);
+    if (outcome.status === 'failed') {
+      core.warning(unfinished ? `Related repo ${repo} was not fetched: ${outcome.reason}` : `Could not fetch related repo ${repo}, which must be public on github.com: ${outcome.reason}`);
     }
-    if (files.has(`${marker}.failed`)) {
-      const reason = readFileSync(join(stateDir, `${marker}.failed`), 'utf-8');
-      core.warning(`Could not fetch related repo ${repo}, which must be public on github.com: ${reason}`);
-      return { ...base, status: 'failed' as const, reason: reason.slice(0, MAX_REASON_CHARS), ...took(`${marker}.failed`) };
-    }
-    // No outcome says nothing about the repo: the stage that held the newest lock did not get to the end of its fetch.
-    const reason = isHolderAlive(lock)
-      ? 'the fetch was still running when the round ended'
-      : 'the stage fetching it was stopped before the fetch finished, and no later call fetched it';
-    core.warning(`Related repo ${repo} was not fetched: ${reason}`);
-    return { ...base, status: 'failed' as const, reason };
+    return { ...base, ...outcome };
   });
 }
 

@@ -10,7 +10,8 @@ import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, co
 import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
-import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
+import { dependencyOutcomes } from './dependency-sources';
+import { fetchedRelatedRepos, fetchRelatedRepos, offeredRepos, relatedNames, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos, withoutDependencies } from './related-repos';
 import { classifyRelatedWork, linkTrackingIssues } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
@@ -1178,21 +1179,23 @@ export async function runReview(
   const comparisonModel = team.finders[0].model;
   const finderTools = [...finderClients.values()].some(c => c.repoTools);
   // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them. The
-  // second refuter runs only next to a judge with tools, so its own tools offer nothing.
+  // second refuter runs only next to a judge with tools, so its own tools offer nothing. The finders, claim checks and
+  // refuters also read the PR's dependencies.
   const anyTools = finderTools || [pickReviewerClient(clients, comparisonModel).client, clients.judge].some(c => c.repoTools);
-  const related = workspace && anyTools ? await relatedRepoTools(config.related_repos, workspace, options.relatedReposAsOf) : undefined;
+  const related = workspace && anyTools ? await relatedRepoTools(config.related_repos, workspace, options.relatedReposAsOf, true) : undefined;
   // The guide of each repo fetched before the finders run, known once that fetch is done.
   const pointedTo: { guides?: Record<string, string> } = {};
   // Every configured related repo is recorded: fetched, failed, unused, or skipped when no model could read it. A stage
   // after the finders can be the first to fetch one, so each way the round ends reads the outcomes then.
-  const relatedRecord = (): Pick<ReviewResult, 'relatedRepos'> => {
+  const relatedRecord = (): Pick<ReviewResult, 'relatedRepos' | 'dependencySources'> => {
     const relatedRepos: RoundRelatedRepo[] | undefined = related
       ? relatedRepoOutcomes(related.repos, related.stateDir, pointedTo.guides, related.asOf, related.locks)
       : config.related_repos?.map(({ repo, ref }) => ({
         repo, ...(ref && { ref }), status: 'skipped' as const,
         reason: workspace ? 'no model of the round has repository tools' : 'the PR head was not checked out for the tools',
       }));
-    return relatedRepos?.length ? { relatedRepos } : {};
+    const dependencySources = related ? dependencyOutcomes(related.stateDir) : [];
+    return { ...(relatedRepos?.length && { relatedRepos }), ...(dependencySources.length > 0 && { dependencySources }) };
   };
   const changedSinceLastRound = filesChangedSinceLastRound(diffWithLockfiles, priorRounds, interRoundDiff);
   if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;
@@ -1239,13 +1242,13 @@ export async function runReview(
   const sideProgress = (kind: SideCheckKind): CheckProgress<number> | undefined =>
     onProgress && reportChecks(event => onProgress({ phase: 'side-check', sideCheck: { kind, ...event } }));
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
-    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal, progress: sideProgress('comparison'), earlier: earlierOf(kept?.comparisons),
+    effort: comparisonEffort, workspace, related: withoutDependencies(related), signal: comparisonDeadline.signal, progress: sideProgress('comparison'), earlier: earlierOf(kept?.comparisons),
   });
   const checkWorkspace = quickCheckOnly(team) ? undefined : workspace;
   // Lines of the related repos for the claims' own checks. A repo is fetched for them also when the diff's names start no search of their own.
   // `progress.step` names the step running, for the record when the lines are not waited for.
   const claimLines = async (claims: PrClaim[], signal: AbortSignal, progress: { step: string }): ReturnType<typeof listClaimLines> => {
-    if (!related || !checkWorkspace || !pickReviewerClient(clients, comparisonModel).client.repoTools || claims.length === 0) return { lines: new Map() };
+    if (!related?.repos.length || !checkWorkspace || !pickReviewerClient(clients, comparisonModel).client.repoTools || claims.length === 0) return { lines: new Map() };
     const fetched = await fetchRelatedRepos(related);
     progress.step = 'the term call';
     const termClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claim_terms'), signal);
@@ -1282,7 +1285,7 @@ export async function runReview(
   const fixClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'fixes'), comparisonDeadline.signal);
   const fixChecksPromise = (checksFixes ? listFixes(fixClient, rawDiff, diff) : Promise.resolve({ fixes: [] })).then(async ({ fixes, ...listed }) => {
     const checked = await runFixChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'fix_check', reviewer), fixes, {
-      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, signal: comparisonDeadline.signal, progress: sideProgress('fix'), earlier: earlierOf(kept?.fixes),
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related: withoutDependencies(related), signal: comparisonDeadline.signal, progress: sideProgress('fix'), earlier: earlierOf(kept?.fixes),
     });
     return { findings: checked.findings, record: fixesRecord(listed, checked.fixes) };
   });
@@ -1297,13 +1300,13 @@ export async function runReview(
   // Each counterpart in a related repo gets a call of its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
   const relatedChecksPromise = runRelatedChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'related_check', reviewer),
     checkWorkspace ? relatedQuestions(relatedUses.counterparts, diff) : [], {
-      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: earlierOf(kept?.comparisons),
+      effort: comparisonEffort, workspace: checkWorkspace, related: withoutDependencies(relatedTools), signal: comparisonDeadline.signal, progress: sideProgress('related'), earlier: earlierOf(kept?.comparisons),
     });
   // Each piece of structure the change adds is compared with how the repository does the same kind of thing, in a call of
   // its own beside the finders, under the comparisons' deadline. The quick check of a trivial change asks none.
   const patternChecksPromise = runPatternChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'pattern_check', reviewer),
     checkWorkspace ? uses.pieces ?? [] : [], {
-      effort: comparisonEffort, workspace: checkWorkspace, related: relatedTools, signal: comparisonDeadline.signal, progress: sideProgress('pattern'),
+      effort: comparisonEffort, workspace: checkWorkspace, related: withoutDependencies(relatedTools), signal: comparisonDeadline.signal, progress: sideProgress('pattern'),
       earlier: earlierOf(kept?.comparisons), diff, fullDiff: options.fullDiff, instructionFiles: options.instructionFiles,
     });
   const usesOutsideDiff = uses.section + relatedUses.section;
@@ -1334,7 +1337,8 @@ export async function runReview(
   const changeMap = changeMapOf(diff, uses.changes);
   // Only a retry or a second ask passes `retryNote`, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string, oneSlice?: number): RunReviewerAgentOptions => ({
-    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, ...usesFor(finder),
+    // The quick check of a trivial change has too few steps to read a dependency, so it reads only the related repos.
+    effort: finder.effort, language: plannerResult?.language, workspace, related: finder.prompt === TRIVIAL_VERIFIER_AGENT ? withoutDependencies(relatedTools) : relatedTools, changedSinceLastRound, interRoundDiff: finderInterRoundDiff, earlierBlockers, ...usesFor(finder),
     lockfileChanges, instructionFiles: options.instructionFiles, changeMap,
     ...(onProgress && { onToolStep: () => onProgress({ phase: 'agent-step', agentName: finder.name }) }),
     ...(retryNote && { retryNote }),
@@ -1765,7 +1769,7 @@ export async function runReview(
   const claimSources: ClaimSources = {
     diff: diffWithLockfiles, rawDiff, fileContents, signals: staticSignals,
     // A stage after the finders can fetch a repo, so each check reads which ones the round holds by then.
-    ...(related && workspace && { related: { names: related.repos.map(r => r.repo), workspace, get checkouts() { return fetchedRelatedRepos(related.stateDir); } } }),
+    ...(related && workspace && { related: { get names() { return relatedNames(related); }, workspace, get checkouts() { return fetchedRelatedRepos(related.stateDir); } } }),
   };
   const round = (priorRounds?.length ?? 0) + 1;
   // Warning leads need the judge's tools to be settled, so without them they stay only listed.
@@ -1898,7 +1902,7 @@ export async function runReview(
     interRoundDiff,
     resolvedThreadIds,
     guardedThreadIds,
-    ...(related && { relatedRepos: related.repos }),
+    ...(related?.repos.length && { relatedRepos: related.repos }),
     ...(refutation && { refutation }),
     toolSteps: judgeToolSteps(config, clients, !!refutation),
     usesOutsideDiff,
@@ -1973,7 +1977,7 @@ export async function runReview(
   const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
   if (sweepSources.length > 0) {
     const sweep = await runSweeps(reviewer => lateFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
-      rawDiff, effort: comparisonEffort, workspace, related: relatedTools, progress: sideProgress('sweep'),
+      rawDiff, effort: comparisonEffort, workspace, related: withoutDependencies(relatedTools), progress: sideProgress('sweep'),
     });
     sweeps = sweep.sweeps;
     // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.

@@ -11,6 +11,7 @@ import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
 import { findClosedPattern, findExcludePattern } from './diff';
+import { dependencyLoader, DependencyLoaderOptions } from './dependency-sources';
 import { fenceText, MANKI_VERSION } from './github';
 import { relatedRepoLoader, RelatedRepoPending } from './related-repos';
 import { writableOnlyByUs } from './tool-install';
@@ -560,6 +561,8 @@ export interface McpServerOptions {
   /** Where to count the calls refused because they named a path `closedPathsOf(root)` closes. A server adds to the count it finds. */
   closedFile?: string;
   loadApi?: () => Promise<AstGrepApi>;
+  /** How the server reads a dependency when `related` offers them. Tests set it to reach a registry of their own. */
+  dependencyOptions?: DependencyLoaderOptions;
 }
 
 // Read-only and closed-world, so a CLI that asks before a tool with side effects runs these without asking.
@@ -567,19 +570,20 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: f
 
 /**
  * Returns Manki's tool server for the repository at `root`. Every tool reads only inside `root` and runs no shell, except
- * `repo_info`, which asks GitHub for a repository's public facts. A call that names a path of `root` that
- * `closedPathsOf(root)` closes is refused and counted.
+ * `repo_info`, which asks GitHub for a repository's public facts, and a `dependency` argument, which fetches a package
+ * of the PR from its registry. A call that names a path of `root` that `closedPathsOf(root)` closes is refused and counted.
  */
-export function createMcpServer(root: string, { fileTools = false, steps, stepsDir, related, readsFile, closedFile, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
+export function createMcpServer(root: string, { fileTools = false, steps, stepsDir, related, readsFile, closedFile, loadApi = loadAstGrep, dependencyOptions }: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: 'manki', version: MANKI_VERSION });
   const closedPaths = closedPathsOf(root);
   let closedCalls = closedFile ? readClosedCalls(closedFile) : 0;
   let taken = 0;
-  // `args` are the call's arguments: a `path` with no related `repo` is a path of `root`.
-  const run = async (tool: () => Promise<string>, args: { path?: string; repo?: string } = {}): Promise<ToolResult> => {
+  // `args` are the call's arguments: a `path` with no related `repo` and no `dependency` is a path of `root`.
+  const run = async (tool: () => Promise<string>, args: { path?: string; repo?: string; dependency?: string } = {}): Promise<ToolResult> => {
     const check = steps === undefined ? {} : stepCheck(stepsDir ? claimStep(stepsDir) : ++taken, steps);
     if (check.refusal) return { content: [{ type: 'text', text: check.refusal }], isError: true };
-    const closedBy = args.path !== undefined && !args.repo ? closingPattern(root, args.path, closedPaths) : undefined;
+    const ofRoot = !args.repo && !args.dependency;
+    const closedBy = args.path !== undefined && ofRoot ? closingPattern(root, args.path, closedPaths) : undefined;
     if (closedBy) {
       closedCalls++;
       try {
@@ -587,7 +591,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
       } catch { /* the count only feeds the round record */ }
     }
     // A symlink's target can be closed, so while paths are closed no tool follows one.
-    const linked = !closedBy && closedPaths.length > 0 && args.path !== undefined && !args.repo && throughSymlink(root, args.path);
+    const linked = !closedBy && closedPaths.length > 0 && args.path !== undefined && ofRoot && throughSymlink(root, args.path);
     const refusal = closedBy
       ? `${args.path} is closed by the repository's config: \`closed_paths\` holds \`${closedBy}\`, so no review stage may read it.`
       : linked ? `${args.path} goes through a symlink, which no tool follows while the repository's config closes paths.` : undefined;
@@ -600,26 +604,49 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
   const repoName = z.enum(names as [string, ...string[]])
     .describe('A related repo to read instead of the PR\'s repository. It is fetched on the first call that names it.');
   // A client with file tools of its own reads the PR's repository with those, so it gets these only for a related repo.
-  const repoArg = (optional: boolean): Record<string, z.ZodType<string | undefined>> =>
-    names.length === 0 ? {} : { repo: optional ? repoName.optional() : repoName };
+  const loadDependency = related?.dependencies ? dependencyLoader(root, related.stateDir, dependencyOptions) : undefined;
+  const dependencyArg: Record<string, z.ZodType<string | undefined>> = loadDependency
+    ? { dependency: z.string().max(300).optional().describe('A dependency of the PR to read instead, as `crates.io/<name>` or `npm/<name>`, with `@<version>` added when the PR uses several versions. Manki reads the version the PR\'s lockfile or manifest gives.') }
+    : {};
+  // With dependencies on offer, a call names a repo or a dependency, so neither argument is required.
+  const repoArg = (optional: boolean): Record<string, z.ZodType<string | undefined>> => ({
+    ...(names.length === 0 ? {} : { repo: optional || loadDependency ? repoName.optional() : repoName }),
+    ...dependencyArg,
+  });
   const kept = readsFile && existsSync(readsFile) ? safeJsonParse(readFileSync(readsFile, 'utf8')) : null;
   const reads: Record<string, number> = kept && typeof kept === 'object' ? kept as Record<string, number> : {};
-  const rootOf = async (args: object): Promise<string> => {
-    const repo = (args as { repo?: string }).repo;
-    if (!repo || !loadRelated) return root;
-    reads[repo] = (reads[repo] ?? 0) + 1;
+  const countRead = (name: string): void => {
+    reads[name] = (reads[name] ?? 0) + 1;
     try {
       if (readsFile) writeFileSync(readsFile, JSON.stringify(reads));
     } catch { /* the count only feeds the round record */ }
-    return loadRelated(repo).catch((error: unknown) => {
+  };
+  /** Returns the folder a call reads, and for a dependency the note that names its version. */
+  const rootOf = async (args: object): Promise<{ dir: string; note?: string }> => {
+    const { repo, dependency } = args as { repo?: string; dependency?: string };
+    if (dependency && loadDependency) {
+      if (repo) throw new Error('Name a related repo in `repo` or a dependency in `dependency`, not both.');
+      const { key, dir, note } = await loadDependency(dependency);
+      countRead(key);
+      return { dir, note };
+    }
+    if (!repo || !loadRelated) return { dir: root };
+    countRead(repo);
+    return loadRelated(repo).then(dir => ({ dir }), (error: unknown) => {
       // A fetch that only ran out of time in this call did not fail, so the answer must not read as if the repo cannot be fetched.
       if (error instanceof RelatedRepoPending) throw new Error(`${repo} ${error.message}`);
       throw new Error(`${repo} could not be fetched, so it cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     });
   };
+  /** Runs `tool` on the folder `args` names, with the dependency's note first. */
+  const readIn = (args: { path?: string; repo?: string; dependency?: string }, tool: (dir: string) => Promise<string>) => run(async () => {
+    const { dir, note } = await rootOf(args);
+    const text = await tool(dir);
+    return note ? `${note}\n\n${text}` : text;
+  }, args);
   const baseExcludes = baseReadsOf(root);
-  if (fileTools || names.length > 0 || baseExcludes) {
-    // A client with file tools of its own reads the head with those, so it names a related repo or the base here.
+  if (fileTools || names.length > 0 || loadDependency || baseExcludes) {
+    // A client with file tools of its own reads the head with those, so it names a related repo, a dependency or the base here.
     const ref = z.enum(['head', 'base']).optional().describe('`base` reads the file as it is at the PR\'s base commit, the code before this PR. Defaults to `head`.');
     server.registerTool('read_file', {
       description: 'Reads a text file of the repository, numbering each line.',
@@ -632,20 +659,24 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
         ref,
       },
       annotations: READ_ONLY,
-    }, (args) => run(async () => {
-      const { repo, ref: at } = args as { repo?: string; ref?: 'head' | 'base' };
+    }, (args) => {
+      const { repo, dependency, ref: at } = args as { repo?: string; dependency?: string; ref?: 'head' | 'base' };
       if (at === 'base') {
-        if (!baseExcludes) throw new Error('This workspace holds no copy of the PR\'s base, so no file can be read there.');
-        if (repo) throw new Error('`ref` reads only the PR\'s own repository, so leave out `repo` to read the base.');
-        return readBaseFile(root, args, baseExcludes);
+        return run(async () => {
+          if (!baseExcludes) throw new Error('This workspace holds no copy of the PR\'s base, so no file can be read there.');
+          if (repo) throw new Error('`ref` reads only the PR\'s own repository, so leave out `repo` to read the base.');
+          if (dependency) throw new Error('`ref` reads only the PR\'s own repository, so leave out `dependency` to read the base.');
+          return readBaseFile(root, args, baseExcludes);
+        }, args);
       }
-      if (!fileTools && !repo) {
-        throw new Error(`Read the PR's head with your own file tools. This tool reads ${names.length > 0 ? 'a related repo named in `repo`, or ' : ''}the PR's base with \`ref\` set to \`base\`.`);
+      if (!fileTools && !repo && !(dependency && loadDependency)) {
+        const others = `${names.length > 0 ? 'a related repo named in `repo`, or ' : ''}${loadDependency ? 'a dependency named in `dependency`, or ' : ''}`;
+        return run(() => Promise.reject(new Error(`Read the PR's head with your own file tools. This tool reads ${others}the PR's base with \`ref\` set to \`base\`.`)), args);
       }
-      return readRepoFile(await rootOf(args), args);
-    }, args));
+      return readIn(args, dir => readRepoFile(dir, args));
+    });
   }
-  if (fileTools || names.length > 0) {
+  if (fileTools || names.length > 0 || loadDependency) {
     server.registerTool('grep', {
       description: 'Finds the lines of the repository that contain a piece of text, and lists each as file:line. Matches plain text, not a regular expression.',
       inputSchema: {
@@ -657,7 +688,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
         ...repoArg(fileTools),
       },
       annotations: READ_ONLY,
-    }, (args) => run(async () => grepRepo(await rootOf(args), args), args));
+    }, (args) => readIn(args, dir => grepRepo(dir, args)));
     server.registerTool('glob', {
       description: 'Lists the files of the repository whose path matches a glob, such as `**/*.rs` or `src/net/*`.',
       inputSchema: {
@@ -666,7 +697,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
         ...repoArg(fileTools),
       },
       annotations: READ_ONLY,
-    }, (args) => run(async () => globRepo(await rootOf(args), args), args));
+    }, (args) => readIn(args, dir => globRepo(dir, args)));
   }
   server.registerTool('git_history', {
     description: 'Lists the commits that changed a file or directory of the repository, newest first. With startLine, it follows only those lines and shows how each commit changed them.',
@@ -688,7 +719,7 @@ export function createMcpServer(root: string, { fileTools = false, steps, stepsD
       ...repoArg(true),
     },
     annotations: READ_ONLY,
-  }, (args) => run(async () => astGrepSearch(await rootOf(args), await loadApi(), args), args));
+  }, (args) => readIn(args, async dir => astGrepSearch(dir, await loadApi(), args)));
   server.registerTool('repo_info', {
     description: 'Tells whether a GitHub repository exists and is public, archived or a fork, and names its default branch. Reads no contents.',
     inputSchema: {

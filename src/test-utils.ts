@@ -1,7 +1,11 @@
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { createServer } from 'http';
+import { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
+import { gzipSync } from 'zlib';
 
 import { getOctokitOptions, GitHub } from '@actions/github/lib/utils';
 
@@ -376,3 +380,100 @@ export const TEST_LINKS: CodeLinks = {
   files: new Map([['src/main.ts', numberedLines(60)], ['src/util.ts', numberedLines(30)]]),
   related: new Map(),
 };
+
+/**
+ * One entry of a test tar archive: a file by default, or a hard link (`1`), symlink (`2`), device (`3`), folder (`5`)
+ * or pax header (`x`). `prefix` fills the bytes POSIX keeps a path's prefix in, and `mode` sets the file mode, `0o644`
+ * by default.
+ */
+export interface TarEntry {
+  name: string;
+  data?: string | Buffer;
+  type?: '0' | '1' | '2' | '3' | '5' | 'x';
+  linkname?: string;
+  prefix?: string;
+  mode?: number;
+}
+
+/** Builds a gzipped ustar archive of `entries`, as a package registry serves one. */
+export function tarGz(entries: TarEntry[]): Buffer {
+  const blocks: Buffer[] = [];
+  for (const { name, data = '', type = '0', linkname = '', prefix = '', mode = 0o644 } of entries) {
+    const body = Buffer.from(data);
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100);
+    header.write(`${mode.toString(8).padStart(7, '0')}\0`, 100);
+    header.write('0000000\0', 108);
+    header.write('0000000\0', 116);
+    header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124);
+    header.write('00000000000\0', 136);
+    header.write(type, 156);
+    header.write(linkname, 157, 100);
+    header.write('ustar\x0000', 257);
+    header.write(prefix, 345, 155);
+    header.fill(0x20, 148, 156);
+    const sum = header.reduce((total, byte) => total + byte, 0);
+    header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
+
+/** The hex SHA-256 of `data`, the checksum `Cargo.lock` and the crates.io index state. */
+export function sha256Hex(data: Buffer): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/** The SHA-512 of `data` in Subresource Integrity form, the checksum npm states. */
+export function sha512Integrity(data: Buffer): string {
+  return `sha512-${createHash('sha512').update(data).digest('base64')}`;
+}
+
+/** A package registry on the loopback interface that serves fixed answers, so no test reaches the network. */
+export interface FakeRegistry {
+  origin: string;
+  /** The paths asked for, in order. */
+  requests: string[];
+  close(): Promise<void>;
+}
+
+/** What a `FakeRegistry` answers for a path: a body, a redirect, headers and then nothing more, or a body after a delay. */
+type FakeAnswer = Buffer | string | { redirect: string } | { hang: true } | { delayMs: number; body: Buffer | string } | { failFirst: number; body: Buffer | string };
+
+/**
+ * Starts a `FakeRegistry` that answers each path of `routes` with its `FakeAnswer`, and any other path with 404. The
+ * paths are matched as requested, still percent-encoded, so a test sees how a client encodes a name. A `failFirst`
+ * answer fails the first request of its path with that status, and serves its body after.
+ */
+export async function fakeRegistry(routes: Record<string, FakeAnswer>): Promise<FakeRegistry> {
+  const requests: string[] = [];
+  const failed = new Set<string>();
+  const server = createServer((request, response) => {
+    const path = request.url ?? '';
+    requests.push(path);
+    const answer = routes[path];
+    if (answer === undefined) {
+      response.writeHead(404).end();
+    } else if (typeof answer === 'object' && 'hang' in answer) {
+      response.writeHead(200).write('{');
+    } else if (typeof answer === 'object' && 'failFirst' in answer) {
+      response.writeHead(failed.has(path) ? 200 : answer.failFirst).end(failed.has(path) ? answer.body : undefined);
+      failed.add(path);
+    } else if (typeof answer === 'object' && 'delayMs' in answer) {
+      setTimeout(() => response.writeHead(200).end(answer.body), answer.delayMs);
+    } else if (typeof answer === 'object' && !Buffer.isBuffer(answer)) {
+      response.writeHead(302, { location: answer.redirect }).end();
+    } else {
+      response.writeHead(200).end(answer);
+    }
+  });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const { port } = server.address() as AddressInfo;
+  return {
+    origin: `http://127.0.0.1:${port}`, requests,
+    close: () => new Promise(done => {
+      server.close(() => done());
+      server.closeAllConnections();
+    }),
+  };
+}

@@ -8,7 +8,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
-import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, RoundDependencySource, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
@@ -2194,7 +2194,7 @@ export async function postReview(
   const gone = new Set<string>();
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])].filter(file => !isClosed(file)), gone);
   const baseBranch: string | undefined = github.context.payload.pull_request?.base?.ref;
-  const links: CodeLinks = { linkTo, linkAt, ...(baseBranch && { baseBranch }), files, changed, related: relatedCommits(result.relatedRepos), rules };
+  const links: CodeLinks = { linkTo, linkAt, ...(baseBranch && { baseBranch }), files, changed, related: relatedCommits(result.relatedRepos, result.dependencySources), rules };
 
   /** Records that the open thread `threadId` carries `f`, which counts and lists that thread as still open. */
   const carry = (f: Finding, threadId: string): void => {
@@ -3420,15 +3420,22 @@ interface CodeRange { file: string; start: number; end: number }
  */
 interface Check { text: string; at?: CodeRange; also?: CodeRange[] }
 
-/** Each configured related repo of the round, by its `owner/name`: whether the round fetched it, and the commit it fetched when the round recorded a valid one. */
-type RelatedCommits = ReadonlyMap<string, { fetched: boolean; commit?: string }>;
+/**
+ * Each configured related repo of the round by its `owner/name`, and each package it read by its `<registry>/<name>@<version>`:
+ * whether the round fetched it, and for a repo the commit it fetched when the round recorded a valid one.
+ */
+type RelatedCommits = ReadonlyMap<string, { fetched: boolean; commit?: string; package?: true }>;
 
-/** Returns each related repo of `repos` with whether the round fetched it, and its commit. */
-export function relatedCommits(repos: readonly RoundRelatedRepo[] = []): RelatedCommits {
-  return new Map(repos.map(({ repo, status, commit }) => {
-    const fetched = status === 'fetched';
-    return [repo, { fetched, ...(fetched && commit && /^[0-9a-f]{40,64}$/.test(commit) && { commit }) }];
-  }));
+/** Returns each related repo of `repos` with whether the round fetched it, and its commit, and each package of `packages` with whether the round read it. */
+export function relatedCommits(repos: readonly RoundRelatedRepo[] = [], packages: readonly RoundDependencySource[] = []): RelatedCommits {
+  return new Map([
+    ...repos.map(({ repo, status, commit }): [string, { fetched: boolean; commit?: string }] => {
+      const fetched = status === 'fetched';
+      return [repo, { fetched, ...(fetched && commit && /^[0-9a-f]{40,64}$/.test(commit) && { commit }) }];
+    }),
+    // A package's lines show as locations, since no host keeps its published files at a line link.
+    ...packages.map(({ package: name, status }): [string, { fetched: boolean; package: true }] => [name, { fetched: status === 'fetched', package: true }]),
+  ]);
 }
 
 /**
@@ -3673,7 +3680,17 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const refutations = refutationParts(finding, links, known);
   // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too. The
   // evidence of a blocker listed again is an earlier round's, and so is the commit its related lines were read at.
-  const relatedLines = relatedLineLinks(finding.evidence?.relatedProof, related, finding.relisted);
+  // An earlier round's evidence can cite a package this round did not read. A package's key ends in `@<version>`, which
+  // no repo's `owner/name` does, so such a line still shows as a location.
+  const earlierPackages = finding.relisted ? (finding.evidence?.relatedProof ?? []).flatMap((location): Array<[string, { fetched: boolean; package: true }]> => {
+    const key = location.slice(0, Math.max(location.indexOf(':'), 0));
+    return /@[^/@]+$/.test(key) && !related.has(key) ? [[key, { fetched: false, package: true }]] : [];
+  }) : [];
+  const readable: RelatedCommits = earlierPackages.length > 0 ? new Map([...related, ...earlierPackages]) : related;
+  const ofPackage = (location: string) => [...readable].some(([name, { package: isPackage }]) => isPackage && location.startsWith(`${name}:`));
+  const repoLines = relatedLineLinks(finding.evidence?.relatedProof?.filter(l => !ofPackage(l)), readable, finding.relisted);
+  const packageLines = relatedLineLinks(finding.evidence?.relatedProof?.filter(ofPackage), readable, finding.relisted);
+  const relatedLines = [...repoLines, ...packageLines];
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
   if (checks.length === 0 && refutations.length === 0 && !rule && relatedLines.length === 0) {
@@ -3703,7 +3720,8 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
       return `${said.length === 1 ? said[0].text : `${said.map(c => `- ${c.text}`).join('\n')}\n`}\n${link}`;
     }),
     ...(listed.length ? [listed.map(listItem).join('\n')] : []),
-    ...(relatedLines.length ? [`In a related repository${finding.relisted ? ', as an earlier round read it' : ''}: ${relatedLines.join(', ')}`] : []),
+    ...(repoLines.length ? [`In a related repository${finding.relisted ? ', as an earlier round read it' : ''}: ${repoLines.join(', ')}`] : []),
+    ...(packageLines.length ? [`In a dependency's published source${finding.relisted ? ', as an earlier round read it' : ''}: ${packageLines.join(', ')}`] : []),
   ];
   const lone = lines.length === 1 && shown.length === 0 && !lines[0].includes('\n');
   const checked: FoldPart[] = lines.length === 0 ? [] : [{

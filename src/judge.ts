@@ -23,7 +23,7 @@ import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earl
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
-import { fetchedRelatedRepos, repoTools } from './related-repos';
+import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
 import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
@@ -1175,7 +1175,7 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
     }
     return files;
   };
-  const relatedNames = related?.repos.map(r => r.repo) ?? [];
+  const citable = related ? relatedNames(related) : [];
   const checkouts = related ? fetchedRelatedRepos(related.stateDir) : new Map<string, string>();
   const shorten = (line: string) => line.length > MAX_CITED_LINE_CHARS ? `${line.slice(0, MAX_CITED_LINE_CHARS)} ... (line cut)` : line;
   const result = new Map<Finding, string[]>();
@@ -1199,7 +1199,7 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
       shown++;
     }
     const text = [finding.title, finding.description, ...(finding.evidence?.checks ?? [])].join('\n');
-    for (const { citation, repo, path, start, end } of relatedCitations(text, relatedNames)) {
+    for (const { citation, repo, path, start, end } of relatedCitations(text, citable)) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const dir = checkouts.get(repo);
       const fetched = dir ? read(dir, path, relatedReads) : undefined;
