@@ -54,10 +54,10 @@ export interface Registry {
   /** The name of the folders that hold the build output, such as Cargo's `target`, whose files of this registry no install reads. */
   buildFolder?: string;
   /**
-   * Returns the path of a copy of the package `name` among `paths`, the files git tracks inside a committed install
-   * such as `node_modules`, or `undefined`. Such a copy is what the project runs.
+   * Returns one of `paths`, the files git tracks inside a committed install such as `node_modules`, when the registry's
+   * projects can run such a copy in place of its archives, or `undefined`.
    */
-  installedCopy(paths: readonly string[], name: string): string | undefined;
+  installedCopy(paths: readonly string[]): string | undefined;
   /** Whether `name` is a valid package name of the registry. No other name reaches a URL. */
   validName(name: string): boolean;
   /** Whether two spellings name the same package, such as `serde_json` and `serde-json` on crates.io. */

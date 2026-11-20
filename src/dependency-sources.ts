@@ -157,28 +157,16 @@ function linksToPlainFile(root: string, link: string, plainFiles: ReadonlySet<st
   }
 }
 
-/** Whether `dir` is `ancestor` or lies inside it, both as folders relative to the repository root. */
-function within(dir: string, ancestor: string): boolean {
-  return ancestor === '.' || dir === ancestor || dir.startsWith(`${ancestor}/`);
-}
-
-/** Whether `text` may name the package `name`: it holds the name in any case, with `-` and `_` alike, or an escape that could spell it. */
-function mayName(text: string, name: string): boolean {
-  const plain = (value: string) => value.toLowerCase().replace(/-/g, '_');
-  return text.includes('\\') || plain(text).includes(plain(name));
-}
-
 /**
  * Returns the version of `name` that the PR at `root`, with the files `listing` holds, uses, but only when Manki is
- * certain which code the PR runs. A version some lockfile of the registry locks counts. So does the version a fresh
- * install picks for a manifest's requirement, when no lockfile of the registry sits in the manifest's folder or above
- * it. With `version` set it must be one of those. Without it there must be only one. Refuses the package, recorded as
- * refused, when the listing was cut, a file that can lock, require or override it could not be read with certainty,
- * any lockfile locks it from another source or with a patch, any manifest or setting overrides or patches it, a
- * setting may take it from another registry, a manifest that requires it sits beside an install file Manki does not
- * read or under a lockfile that does not lock it, or a fresh install may pick another version than the highest.
- * Throws, naming why, when the PR does not use the package, uses another version, or uses several and `version` names
- * none.
+ * certain which code the PR runs. It is the version a committed lockfile of the registry locks. Without one, it is the
+ * newest published version that the one requirement of the PR's manifests allows. With `version` set it must be that
+ * version, or one of those the lockfiles lock. Refuses the package, recorded as refused, when the listing was cut, the
+ * checkout holds a committed install or an install file Manki does not read, a file that can lock, require or override
+ * it could not be read with certainty, a setting may take it from another registry or changes the lockfile, a manifest
+ * overrides or patches it or takes it from elsewhere, a lockfile locks it from another source, with a patch or at
+ * several versions, or the manifests state several requirements, one Manki does not read, or one a fresh install may
+ * not meet with the newest version. Throws, naming why, when the PR does not use the package or another version.
  */
 async function resolveDependency(
   root: string, { files, installed, cut }: Listing, registry: Registry, name: string, version: string | undefined, fetch: RegistryFetch, budget: ReadBudget,
@@ -188,155 +176,92 @@ async function resolveDependency(
   const refuse = (reason: string, origin: Partial<PackageOrigin> = {}): never => {
     throw new UnreadPackage(`Manki does not read ${label}: ${reason}.`, label, { registry: registry.id, name, ...origin }, true);
   };
-  const uncertain = (file: string, error: unknown): never => refuse(`Manki cannot read ${shown(file)} with certainty: ${shown(error instanceof Error ? error.message : String(error))}`, { file });
-  if (cut) refuse(cut);
-  const read = (file: string, what: string): string => readManifest(root, file, budget) ?? refuse(`Manki could not read ${shown(file)}, which can ${what}, within its size limits`, { file });
-  // A file that does not parse refuses the package, unless `ifUnrelated` is given and the file cannot name it.
-  const certain = <T>(file: string, text: string, parse: () => T, ifUnrelated?: T): T => {
+  const certain = <T>(file: string, parse: () => T): T => {
     try {
       return parse();
     } catch (error) {
-      return ifUnrelated !== undefined && !mayName(text, name) ? ifUnrelated : uncertain(file, error);
+      return refuse(`Manki cannot read ${shown(file)} with certainty: ${shown(error instanceof Error ? error.message : String(error))}`, { file });
     }
   };
+  if (cut) refuse(cut);
+  const read = (file: string, what: string): string => readManifest(root, file, budget) ?? refuse(`Manki could not read ${shown(file)}, which can ${what}, within its size limits`, { file });
 
+  const copy = registry.installedCopy(installed);
+  if (copy) refuse(`the checkout holds ${shown(copy)}, a committed install, which the project can run in place of the archives ${registry.id} publishes`);
+  const unreadInstall = files.find(f => registry.unreadInstallFiles.includes(posix.basename(f)));
+  if (unreadInstall) refuse(`the checkout holds ${shown(unreadInstall)}, which Manki does not read and which can decide what an install gets`, { file: unreadInstall });
   const configs = files.filter(f => registry.isConfigFile(f)).map((file): RegistryConfig => ({ file, text: read(file, 'change where packages come from') }));
   for (const config of configs) {
-    // A setting can change every package without naming one, so one Manki cannot read refuses any package.
-    let overridden: string | undefined;
-    try {
-      overridden = registry.overriddenBy(name, [config]);
-    } catch (error) {
-      uncertain(config.file, error);
-    }
+    const overridden = certain(config.file, () => registry.overriddenBy(name, [config]));
     if (overridden) refuse(overridden, { file: config.file });
   }
   const otherRegistry = registry.otherRegistry(name, configs);
+  if (otherRegistry) refuse(`it may come from another registry than ${registry.id}, since ${otherRegistry}`);
 
-  // An install file Manki does not read, such as a `bun.lock`, can decide the packages of its folder tree. A lockfile
-  // above it can lock the packages of that tree too, so it counts for a lockfile in either direction.
-  const unreadInstall = files.filter(f => registry.unreadInstallFiles.includes(posix.basename(f)));
-  const copy = registry.installedCopy(installed, name);
-  if (copy) refuse(`the checkout holds ${shown(copy)}, which the project runs in place of the archive ${registry.id} publishes`);
-  const unreadIn = (dir: string, below = false) => unreadInstall.find(f => within(dir, posix.dirname(f)) || (below && within(posix.dirname(f), dir)));
+  const manifests = files.filter(f => registry.manifests.includes(posix.basename(f))).map((file): RegistryConfig => ({ file, text: read(file, 'require or override it') }));
+  const requirements = manifests.flatMap(({ file, text }) => {
+    const { requirements: stated, overridden, otherSource } = certain(file, () => registry.manifest(text, name));
+    if (overridden) refuse(`${shown(file)} changes its code for an install: ${overridden}`, { file });
+    if (otherSource) refuse(`${shown(file)} does not take it from ${registry.id}: ${otherSource}`, { file });
+    return stated.map(r => ({ ...r, file }));
+  });
+
   const lockfiles = files.filter(f => registry.lockfiles.includes(posix.basename(f)));
   // A lockfile past the cap may lock the package too, so the listing cannot settle it.
   if (lockfiles.length > MAX_LOCKFILES) refuse(`the checkout holds ${lockfiles.length} lockfiles, more than the ${MAX_LOCKFILES} Manki reads`);
   const locked = lockfiles.flatMap(file => {
     const text = read(file, 'lock it');
-    return certain(file, text, () => lockedPackages(file, text), []).filter(p => registry.sameName(p.name, name)).map(p => ({ ...p, file }));
+    return certain(file, () => lockedPackages(file, text)).filter(p => registry.sameName(p.name, name)).map(p => ({ ...p, file }));
   });
-  // Any entry of the name whose code is not the registry's archive refuses the name, since a call site may use it.
-  for (const p of locked) {
-    const reason = !VERSION.test(p.version) ? `${shown(p.file)} locks it at a version Manki does not read`
-      : !registry.isRegistrySource(p.source, p.name, p.version) ? `${shown(p.file)} locks it from ${shown((p.source ?? 'this repository').slice(0, 200))}, not from ${registry.id}`
-        : p.patched ? `${shown(p.file)} locks it with a patch applied, so the PR does not run the code ${registry.id} publishes`
-          // npm and Yarn fetch an entry that names the public registry from the one the settings give, so the host proves nothing.
-          : otherRegistry !== undefined ? `it may come from another registry than ${registry.id}, since ${otherRegistry}`
-            : unreadIn(posix.dirname(p.file), true) !== undefined ? `${shown(p.file)} locks it, and ${shown(unreadIn(posix.dirname(p.file), true)!)}, which Manki does not read, can decide what an install there gets`
-              : undefined;
-    if (reason) refuse(reason, { ...(VERSION.test(p.version) && { version: p.version }), source: 'lockfile', file: p.file });
+  // A committed lockfile decides: each entry of the name must be the registry's archive, and all must agree.
+  if (locked.length > 0) {
+    for (const p of locked) {
+      const reason = !VERSION.test(p.version) ? `${shown(p.file)} locks it at a version Manki does not read`
+        : !registry.isRegistrySource(p.source, p.name, p.version) ? `${shown(p.file)} locks it from ${shown((p.source ?? 'this repository').slice(0, 200))}, not from ${registry.id}`
+          : p.patched ? `${shown(p.file)} locks it with a patch applied, so the PR does not run the code ${registry.id} publishes`
+            : undefined;
+      if (reason) refuse(reason, { ...(VERSION.test(p.version) && { version: p.version }), source: 'lockfile', file: p.file });
+    }
+    const where = locked.map(p => `${p.version} in ${shown(p.file)}`).join(', ');
+    const chosen = version === undefined ? locked[0] : locked.find(p => p.version === version);
+    if (!chosen) throw new Error(`The PR does not use ${label}@${version}. Its lockfiles lock ${where}.`);
+    if (version === undefined && locked.some(p => p.version !== chosen.version)) {
+      refuse(`its lockfiles lock several versions: ${where}. Name one as ${label}@<version>`, { source: 'lockfile', file: chosen.file });
+    }
+    return {
+      registry, name: chosen.name, version: chosen.version, key: `${registry.id}/${chosen.name}@${chosen.version}`, source: 'lockfile', file: chosen.file,
+      ...(chosen.checksum && { checksum: chosen.checksum }), ...(!registry.namesHost(chosen.source) && { hostAssumed: true as const }),
+    };
   }
 
-  const manifests = files.filter(f => registry.manifests.includes(posix.basename(f))).map((file): RegistryConfig => ({ file, text: read(file, 'require or override it') }));
-  const texts = new Map([...configs, ...manifests].map(({ file, text }) => [file, text]));
-  // Whether the manifest in `dir` belongs to the project of `lockfile`: always when it sits beside it, and else only as
-  // a provable member of that project's workspace.
-  const belongs = (lockfile: string, dir: string, file: string): boolean => {
-    if (posix.dirname(lockfile) === dir) return true;
-    try {
-      return registry.isWorkspaceMember(lockfile, dir, path => texts.get(path));
-    } catch (error) {
-      return uncertain(file, error);
-    }
+  // Without a lockfile, a direct dependency with one requirement gets the newest version that requirement allows.
+  if (requirements.length === 0) throw new Error(`${label} is not a dependency in the PR's manifests or lockfiles, so Manki does not read it.`);
+  const first = requirements[0];
+  const origin = { name: first.name, source: 'requirement' as const, file: first.file, requirement: first.requirement };
+  const distinct = [...new Set(requirements.map(r => r.requirement.trim()))];
+  if (distinct.length > 1) {
+    refuse(`the PR's manifests require it as ${requirements.map(r => `\`${shown(r.requirement)}\` in ${shown(r.file)}`).join(', ')}, and without a lockfile Manki cannot tell which an install follows`, origin);
+  }
+  const range = registry.range(first.requirement);
+  if (range === undefined) refuse(`${shown(first.file)} requires it as \`${shown(first.requirement)}\`, a form Manki does not read with certainty`, origin);
+  const fresh = certain(first.file, () => registry.freshPick([...configs, ...manifests]));
+  if (fresh) refuse(fresh, origin);
+  let published: Awaited<ReturnType<Registry['published']>>;
+  try {
+    // The registry files a package under its own spelling, which the manifest holds and the call may not.
+    published = await registry.published(first.name, fetch);
+  } catch (error) {
+    throw new UnreadPackage(`Manki could not read the published versions of ${label} to resolve its requirement: ${error instanceof Error ? error.message : String(error)}`, `${registry.id}/${first.name}`, { registry: registry.id, ...origin }, false);
+  }
+  // The registry's spelling of the name reaches the key and the note, so it must be a name of the same package.
+  if (!registry.validName(published.name) || !registry.sameName(published.name, first.name)) throw new Error(`${registry.id} lists ${label} under a name Manki does not read.`);
+  const picked = pickVersion(published.versions, range!, published.latest);
+  if (!picked) throw new Error(`No published version of ${label} matches what the PR requires: \`${shown(first.requirement)}\` in ${shown(first.file)}.`);
+  if (version !== undefined && version !== picked.version) throw new Error(`The PR does not use ${label}@${version}. It uses ${picked.version} (resolved from \`${shown(first.requirement)}\` in ${shown(first.file)}).`);
+  return {
+    registry, name: published.name, version: picked.version, key: `${registry.id}/${published.name}@${picked.version}`,
+    source: 'requirement', file: first.file, requirement: first.requirement, checksum: picked.checksum, hostAssumed: true,
   };
-  const requirements = manifests.flatMap(({ file, text }) => {
-    const { requirements: stated, overridden, otherSource, lockedElsewhere } = certain(file, text, () => registry.manifest(text, name), registry.manifestsChangeAll ? undefined : { requirements: [] });
-    if (overridden) refuse(`${shown(file)} changes its code for an install: ${overridden}`, { file });
-    if (otherSource) refuse(`${shown(file)} does not take it from ${registry.id}: ${otherSource}`, { file });
-    if (stated.length === 0) return [];
-    const dir = posix.dirname(file);
-    const origin = { name: stated[0].name, source: 'requirement' as const, file, requirement: stated[0].requirement };
-    const installFile = unreadIn(dir);
-    if (installFile) refuse(`${shown(file)} requires it, and ${shown(installFile)}, which Manki does not read, can decide what an install there gets`, origin);
-    // A manifest under a lockfile takes its versions from the nearest one, but only as part of that lockfile's project.
-    // A lockfile further up that also counts it as a member leaves Manki unsure which of the two an install reads.
-    // By depth, since the root's `.` is as long as a one-letter folder.
-    const depth = (lockfile: string) => (posix.dirname(lockfile) === '.' ? 0 : posix.dirname(lockfile).split('/').length);
-    const covering = lockfiles.filter(f => within(dir, posix.dirname(f))).sort((a, b) => depth(b) - depth(a));
-    if (covering.length > 0) {
-      const nearest = posix.dirname(covering[0]);
-      // Each lockfile there must count the manifest, since Manki cannot tell which of them an install reads.
-      const own = covering.filter(f => posix.dirname(f) === nearest);
-      const outside = own.find(f => !belongs(f, dir, file));
-      if (outside) refuse(`${shown(file)} requires it, and Manki cannot tell that it belongs to the project ${shown(outside)} locks`, origin);
-      const further = covering.find(f => posix.dirname(f) !== nearest && belongs(f, dir, file));
-      if (further) refuse(`${shown(file)} requires it, and both ${shown(own[0])} and ${shown(further)} can lock that manifest's versions`, origin);
-      const lockedHere = locked.filter(p => own.includes(p.file));
-      if (lockedHere.length === 0) refuse(`${shown(file)} requires it, but ${shown(own[0])}, which locks that manifest's versions, does not lock it`, origin);
-      // An install drops a locked version the requirement no longer allows, so the lockfile does not show what it gets.
-      for (const { requirement } of stated) {
-        const range = registry.range(requirement);
-        if (range === undefined) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, a form Manki does not read with certainty`, { ...origin, requirement });
-        if (!lockedHere.some(p => satisfies(p.version, range!))) refuse(`${shown(file)} requires it as \`${shown(requirement)}\`, which no version ${shown(own[0])} locks meets`, { ...origin, requirement });
-      }
-      return [];
-    }
-    if (lockedElsewhere) refuse(`${shown(file)} requires it, but ${lockedElsewhere}`, origin);
-    return stated.map(r => ({ ...r, file }));
-  });
-  if (requirements.length > 0) {
-    const { file, requirement } = requirements[0];
-    const origin = { name: requirements[0].name, source: 'requirement' as const, file, requirement };
-    if (otherRegistry !== undefined) refuse(`it may come from another registry than ${registry.id}, since ${otherRegistry}`, origin);
-    const unread = requirements.find(r => registry.range(r.requirement) === undefined);
-    if (unread) refuse(`${shown(unread.file)} requires it as \`${shown(unread.requirement)}\`, a form Manki does not read with certainty`, { ...origin, file: unread.file, requirement: unread.requirement });
-    let fresh: string | undefined;
-    try {
-      fresh = registry.freshPick([...configs, ...manifests]);
-    } catch (error) {
-      refuse(`Manki cannot tell which version a fresh install picks: ${shown(error instanceof Error ? error.message : String(error))}`, origin);
-    }
-    if (fresh) refuse(fresh, origin);
-  }
-  if (locked.length === 0 && requirements.length === 0) throw new Error(`${label} is not a dependency in the PR's manifests or lockfiles, so Manki does not read it.`);
-
-  const candidates: Array<Omit<Resolved, 'registry' | 'key' | 'name'>> = locked.map(p => ({
-    version: p.version, source: 'lockfile' as const, file: p.file, ...(p.checksum && { checksum: p.checksum }), ...(!registry.namesHost(p.source) && { hostAssumed: true as const }),
-  }));
-  let own = locked[0]?.name ?? name;
-  if (requirements.length > 0 && !(version && candidates.some(c => c.version === version))) {
-    const first = requirements[0];
-    let published: Awaited<ReturnType<Registry['published']>>;
-    try {
-      // The registry files a package under its own spelling, which the manifest holds and the call may not.
-      published = await registry.published(first.name, fetch);
-    } catch (error) {
-      const origin: PackageOrigin = { registry: registry.id, name: first.name, source: 'requirement', file: first.file, requirement: first.requirement };
-      throw new UnreadPackage(`Manki could not read the published versions of ${label} to resolve its requirement: ${error instanceof Error ? error.message : String(error)}`, `${registry.id}/${first.name}`, origin, false);
-    }
-    // The registry's spelling of the name reaches the key and the note, so it must be a name of the same package.
-    if (!registry.validName(published.name) || !registry.sameName(published.name, first.name)) throw new Error(`${registry.id} lists ${label} under a name Manki does not read.`);
-    own = published.name;
-    for (const { file, requirement } of requirements) {
-      const range = registry.range(requirement);
-      const picked = range === undefined ? undefined : pickVersion(published.versions, range, published.latest);
-      if (picked) candidates.push({ version: picked.version, source: 'requirement', file, requirement, checksum: picked.checksum, hostAssumed: true });
-    }
-  }
-  const where = (c: typeof candidates[number]) => c.source === 'lockfile' ? `locked in ${shown(c.file)}` : `resolved from \`${shown(c.requirement!)}\` in ${shown(c.file)}`;
-  if (candidates.length === 0) {
-    throw new Error(`No published version of ${label} matches what the PR requires: ${requirements.map(r => `\`${shown(r.requirement)}\` in ${shown(r.file)}`).join(', ')}.`);
-  }
-  const versions = [...new Set(candidates.map(c => c.version))];
-  const chosen = version !== undefined ? candidates.find(c => c.version === version) : versions.length === 1 ? candidates[0] : undefined;
-  if (!chosen) {
-    const used = candidates.map(c => `${c.version} (${where(c)})`).join(', ');
-    throw new Error(version !== undefined
-      ? `The PR does not use ${label}@${version}. It uses ${used}.`
-      : `The PR uses several versions of ${label}: ${used}. Name one as ${label}@<version>.`);
-  }
-  return { registry, name: own, ...chosen, key: `${registry.id}/${own}@${chosen.version}` };
 }
 
 /** Returns the registry, package name and version a `dependency` argument names, as `<registry>/<name>` with an optional `@<version>`. */
@@ -579,7 +504,7 @@ export function dependencyLoader(
     }
     const from = source === 'lockfile'
       ? `the version \`${shown(file)}\` locks`
-      : `the version a fresh install picks for the requirement \`${shown(requirement!)}\` in \`${shown(file)}\`, since no lockfile covers that manifest`;
+      : `the version a fresh install picks for the requirement \`${shown(requirement!)}\` in \`${shown(file)}\`, since no committed lockfile locks it`;
     const host = resolved.hostAssumed ? ` No file of the PR sets another registry for it, so Manki read it from ${registry.id}.` : '';
     return { key, dir, note: `Manki read \`${key}\`, ${from}.${host} Cite its lines as \`${key}:path:line\`.` };
   };

@@ -269,20 +269,9 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
       }
       return matchesWorkspace(patterns, posix.relative(root, member));
     },
-    installedCopy(paths, name) {
-      // A committed `node_modules` copy in any folder, since Node looks for one in every folder above a file, or a zip in
-      // Yarn's committed cache, is what the project runs, whatever the lockfile says. A tracked path that ends on the way
-      // to the package, such as a symlink named `node_modules` or `node_modules/@scope`, can hold it too.
-      const named = name.split('/');
-      const zip = `${name.replace('/', '-')}-npm-`;
-      for (const path of paths) {
-        const parts = path.split('/');
-        const at = parts.findIndex((part, i) => part === 'node_modules' && named.every((n, j) => i + 1 + j >= parts.length || parts[i + 1 + j] === n));
-        if (at >= 0) return parts.slice(0, at + 1 + named.length).join('/');
-        if (parts.at(-3) === '.yarn' && parts.at(-2) === 'cache' && parts.at(-1)!.startsWith(zip)) return path;
-      }
-      return undefined;
-    },
+    // A committed `node_modules` in any folder, since Node looks for one in every folder above a file, or Yarn's
+    // committed cache, is what the project runs, whatever the lockfile says.
+    installedCopy: paths => paths[0],
     validName: name => name.length <= 214 && /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name),
     sameName: (a, b) => a === b,
     isRegistrySource(source, name, version) {
