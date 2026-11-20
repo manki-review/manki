@@ -1101,11 +1101,11 @@ export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation
 
 /**
  * Returns the answer of one check that the code at the PR's base fails the same way as `finding`, when `sameOnBase`
- * does not make it pre-existing and no second check found the failure the PR's own. It changes no grade. The finding
+ * does not make it pre-existing and neither check found the failure the PR's own. It changes no grade. The finding
  * only notes that it may be older than this PR.
  */
 export function oneCheckOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
-  if (sameOnBase(finding) || finding.pairRefutation?.base?.outcome === 'confirmed') return undefined;
+  if (sameOnBase(finding) || [finding.refutation, finding.pairRefutation].some(check => check?.base?.outcome === 'confirmed')) return undefined;
   return [finding.refutation, finding.pairRefutation].find(failsOnBase)?.base;
 }
 

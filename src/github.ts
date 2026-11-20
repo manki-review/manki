@@ -1737,12 +1737,15 @@ const BASE_NOTE_RE = /^\*\*(?:Possibly older than this PR|Already broken before 
 
 /**
  * Returns the line that says the checks found the failure of `finding` at the PR's base, with the base lines they cited,
- * linked at the base commit when `links` can. Two checks on different models made a pre-existing finding of it. One
- * check changes no grade, so the line only says it may be older.
+ * linked at the base commit when `links` can. It says the failure was already there only when two checks on different
+ * models made a pre-existing finding of it that no longer blocks. A finding that still blocks, such as a security
+ * blocker on code the PR did not touch, or one only one check found there, only says it may be older. A pre-existing
+ * finding that stopped blocking for another reason needs neither.
  */
 function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
-  const both = isPreExisting(finding) ? sameOnBase(finding) : undefined;
-  const base = both ?? (isPreExisting(finding) ? undefined : oneCheckOnBase(finding));
+  const stopped = isPreExisting(finding) && finding.severity !== 'blocker';
+  const both = stopped ? sameOnBase(finding) : undefined;
+  const base = stopped ? both : sameOnBase(finding) ?? oneCheckOnBase(finding);
   if (!base?.proof?.length) return undefined;
   const linkTo = base.commit && links?.linkAt ? links.linkAt(base.commit) : () => undefined;
   const lines = base.proof.flatMap(location => {

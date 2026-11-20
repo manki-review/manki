@@ -1271,16 +1271,21 @@ describe('refuteBlockers', () => {
     const [hidden] = await refuteBlockers(fakeClient({ 'Unchanged line at its base line': { ...confirmed, proof: ['src/lines.ts:5'], base: { ...same, proof: ['src/lines.ts:4'] } } }),
       [finding('Unchanged line at its base line', { file: 'src/lines.ts', line: 5, evidence: { checks: [], proof: ['src/lines.ts:5'] } })], { workspace: moved.root, diff: moved.diff, excludedPaths: ['src/lines.ts'] });
     expect(hidden.refutation?.base?.outcome).toBe('unsettled');
-    // A changed file whose patch GitHub left out is not unchanged, so its flagged line never maps to the base.
+    // A changed file whose patch GitHub left out is not unchanged, so its flagged line never maps to the base. Read as
+    // unchanged, head line 1 would map to base line 1, which holds the same text, so the answer cites that line.
     const omitted: ParsedDiff[] = [
       { ...moved.diff, files: [], binarySkipped: [{ path: 'src/lines.ts', header: '' }] },
       { ...moved.diff, files: [{ path: 'src/lines.ts', changeType: 'modified', hunks: [] }] },
     ];
     for (const without of omitted) {
-      const [unmapped] = await refuteBlockers(fakeClient({ 'Unchanged line at its base line': { ...confirmed, proof: ['src/lines.ts:5'], base: { ...same, proof: ['src/lines.ts:4'] } } }),
-        [finding('Unchanged line at its base line', { file: 'src/lines.ts', line: 5, evidence: { checks: [], proof: ['src/lines.ts:5'] } })], { workspace: moved.root, diff: without });
+      const [unmapped] = await refuteBlockers(fakeClient({ 'First line': { ...confirmed, proof: ['src/lines.ts:1'], base: { ...same, proof: ['src/lines.ts:1'] } } }),
+        [finding('First line', { file: 'src/lines.ts', line: 1, evidence: { checks: [], proof: ['src/lines.ts:1'] } })], { workspace: moved.root, diff: without });
       expect(unmapped.refutation?.base?.outcome).toBe('unsettled');
     }
+    // With the real diff, the same answer stands, so only the missing patch leaves it open.
+    const [mappedFirst] = await refuteBlockers(fakeClient({ 'First line': { ...confirmed, proof: ['src/lines.ts:1'], base: { ...same, proof: ['src/lines.ts:1'] } } }),
+      [finding('First line', { file: 'src/lines.ts', line: 1, evidence: { checks: [], proof: ['src/lines.ts:1'] } })], { workspace: moved.root, diff: moved.diff });
+    expect(mappedFirst.refutation?.base?.outcome).toBe('disproved');
     rmSync(moved.root, { recursive: true, force: true });
     // With one, a second call that failed, or a second check that finds the failure the PR's own, leaves it open or cites
     // no line found at the base, keeps the finding as it is.
@@ -1300,6 +1305,8 @@ describe('refuteBlockers', () => {
     const own = fakeClient({ 'Same before': { ...confirmed, base: { outcome: 'confirmed', reason: 'This PR adds the caller.', proof: [] } } }, 'pair-model');
     const [disputed] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, pair: own });
     expect([disputed.pairRefutation?.base?.outcome, sameOnBase(disputed), oneCheckOnBase(disputed)]).toEqual(['confirmed', undefined, undefined]);
+    // The same holds when the first check found the failure the PR's own and the second found it at the base.
+    expect(oneCheckOnBase({ ...lowered, refutation: { ...lowered.refutation!, base: { ...lowered.refutation!.base!, outcome: 'confirmed' } } })).toBeUndefined();
 
     // A base that `exclude_paths` keeps from the tools, or a workspace without a base, leaves every answer open.
     writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['src/math.ts'] }));
