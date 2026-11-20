@@ -226,7 +226,10 @@ async function resolveDependency(
     const chosen = version === undefined ? locked[0] : locked.find(p => p.version === version);
     if (!chosen) throw new Error(`The PR does not use ${label}@${version}. Its lockfiles lock ${where}.`);
     if (version === undefined && locked.some(p => p.version !== chosen.version)) {
-      refuse(`its lockfiles lock several versions: ${where}. Name one as ${label}@<version>`, { source: 'lockfile', file: chosen.file });
+      // Naming a version helps only when one of them meets every requirement a manifest states.
+      const meetsAll = (v: string) => requirements.every(r => { const range = registry.range(r.requirement); return range !== undefined && satisfies(v, range); });
+      const hint = locked.some(p => meetsAll(p.version)) ? `. Name one as ${label}@<version>` : '';
+      refuse(`its lockfiles lock several versions: ${where}${hint}`, { source: 'lockfile', file: chosen.file });
     }
     // An install drops a locked version that a manifest's requirement no longer allows, so the lockfile is stale for it.
     for (const { file, requirement } of requirements) {

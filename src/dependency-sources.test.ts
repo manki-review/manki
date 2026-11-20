@@ -152,6 +152,12 @@ describe('dependencyLoader', () => {
     });
     await expect(load('crates.io/demo')).rejects.toThrow('Manki does not read crates.io/demo: its lockfiles lock several versions: 1.2.0 in Cargo.lock, 2.0.0 in tools/Cargo.lock. Name one as crates.io/demo@<version>.');
     expect((await load('crates.io/demo@2.0.0')).note).toContain('the version `tools/Cargo.lock` locks');
+    // Without a locked version that meets every requirement, naming one cannot help, so the refusal does not suggest it.
+    const apart = round({
+      'Cargo.lock': cargoLock([{ version: '1.2.0' }]), 'Cargo.toml': '[dependencies]\ndemo = "=1.2.0"\n',
+      'tools/Cargo.lock': cargoLock([{ version: '2.0.0' }]), 'tools/Cargo.toml': '[dependencies]\ndemo = "2"\n',
+    });
+    await expect(apart.load('crates.io/demo')).rejects.toThrow(/several versions: 1\.2\.0 in Cargo\.lock, 2\.0\.0 in tools\/Cargo\.lock\.$/);
     const git = round({ 'Cargo.lock': cargoLock([{ version: '1.2.0', source: 'git+https://example.com/demo#abc' }]) });
     await expect(git.load('crates.io/demo')).rejects.toThrow('Manki does not read crates.io/demo: Cargo.lock locks it from git+https://example.com/demo#abc, not from crates.io.');
     expect(dependencyOutcomes(git.stateDir)).toEqual([expect.objectContaining({ package: 'crates.io/demo', version: '1.2.0', status: 'refused', reason: expect.stringContaining('not from crates.io') })]);
