@@ -5,7 +5,7 @@ import { gunzipSync } from 'zlib';
 
 /** The most bytes a package archive may unpack to, headers included. */
 const MAX_UNPACKED_BYTES = 200 * 1024 * 1024;
-/** The most files and folders an archive may hold. */
+/** The most files and folders an archive may create, counting each folder a file's path implies. */
 const MAX_UNPACKED_ENTRIES = 20_000;
 /** The most folders deep a path in an archive may lie. */
 const MAX_PATH_DEPTH = 32;
@@ -45,7 +45,7 @@ function refusal(path: string, entry: ReadEntry, maxDepth: number, maxPathBytes:
  * Unpacks the gzipped tar `archive` into the new folder `dest` with node-tar, the reader npm itself uses, and drops the
  * top folder every package archive has. Refuses the whole archive when it holds anything but plain files and folders,
  * such as a link or a device, a path that leaves `dest`, or passes a cap of `limits`: the bytes it unpacks to, the files
- * and folders it holds, and the depth and length of a path. Writes no file mode, so nothing it writes can run. Throws,
+ * and folders it creates, and the depth and length of a path. Writes no file mode, so nothing it writes can run. Throws,
  * and the caller discards `dest`, on a refusal or an archive node-tar cannot read.
  */
 export function extractTarGz(archive: Buffer, dest: string, {
@@ -62,6 +62,7 @@ export function extractTarGz(archive: Buffer, dest: string, {
   mkdirSync(root);
   const result: Extracted = { files: 0, folders: 0, bytes: 0 };
   let refused: string | undefined;
+  const folders = new Set<string>();
   const unpack = new UnpackSync({
     cwd: root, strip: 1, strict: true, preservePaths: false, preserveOwner: false, fmode: 0o644, dmode: 0o755,
     filter: (path, entry) => {
@@ -70,10 +71,14 @@ export function extractTarGz(archive: Buffer, dest: string, {
       if (refused) return false;
       // Without a mode of its own, an entry gets `fmode` or `dmode`, so no file is written to run.
       readEntry.mode = undefined;
-      if (readEntry.type === 'Directory') result.folders++;
-      else result.files++;
+      // Every folder an entry creates counts, whether the archive lists it or only a path implies it.
+      const inside = path.split('/').filter(part => part !== '' && part !== '.').slice(1);
+      const folderParts = readEntry.type === 'Directory' ? inside.length : inside.length - 1;
+      for (let i = 1; i <= folderParts; i++) folders.add(inside.slice(0, i).join('/'));
+      if (readEntry.type !== 'Directory') result.files++;
+      result.folders = folders.size;
       result.bytes += readEntry.size;
-      if (result.files + result.folders > maxEntries) refused = `the archive holds more than ${maxEntries} files and folders`;
+      if (result.files + result.folders > maxEntries) refused = `the archive creates more than ${maxEntries} files and folders`;
       return !refused;
     },
   });

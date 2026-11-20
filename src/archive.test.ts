@@ -26,7 +26,8 @@ describe('extractTarGz', () => {
       // npm archives such as those of `@types` keep times after the NUL of the prefix field.
       { name: 'package/types.d.ts', data: 't', prefix: `${'\0'.repeat(131)}14566415320\x0014566415320` },
     ]), out);
-    expect(result).toEqual({ files: 4, folders: 1, bytes: 32 });
+    // The top folder is dropped, and `lib` and `bin` are implied by the paths of their files.
+    expect(result).toEqual({ files: 4, folders: 2, bytes: 32 });
     expect(readFileSync(join(out, 'lib', 'index.js'), 'utf8')).toBe('module.exports = 1;\n');
     expect(readFileSync(join(out, 'a-very-long.js'), 'utf8')).toBe('x');
     expect(statSync(join(out, 'bin', 'run.sh')).mode & 0o111).toBe(0);
@@ -53,7 +54,12 @@ describe('extractTarGz', () => {
     expect(() => extractTarGz(big, dest(), { maxBytes: 1024 * 1024 })).toThrow('unpacks to more than 1 MB');
     expect(() => extractTarGz(big, dest(), { maxBytes: 8 * 1024 * 1024 })).not.toThrow();
     const files = tarGz(Array.from({ length: 4 }, (_, i) => ({ name: `package/f${i}`, data: 'x' })));
-    expect(() => extractTarGz(files, dest(), { maxEntries: 3 })).toThrow('holds more than 3 files and folders');
+    expect(() => extractTarGz(files, dest(), { maxEntries: 3 })).toThrow('creates more than 3 files and folders');
+    // Each folder a deep path implies counts, so few entries cannot create many folders.
+    const implied = tarGz(Array.from({ length: 3 }, (_, i) => ({ name: `package/a${i}/b/c/d/file`, data: 'x' })));
+    expect(() => extractTarGz(implied, dest(), { maxEntries: 10 })).toThrow('creates more than 10 files and folders');
+    const shared = tarGz([{ name: 'package/a/x', data: '1' }, { name: 'package/a/', type: '5' }, { name: 'package/a/y', data: '2' }]);
+    expect(extractTarGz(shared, dest(), { maxEntries: 3 })).toEqual({ files: 2, folders: 1, bytes: 2 });
     const deep = `package/${'d/'.repeat(5)}file`;
     expect(() => extractTarGz(tarGz([{ name: deep, data: 'x' }]), dest(), { maxDepth: 5 })).toThrow('more than 5 levels deep');
     expect(() => extractTarGz(tarGz([{ name: deep, data: 'x' }]), dest(), { maxDepth: 6 })).not.toThrow();
