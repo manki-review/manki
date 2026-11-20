@@ -75,8 +75,11 @@ const LOCKFILE_SETTINGS = [
   'plugins',
 ];
 
-/** The switches that turn the lockfile off, in lower case. npm reads `0`, `null` and other values as off too, so any value but `true` counts. */
-const LOCKFILE_SWITCHES = ['package-lock', 'packagelock', 'shrinkwrap', 'lockfile'];
+/**
+ * The switches that turn the lockfile off, or pnpm's one shared lockfile of a workspace, in lower case. npm reads `0`,
+ * `null` and other values as off too, so any value but `true` counts.
+ */
+const LOCKFILE_SWITCHES = ['package-lock', 'packagelock', 'shrinkwrap', 'lockfile', 'shared-workspace-lockfile', 'sharedworkspacelockfile'];
 
 /** The settings that make a fresh install pick another version than the highest a requirement allows, in lower case. */
 const PICK_SETTINGS = ['before', 'tag', 'resolution-mode', 'resolutionmode', 'min-release-age', 'minimum-release-age', 'minimumreleaseage', 'npmminimalagegate'];

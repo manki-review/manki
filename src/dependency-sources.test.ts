@@ -408,6 +408,9 @@ describe('dependencyLoader', () => {
       [{ 'package.json': manifest({}), '.npmrc': 'package-lock=0\n' }, '.npmrc sets `package-lock`'],
       [{ 'package.json': manifest({}), '.npmrc': 'lockfile=null\n' }, '.npmrc sets `lockfile`'],
       [{ 'package.json': manifest({}), 'pnpm-workspace.yaml': 'lockfile: 0\n' }, 'pnpm-workspace.yaml sets `lockfile`'],
+      // Without pnpm's shared lockfile, each member of the workspace gets a lockfile of its own.
+      [{ 'package.json': manifest({}), '.npmrc': 'shared-workspace-lockfile=false\n' }, '.npmrc sets `shared-workspace-lockfile`'],
+      [{ 'package.json': manifest({}), 'pnpm-workspace.yaml': 'sharedWorkspaceLockfile: false\n' }, 'pnpm-workspace.yaml sets `sharedWorkspaceLockfile`'],
       [{ 'package.json': manifest({}), '.yarnrc.yml': 'cacheFolder: ./vendor/cache\n' }, '.yarnrc.yml sets `cacheFolder`'],
       [{ 'package.json': manifest({}), 'web/node_modules/left-pad/index.js': 'module.exports = 1;\n', 'web/package.json': manifest({}) }, 'the checkout holds web/node_modules/left-pad, which the project runs in place of the archive npm publishes'],
       [{ 'package.json': manifest({}), '.yarn/cache/left-pad-npm-1.2.0-abc123-def456.zip': '' }, 'the checkout holds .yarn/cache/left-pad-npm-1.2.0-abc123-def456.zip'],
