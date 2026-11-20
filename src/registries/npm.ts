@@ -320,6 +320,10 @@ export function npmRegistry(registry = NPM_REGISTRY, maxMetadataBytes = MAX_META
           const workspace = yamlSettings(text);
           if (namesPackage(workspace.overrides, name) || namesPackage(workspace.patchedDependencies, name)) return `${shown(file)} overrides or patches it`;
         }
+        // Yarn 1 reads a `.yarnrc` with a parser of its own and takes `--registry` as a command-line flag, so Manki
+        // cannot tell for certain which registry such a line sets.
+        const yarnRegistry = base === '.yarnrc' ? lineSettings(text).find(({ key }) => /^(?:--(?:[\w-]+\.)?)?registry$/i.test(key)) : undefined;
+        if (yarnRegistry) return `${shown(file)} sets \`${shown(yarnRegistry.key)}\`, which Manki does not read with certainty in a Yarn 1 \`.yarnrc\``;
         // A key in lower case matches a known name, so it holds no character `shown` would change.
         const lockfile = settingsOf(config).find(({ key, value }) => LOCKFILE_SETTINGS.includes(key.toLowerCase())
           || (LOCKFILE_SWITCHES.includes(key.toLowerCase()) && value !== true && value !== 'true'));

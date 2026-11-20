@@ -497,7 +497,7 @@ describe('Manki tool server', () => {
     mkdirSync(stateDir);
     const related: RelatedRepoTools = { repos: [], cacheDir: join(base, 'dep-cache'), stateDir, dependencies: true };
     const readsFile = join(base, 'dep-reads.json');
-    const claude = await connect(depRepo, { related, readsFile, dependencyOptions: { registries: [cratesIo({ index: registry.origin, download: registry.origin })] } });
+    const claude = await connect(depRepo, { related, readsFile, dependencyOptions: { registries: [cratesIo({ index: registry.origin, download: registry.origin })], caseSensitive: () => true } });
     try {
       // A client with file tools of its own gets these for dependencies, and names one in each call.
       const { tools } = await claude.listTools();

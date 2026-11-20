@@ -70,6 +70,8 @@ export interface TrackedFile {
   path: string;
   /** A checkout with `core.symlinks=false` writes a symlink as a file that holds the link's target. */
   symlink: boolean;
+  /** Whether git holds it as a submodule, whose files the checkout does not track itself. */
+  submodule: boolean;
 }
 
 /**
@@ -81,8 +83,8 @@ export async function trackedFiles(
 ): Promise<TrackedFile[] | undefined> {
   const listed = await runTool('git', ['ls-files', '-s', '-z', '--', ...pathspecs], workspace, { env: gitEnv(GIT_CONFIG), timeoutMs: FETCH_TIMEOUT_MS });
   if (listed.code !== 0) return undefined;
-  // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, and mode `120000` is a symlink.
-  return listed.stdout.split('\0').filter(Boolean).map(entry => ({ path: entry.slice(entry.indexOf('\t') + 1), symlink: entry.startsWith('120000 ') }))
+  // Each entry is `<mode> <object> <stage>\t<path>`, where the path may hold a tab itself, mode `120000` is a symlink and `160000` a submodule.
+  return listed.stdout.split('\0').filter(Boolean).map(entry => ({ path: entry.slice(entry.indexOf('\t') + 1), symlink: entry.startsWith('120000 '), submodule: entry.startsWith('160000 ') }))
     .filter(({ path }) => path && !path.split('/').some(part => skipped.includes(part)));
 }
 

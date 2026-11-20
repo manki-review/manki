@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
-import { checksumMatches, dependencyLoader, DependencyLoaderOptions, dependencyOutcomes, pickVersion } from './dependency-sources';
+import { caseSensitiveFs, checksumMatches, dependencyLoader, DependencyLoaderOptions, dependencyOutcomes, pickVersion } from './dependency-sources';
 import { cratesIo } from './registries/crates';
 import { npmRegistry } from './registries/npm';
 import { Registry } from './registries/types';
@@ -28,6 +28,8 @@ describe('dependencyLoader', () => {
   let base: string;
   let server: FakeRegistry;
   let registries: Registry[];
+  // The probe says no on macOS and Windows, so each round states the answer of the Linux runners.
+  const caseSensitive = () => true;
   let n = 0;
 
   beforeAll(async () => {
@@ -95,7 +97,7 @@ describe('dependencyLoader', () => {
     mkdirSync(repo, { recursive: true });
     git(repo, 'init', '-q');
     git(repo, 'add', '-A');
-    return { repo, stateDir, load: dependencyLoader(repo, stateDir, { registries, ...options }) };
+    return { repo, stateDir, load: dependencyLoader(repo, stateDir, { registries, caseSensitive, ...options }) };
   }
 
   it('reads the version a lockfile locks, and records where that version came from', async () => {
@@ -113,6 +115,21 @@ describe('dependencyLoader', () => {
     expect(dependencyOutcomes(stateDir)).toEqual([{
       package: 'crates.io/demo@1.2.0', registry: 'crates.io', name: 'demo', version: '1.2.0', source: 'lockfile', file: 'Cargo.lock', status: 'fetched', durationMs: expect.any(Number),
     }]);
+  });
+
+  it('reads no package on a file system that does not tell names apart by case or Unicode form, and records why', async () => {
+    const files = { 'Cargo.lock': cargoLock([{ version: '1.2.0' }]), 'Cargo.toml': '[dependencies]\ndemo = "1"\n' };
+    const probed: string[] = [];
+    const { stateDir, load } = round(files, { caseSensitive: dir => (probed.push(dir), false) });
+    const off = 'Manki does not read crates.io/demo: this run\'s file system does not tell apart names that differ only in case or Unicode form';
+    await expect(load('crates.io/demo')).rejects.toThrow(off);
+    await expect(load('npm/left-pad')).rejects.toThrow('Dependency reading is off for the run.');
+    // The probe runs once per round, and no registry is contacted.
+    expect(probed).toHaveLength(1);
+    expect(server.requests).toEqual([]);
+    expect(dependencyOutcomes(stateDir)).toEqual(expect.arrayContaining([expect.objectContaining({ package: 'crates.io/demo', status: 'refused', reason: expect.stringContaining(off) })]));
+    // A probe that cannot be written counts as a file system that does not tell names apart.
+    expect(caseSensitiveFs(join(base, 'missing'))).toBe(false);
   });
 
   it('refuses a package the PR does not use, and a version other than the one it uses, without contacting a registry', async () => {
@@ -209,6 +226,10 @@ describe('dependencyLoader', () => {
       await expect(linked({ 'web/node_modules': '../README.md' }, plain).load('npm/left-pad')).rejects.toThrow('the checkout holds web/node_modules, which the project runs');
       await expect(linked({ 'node_modules/@corp': '../README.md' }, plain).load('npm/@corp/pad')).rejects.toThrow('the checkout holds node_modules/@corp, which the project runs');
     }
+    // A submodule anywhere holds files Manki does not list, so it refuses every package.
+    const withSubmodule = round({ 'package-lock.json': lockOfPad });
+    git(withSubmodule.repo, 'update-index', '--add', '--cacheinfo', `160000,${'a'.repeat(40)},vendor/lib`);
+    await expect(withSubmodule.load('npm/left-pad')).rejects.toThrow('Manki does not read npm/left-pad: the checkout holds vendor/lib as a git submodule');
     // A lockfile or a Cargo manifest that does not name the package, in any spelling or through an escape, cannot change it.
     const unrelated = round({ 'a/Cargo.toml': '[dependencies]\nother = ', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) });
     expect((await unrelated.load('crates.io/demo')).key).toBe('crates.io/demo@1.2.0');
@@ -265,7 +286,11 @@ describe('dependencyLoader', () => {
     const npmrc = round({ ...required, '.npmrc': 'registry=https://npm.corp.example/\n' });
     await expect(npmrc.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: ${another} .npmrc sets the registry`);
     expect(dependencyOutcomes(npmrc.stateDir)).toEqual([expect.objectContaining({ package: 'npm/left-pad', source: 'requirement', requirement: '^1.0.0', status: 'refused' })]);
-    await expect(round({ ...required, 'web/.yarnrc': '"@corp:registry" "https://npm.corp.example"\nregistry "https://npm.corp.example"\n' }).load('npm/left-pad')).rejects.toThrow(`${another} web/.yarnrc sets`);
+    // Yarn 1 reads a `.yarnrc` with its own parser and `--registry` as a flag, so any registry line there refuses, even the public one.
+    await expect(round({ ...required, 'web/.yarnrc': '"@corp:registry" "https://npm.corp.example"\nregistry "https://npm.corp.example"\n' }).load('npm/left-pad')).rejects.toThrow('web/.yarnrc sets `registry`, which Manki does not read with certainty in a Yarn 1 `.yarnrc`');
+    for (const line of ['--registry "https://registry.npmjs.org/"', '--install.registry https://npm.corp.example', 'REGISTRY https://registry.yarnpkg.com']) {
+      await expect(round({ ...required, '.yarnrc': `${line}\n` }).load('npm/left-pad')).rejects.toThrow('which Manki does not read with certainty in a Yarn 1 `.yarnrc`');
+    }
     // pnpm reads registries from its workspace settings too.
     await expect(round({ ...required, 'pnpm-workspace.yaml': 'registry: https://npm.corp.example/\n' }).load('npm/left-pad')).rejects.toThrow(`${another} pnpm-workspace.yaml sets the registry https://npm.corp.example/.`);
     await expect(round({ ...scopedRequired, 'pnpm-workspace.yaml': 'registries:\n  "@corp": https://npm.corp.example/\n' }).load('npm/@corp/pad')).rejects.toThrow(`${another} pnpm-workspace.yaml sets the registry https://npm.corp.example/ for @corp.`);
@@ -282,7 +307,7 @@ describe('dependencyLoader', () => {
       ['.yarnrc', `registry${' '.repeat(100_000)}a"b"c\n"registry${'='.repeat(100_000)}"\n`],
     ]) {
       const started = Date.now();
-      await expect(round({ ...required, [file]: text }).load('npm/left-pad')).rejects.toThrow(`${another} ${file} sets the registry`);
+      await expect(round({ ...required, [file]: text }).load('npm/left-pad')).rejects.toThrow(file === '.npmrc' ? `${another} ${file} sets the registry` : `${file} sets \`registry\``);
       expect(Date.now() - started).toBeLessThan(1_000);
     }
     expect(server.requests).toEqual([]);
@@ -568,7 +593,7 @@ describe('dependencyLoader', () => {
     expect((await load('npm/undeprecated')).key).toBe('npm/undeprecated@1.1.0');
     await load('npm/undeprecated');
     // Another tool server of the round reuses the resolution and the fetched archive.
-    await dependencyLoader(repo, stateDir, { registries })('npm/undeprecated');
+    await dependencyLoader(repo, stateDir, { registries, caseSensitive })('npm/undeprecated');
     expect(server.requests).toEqual(['/npm/undeprecated', '/npm/undeprecated/-/undeprecated-1.1.0.tgz']);
   });
 
@@ -636,14 +661,14 @@ describe('dependencyLoader', () => {
     const timedOut = round(locked, { timeoutMs: 500 });
     await expect(timedOut.load('npm/slowpad')).rejects.toThrow('did not finish within 0.5 seconds');
     expect(dependencyOutcomes(timedOut.stateDir)).toEqual([expect.objectContaining({ package: 'npm/slowpad@1.0.0', status: 'failed', reason: expect.stringContaining('did not finish within 0.5 seconds, and no later call fetched it') })]);
-    expect((await dependencyLoader(timedOut.repo, timedOut.stateDir, { registries, timeoutMs: 1_500 })('npm/slowpad')).key).toBe('npm/slowpad@1.0.0');
+    expect((await dependencyLoader(timedOut.repo, timedOut.stateDir, { registries, caseSensitive, timeoutMs: 1_500 })('npm/slowpad')).key).toBe('npm/slowpad@1.0.0');
     expect(dependencyOutcomes(timedOut.stateDir)).toEqual([expect.objectContaining({ package: 'npm/slowpad@1.0.0', status: 'fetched' })]);
 
     // A version list that could not be read in time is retried, and the round records only the read that followed.
     const unresolved = round(required, { timeoutMs: 300 });
     await expect(unresolved.load('npm/slowpad')).rejects.toThrow('could not read the published versions of npm/slowpad');
     expect(dependencyOutcomes(unresolved.stateDir)).toEqual([expect.objectContaining({ package: 'npm/slowpad', status: 'failed' })]);
-    expect((await dependencyLoader(unresolved.repo, unresolved.stateDir, { registries, timeoutMs: 1_500 })('npm/slowpad')).key).toBe('npm/slowpad@1.0.0');
+    expect((await dependencyLoader(unresolved.repo, unresolved.stateDir, { registries, caseSensitive, timeoutMs: 1_500 })('npm/slowpad')).key).toBe('npm/slowpad@1.0.0');
     expect(dependencyOutcomes(unresolved.stateDir)).toEqual([expect.objectContaining({ package: 'npm/slowpad@1.0.0', status: 'fetched' })]);
 
     // Another tool server of this process holds the package and never finishes. The wait ends once the call, counted
@@ -689,7 +714,7 @@ describe('dependencyLoader', () => {
     writeFileSync(join(untracked.repo, 'Cargo.lock'), lock);
     await expect(untracked.load('crates.io/demo')).rejects.toThrow('is not a dependency');
     rmSync(join(untracked.repo, '.git'), { recursive: true });
-    const unlisted = dependencyLoader(untracked.repo, untracked.stateDir, { registries });
+    const unlisted = dependencyLoader(untracked.repo, untracked.stateDir, { registries, caseSensitive });
     await expect(unlisted('crates.io/demo')).rejects.toThrow('Manki does not read crates.io/demo: Manki could not list the files of the checkout');
   });
 });

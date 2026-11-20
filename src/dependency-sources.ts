@@ -429,6 +429,25 @@ export interface DependencyLoaderOptions {
   maxManifestTotalBytes?: number;
   /** The most lockfiles, manifests and settings files of the checkout Manki lists. */
   maxListed?: number;
+  /** Whether the file system of `dir` tells apart names that differ only in case or Unicode form. */
+  caseSensitive?: (dir: string) => boolean;
+}
+
+/**
+ * Whether the file system of `dir` tells apart names that differ only in case or Unicode form, as Linux does and
+ * macOS and Windows by default do not. A probe that cannot be written counts as no.
+ */
+export function caseSensitiveFs(dir: string): boolean {
+  let probe: string | undefined;
+  try {
+    probe = mkdtempSync(join(dir, 'case-'));
+    writeFileSync(join(probe, 'a\u00e9'), '');
+    return !existsSync(join(probe, 'A\u00e9')) && !existsSync(join(probe, 'ae\u0301'));
+  } catch {
+    return false;
+  } finally {
+    if (probe) rmSync(probe, { recursive: true, force: true });
+  }
 }
 
 /** A package a tool call reads, with the note that tells the model which version it is and where that comes from. */
@@ -450,6 +469,7 @@ export function dependencyLoader(
   {
     registries = REGISTRIES, timeoutMs = FETCH_TIMEOUT_MS, callLimitMs = STALE_TIMEOUT_MS, maxPackages = MAX_PACKAGES_PER_ROUND, maxArchiveBytes = MAX_ARCHIVE_BYTES,
     archiveLimits = {}, maxManifestBytes = MAX_LOCKFILE_BYTES, maxManifestTotalBytes = MAX_LOCKFILES_TOTAL_BYTES, maxListed = MAX_LISTED,
+    caseSensitive = caseSensitiveFs,
   }: DependencyLoaderOptions = {},
 ): (spec: string) => Promise<DependencyCheckout> {
   // A folder of its own, so a package's markers never meet a related repository's of the same name.
@@ -472,6 +492,9 @@ export function dependencyLoader(
     }
     const closed = removed.find(path => isRead(path) || INSTALLED_COPY.test(path));
     if (closed) return refused(`\`closed_paths\` removed ${shown(closed)} from the checkout, and that path can decide which code the PR runs`);
+    // A submodule holds files the checkout does not list, such as a lockfile, a setting or a whole package.
+    const submodule = all.find(f => f.submodule);
+    if (submodule) return refused(`the checkout holds ${shown(submodule.path)} as a git submodule, whose files Manki does not list, so it cannot tell which code the PR runs`);
     const installed = all.filter(f => INSTALLED_COPY.test(f.path)).map(f => f.path);
     // The files of a committed `node_modules` only show whether it holds the package, so they are neither read nor counted.
     const tracked = all.filter(f => !f.path.split('/').includes('node_modules'));
@@ -505,12 +528,22 @@ export function dependencyLoader(
     resolving.set(spec, pending);
     return pending;
   };
+  // Names in a package or a checkout that differ only in case or Unicode form would land on one file, so a package
+  // could read as other code than it holds. Such a file system turns dependency reading off for the run.
+  let sensitive: boolean | undefined;
   return async spec => {
     const started = Date.now();
     const left = () => callLimitMs - (Date.now() - started);
     const { registry, name, version } = parseSpec(spec, registries);
     let resolved: Resolved;
     try {
+      sensitive ??= caseSensitive(stateDir);
+      if (!sensitive) {
+        throw new UnreadPackage(
+          `Manki does not read ${registry.id}/${name}: this run's file system does not tell apart names that differ only in case or Unicode form, so files of a package could overwrite each other. Dependency reading is off for the run.`,
+          `${registry.id}/${name}`, { registry: registry.id, name }, true,
+        );
+      }
       resolved = await resolve(spec, registry, name, version);
     } catch (error) {
       if (error instanceof UnreadPackage) recordUnread(stateDir, error);
