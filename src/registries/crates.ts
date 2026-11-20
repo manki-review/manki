@@ -1,8 +1,8 @@
 import { posix } from 'path';
 import { validRange } from 'semver';
+import { parse } from 'smol-toml';
 
 import { shown } from './shown';
-import { parseTomlSubset, tableOf, TomlTable } from './toml';
 import { matchesWorkspace } from './workspace';
 import { ManifestFacts, PublishedVersion, Registry, RegistryConfig, Requirement } from './types';
 
@@ -29,6 +29,13 @@ const OTHER_SOURCES = ['path', 'git', 'registry', 'registry-index', 'registry_in
 /** The other fields of a dependency entry Manki knows, none of which changes where the crate comes from. */
 const ENTRY_FIELDS = new Set(['version', 'features', 'optional', 'default-features', 'default_features', 'package', 'public', 'artifact', 'lib', 'target', 'branch', 'tag', 'rev']);
 
+type TomlTable = Record<string, unknown>;
+
+/** Returns `value` when it is a TOML table, else an empty one. */
+function tableOf(value: unknown): TomlTable {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date) ? value as TomlTable : {};
+}
+
 /** Returns the path of a crate's file in the crates.io index, which files a crate by the length and start of its name. */
 function indexPath(name: string): string {
   const lower = name.toLowerCase();
@@ -45,7 +52,7 @@ function dependencyTables(manifest: TomlTable): TomlTable[] {
 
 /** The crate an entry of a dependency or `[patch]` table names: its `package` when it renames one, else its key. */
 function crateOf(key: string, entry: unknown): string {
-  const renamed = tableOf(entry as TomlTable).package;
+  const renamed = tableOf(entry).package;
   return typeof renamed === 'string' ? renamed : key;
 }
 
@@ -69,7 +76,7 @@ function replacedCrate(spec: string): string | undefined {
  * there. One from a path, a git repository or another registry, or with a field Manki does not know, sets `otherSource`.
  */
 function cargoManifest(text: string, name: string): ManifestFacts {
-  const manifest = parseTomlSubset(text);
+  const manifest = parse(text);
   let otherSource: string | undefined;
   const requirements = dependencyTables(manifest).flatMap(table => Object.entries(table).flatMap(([key, entry]): Requirement[] => {
     if (normalize(crateOf(key, entry)) !== normalize(name)) return [];
@@ -108,7 +115,7 @@ function cargoFreshPick(files: readonly RegistryConfig[]): string | undefined {
   for (const { file, text } of files) {
     let toml: TomlTable;
     try {
-      toml = parseTomlSubset(text);
+      toml = parse(text);
     } catch (error) {
       throw new Error(`Manki cannot read ${file} with certainty: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -183,8 +190,8 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
       const memberText = text(posix.join(member, 'Cargo.toml'));
       if (rootText === undefined || memberText === undefined) return false;
       // A manifest with a `[workspace]` of its own is the root of its own workspace.
-      if (Object.hasOwn(parseTomlSubset(memberText), 'workspace')) return false;
-      const manifest = parseTomlSubset(rootText);
+      if (Object.hasOwn(parse(memberText), 'workspace')) return false;
+      const manifest = parse(rootText);
       const relative = posix.relative(root, member);
       // A path dependency of the root shares its lockfile, with or without a `[workspace]`.
       const pathDependency = dependencyTables(manifest).some(table => Object.values(table).some(entry => {
@@ -208,7 +215,7 @@ export function cratesIo({ index = CRATES_IO.index, download = CRATES_IO.downloa
     otherRegistry: () => undefined,
     overriddenBy(name, configs) {
       for (const { file, text } of configs) {
-        const config = parseTomlSubset(text);
+        const config = parse(text);
         // A replaced source serves every crate from elsewhere, such as a vendored folder whose files can differ.
         if (Object.values(tableOf(config.source)).some(source => ['replace-with', 'replace_with'].some(k => Object.hasOwn(tableOf(source), k)))) return `${shown(file)} replaces the source of crates`;
         // `registry.index` and a `crates-io` entry of `[registries]` point crates.io itself at another index.
