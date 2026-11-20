@@ -2283,11 +2283,12 @@ describe('handleReviewCommentCommand', () => {
     const guardedByAuthor = kind !== 'warning' && sender === 'pr-author';
     // The lookup gets the level of the base branch's config, and only the PR author's own dismissal of a guarded thread needs it.
     expect(jest.mocked(ghUtils.authorClearRole).mock.calls).toEqual(guardedByAuthor ? [[octokit, 'test-owner', 'test-repo', 'pr-author', 'maintain']] : []);
-    // Manki records the PR author's dismissal as an override, and a maintainer's with a record of its own, both before it resolves.
+    // Manki records the PR author's dismissal of a guarded thread as an override, and any other dismissal it resolves the
+    // thread on with a record of its own, both before it resolves.
     const overrides = mayClear && guardedByAuthor ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', role: 'maintain', via: 'dismiss', fixClaim: { pr: 7, status: 'confirmed' } }]]] : [];
     expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toEqual(overrides);
-    const byMaintainer = resolves && kind !== 'warning' && sender !== 'pr-author';
-    expect(jest.mocked(state.recordDismissal).mock.calls).toEqual(byMaintainer ? [[octokit, 'PRRT_this', sender, { pr: 7, status: 'confirmed' }]] : []);
+    const recorded = resolves && !guardedByAuthor;
+    expect(jest.mocked(state.recordDismissal).mock.calls).toEqual(recorded ? [[octokit, 'PRRT_this', sender, sender === 'pr-author', { pr: 7, status: 'confirmed' }]] : []);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolves ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     // A resolved thread speaks for itself. One left open says why in the thread, and nothing goes to the PR.
     expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
@@ -2358,7 +2359,7 @@ describe('handleReviewCommentCommand', () => {
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(result === 'cleared' ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     // Manki records a maintainer's dismissal only on a thread it resolves itself.
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
-    expect(jest.mocked(state.recordDismissal).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this', 'someone', undefined]] : []);
+    expect(jest.mocked(state.recordDismissal).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this', 'someone', false, undefined]] : []);
     // A thread that stays resolved by the PR author still blocks, so the dismissal says it did not work.
     const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
     const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
@@ -2486,19 +2487,22 @@ describe('handleBoxCommand', () => {
     expect(await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 })).toBe(writer);
     expect(jest.mocked(dismissed.rest.pulls.getReviewComment).mock.calls[0]?.[0]).toEqual({ owner: 'test-owner', repo: 'test-repo', comment_id: 99 });
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(writer ? [[dismissed, 'PRRT_this', 'WONT_FIX']] : []);
+    // The note that records the dismissal is the only one. A refused dismissal says why instead.
     const replies = jest.mocked(dismissed.rest.pulls.createReplyForReviewComment).mock.calls.map((call: unknown[]) => call[0] as { comment_id: number; body: string });
-    expect(replies).toEqual([expect.objectContaining({
-      comment_id: 99, body: expect.stringContaining(writer ? 'Dismissed by `@writer`.' : 'Only the PR author or someone with write access can dismiss this finding'),
-    })]);
-    // A dismissal that resolved the thread leaves the reply record that later rounds and the fix rate read as a settled thread.
-    expect(replies.map((r: { body: string }) => settlingDecision(r.body))).toEqual([writer ? { outcome: 'Agreed', thread: 'resolves' } : undefined]);
-    // A suggestion a later round raised to a warning gets no such record, since the record would lift the warning's hold.
+    expect(replies).toEqual(writer ? [] : [expect.objectContaining({ comment_id: 99, body: expect.stringContaining('Only the PR author or someone with write access can dismiss this finding') })]);
+    const records = () => jest.mocked(state.recordDismissal).mock.calls.map(([, thread, login, , , ...markers]) => [thread, login, settlingDecision(`Dismissed.\n\n<!-- manki -->\n${markers.join('\n')}`)]);
+    // On a suggestion the note carries the reply record that later rounds and the fix rate read as a settled thread.
+    expect(records()).toEqual(writer ? [['PRRT_this', 'writer', { outcome: 'Agreed', thread: 'resolves' }]] : []);
     if (writer) {
-      jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, isWarning: true, findingTitle: 'Token' }]);
-      dismissed.rest.pulls.createReplyForReviewComment.mockClear();
-      expect(await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 })).toBe(true);
-      const raised = jest.mocked(dismissed.rest.pulls.createReplyForReviewComment).mock.calls.map((call: unknown[]) => (call[0] as { body: string }).body);
-      expect([raised.length, raised.map((body: string) => settlingDecision(body))]).toEqual([1, [undefined]]);
+      // A suggestion a later round raised to a warning gets no such record, since the record would lift the warning's hold.
+      // A blocker gets the note alone too.
+      for (const raised of [{ isWarning: true as const }, { isBlocking: true }]) {
+        jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'Token', ...raised }]);
+        dismissed.rest.pulls.createReplyForReviewComment.mockClear();
+        jest.mocked(state.recordDismissal).mockClear();
+        expect(await handleBoxCommand(dismissed, TEST_BOT, 'test-owner', 'test-repo', 1, 'dismiss', undefined, { config, configHeld: false, commentId: 99 })).toBe(true);
+        expect([raised, records(), dismissed.rest.pulls.createReplyForReviewComment.mock.calls.length]).toEqual([raised, [['PRRT_this', 'writer', undefined]], 0]);
+      }
     }
     // A thread someone resolved already is left as it is, so the dismiss did nothing.
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: 'writer', isBlocking: false, findingTitle: 'Token' }]);

@@ -1534,6 +1534,21 @@ describe('fetchRecapState', () => {
       dismissedLater.comments.nodes.push({ body: '@manki dismiss', author: { login: 'mallory' } });
       const afterDismiss = await fetchRecapState(withWriter(mockOctokit([dismissedLater], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(afterDismiss.previousFindings.map(f => f.decidedWithoutFix ?? false)).toEqual([true]);
+      // A warning a writer dismissed carries Manki's record too, so a later round's repeat of it is dropped as waived.
+      const dismissedWarning = makeThread({
+        id: 'T_WARN', isResolved: true, resolvedBy: { login: BOT_LOGIN }, path: files.bot, line: 10,
+        comments: { nodes: [
+          { body: `**Warning**: ${title}\n\n<!-- manki:warning:${slug} -->`, author: { login: BOT_LOGIN } },
+          { body: '@manki dismiss', author: { login: 'alice' } },
+          { body: `Finding dismissed by \`@alice\`, who has write access to this repository.\n\n<!-- manki -->\n${dismissRecordMarker('alice')}`, author: { login: BOT_LOGIN } },
+        ] },
+      });
+      const warned = await fetchRecapState(withWriter(mockOctokit([dismissedWarning], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }])), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(warned.previousFindings.map(f => [f.status, f.decidedWithoutFix ?? false])).toEqual([['auto-resolved', true]]);
+      const sameDefect = { sendMessage: jest.fn().mockResolvedValue({ content: '[{ "index": 1, "matchedResolved": 1 }]' }) } as unknown as import('./providers').LLMClient;
+      const repeat = makeFinding({ severity: 'warning', title: 'Null input is not rejected', file: files.bot, line: 10 });
+      const deduped = await llmDeduplicateFindings([repeat], warned.previousFindings, sameDefect, undefined, () => false);
+      expect([deduped.unique, deduped.duplicates.map(d => d.matchedTitle)]).toEqual([[], [title]]);
 
       // A later round that found the thread open again takes the earlier `addressed` away, so Manki's resolve has nothing
       // to back it. A warning thread Manki resolved on an `addressed` record counts as resolved and fixed.

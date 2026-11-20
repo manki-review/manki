@@ -87,7 +87,7 @@ interface ReviewThread {
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
-  /** Who Manki recorded a dismissal for on this blocking or security thread since its last reopen, by `dismissRecordLogins`. */
+  /** Who Manki recorded a dismissal for on this thread since its last reopen, by `dismissRecordLogins`. */
   dismissRecords?: string[];
   /** The fix in another pull request that a reply in the thread named, and whether Manki checked it, by `fixClaimOf`. */
   fixClaim?: FixClaim;
@@ -242,7 +242,7 @@ async function fetchBotReviewThreads(
       const resolvedByLogin = thread.resolvedBy?.login;
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
-      const dismissRecords = isSecurity || isBlocking ? dismissRecordLogins(bot, thread.comments.nodes) : [];
+      const dismissRecords = dismissRecordLogins(bot, thread.comments.nodes);
       // A thread at the comment limit may hide a later answer, so it names no claim.
       const fixClaim = (isSecurity || isBlocking) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
@@ -378,19 +378,19 @@ async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean
  * Says which pull request a reply in the thread named, and whether Manki confirmed it as the fix. Only Manki's check
  * reads a reply as naming the fix, so an unchecked one only names the pull request.
  */
-/** The note that records a dismissal of a guarded thread by `login`: the PR author with `role`, or else someone with write access. */
-function dismissalNote(login: string, role: AuthorClearRole | undefined, fixClaim: FixClaim | undefined): string {
-  const who = role ? `the PR author, who has ${rolePhrase(role)} on this repository` : 'who has write access to this repository';
-  return `Finding dismissed by \`@${login}\`, ${who}.${fixClaim ? ` ${fixClaimLine(fixClaim)}` : ''}`;
+/** The note that records a dismissal by `login`, who is the PR author with `role`, the PR author, or someone with write access. */
+function dismissalNote(login: string, who: { role?: AuthorClearRole; prAuthor?: boolean }, fixClaim: FixClaim | undefined): string {
+  const by = who.role ? `, the PR author, who has ${rolePhrase(who.role)} on this repository` : who.prAuthor ? ', the PR author' : ', who has write access to this repository';
+  return `Finding dismissed by \`@${login}\`${by}.${fixClaim ? ` ${fixClaimLine(fixClaim)}` : ''}`;
 }
 
 /**
- * Replies on `thread` to record the dismissal by `login`, someone other than the PR author with write access, with its
- * own marker that no reader of security overrides sees. Returns whether the reply was posted.
+ * Replies on `thread` to record the dismissal by `login` that Manki accepted, with its own marker that no reader of
+ * security overrides sees, and with `markers`. Returns whether the reply was posted.
  */
-async function recordDismissal(octokit: Octokit, thread: string, login: string, fixClaim: FixClaim | undefined): Promise<boolean> {
+async function recordDismissal(octokit: Octokit, thread: string, login: string, prAuthor: boolean, fixClaim: FixClaim | undefined, ...markers: string[]): Promise<boolean> {
   try {
-    await replyToReviewThread(octokit, thread, dismissalNote(login, undefined, fixClaim), dismissRecordMarker(login));
+    await replyToReviewThread(octokit, thread, dismissalNote(login, { prAuthor }, fixClaim), dismissRecordMarker(login), ...markers);
     core.info(`Recorded the dismissal by ${login} on thread ${thread}`);
     return true;
   } catch (error) {
@@ -413,7 +413,7 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Requ
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
-      await replyToReviewThread(octokit, o.thread, dismissalNote(o.login, o.role, o.fixClaim), securityOverrideMarker(o.via, o.login));
+      await replyToReviewThread(octokit, o.thread, dismissalNote(o.login, { role: o.role }, o.fixClaim), securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {

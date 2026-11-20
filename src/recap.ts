@@ -190,8 +190,8 @@ function recordedSecurityOverride(
 const DISMISS_RECORD_OPENER = '<!-- manki-dismiss-record:';
 
 /**
- * Marks Manki's reply that records a dismissal it accepted from `login`, someone other than the PR author with write
- * access, on a guarded thread. Only `settlement` and `dismissRecordLogins` read it, never as a security override.
+ * Marks Manki's reply that records a dismissal it accepted from `login` and resolved the thread on. On a guarded thread
+ * `login` is someone other than the PR author. Only `settlement` and `dismissRecordLogins` read it, never as a security override.
  */
 function dismissRecordMarker(login: string): string {
   return `${DISMISS_RECORD_OPENER}${login} -->`;
@@ -823,7 +823,7 @@ function shouldReopen(t: ReviewThread, prAuthorLogin: string | undefined): boole
 
 /**
  * Whether the latest settlement of the resolved thread `t` waived it, so the resolve that holds now is that waiver's:
- * Manki resolved it on its own answer that accepted no fix or on a maintainer's dismiss it recorded, or recorded the PR
+ * Manki resolved it on its own answer that accepted no fix or on a dismiss it recorded, or recorded the PR
  * author's clearing with `override` and the author's resolve or Manki's own still holds. A later resolve by anyone
  * else, as after a reopen and a fix, waives nothing.
  */
@@ -850,8 +850,8 @@ interface Settlement {
   fixAnswered: boolean;
   /**
    * Manki's latest settling comment since it last reopened the thread, when that comment settled it without a fix:
-   * `answer`, its reply record says it accepted an answer that accepted no fix, `dismiss`, its record of a maintainer's
-   * dismiss it accepted, or `override`, its record of the PR author's clearing with a role.
+   * `answer`, its reply record says it accepted an answer that accepted no fix, `dismiss`, its record of a dismiss it
+   * accepted, or `override`, its record of the PR author's clearing with a role.
    */
   latestWaiver?: 'answer' | 'dismiss' | 'override';
 }
