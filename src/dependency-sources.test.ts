@@ -142,7 +142,8 @@ describe('dependencyLoader', () => {
     await expect(load('pypi/demo')).rejects.toThrow('Name a dependency as crates.io/<name> or npm/<name>');
     await expect(load('crates.io/../demo')).rejects.toThrow('is not a package name of crates.io');
     expect(server.requests).toEqual([]);
-    expect(dependencyOutcomes(stateDir)).toEqual([]);
+    // Only the package the PR uses reaches the record, with the version it was named at refused as failed.
+    expect(dependencyOutcomes(stateDir)).toEqual([expect.objectContaining({ package: 'crates.io/demo', source: 'lockfile', file: 'Cargo.lock', status: 'failed', reason: expect.stringContaining('does not use crates.io/demo@1.2.5') })]);
   });
 
   it('refuses a name its lockfiles lock at several versions unless the call names one, and one locked from another source', async () => {
