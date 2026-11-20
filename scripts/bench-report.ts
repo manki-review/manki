@@ -11,15 +11,20 @@
  *   npm run bench-report -- merge --set <set> [--cases "<id> ..."] --dir <case reports> --out <report.json> [--ref <ref>] [--commit <sha>]
  *   npm run bench-report -- gate --baseline <report.json> [--baseline ...] --candidate <report.json> [--candidate ...]
  *   npm run bench-report -- unmatched --report <report.json> [--set <holdout|tuning|both>]
+ *
+ * `gate` exits 0 on `PASS`, 2 on `RERUN`, 3 on `NO DECISION` and 4 on `FAIL`, and an error exits 1.
  */
 
 import { readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { printableError } from '../src/cli';
-import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatBlockerRoutes, formatComparison, formatGate, formatRemoved, formatUnmatched, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
+import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatBlockerRoutes, formatComparison, formatGate, formatRemoved, formatUnmatched, GateResult, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
 
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
+
+/** The exit code of `gate` per verdict. The highest code among the variants is returned, so a `FAIL` of any variant decides. */
+const GATE_EXIT: Record<GateResult['verdict'], number> = { PASS: 0, RERUN: 2, 'NO DECISION': 3, FAIL: 4 };
 
 /** One job of the benchmark matrix: a case and what its job needs to fetch. */
 export interface MatrixEntry {
@@ -107,7 +112,9 @@ export function main(argv: string[], root = '.'): number {
     const [baseline, candidate] = ['--baseline', '--candidate'].map(flag => (flags.get(flag) ?? []).map(path => readReport(path, root)));
     const sides = [baseline, candidate].map(side => side.map(read => read.report));
     const removed = formatRemoved([...baseline, ...candidate].flatMap(read => read.removed));
-    console.log(`## Release gate\n\n${formatGate(gateReports(sides[0], sides[1]))}${removed && `\n${removed}\n`}`);
+    const results = gateReports(sides[0], sides[1]);
+    console.log(`## Release gate\n\n${formatGate(results)}${removed && `\n${removed}\n`}`);
+    return Math.max(...results.map(r => GATE_EXIT[r.verdict]));
   } else if (command === 'unmatched') {
     const sets = SET_CHOICES[one('--set') ?? 'tuning'];
     if (!sets) throw new Error(`--set must be one of ${Object.keys(SET_CHOICES).join(', ')}`);

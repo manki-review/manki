@@ -112,9 +112,24 @@ describe('formatReportSummary and the commands on a stored report', () => {
       expect(printed()).toContain('src/SHOWN-TEXT.rs:3: title SHOWN-TEXT');
       expect(printed()).toContain('src/HOLDOUT-TEXT.rs:3: title HOLDOUT-TEXT');
       expect(out).toHaveBeenLastCalledWith('Left out, no case file holds it: gone-1, gone-2');
-      expect(main(['gate', '--baseline', old, '--candidate', old], root)).toBe(0);
+      // The failed run 2 of held-1 leaves the gate without a decision.
+      expect(main(['gate', '--baseline', old, '--candidate', old], root)).toBe(3);
       expect(String(out.mock.lastCall)).toMatch(/\nShared hold-out cases \(1\): held-1\n\nLeft out, no case file holds it: gone-1, gone-2\n$/);
       expect(printed()).not.toContain('GONE-TEXT');
+
+      // The exit code of `gate` says its verdict, so the workflow's step fails on any verdict but `PASS`.
+      let started = 0;
+      const gated = (name: string, falseBlockers: number) => {
+        const [shownCase, heldCase] = current.variants[0].cases;
+        const held = { ...heldCase, runs: [{ ...heldCase.runs[0], falseBlockers }] };
+        mkdirSync(join(root, name));
+        writeFileSync(join(root, name, 'report.json'), JSON.stringify({ ...current, startedAt: `2026-11-09T0${++started}:00:00.000Z`, variants: [{ ...current.variants[0], cases: [shownCase, held] }] }));
+        return join(root, name, 'report.json');
+      };
+      const baselines = ['--baseline', gated('b', 0), '--baseline', gated('bb', 0)];
+      const candidate = (name: string, falseBlockers: number) => main(['gate', ...baselines, '--candidate', gated(name, falseBlockers)], root);
+      expect([candidate('pass', 0), candidate('rerun', 1), candidate('fail', 2)]).toEqual([0, 2, 4]);
+      expect(out.mock.lastCall?.[0]).toMatch(/^## Release gate\n\n### Release gate, base: FAIL\n/);
       out.mockClear();
       process.env.GITHUB_ACTIONS = 'true';
 
