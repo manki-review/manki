@@ -41,6 +41,12 @@ describe('extractTarGz', () => {
     ['a path with `..`', [{ name: 'package/../../evil.js', data: 'x' }], 'which leaves its folder'],
     ['an absolute path', [{ name: '/etc/evil', data: 'x' }], 'which leaves its folder'],
     ['a backslash path', [{ name: 'package\\..\\evil', data: 'x' }], 'which leaves its folder'],
+    ['a path that starts with `./`', [{ name: './d1/a/b/file', data: 'x' }], 'which is not canonical'],
+    ['a path with `.`', [{ name: 'package/./b', data: 'x' }], 'which is not canonical'],
+    ['a path with an empty part', [{ name: 'package//b', data: 'x' }], 'which is not canonical'],
+    // node-tar reads a file whose path ends in a slash as a folder, so its data is a broken header too.
+    ['a file with a trailing slash', [{ name: 'package/b/', data: 'x' }], 'checksum failure'],
+    ['a folder with two trailing slashes', [{ name: 'package/b//', type: '5' }], 'which is not canonical'],
     // node-tar reads a folder's size as 0, so data after it is a broken header, which strict mode refuses.
     ['a folder with data', [{ name: 'package/b/', type: '5', data: 'x' }], 'checksum failure'],
   ] as Array<[string, TarEntry[], string]>)('refuses an archive with %s', (_, entries, why) => {

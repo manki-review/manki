@@ -36,6 +36,9 @@ function quoted(name: string): string {
 function refusal(path: string, entry: ReadEntry, maxDepth: number, maxPathBytes: number): string | undefined {
   if (entry.type !== 'File' && entry.type !== 'Directory') return `the archive holds ${quoted(path)} as a ${entry.type}, which is no plain file or folder`;
   if (path.startsWith('/') || /^[A-Za-z]:/.test(path) || path.includes('\\') || path.split('/').includes('..')) return `the archive holds the path ${quoted(path)}, which leaves its folder`;
+  // npm and crates.io archives hold canonical paths only, which the folder count below reads as node-tar writes them.
+  const parts = (entry.type === 'Directory' && path.endsWith('/') ? path.slice(0, -1) : path).split('/');
+  if (parts.some(part => part === '' || part === '.')) return `the archive holds the path ${quoted(path)}, which is not canonical`;
   if (Buffer.byteLength(path) > maxPathBytes) return `the archive holds the path ${quoted(path)}, longer than ${maxPathBytes} bytes`;
   if (path.split('/').filter(Boolean).length > maxDepth + 1) return `the archive holds the path ${quoted(path)}, more than ${maxDepth} levels deep`;
   return undefined;
@@ -72,7 +75,7 @@ export function extractTarGz(archive: Buffer, dest: string, {
       // Without a mode of its own, an entry gets `fmode` or `dmode`, so no file is written to run.
       readEntry.mode = undefined;
       // Every folder an entry creates counts, whether the archive lists it or only a path implies it.
-      const inside = path.split('/').filter(part => part !== '' && part !== '.').slice(1);
+      const inside = path.replace(/\/$/, '').split('/').slice(1);
       const folderParts = readEntry.type === 'Directory' ? inside.length : inside.length - 1;
       for (let i = 1; i <= folderParts; i++) folders.add(inside.slice(0, i).join('/'));
       if (readEntry.type !== 'Directory') result.files++;
