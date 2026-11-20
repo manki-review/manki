@@ -19,7 +19,7 @@ import { readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { printableError } from '../src/cli';
-import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatBlockerRoutes, formatComparison, formatGate, formatRemoved, formatUnmatched, GateResult, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
+import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatBlockerRoutes, formatComparison, formatGate, formatRemoved, formatUnmatched, formatWarningSources, GateResult, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
 
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
 
@@ -52,8 +52,9 @@ export function benchMatrix(cases: BenchCase[]): MatrixEntry[] {
 }
 
 /**
- * Returns the Markdown summary of a merged report: the comparison table, the unmatched blockers and unexpected warnings
- * on tuning cases, then every case and run in a fold.
+ * Returns the Markdown summary of a merged report: the comparison table, the routes of the posted blockers, the steps
+ * that raised the unexpected warnings, the unmatched blockers and unexpected warnings on tuning cases, then every case
+ * and run in a fold.
  */
 export function formatReportSummary(report: BenchReport): string {
   const cases = report.variants[0]?.cases ?? [];
@@ -65,7 +66,7 @@ export function formatReportSummary(report: BenchReport): string {
     '',
     formatComparison(report.variants),
     '',
-    ...[formatBlockerRoutes(report.variants)].filter(Boolean).flatMap(table => [table, '']),
+    ...[formatBlockerRoutes(report.variants), formatWarningSources(report.variants)].filter(Boolean).flatMap(table => [table, '']),
     ...[formatUnmatched(report.variants)].filter(Boolean),
     '<details><summary>Every case and run</summary>',
     '',

@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatBlockerRoutes, formatGate, formatUnmatched, formatWarningSources, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, MatcherSpend, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import { printableError } from './cli';
@@ -13,7 +13,7 @@ import type { LLMClient } from './providers';
 import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import { expectLinearTime, GIT_TEST_TIMEOUT_MS } from './test-utils';
-import { PRE_EXISTING_TAG, VERDICT_READER_NAME } from './types';
+import { PRE_EXISTING_TAG, SCOPE_READER_NAME, VERDICT_READER_NAME } from './types';
 import type { Doubt, Finding, FindingFingerprintEntry, FindingSeverity, GradeChange, Refutation, RoundContext, RoundDedup, RoundJudge, RoundLead, RoundMemory, RoundOutcome, RoundRawFinding } from './types';
 
 jest.mock('@actions/core');
@@ -433,8 +433,8 @@ describe('scoreRun', () => {
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings.slice(1, 3)).toEqual([
-      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.', route: { finderGrade: 'blocker' } },
-      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker' } },
+      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } },
+      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } },
     ]);
 
     const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted\n```', description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'note', title: 'A note' })];
@@ -446,7 +446,7 @@ describe('scoreRun', () => {
     );
     expect(unscored.variants[0].summary.unexpectedWarnings).toBe(1);
     expect(formatBenchSummary(unscored)).toContain('0 false blockers, 1 unexpected warnings, 2 extra');
-    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();', route: { finderGrade: 'warning' } });
+    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();', route: { finderGrade: 'warning', raisedBy: ['finder'] } });
     expect(formatUnmatched(unscored.variants)).toBe([
       '### Unexpected warnings on tuning cases', '',
       "Warnings that match no key item. Add each real defect to its case's `must_catch`, or to `nice_to_have` when a good review may leave it out, and bump the case's `key_version`.", '',
@@ -484,8 +484,12 @@ describe('scoreRun', () => {
       // A finder that reports it too makes it a finder's blocker.
       blocker('Claimed', { reviewers: ['Claim check 2', 'Claim check 4'] }),
       blocker('Claimed and found', { reviewers: ['Claim check 1', 'Reviewer'] }),
-      // A check that ended unsettled keeps whether its call used all its steps.
-      makeFinding({ title: 'Lowered', gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', refutation: { ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' } }),
+      // A check that ended unsettled keeps whether its call used all its steps. Each kind of step that reported it is named once, in pipeline order.
+      makeFinding({
+        title: 'Lowered', toolSource: 'clippy',
+        reviewers: [SCOPE_READER_NAME, 'clippy', 'Sweep 2', 'Consumer check: Api', 'Reference check: read', 'Pattern check: helper', 'Sibling code: Codec::decode', 'Sibling field: len vs cap', 'Second read 1', 'Reviewer', 'reviewer'],
+        gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'unconfirmed', refutation: { ...refutation, outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' },
+      }),
       // No finder filed it as a blocker, and the check confirmed the defect and the consequence the judge named.
       blocker('Consequence', {
         gradePath: [step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker', doubts: [doubt('defect'), { ...doubt('grade'), consequence: true }], refutation,
@@ -507,30 +511,33 @@ describe('scoreRun', () => {
     expect(score.findings.map(f => f.route)).toEqual([
       {
         finderGrade: 'blocker', cell: { row: 'wrong', column: 'normal' }, gradeIfConfirmed: 'blocker', judgeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed',
+        doubts: { defect: 2, grade: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, checkStatus: 'confirmed', raisedBy: ['finder'],
       },
       {
         finderGrade: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' }, refutation: { outcome: 'confirmed' },
-        gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
+        gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }, { from: 'warning', to: 'blocker', by: 'refutation' }], raisedBy: ['finder'],
       },
       {
         finderGrade: 'note', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], doubts: { defect: 0, grade: 1 },
-        refutation: { outcome: 'confirmed', defect: 'confirmed', relatedLines: 2, prLines: 0 },
+        refutation: { outcome: 'confirmed', defect: 'confirmed', relatedLines: 2, prLines: 0 }, raisedBy: ['finder'],
       },
-      { finderGrade: 'blocker', byReader: true },
-      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true },
-      { finderGrade: 'blocker', byClaimCheck: true },
-      { finderGrade: 'blocker' },
-      { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' }, checkStatus: 'unconfirmed' },
+      { finderGrade: 'blocker', byReader: true, raisedBy: ['reader'] },
+      { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true, raisedBy: ['finder'] },
+      { finderGrade: 'blocker', byClaimCheck: true, raisedBy: ['claim'] },
+      { finderGrade: 'blocker', raisedBy: ['finder', 'claim'] },
+      {
+        finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], refutation: { outcome: 'unsettled', defect: 'unsettled', stepsUsedUp: 'yes' }, checkStatus: 'unconfirmed',
+        raisedBy: ['finder', 'second_read', 'comparison', 'pattern', 'related', 'sweep', 'tool', 'scope'],
+      },
       {
         finderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' },
+        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'],
       },
       {
         finderGrade: 'blocker', lowestFinderGrade: 'warning', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
-        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' },
+        doubts: { defect: 1, grade: 1, consequence: 1 }, refutation: { outcome: 'confirmed', defect: 'confirmed' }, raisedBy: ['finder'],
       },
-      { finderGrade: 'blocker', byFixCheck: true },
+      { finderGrade: 'blocker', byFixCheck: true, raisedBy: ['fix'] },
     ]);
     expect(await scoreRun(benchCase, makeReview('READY', []), stub({}))).not.toHaveProperty('verdictReason');
 
@@ -549,12 +556,19 @@ describe('scoreRun', () => {
       '| base: other | 0 | 0 | 0 | 1 | 1 |',
     ]));
     expect(formatBenchSummary(routed)).toContain(`\n\n${formatBlockerRoutes(routed.variants)}\n`);
+    // The unexpected warning counts in every run, as in the variant's figure of unexpected warnings.
+    const sources = (row: string) => ['| Raised an unexpected warning | Warnings |', '| --- | --- |', row].join('\n');
+    expect(routed.variants[0].summary.unexpectedWarnings).toBe(2);
+    expect(formatWarningSources(routed.variants)).toBe(sources('| base: finder, second read, sibling comparison, pattern check, related repo check, sweep, tool result, scope reader | 2 |'));
+    expect(formatBenchSummary(routed)).toContain(`\n\n${formatWarningSources(routed.variants)}\n`);
+    expect(formatWarningSources(report([{ ...score, findings: score.findings.slice(0, 7) }]).variants)).toBe('');
     expect(formatBlockerRoutes(report([{ ...score, findings: score.findings.slice(7, 8) }]).variants)).toBe('');
 
     // A report of a ref that stored no route scores the same, and the route of its blockers is not known.
     const older: BenchReport = JSON.parse(JSON.stringify(routed, (key, value: unknown) => (key === 'route' || key === 'verdictReason' ? undefined : value)));
     expect(older.variants[0].summary).toEqual(routed.variants[0].summary);
     expect(formatBlockerRoutes(older.variants)).toBe(table(['| base: unknown | 1 | 1 | 1 | 7 | 10 |']));
+    expect(formatWarningSources(older.variants)).toBe(sources('| base: unknown | 2 |'));
   });
 
   it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
@@ -1013,7 +1027,7 @@ describe('runBench and buildReport', () => {
 
     const [{ results: [failed] }] = await runBench([benchCase], { ...options, matcher: broken });
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
-    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker' } }]);
+    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.', route: { finderGrade: 'blocker', raisedBy: ['finder'] } }]);
     expect(review).toHaveBeenCalledTimes(2);
   });
 
@@ -1521,7 +1535,7 @@ describe('mergeReports and gateReports', () => {
     expect({ rescored, left }).toEqual({ rescored: ['demo-2'], left: [] });
     const [kept, changed] = scored.variants[0].cases;
     expect(kept).toBe(stored.variants[0].cases[0]);
-    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'warning' } }]);
+    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', route: { finderGrade: 'warning', raisedBy: ['finder'] } }]);
     expect(stored.variants[0].cases[1].runs[0]).toMatchObject({ mustCatchRecall: 0.5, unexpectedWarnings: 1, extraFindings: 1 });
     expect(changed).toMatchObject({ id: 'demo-2', set: 'holdout', keyVersion: 3 });
     expect(changed.items.map(item => [item.id, item.caught, item.runs])).toEqual([['K1', 1, 1], ['K2', 0, 1], ['K3', 1, 1], ['N1', 0, 1]]);

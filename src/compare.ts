@@ -157,10 +157,23 @@ interface Question {
   message: (tools: boolean) => string;
 }
 
+const SIBLING_FIELD_NAME = 'Sibling field';
+const SIBLING_CODE_NAME = 'Sibling code';
+const PATTERN_CHECK_NAME = 'Pattern check';
+
+/** Whether `reviewer` names a sibling comparison. */
+export const isComparison = (reviewer: string): boolean => [SIBLING_FIELD_NAME, SIBLING_CODE_NAME].some(name => reviewer.startsWith(`${name}: `));
+
+/** Whether `reviewer` names a related repo check. */
+export const isRelatedCheck = (reviewer: string): boolean => Object.values(RELATED_KINDS).some(({ label }) => reviewer.startsWith(`${label}: `));
+
+/** Whether `reviewer` names a pattern check. */
+export const isPatternCheck = (reviewer: string): boolean => reviewer.startsWith(`${PATTERN_CHECK_NAME}: `);
+
 function questionsOf(siblings: SiblingQuestions): Question[] {
   const labels = [
-    ...siblings.fields.map(q => `Sibling field: ${q.field} vs ${q.sibling}`),
-    ...siblings.implementations.map(q => `Sibling code: ${q.trait ? `${q.trait}::` : ''}${q.name}`),
+    ...siblings.fields.map(q => `${SIBLING_FIELD_NAME}: ${q.field} vs ${q.sibling}`),
+    ...siblings.implementations.map(q => `${SIBLING_CODE_NAME}: ${q.trait ? `${q.trait}::` : ''}${q.name}`),
   ];
   const names = uniqueNames(labels);
   return [
@@ -433,7 +446,7 @@ export async function runPatternChecks(
   // A file's path comes from the PR, so its name is used only when it is plain.
   const names = uniqueNames(pieces.map(p => {
     const base = p.name.slice(p.name.lastIndexOf('/') + 1);
-    return `Pattern check: ${p.kind !== 'file' ? p.name : PLAIN_FILE_NAME.test(base) ? base : 'new file'}`;
+    return `${PATTERN_CHECK_NAME}: ${p.kind !== 'file' ? p.name : PLAIN_FILE_NAME.test(base) ? base : 'new file'}`;
   }));
   const all = pieces.map((piece, i): Question => ({ kind: 'pattern', reviewer: names[i], at: [`${piece.file}:${piece.start}`], message: () => patternMessage(piece, instructionFiles) }));
   return ask(clientFor, all.slice(0, MAX_PATTERN_QUESTIONS), all.slice(MAX_PATTERN_QUESTIONS), options, {
