@@ -45,9 +45,12 @@ describe('extractTarGz', () => {
       // A GNU header keeps times where POSIX keeps a prefix, so those bytes are no part of its path.
       { name: 'package/gnu.js', data: 'g', gnu: true, prefix: 'elsewhere' },
       { name: 'index.js', data: 'p', prefix: 'package/lib' },
+      // npm archives such as those of `@types` keep times after the prefix's NUL, which both read up to that NUL.
+      { name: 'package/types.d.ts', data: 't', prefix: `${'\0'.repeat(131)}14566415320\x0014566415320` },
+      { name: 'package/c.js\0\0junk', data: 'c' },
     ]), out);
     expect(readFileSync(join(out, 'index.js'), 'utf8')).toBe(code);
-    expect(readdirSync(out).sort()).toEqual(['b.js', 'gnu.js', 'index.js', 'lib']);
+    expect(readdirSync(out).sort()).toEqual(['b.js', 'c.js', 'gnu.js', 'index.js', 'lib', 'types.d.ts']);
     expect(readFileSync(join(out, 'lib', 'index.js'), 'utf8')).toBe('p');
   });
 
@@ -87,7 +90,10 @@ describe('extractTarGz', () => {
     ['a file at the path of a folder', [{ name: 'package/a/', type: '5' }, file('package/a')], 'holds "a" twice'],
     ['a file inside a file', [file('package/a'), file('package/a/b')], 'holds "a" as a file and as a folder'],
     ['one folder listed twice', [{ name: 'package/a/', type: '5' }, { name: 'package/a/', type: '5' }], 'holds "a" twice'],
-    ['a name with bytes after its end', [file('package/a\0b')], 'a path field with bytes after its end'],
+    // node-tar keeps the bytes after a NUL that follow a line break, and the tar crate drops them.
+    ['a name with a line break after its end', [file('package/a\0b\nc')], 'a path field with bytes after its end'],
+    ['a prefix with a line break after its end', [{ name: 'a', data: 'x', prefix: 'package\0\u2028b' }], 'a path field with bytes after its end'],
+    ['a long name with bytes after its end', [header('L', 'package/a\0b'), file('package/b')], 'a path field with bytes after its end'],
     ['a long name that is not UTF-8', [header('L', Buffer.from([...Buffer.from('package/a'), 0xff, 0])), file('package/b')], 'a path that is not UTF-8'],
     ['a pax header that is not UTF-8', [header('x', record('path', Buffer.from([...Buffer.from('package/a'), 0xff]))), file('package/b')], 'a pax header that is not UTF-8'],
     ['a pax value with a newline', [header('x', record('path', 'package/a\nb')), file('package/b')], 'whose "path" holds a newline'],

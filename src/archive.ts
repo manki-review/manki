@@ -44,14 +44,17 @@ function field(header: Buffer, start: number, length: number): string {
 }
 
 /**
- * Reads a path field of a tar header or a long-name header's data. Refuses bytes after its NUL, which node-tar keeps
- * past a newline and Cargo drops, and bytes that are no UTF-8, which Cargo writes as they are and npm replaces.
+ * Reads a path field of a tar header, or a long-name header's data with `longName`, up to its first NUL. Refuses bytes
+ * that are no UTF-8, which Cargo writes as they are and npm replaces. In a header field, both drop the bytes after
+ * the NUL, such as the times many npm archives keep in the prefix field, but node-tar keeps those past a line break.
+ * In a long name, Cargo keeps the bytes after the first NUL, so any of them but a NUL is refused.
  */
-function pathField(data: Buffer, start: number, length: number): string {
+function pathField(data: Buffer, start: number, length: number, longName = false): string {
   const raw = data.subarray(start, start + length);
   const end = raw.indexOf(0);
   const text = raw.subarray(0, end < 0 ? raw.length : end);
-  if (end >= 0 && raw.subarray(end).some(b => b !== 0)) throw new Error('the archive has a path field with bytes after its end');
+  const rest = raw.subarray(end < 0 ? raw.length : end);
+  if (longName ? rest.some(b => b !== 0) : /[\n\r\u2028\u2029]/.test(rest.toString('utf8'))) throw new Error('the archive has a path field with bytes after its end');
   if (!isUtf8(text)) throw new Error('the archive has a path that is not UTF-8');
   return text.toString('utf8');
 }
@@ -224,7 +227,7 @@ export function extractTarGz(archive: Buffer, dest: string, {
     const data = tar.subarray(dataStart, dataStart + size);
     at = dataStart + Math.ceil(size / BLOCK) * BLOCK;
     if (type === 'L') {
-      longName = pathField(data, 0, data.length);
+      longName = pathField(data, 0, data.length, true);
       continue;
     }
     if (type === 'x') {
