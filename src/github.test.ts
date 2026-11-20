@@ -561,30 +561,41 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, toolSource: 'CodeQL' })).not.toContain(unchecked);
     expect(render({ ...baseFinding, reviewers: [] })).not.toContain(unchecked);
 
-    // A finding posted as pre-existing because the code before this PR fails the same way says so, with the lines the
-    // check read at the base, linked to the base commit.
+    // A finding two checks on different models found at the base says so under its title, with the lines they read
+    // there, linked to the base commit, and the branch the PR merges into.
     const same = { premise: BASE_QUESTION, outcome: 'disproved' as const, reason: 'The queue had no cap before this PR.', proof: ['src/main.ts:40'], commit: 'base' };
     const baseLink = links.linkAt!('base')('src/main.ts', 40);
+    const onMain = (finding: Finding, extra: Partial<typeof links> = {}): string => formatFindingComment(finding, { ...links, baseBranch: 'main', ...extra });
     const confirmedBefore: Finding = {
       ...baseFinding, severity: 'warning', tags: ['pre-existing'], evidence: { checks: [], proof: ['src/main.ts:42'] },
       refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'first-model', base: same },
       pairRefutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'It fills.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc', model: 'pair-model', base: same },
     };
-    const sameBefore = `**Same before this PR**\nManki read the code before this PR and found it fails the same way, so this PR did not cause it. The queue had no cap before this PR. See [\`src/main.ts:40\`](${baseLink}).`;
+    const broken = `**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}), so it doesn't block this PR.`;
+    const older = `**Possibly older than this PR.** One check found the same problem on \`main\` before this PR, at [\`src/main.ts:40\`](${baseLink}). If that's right, a maintainer can dismiss this thread.`;
     expect(baseLink).toContain('/blob/base/');
-    expect(render(confirmedBefore)).toContain(sameBefore);
-    expect(render(confirmedBefore)).toContain('double-checked, same before this PR</summary>');
-    // One refuter's answer says so too, except on a security finding.
-    expect(render({ ...confirmedBefore, pairRefutation: undefined })).toContain(sameBefore);
-    expect(render({ ...confirmedBefore, pairRefutation: undefined, tags: ['pre-existing', 'security'] })).not.toContain('Same before this PR');
-    // Without a way to link the base commit, the lines show unlinked rather than as lines of the head.
-    expect(formatFindingComment(confirmedBefore, { ...links, linkAt: undefined })).toContain('so this PR did not cause it. The queue had no cap before this PR. See `src/main.ts:40`.');
-    // Without the pre-existing mark, with an answer left open, with a second check that did not find it at the base, or
-    // with lines the code never found at the base, nothing says so.
-    expect(render({ ...confirmedBefore, tags: undefined })).not.toContain('Same before this PR');
-    expect(render({ ...confirmedBefore, refutation: { ...confirmedBefore.refutation!, base: { ...same, outcome: 'unsettled' } } })).not.toContain('Same before this PR');
-    expect(render({ ...confirmedBefore, pairRefutation: { ...confirmedBefore.pairRefutation!, base: { ...same, outcome: 'confirmed' } } })).not.toContain('Same before this PR');
-    expect(render({ ...confirmedBefore, refutation: { ...confirmedBefore.refutation!, base: { ...same, commit: undefined } } })).not.toContain('Same before this PR');
+    expect(onMain(confirmedBefore)).toContain(`**${baseFinding.title}**\n\n${broken}\n\n`);
+    expect(onMain(confirmedBefore)).toContain('double-checked, same before this PR</summary>');
+    expect(onMain(confirmedBefore)).not.toContain('Manki read the code before this PR');
+    expect(parseFindingFromComment(onMain(confirmedBefore)).description).toBe(baseFinding.description);
+    // One check, two on one model, or a second check that failed, leaves the blocker as it is with a note that it may be
+    // older, on a security finding too.
+    const blocking: Finding = { ...confirmedBefore, severity: 'blocker', tags: undefined };
+    for (const one of [{ ...blocking, pairRefutation: undefined }, { ...blocking, pairRefutation: { ...blocking.pairRefutation!, model: 'first-model' } }, { ...blocking, tags: ['security'], pairRefutation: undefined }]) {
+      expect(onMain(one)).toContain(`**${baseFinding.title}**\n\n${older}\n\n`);
+      expect(onMain(one)).not.toContain('Already broken');
+    }
+    // Without a way to link the base commit, the lines show unlinked rather than as lines of the head, and without the
+    // branch name the note names the base branch.
+    expect(onMain(confirmedBefore, { linkAt: undefined })).toContain('on `main` at `src/main.ts:40`, so it');
+    expect(render(confirmedBefore)).toContain('on the base branch at');
+    // With an answer left open, a second check that found the failure the PR's own, or lines the code never found at the
+    // base, no note says so.
+    for (const none of [
+      { ...blocking, refutation: { ...blocking.refutation!, base: { ...same, outcome: 'unsettled' as const } }, pairRefutation: undefined },
+      { ...blocking, pairRefutation: { ...blocking.pairRefutation!, base: { ...same, outcome: 'confirmed' as const } } },
+      { ...blocking, refutation: { ...blocking.refutation!, base: { ...same, commit: undefined } }, pairRefutation: undefined },
+    ]) expect(onMain(none)).not.toMatch(/Possibly older|Already broken/);
 
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
     const disprovedFinding: Finding = {

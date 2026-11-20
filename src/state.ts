@@ -9,7 +9,7 @@ import { ISSUE_BOX_LABEL, withMessageBoxes } from './issue-box';
 import { MessageBox, SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, isGuardedWarningThread, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
+import { FixClaim, fixClaimOf, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, RecordedGrade, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { FIXED_MARKER_OPENER, fixedMarker, formatApprovalRecord, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, FindingSeverity, gradedAbove, PRE_EXISTING_TAG, ReviewConfig, RoundContext, SecurityOverride, threadBlocks, threadWarns } from './types';
@@ -85,8 +85,6 @@ interface ReviewThread {
    */
   holdLifted?: 'answer' | 'fixed';
   isSecurity?: boolean;
-  /** Whether the thread posts a warning `GUARDED_TAG` marks, cleared like a security warning only by someone other than the PR author. */
-  guardedWarning?: true;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   /** The fix in another pull request that a reply in the thread named, and whether Manki checked it, by `fixClaimOf`. */
@@ -216,7 +214,6 @@ async function fetchBotReviewThreads(
       const body = thread.comments.nodes[0]?.body ?? '';
       const severity = threadSeverity(body);
       const isSecurity = isSecurityThread(body);
-      const guardedWarning = isGuardedWarningThread(body);
       const recorded = grades.get(thread.id)?.grade;
       const peak = grades.get(thread.id)?.peak;
       // An unreadable record could hide a raise, so the thread blocks rather than let auto-approve pass it.
@@ -242,9 +239,9 @@ async function fetchBotReviewThreads(
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
       const resolvedByLogin = thread.resolvedBy?.login;
       const threadUrl = thread.comments.nodes[0]?.url;
-      const recordedOverride = isSecurity || guardedWarning || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
+      const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       // A thread at the comment limit may hide a later answer, so it names no claim.
-      const fixClaim = (isSecurity || guardedWarning || isBlocking) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
+      const fixClaim = (isSecurity || isBlocking) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT ? fixClaimOf(bot, thread.comments.nodes, `${owner}/${repo}`, prNumber) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
         const sha = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', FIXED_MARKER_OPENER, BOT_MARKER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
         return sha ? [sha] : [];
@@ -261,7 +258,6 @@ async function fetchBotReviewThreads(
         ...(isWarning && { isWarning: true as const }),
         ...(holdLifted && { holdLifted }),
         ...(isSecurity && { isSecurity: true }),
-        ...(guardedWarning && { guardedWarning: true as const }),
         ...(recordedOverride && { recordedOverride }),
         ...(fixClaim && { fixClaim }),
         findingTitle,
@@ -426,8 +422,7 @@ async function heldWarnings(
     t.isResolved && !!t.resolvedByLogin && !isBotLogin(bot, t.resolvedByLogin) && !!await authorClearRole(octokit, owner, repo, t.resolvedByLogin, clearRole);
   const held: ReviewThread[] = [];
   for (const t of threads.filter(t => t.isWarning)) {
-    // Only someone other than the PR author clears a security warning or a guarded one, so neither an answer nor a tick does.
-    const cleared = t.isSecurity || t.guardedWarning ? !!settledBy(t, bot, prAuthorLogin, prAuthorRole) : !!t.holdLifted || await resolvedWithRole(t);
+    const cleared = t.isSecurity ? !!settledBy(t, bot, prAuthorLogin, prAuthorRole) : !!t.holdLifted || await resolvedWithRole(t);
     if (!cleared) held.push(t);
   }
   return held;
@@ -446,7 +441,7 @@ function warningClearedBy(clearRole: AuthorClearRole | undefined): string {
 async function warningHoldNote(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, thread: ReviewThread, clearRole: AuthorClearRole | undefined,
 ): Promise<string | undefined> {
-  if (thread.isSecurity || thread.guardedWarning || (await heldWarnings(octokit, owner, repo, [thread], bot, undefined, undefined, clearRole)).length === 0) return undefined;
+  if (thread.isSecurity || (await heldWarnings(octokit, owner, repo, [thread], bot, undefined, undefined, clearRole)).length === 0) return undefined;
   return `This warning holds the approval until it is ${warningClearedBy(clearRole)}.`;
 }
 

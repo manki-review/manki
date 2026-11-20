@@ -10,7 +10,7 @@ import { AnthropicClient } from './providers/anthropic';
 import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
-import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, oneCheckOnBase, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { baseProofFixture, git, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 import { BASE_READS_FILE, fetchWorkspace } from './workspace';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -1214,9 +1214,9 @@ describe('refuteBlockers', () => {
     expect(message('Pending blocker')).toContain('- **Other files this PR changes**');
     expect(message('Plain warning')).not.toContain('Other files this PR changes');
     // The answer never moves the outcome or the grade here. A disproof counts only when every line it cites is in its
-    // file at the base, and one of them is the line the finding flags, at its place in the base. With a second refuter,
-    // both must give one, for a security finding as for any other.
-    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.base?.outcome, !!sameOnBase(f, true)])).toEqual([
+    // file at the base, and one of them is the line the finding flags, at its place in the base. Both refuters, on
+    // different models, must give one, for a security finding as for any other.
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.base?.outcome, !!sameOnBase(f)])).toEqual([
       ['Same before', 'blocker', 'confirmed', 'disproved', true],
       ['No answer about the base', 'blocker', 'confirmed', 'unsettled', false],
       ['Same before without proof', 'blocker', 'confirmed', 'unsettled', false],
@@ -1232,8 +1232,15 @@ describe('refuteBlockers', () => {
     expect(result[0].refutation?.base).toEqual({ premise: BASE_QUESTION, outcome: 'disproved', reason: same.reason, proof: ['src/math.ts:2'], commit: baseCommit });
     // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.
     expect(result[4].refutation?.base?.proof).toEqual(['src/math.ts:2']);
-    // Without a second refuter, the first refuter's answer is enough, except on a security finding.
-    expect(result.map(f => !!sameOnBase({ ...f, pairRefutation: undefined }, false))).toEqual([true, false, false, false, false, false, false, false, true, false, false]);
+    // One refuter's answer makes nothing pre-existing. It only notes that the finding may be older, a security one too.
+    expect(result.map(f => [!!sameOnBase({ ...f, pairRefutation: undefined }), !!oneCheckOnBase({ ...f, pairRefutation: undefined })])).toEqual([
+      [false, true], [false, false], [false, false], [false, false], [false, false], [false, false], [false, false], [false, false], [false, true], [false, true], [false, false],
+    ]);
+    // Two answers from one model, or from a model nobody named, count as one.
+    for (const model of ['first-model', undefined]) {
+      const one = { ...result[0], pairRefutation: { ...result[0].pairRefutation!, model } };
+      expect([model, !!sameOnBase(one), !!oneCheckOnBase(one)]).toEqual([model, false, true]);
+    }
 
     // The diff maps the flagged line to the base. A line the PR changed or added never counts, nor does the same text
     // at another line of the base, nor an unchanged line the finding's evidence cites.
@@ -1264,21 +1271,35 @@ describe('refuteBlockers', () => {
     const [hidden] = await refuteBlockers(fakeClient({ 'Unchanged line at its base line': { ...confirmed, proof: ['src/lines.ts:5'], base: { ...same, proof: ['src/lines.ts:4'] } } }),
       [finding('Unchanged line at its base line', { file: 'src/lines.ts', line: 5, evidence: { checks: [], proof: ['src/lines.ts:5'] } })], { workspace: moved.root, diff: moved.diff, excludedPaths: ['src/lines.ts'] });
     expect(hidden.refutation?.base?.outcome).toBe('unsettled');
+    // A changed file whose patch GitHub left out is not unchanged, so its flagged line never maps to the base.
+    const omitted: ParsedDiff[] = [
+      { ...moved.diff, files: [], binarySkipped: [{ path: 'src/lines.ts', header: '' }] },
+      { ...moved.diff, files: [{ path: 'src/lines.ts', changeType: 'modified', hunks: [] }] },
+    ];
+    for (const without of omitted) {
+      const [unmapped] = await refuteBlockers(fakeClient({ 'Unchanged line at its base line': { ...confirmed, proof: ['src/lines.ts:5'], base: { ...same, proof: ['src/lines.ts:4'] } } }),
+        [finding('Unchanged line at its base line', { file: 'src/lines.ts', line: 5, evidence: { checks: [], proof: ['src/lines.ts:5'] } })], { workspace: moved.root, diff: without });
+      expect(unmapped.refutation?.base?.outcome).toBe('unsettled');
+    }
     rmSync(moved.root, { recursive: true, force: true });
     // With one, a second call that failed, or a second check that finds the failure the PR's own, leaves it open or cites
     // no line found at the base, keeps the finding as it is.
     const [lowered] = result;
     const pairBase = lowered.pairRefutation!.base!;
-    expect(sameOnBase({ ...lowered, pairRefutation: undefined }, true)).toBeUndefined();
+    expect(sameOnBase({ ...lowered, pairRefutation: undefined })).toBeUndefined();
     for (const outcome of ['confirmed', 'unsettled'] as const) {
-      expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...pairBase, outcome } } }, true)).toBeUndefined();
+      expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...pairBase, outcome } } })).toBeUndefined();
     }
-    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...pairBase, proof: undefined } } }, true)).toBeUndefined();
-    // An answer stored before the code checked its lines at the base names no commit, so it lowers nothing.
-    expect(sameOnBase({ ...lowered, refutation: { ...lowered.refutation!, base: { ...lowered.refutation!.base!, commit: undefined } } }, false)).toBeUndefined();
+    expect(sameOnBase({ ...lowered, pairRefutation: { ...lowered.pairRefutation!, base: { ...pairBase, proof: undefined } } })).toBeUndefined();
+    // An answer stored before the code checked its lines at the base names no commit, so it shows nothing.
+    expect(oneCheckOnBase({ ...lowered, pairRefutation: undefined, refutation: { ...lowered.refutation!, base: { ...lowered.refutation!.base!, commit: undefined } } })).toBeUndefined();
     const failed = fakeClient({ 'Same before': new Error('timed out') }, 'pair-model');
     const [alone] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, pair: failed });
-    expect([alone.refutation?.base?.outcome, alone.pairRefutation, sameOnBase(alone, true)]).toEqual(['disproved', undefined, undefined]);
+    expect([alone.refutation?.base?.outcome, alone.pairRefutation, sameOnBase(alone), !!oneCheckOnBase(alone)]).toEqual(['disproved', undefined, undefined, true]);
+    // A second answer that the failure is the PR's own stands without a line of the base, and leaves no note either.
+    const own = fakeClient({ 'Same before': { ...confirmed, base: { outcome: 'confirmed', reason: 'This PR adds the caller.', proof: [] } } }, 'pair-model');
+    const [disputed] = await refuteBlockers(client, [finding('Same before')], { workspace: root, diff, pair: own });
+    expect([disputed.pairRefutation?.base?.outcome, sameOnBase(disputed), oneCheckOnBase(disputed)]).toEqual(['confirmed', undefined, undefined]);
 
     // A base that `exclude_paths` keeps from the tools, or a workspace without a base, leaves every answer open.
     writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['src/math.ts'] }));
@@ -1780,7 +1801,7 @@ describe('live base replay', () => {
         console.log(`[live-refute] ${f.title}: base=${f.refutation?.base?.outcome} proof=${JSON.stringify(f.refutation?.base?.proof ?? [])} reason=${JSON.stringify(f.refutation?.base?.reason ?? '')}`);
       }
       // Without a second refuter, only a non-security finding the base already had is pre-existing.
-      expect(checked.map(f => [f.title, sameOnBase(f, false) ? 'pre-existing' : 'blocker'])).toEqual(fixture.findings.map(f => [f.title, f.expected]));
+      expect(checked.map(f => [f.title, oneCheckOnBase(f) ? 'pre-existing' : 'blocker'])).toEqual(fixture.findings.map(f => [f.title, f.expected]));
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

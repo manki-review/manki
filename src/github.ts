@@ -8,7 +8,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { isAllowedAccount } from './auth';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig, readClosedPaths } from './config';
-import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, lowersOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, ApprovalRecord, SideCheckKind, agreedOutcome, oneCheckOnBase, sameOnBase, confirmsAll, confirmsDefect, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RulesMode, RoundRelatedRepo, PostedPlace, RoundContext, RoundScope, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, SCOPE_READER_NAME, VerdictReport, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { holdsLines } from './code-window';
 import { firstCommentableLine, isLineInDiff, listedFilesDiff, findClosedPattern } from './diff';
 import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue-box';
@@ -1732,9 +1732,33 @@ function trackedNote(finding: Finding): string | undefined {
   return finding.trackedIn && `Tracked in #${finding.trackedIn.number}.`;
 }
 
-/** Returns the `trustNote`, the `trackedNote` and what goes wrong, as listed under a finding in the review body. */
-function formatFindingDescription(finding: Finding): string[] {
-  const lines = [trustNote(finding), trackedNote(finding)].filter((line): line is string => !!line);
+/** Matches the line `baseNote` writes. */
+const BASE_NOTE_RE = /^\*\*(?:Possibly older than this PR|Already broken before this PR)\.\*\* [^\n]*/;
+
+/**
+ * Returns the line that says the checks found the failure of `finding` at the PR's base, with the base lines they cited,
+ * linked at the base commit when `links` can. Two checks on different models made a pre-existing finding of it. One
+ * check changes no grade, so the line only says it may be older.
+ */
+function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
+  const both = isPreExisting(finding) ? sameOnBase(finding) : undefined;
+  const base = both ?? (isPreExisting(finding) ? undefined : oneCheckOnBase(finding));
+  if (!base?.proof?.length) return undefined;
+  const linkTo = base.commit && links?.linkAt ? links.linkAt(base.commit) : () => undefined;
+  const lines = base.proof.flatMap(location => {
+    const [, file, range] = location.match(/^(.+):(\d+(?:-\d+)?)$/) ?? [];
+    const at = file ? lineRange(file, range) : undefined;
+    return at ? [linkedRange(at, linkTo)] : [];
+  }).join(', ');
+  const branch = links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch';
+  return both
+    ? `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}, so it doesn't block this PR.`
+    : `**Possibly older than this PR.** One check found the same problem on ${branch} before this PR, at ${lines}. If that's right, a maintainer can dismiss this thread.`;
+}
+
+/** Returns the `trustNote`, the `trackedNote`, the `baseNote` and what goes wrong, as listed under a finding in the review body. */
+function formatFindingDescription(finding: Finding, links?: CodeLinks): string[] {
+  const lines = [trustNote(finding), trackedNote(finding), baseNote(finding, links)].filter((line): line is string => !!line);
   const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
   return lines;
@@ -1781,7 +1805,7 @@ function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = fal
   const lines = [formatFindingHeader(finding, noThread), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(linked(inlineCode(findingLocation(finding)), links.linkTo(finding.file, finding.line)));
   const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links, 'flagged'));
-  const block = [...lines, ...formatFindingDescription(finding), ...(fold ? [fold] : [])].join('\n');
+  const block = [...lines, ...formatFindingDescription(finding, links), ...(fold ? [fold] : [])].join('\n');
   return offerIssue ? `${block}\n\n${issueBoxFor(finding)}` : block;
 }
 
@@ -1828,7 +1852,7 @@ function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = fals
   const checks = checksSection(finding, links, 'flagged');
   const fix = bodyFixPart(finding, files);
   const parts = [...(fix ? [labelledPart(fix)] : []), ...(checks.status ? [`**How this was checked:** ${checks.status}`] : []), ...checks.parts.map(labelledPart)];
-  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding), ...preview, ...parts].join('\n\n')}\n\n</details>`;
+  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding, links), ...preview, ...parts].join('\n\n')}\n\n</details>`;
   // The box goes right under the fold, so it shows without opening it.
   return offerIssue ? `${fold}\n\n${issueBoxFor(finding)}` : fold;
 }
@@ -2164,7 +2188,8 @@ export async function postReview(
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const gone = new Set<string>();
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])].filter(file => !isClosed(file)), gone);
-  const links: CodeLinks = { linkTo, linkAt, files, changed, related: relatedCommits(result.relatedRepos), rules };
+  const baseBranch: string | undefined = github.context.payload.pull_request?.base?.ref;
+  const links: CodeLinks = { linkTo, linkAt, ...(baseBranch && { baseBranch }), files, changed, related: relatedCommits(result.relatedRepos), rules };
 
   /** Records that the open thread `threadId` carries `f`, which counts and lists that thread as still open. */
   const carry = (f: Finding, threadId: string): void => {
@@ -3270,8 +3295,6 @@ const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }
 const DISPROVED_RAISE_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
 const OVERRULED_DISPROOF_TEXT = 'The finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself.';
 const PAIR_REFUTATION_LABEL = 'Second check, on another model';
-const SAME_ON_BASE_LABEL = 'Same before this PR';
-const SAME_ON_BASE_TEXT = 'Manki read the code before this PR and found it fails the same way, so this PR did not cause it.';
 
 /** Opens the fold under a finding comment, so reading the comment back stops its description there. */
 const CHECKS_MARKER = '<!-- manki-checks -->';
@@ -3430,7 +3453,7 @@ function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits
  * holds the related repos whose lines a check may show. `linkAt` links lines of another commit of the repository,
  * such as the PR's base.
  */
-interface CodeLinks { linkTo: LineLink; linkAt?: (commit: string) => LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related: RelatedCommits; rules?: RulesMode }
+interface CodeLinks { linkTo: LineLink; linkAt?: (commit: string) => LineLink; baseBranch?: string; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related: RelatedCommits; rules?: RulesMode }
 
 /**
  * Returns `path` as the repository path it names. A file name with no directories gets those of the one known file
@@ -3642,12 +3665,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const { linkTo, files, related } = links;
   const known = knownFiles(finding, links);
   const checks = findingChecks(finding, known);
-  // A finding a second refuter checked shows the answer only when both found the failure at the base.
-  const lowered = isPreExisting(finding) || !!finding.gradePath?.some(step => step.by === 'pre_existing');
-  const base = lowered ? lowersOnBase(finding, !!finding.pairRefutation)?.base : undefined;
-  // The answer cites lines of the base, so they link to the base commit, never to the same numbers at the head.
-  const baseLinks: CodeLinks = { ...links, linkTo: base?.commit && links.linkAt ? links.linkAt(base.commit) : () => undefined };
-  const refutations = [...refutationParts(finding, links, known), ...(base ? [refutationPart(SAME_ON_BASE_LABEL, SAME_ON_BASE_TEXT, base, undefined, baseLinks, known)] : [])];
+  const refutations = refutationParts(finding, links, known);
   // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too. The
   // evidence of a blocker listed again is an earlier round's, and so is the commit its related lines were read at.
   const relatedLines = relatedLineLinks(finding.evidence?.relatedProof, related, finding.relisted);
@@ -3696,7 +3714,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
     reads: [places && `${places} ${places === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
     outcomes: [
       rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`,
-      base && 'same before this PR',
+      isPreExisting(finding) && sameOnBase(finding) && 'same before this PR',
     ].filter(o => typeof o === 'string'),
     ...status,
   };
@@ -3772,7 +3790,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' 
   const onLine = place === 'file' ? `${lineNote(finding, links.linkTo)}\n\n` : '';
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n${onLine}`;
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
-  for (const note of [trustNote(finding), trackedNote(finding)]) {
+  for (const note of [trustNote(finding), trackedNote(finding), baseNote(finding, links)]) {
     if (note) comment += `${note}\n\n`;
   }
   if (finding.origin === 'reviewed' && holdsApproval(finding)) comment += `${isSecurityFinding(finding.tags, finding.reviewers) ? MISSED_EARLIER_SECURITY_NOTE : MISSED_EARLIER_NOTE}\n\n`;
@@ -4340,5 +4358,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, TRACKED_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, REVIEW_STATE_VERDICTS, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

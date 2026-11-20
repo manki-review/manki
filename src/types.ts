@@ -230,11 +230,6 @@ export function canLeaveOut(f: Finding): boolean {
  * also marks a finding whose failure the checks found at the PR's base by `sameOnBase`, which never blocks.
  */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
-/**
- * Marks a warning only someone other than the PR author can clear, as a blocker or a security finding: a blocker one
- * refuter lowered because the code before this PR fails the same way.
- */
-export const GUARDED_TAG = 'guarded' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
 /** Marks a blocker posted as a warning because it claims a build, type or test failure that no CI result on the commit reports. */
@@ -1087,33 +1082,31 @@ export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts
   return check.defect === 'confirmed' && !check.premises?.some(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade');
 }
 
-/**
- * Returns the answer that shows the code at the PR's base fails the same way as `finding`: a disproof of
- * `BASE_QUESTION` whose lines the code found at the base `commit`. The PR author cannot plant text in the base, so the
- * first refuter's answer is enough, except on a security finding, whose input an attacker picks. With `paired`, both
- * refuters must give such an answer on two different known models, for a security finding as for any other. So a
- * second check that failed, found the failure the PR's own, left it open or ran on the first one's model keeps the
- * finding as it is, and without `paired` a security finding always does.
- */
-export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'tags' | 'reviewers'>, paired: boolean): PremiseCheck | undefined {
-  const same = (r: Refutation | undefined): r is Refutation & { base: PremiseCheck } => r?.base?.outcome === 'disproved' && !!r.base.proof?.length && !!r.base.commit;
-  const { refutation, pairRefutation } = finding;
-  if (!same(refutation)) return undefined;
-  if (paired) return same(pairRefutation) && !!refutation.model && !!pairRefutation.model && refutation.model !== pairRefutation.model ? refutation.base : undefined;
-  return isSecurityFinding(finding.tags, finding.reviewers) ? undefined : refutation.base;
+/** Whether `check` answers that the code at the PR's base fails the same way, with lines the code found at the base `commit`. */
+function failsOnBase(check: Refutation | undefined): check is Refutation & { base: PremiseCheck } {
+  return check?.base?.outcome === 'disproved' && !!check.base.proof?.length && !!check.base.commit;
 }
 
 /**
- * Returns the answer that the code before this PR fails the same way when it lowers `finding`, and whether the lowered
- * finding still holds the approval. In a `paired` round, both refuters' answers on two models make it pre-existing,
- * holding nothing. Otherwise one refuter's answer lowers a non-security finding to a warning that holds the approval,
- * unless a second answer finds the failure the PR's own.
+ * Returns the answer that shows the code at the PR's base fails the same way as `finding`, when both refuters, on
+ * different known models, give such an answer (`failsOnBase`). One model's answer, read from files the PR author
+ * controls, never lowers a blocker, so one refuter alone, one whose call failed, or two on one model keep the finding as
+ * it is.
  */
-export function lowersOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation' | 'tags' | 'reviewers'>, paired: boolean): { base: PremiseCheck; holds: boolean } | undefined {
-  const both = paired ? sameOnBase(finding, true) : undefined;
-  if (both) return { base: both, holds: false };
-  const alone = finding.pairRefutation?.base?.outcome === 'confirmed' ? undefined : sameOnBase(finding, false);
-  return alone && { base: alone, holds: true };
+export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
+  const { refutation, pairRefutation } = finding;
+  if (!refutation?.model || !pairRefutation?.model || refutation.model === pairRefutation.model) return undefined;
+  return failsOnBase(refutation) && failsOnBase(pairRefutation) ? refutation.base : undefined;
+}
+
+/**
+ * Returns the answer of one check that the code at the PR's base fails the same way as `finding`, when `sameOnBase`
+ * does not make it pre-existing and no second check found the failure the PR's own. It changes no grade. The finding
+ * only notes that it may be older than this PR.
+ */
+export function oneCheckOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
+  if (sameOnBase(finding) || finding.pairRefutation?.base?.outcome === 'confirmed') return undefined;
+  return [finding.refutation, finding.pairRefutation].find(failsOnBase)?.base;
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */

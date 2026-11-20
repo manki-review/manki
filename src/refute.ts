@@ -346,13 +346,14 @@ function parseBase(answer: unknown, cut: boolean, workspace: string, related?: R
 
 /**
  * Returns where the line `finding` flags sat at the PR's base, as git's path and line, when the PR left that line as it
- * was. A line the PR added or changed, a file the PR added, and a change the diff does not show have no such line.
+ * was. A line the PR added or changed, a file the PR added, and a change the diff does not show have no such line. A
+ * changed file whose patch GitHub left out, as `binarySkipped` or as a file listed without lines, is one of those.
  */
 function flaggedLineAtBase(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { file: string; line: number } | undefined {
-  if (!diff || excludedPaths.includes(finding.file)) return undefined;
+  if (!diff || excludedPaths.includes(finding.file) || diff.binarySkipped?.some(f => f.path === finding.file)) return undefined;
   const changed = diff.files.find(f => f.path === finding.file);
   if (!changed) return { file: finding.file, line: finding.line };
-  const line = changed.changeType === 'added' ? undefined : oldLineOf(changed, finding.line);
+  const line = changed.changeType === 'added' || changed.hunks.length === 0 ? undefined : oldLineOf(changed, finding.line);
   return line === undefined ? undefined : { file: changed.oldPath ?? changed.path, line };
 }
 
@@ -362,8 +363,8 @@ function flaggedLineAtBase(finding: Finding, diff: ParsedDiff | undefined, exclu
  * lowers a blocker, so it stands only when every line it cites is there and one of them is the line the finding flags,
  * which the PR left unchanged, at its place in the base with the same text. So a line the PR added or changed is never
  * lowered. Any doubt leaves it unsettled: a workspace without a base, a file that cannot be read there, a line it does
- * not hold, or no citation of the flagged line. Any other answer needs one line that is there, or a line of a related
- * repo, as a premise does.
+ * not hold, or no citation of the flagged line. An answer that the failure is the PR's own stands as given, since it
+ * keeps the blocker. An unsettled answer needs one line that is there, or a line of a related repo, as a premise does.
  */
 async function checkBase(check: Refutation, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): Promise<Refutation> {
   const { base } = check;
@@ -385,7 +386,8 @@ async function checkBase(check: Refutation, finding: Finding, workspace: string,
   const outcome = !commit ? 'unsettled'
     : base.outcome === 'disproved'
       ? found.length > 0 && found.length === cited.length && citesFlaggedLine() ? 'disproved' : 'unsettled'
-      : found.length + (base.relatedProof?.length ?? 0) === 0 ? 'unsettled' : base.outcome;
+      // An answer that the failure is the PR's own keeps the blocker, so it stands without a line of the base.
+      : base.outcome !== 'confirmed' && found.length + (base.relatedProof?.length ?? 0) === 0 ? 'unsettled' : base.outcome;
   const { proof: _proof, ...answer } = base;
   return { ...check, base: { ...answer, outcome, ...(found.length > 0 && { proof: found, commit }) } };
 }

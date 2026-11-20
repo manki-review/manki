@@ -1,13 +1,13 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient, NotStartedError } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, TRACKED_NOTE_RE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, BASE_NOTE_RE, TRACKED_NOTE_RE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, plainCitedFiles, titleToSlug } from './github';
 import { BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
-import { AuthorClearRole, AuthorReplyClass, GUARDED_TAG, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
+import { AuthorClearRole, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
 import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -94,11 +94,6 @@ function isStringArray(value: unknown): value is string[] {
 function isSecurityThread(body: string): boolean {
   const data = parseFindingData(body);
   return isSecurityFinding(data?.tags, data?.flaggedBy ?? []);
-}
-
-/** Whether the first comment of a Manki thread posts a warning that `GUARDED_TAG` marks. */
-function isGuardedWarningThread(body: string): boolean {
-  return !!parseFindingData(body)?.tags?.includes(GUARDED_TAG);
 }
 
 /** The severity in the marker of a Manki thread's first comment, or `unknown` for a thread from before the markers. */
@@ -238,12 +233,11 @@ function fixClaimOf(
 }
 
 /**
- * Whether only someone other than the PR author can clear the finding: a blocker, a security finding of any severity,
- * or a warning `GUARDED_TAG` marks. A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its
- * severity and partly-fixed grade.
+ * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
+ * A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its severity and partly-fixed grade.
  */
-function isGuarded(t: { isSecurity?: boolean; guardedWarning?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
-  return !!t.isSecurity || !!t.guardedWarning || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
+function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
+  return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
 }
 
 /**
@@ -264,7 +258,6 @@ function authorCannotClear(t: Parameters<typeof isGuarded>[0] & { gradeUnknown?:
 
 interface OverrideCandidate {
   isSecurity?: boolean;
-  guardedWarning?: boolean;
   isBlocking?: boolean;
   severity?: FindingSeverity | 'unknown';
   recordedGrade?: FindingSeverity;
@@ -476,8 +469,6 @@ interface PreviousFinding extends FindingMetadata {
   /** `author_association` of the latest non-bot replier. */
   authorReplyAssociation?: string;
   isSecurity?: boolean;
-  /** Whether the thread posts a warning `GUARDED_TAG` marks. */
-  guardedWarning?: boolean;
   /** On a guarded thread, whether the latest replier may agree it away: `mayClearSecurityThread` with write access. */
   authorReplyMayClear?: boolean;
   /** A guarded thread the PR author resolved, which Manki has not reopened before. */
@@ -751,7 +742,6 @@ async function fetchRecapState(
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
-      ...(t.guardedWarning && { guardedWarning: true }),
       ...(replierMayClear && { authorReplyMayClear: true }),
       ...(!settled && shouldReopen(t, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
@@ -1029,8 +1019,6 @@ interface ReviewThread extends FindingMetadata {
   resolvedByHuman: boolean;
   resolvedByLogin?: string;
   isSecurity: boolean;
-  /** Whether the thread posts a warning `GUARDED_TAG` marks, which only someone other than the PR author clears. */
-  guardedWarning?: boolean;
   reopenedByManki: boolean;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   fixClaim?: FixClaim;
@@ -1096,7 +1084,7 @@ function parseFindingFromComment(posted: string): FindingMetadata {
   const data = parseFindingData(body);
   // The other notes under the title are skipped in whatever order they come.
   const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE, MISSED_EARLIER_SECURITY_NOTE, ...OLD_MISSED_EARLIER_NOTES].find(n => descSlice.startsWith(n))
-    ?? descSlice.match(TRACKED_NOTE_RE)?.[0];
+    ?? descSlice.match(TRACKED_NOTE_RE)?.[0] ?? descSlice.match(BASE_NOTE_RE)?.[0];
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
   if (label) descSlice = descSlice.slice(label.length).trimStart();
@@ -1247,7 +1235,6 @@ async function fetchReviewThreads(
         resolvedByHuman: !!thread.resolvedBy?.login && !isBotLogin(bot, thread.resolvedBy.login),
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
-        ...(isBotThread && isGuardedWarningThread(body) && { guardedWarning: true }),
         reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
         ...(recordedOverride && { recordedOverride }),
         ...(fixClaim && { fixClaim }),
@@ -1557,4 +1544,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isGuardedWarningThread, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { BOT_PREFIX_PATTERN, withoutCode, blockersToRecheck, currentFindingLine, DuplicateMatch, FixClaim, fixClaimMarker, fixClaimOf, namedPullRequests, FOUND_AGAIN_MARKER, recordedThreadGrades, RecordedGrade, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, pushTouchesThread, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, latestPersonReply, resolveBacking, settledBy, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
