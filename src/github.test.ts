@@ -585,10 +585,13 @@ describe('formatFindingComment', () => {
       expect(onMain(one)).toContain(`**${baseFinding.title}**\n\n${older}\n\n`);
       expect(onMain(one)).not.toContain('Already broken');
     }
-    // A pre-existing security blocker on code the PR did not touch still blocks, so both checks only say it may be older.
+    // A pre-existing security blocker on code the PR did not touch still blocks. Both checks say it was already broken,
+    // and that a maintainer decides, never that it does not block, and the summary agrees.
     const stillBlocking = onMain({ ...confirmedBefore, severity: 'blocker', tags: ['pre-existing', 'security'] });
-    expect(stillBlocking).toContain(older);
-    expect(stillBlocking).not.toContain('Already broken');
+    expect(stillBlocking).toContain(`**${baseFinding.title}**\n\n**Already broken before this PR.** Two checks found the same problem on \`main\` at [\`src/main.ts:40\`](${baseLink}). It still blocks because it is a security finding, so a maintainer decides.\n\n`);
+    expect(stillBlocking).not.toMatch(/Possibly older|doesn't block/);
+    expect(stillBlocking).toContain('double-checked, same before this PR</summary>');
+    expect(parseFindingFromComment(stillBlocking).description).toBe(baseFinding.description);
     // Without a way to link the base commit, the lines show unlinked rather than as lines of the head, and without the
     // branch name the note names the base branch.
     expect(onMain(confirmedBefore, { linkAt: undefined })).toContain('on `main` at `src/main.ts:40`, so it');

@@ -1737,15 +1737,16 @@ const BASE_NOTE_RE = /^\*\*(?:Possibly older than this PR|Already broken before 
 
 /**
  * Returns the line that says the checks found the failure of `finding` at the PR's base, with the base lines they cited,
- * linked at the base commit when `links` can. It says the failure was already there only when two checks on different
- * models made a pre-existing finding of it that no longer blocks. A finding that still blocks, such as a security
- * blocker on code the PR did not touch, or one only one check found there, only says it may be older. A pre-existing
- * finding that stopped blocking for another reason needs neither.
+ * linked at the base commit when `links` can. Two checks on different models (`sameOnBase`) say the failure was already
+ * there: on a pre-existing finding that no longer blocks, and on a security finding that still blocks, which a
+ * maintainer decides. One check only says the finding may be older. A pre-existing finding that stopped blocking for
+ * another reason needs neither.
  */
 function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
   const stopped = isPreExisting(finding) && finding.severity !== 'blocker';
-  const both = stopped ? sameOnBase(finding) : undefined;
-  const base = stopped ? both : sameOnBase(finding) ?? oneCheckOnBase(finding);
+  const both = sameOnBase(finding);
+  const security = !stopped && !!both && isSecurityFinding(finding.tags, finding.reviewers);
+  const base = stopped || security ? both : oneCheckOnBase(finding);
   if (!base?.proof?.length) return undefined;
   const linkTo = base.commit && links?.linkAt ? links.linkAt(base.commit) : () => undefined;
   const lines = base.proof.flatMap(location => {
@@ -1754,7 +1755,8 @@ function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
     return at ? [linkedRange(at, linkTo)] : [];
   }).join(', ');
   const branch = links?.baseBranch ? inlineCode(links.baseBranch) : 'the base branch';
-  return both
+  if (security) return `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}. It still blocks because it is a security finding, so a maintainer decides.`;
+  return stopped
     ? `**Already broken before this PR.** Two checks found the same problem on ${branch} at ${lines}, so it doesn't block this PR.`
     : `**Possibly older than this PR.** One check found the same problem on ${branch} before this PR, at ${lines}. If that's right, a maintainer can dismiss this thread.`;
 }
@@ -3717,7 +3719,7 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
     reads: [places && `${places} ${places === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
     outcomes: [
       rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`,
-      isPreExisting(finding) && sameOnBase(finding) && 'same before this PR',
+      (isPreExisting(finding) || isSecurityFinding(finding.tags, finding.reviewers)) && sameOnBase(finding) && 'same before this PR',
     ].filter(o => typeof o === 'string'),
     ...status,
   };
