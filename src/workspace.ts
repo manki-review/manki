@@ -102,6 +102,8 @@ interface ClosedRecord {
   patterns: string[];
   /** Each path it deleted from the checkout or dropped from the index, relative to the checkout. */
   removed: string[];
+  /** The removed paths that git held as submodules, whose files no listing of the checkout shows. */
+  submodules: string[];
 }
 
 /**
@@ -135,6 +137,8 @@ export async function closePaths(dir: string, closedPaths: readonly string[]): P
   close('');
   // The git directory is named, so a checkout without one fails instead of changing a repository above it.
   const git = (args: string[]) => runGit(dir, ['--git-dir', join(dir, '.git'), '--work-tree', dir, '--literal-pathspecs', ...args]);
+  // Each entry is `<mode> <object> <stage>\t<path>`, and mode `160000` is a submodule.
+  const gitlinks = (await git(['ls-files', '-s', '-z'])).split('\0').filter(entry => entry.startsWith('160000 ')).map(entry => entry.slice(entry.indexOf('\t') + 1));
   const indexed = (await git(['ls-files', '-z'])).split('\0').filter(path => path && findClosedPattern(path, closedPaths));
   for (const path of indexed) removed.add(path);
   if (indexed.length > 0) {
@@ -146,17 +150,17 @@ export async function closePaths(dir: string, closedPaths: readonly string[]): P
       rmSync(list, { force: true });
     }
   }
-  const record: ClosedRecord = { patterns: [...closedPaths], removed: [...removed].sort() };
+  const record: ClosedRecord = { patterns: [...closedPaths], removed: [...removed].sort(), submodules: gitlinks.filter(path => removed.has(path)).sort() };
   writeFileSync(join(dir, '.git', CLOSED_PATHS_FILE), JSON.stringify(record));
 }
 
 /** Returns what `closePaths` kept for the checkout at `dir`, or nothing removed for a checkout it never closed. */
 function closedRecordOf(dir: string): ClosedRecord {
   const file = join(dir, '.git', CLOSED_PATHS_FILE);
-  if (!existsSync(file)) return { patterns: [], removed: [] };
+  if (!existsSync(file)) return { patterns: [], removed: [], submodules: [] };
   const record: unknown = JSON.parse(readFileSync(file, 'utf8'));
   const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(p => typeof p === 'string');
-  if (typeof record !== 'object' || record === null || !strings((record as ClosedRecord).patterns) || !strings((record as ClosedRecord).removed)) {
+  if (typeof record !== 'object' || record === null || !strings((record as ClosedRecord).patterns) || !strings((record as ClosedRecord).removed) || !strings((record as ClosedRecord).submodules)) {
     throw new Error(`${file} does not list the closed paths`);
   }
   return record as ClosedRecord;
@@ -173,6 +177,11 @@ export function closedPathsOf(dir: string): string[] {
  */
 export function removedPathsOf(dir: string): string[] {
   return closedRecordOf(dir).removed;
+}
+
+/** Returns each path `closePaths` removed from the checkout at `dir` that git held as a submodule. Throws when the record cannot be read. */
+export function removedSubmodulesOf(dir: string): string[] {
+  return closedRecordOf(dir).submodules;
 }
 
 /**

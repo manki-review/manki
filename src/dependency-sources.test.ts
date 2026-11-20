@@ -341,6 +341,12 @@ describe('dependencyLoader', () => {
     await expect((await closed({ '.yarn/cache/left-pad-npm-1.2.0-abc.zip': 'zip\n' }, ['*.zip'])).load('npm/left-pad')).rejects.toThrow(`${removed} .yarn/cache from`);
     expect(server.requests).toEqual([]);
 
+    // A closed submodule holds files no listing shows, so it refuses every package.
+    const submodule = round({ 'yarn.lock': berryLock });
+    git(submodule.repo, 'update-index', '--add', '--cacheinfo', `160000,${'a'.repeat(40)},vendor/lib`);
+    await closePaths(submodule.repo, ['vendor/**']);
+    await expect(submodule.load('npm/left-pad')).rejects.toThrow(`Manki does not read npm/left-pad: ${removed} the git submodule vendor/lib from the checkout`);
+
     // Closing only files that decide no package leaves every package readable.
     const unrelated = await closed({}, ['bench/**']);
     expect((await unrelated.load('npm/left-pad')).key).toBe('npm/left-pad@1.2.0');
@@ -502,10 +508,14 @@ describe('dependencyLoader', () => {
       [{ ...required('', '^2.0.0'), 'package-lock.json': lock }, 'npm/left-pad', '^2.0.0'],
     ] as Array<[Record<string, string>, string, string]>) {
       const stale = round(files);
-      await expect(stale.load(spec)).rejects.toThrow(`requires it as \`${requirement}\`, which no version its lockfiles lock meets`);
+      await expect(stale.load(spec)).rejects.toThrow(`requires it as \`${requirement}\`, which the locked version`);
       expect(dependencyOutcomes(stale.stateDir)).toEqual([expect.objectContaining({ status: 'refused', source: 'requirement', requirement })]);
     }
     await expect(round({ 'Cargo.toml': '[dependencies]\ndemo = "1.*.2"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }]) }).load('crates.io/demo')).rejects.toThrow('requires it as `1.*.2`, a form Manki does not read with certainty');
+    // The version a call names must meet every requirement too, also when another locked version does.
+    const both = { 'Cargo.toml': '[dependencies]\ndemo = "2"\n', 'Cargo.lock': cargoLock([{ version: '1.2.0' }, { version: '2.0.0' }]) };
+    await expect(round(both).load('crates.io/demo@1.2.0')).rejects.toThrow('requires it as `2`, which the locked version 1.2.0 does not meet');
+    expect((await round(both).load('crates.io/demo@2.0.0')).key).toBe('crates.io/demo@2.0.0');
     // One that does not lock the package leaves its requirement to decide.
     expect((await round({ 'Cargo.toml': '[dependencies]\ndemo = "1.2"\n', 'Cargo.lock': '[[package]]\nname = "other"\nversion = "1.0.0"\n' }).load('crates.io/demo')).key).toBe('crates.io/demo@1.2.5');
     // Without a lockfile, the manifests must state one requirement, though several may state it.
