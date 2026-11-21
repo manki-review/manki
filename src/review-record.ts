@@ -149,8 +149,7 @@ function withoutSection(key: 'relatedWork' | 'sweeps' | 'staticAnalysis' | 'depe
 /**
  * The parts a record that is still too large without its diagnostics leaves out, in this order. No later round reads
  * the parts up to `output`. The parts from `comparisons` to `models.fallbacks` are read only to reuse an attempt, and a
- * cut record is never reused. Without a finding's stored checks or proposed fix, a later round checks the finding again
- * and does not see the proposal.
+ * cut record is never reused.
  */
 const RECORD_CUTS: RecordCut[] = [
   ['usage.llmCalls', c => c.usage.llmCalls && { ...c, usage: { ...c.usage, llmCalls: undefined } }],
@@ -169,8 +168,10 @@ const RECORD_CUTS: RecordCut[] = [
 /**
  * Returns ever smaller forms of `context` for a record too large for the review. The first two are `omitBulkyDiagnostics`
  * with and without traces, and each later one also leaves out the next part of `RECORD_CUTS` the record has. The last
- * keeps only what later rounds need, such as the meta, each finding with its fingerprint, grade and thread, and the
- * judge's thread evaluations. `meta.omitted` names every part a form left out.
+ * keeps what later rounds need to follow findings and threads: the meta, each finding with its fingerprint, grade and
+ * thread, and the judge's thread evaluations. It loses each finding's stored checks and proposed fix, so a later round
+ * checks such a finding again and its own-proposal check does not see the fix. `meta.omitted` names every part a form
+ * left out.
  */
 export function* smallerRecords(context: RoundContext): Generator<RoundContext> {
   yield omitBulkyDiagnostics(context, true);
