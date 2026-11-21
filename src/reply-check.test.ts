@@ -6,7 +6,7 @@ import { join } from 'path';
 import { parsePRDiff } from './diff';
 import * as mcpServer from './mcp-server';
 import { checkFixedElsewhere, checkReply, ElsewhereSources, fixedElsewhereText, ReplySources, statementList, statementRecords, statementSummary } from './reply-check';
-import { RelatedRepoTools } from './types';
+import { ParsedDiff, RelatedRepoTools } from './types';
 
 const REPLY = 'The exporter writes rows as CSV columns.\nNothing   calls `Ledger::snapshot`. The mobile app never stores them, see @alice and [the docs](https://example.com). The description no longer names `MAX_ROWS`.';
 // What the PR description says at the time of the reply. Its last paragraph is longer than a text Manki looks up.
@@ -27,7 +27,7 @@ describe('checkReply', () => {
     const reports = join(root, 'reports');
     const stateDir = join(root, 'state');
     for (const dir of [join(workspace, 'src'), join(reports, 'lib'), stateDir]) mkdirSync(dir, { recursive: true });
-    writeFileSync(join(workspace, 'src/ledger.rs'), 'pub struct Ledger;\nimpl Ledger {\n    rows.write_csv();\n    pub fn snapshot(&self) {}\n}\n// --force is not read here\n');
+    writeFileSync(join(workspace, 'src/ledger.rs'), 'pub struct Ledger;\nimpl Ledger {\n    rows.write_csv();\n    pub fn snapshot(&self) {}\n}\n// --force is not read here\n// end\n// of\n// file\n');
     writeFileSync(join(workspace, 'logo.png'), Buffer.from([0x89, 0x50, 0x00, 0x01]));
     writeFileSync(join(reports, 'lib/rows.py'), 'import csv\nrows = csv.reader(source)\n');
     writeFileSync(join(stateDir, `${encodeURIComponent('acme/reports')}.done`), reports);
@@ -240,6 +240,12 @@ describe('checkReply', () => {
       const removal = parsePRDiff('diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -2,3 +2,2 @@\n context\n-    debug(rows);\n context').files;
       const removed = (at: string) => checkReply(JSON.stringify({ outcome, answer: 'The debug call is gone.', proof: [at] }), REPLY, { ...sources, changedSincePosted: removal }).text;
       expect(['src/ledger.rs:2', 'src/ledger.rs:3', 'src/ledger.rs:4'].map(removed)).toEqual(['Fixed. The debug call is gone.', 'Fixed. The debug call is gone.', `Unverified. The debug call is gone. ${UNPROVEN}`]);
+      // A range wider than a quote holds an unrelated change as easily as a fix, so it counts only when every line in it changed.
+      const wide = 'diff --git a/src/ledger.rs b/src/ledger.rs\n--- a/src/ledger.rs\n+++ b/src/ledger.rs\n@@ -1,0 +1,8 @@\n+a\n+b\n+c\n+d\n+e\n+f\n+g\n+h';
+      const ranged = (at: string, changed: ParsedDiff) => checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: [at] }), REPLY, { ...sources, changedSincePosted: changed.files }).text;
+      expect(ranged('src/ledger.rs:1-8', parsePRDiff(wide))).toBe('Fixed. The guard runs first.');
+      expect(ranged('src/ledger.rs:1-8', DIFF)).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
+      expect(ranged('src/ledger.rs:1-7', DIFF)).toBe('Fixed. The guard runs first.');
     }
   });
 
