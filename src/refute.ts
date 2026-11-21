@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { BASE_REF, baseReadsOf, runGit } from './workspace';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -56,6 +56,7 @@ To refute it:
 - A finding that one piece of code lacks a check, a lock or an error path its sibling has goes through the same search: find why the sibling has it, and whether that reason holds here.
 - For a doubt that the failure is reached, search for a path from an entry point to the failing code. A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API: any caller of it can pass a value it accepts, so a path from it counts as reached with no caller in the repository. In an application, an exported function is no entry point on its own and needs a caller. Confirm when such a path carries the triggering value, and disprove only when every path checks the value or cannot carry it.
 - A premise that normal use or outside input can produce a state is such a doubt about the state: the judge holds that only the code's own logic produces it. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces the state, and cite the lines of that path. Disprove it only when the code shows nothing but its own logic produces the state.
+- A premise that a trigger happens in realistic use asks whether normal use produces the sequence of events it names. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces that sequence, and cite the lines of that path. Disprove it when the sequence needs a timing window much shorter than the operations around it, or an event nothing in normal use produces, and cite the lines that show it.
 - For any other doubt, check in the code the premise the message lists, or else the one the judge's reasoning names.
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
@@ -687,6 +688,19 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
   if (checks.length > 0) return open ? 'unsettled_check' : undefined;
   if (finding.overCheckLimit) return open ? 'not_checked' : undefined;
   return lacksProof ? 'no_proof' : undefined;
+}
+
+/**
+ * Whether the warning `finding` on the `degraded` row has no realistic trigger: the judge named none, or a check
+ * disproved the trigger it named and no check confirmed the defect. A finding on any other row keeps its grade however
+ * rare its trigger, since its consequence is serious.
+ */
+export function lacksTrigger(finding: Finding): boolean {
+  if (finding.severity !== 'warning' || finding.cell?.row !== 'degraded') return false;
+  if (!finding.trigger) return true;
+  const { premise } = triggerDoubt(finding.trigger);
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  return !checks.some(check => confirmsDefect(check, finding)) && checks.some(check => !!check.premises?.some(p => p.premise === premise && p.outcome === 'disproved'));
 }
 
 /**

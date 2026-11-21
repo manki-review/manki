@@ -1,0 +1,33 @@
+{
+  "name": "rare-window-minor",
+  "case": "rare-window-minor",
+  "allowed": [
+    "warning",
+    "ignore"
+  ],
+  "posted": false,
+  "finding": {
+    "title": "`Submit` can miss the wake-up and leave a queued job waiting one poll interval",
+    "file": "worker/worker.go",
+    "line": 42,
+    "description": "When `Submit` runs after the worker's empty `Pop` at line 24 and before `w.waiting.Store(true)` at line 28, it reads `waiting` as false and sends no wake-up. The worker then sleeps the whole `w.interval`, one second by default, while a job sits in the queue. The job still runs, up to a second late.",
+    "severity": "warning",
+    "reviewers": [
+      "Concurrency"
+    ],
+    "evidence": {
+      "checks": [
+        "worker/worker.go:24 `Pop` finds the queue empty",
+        "worker/worker.go:28 sets `waiting` only after that",
+        "worker/worker.go:42 `Submit` reads `waiting` without a lock"
+      ],
+      "proof": [
+        "worker/worker.go:24",
+        "worker/worker.go:28",
+        "worker/worker.go:42"
+      ]
+    },
+    "suggestedFix": "Set `waiting` before the last `Pop`, or have `Submit` always try a non-blocking send on `w.wake`."
+  },
+  "prDiff": "diff --git a/worker/worker.go b/worker/worker.go\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/worker/worker.go\n@@ -0,0 +1,48 @@\n+package worker\n+\n+import (\n+\t\"context\"\n+\t\"sync/atomic\"\n+\t\"time\"\n+)\n+\n+// DefaultInterval is how long an idle worker sleeps before it checks the queue again.\n+const DefaultInterval = time.Second\n+\n+// Worker runs queued jobs one at a time. Each job takes several seconds.\n+type Worker struct {\n+\tqueue    *Queue\n+\twaiting  atomic.Bool\n+\twake     chan struct{}\n+\tinterval time.Duration\n+\thandle   func(Job)\n+}\n+\n+// Run handles jobs until ctx ends.\n+func (w *Worker) Run(ctx context.Context) {\n+\tfor {\n+\t\tif job, ok := w.queue.Pop(); ok {\n+\t\t\tw.handle(job)\n+\t\t\tcontinue\n+\t\t}\n+\t\tw.waiting.Store(true)\n+\t\tselect {\n+\t\tcase <-ctx.Done():\n+\t\t\treturn\n+\t\tcase <-w.wake:\n+\t\tcase <-time.After(w.interval):\n+\t\t}\n+\t\tw.waiting.Store(false)\n+\t}\n+}\n+\n+// Submit queues job and wakes the worker when it waits.\n+func (w *Worker) Submit(job Job) {\n+\tw.queue.Push(job)\n+\tif w.waiting.Load() {\n+\t\tselect {\n+\t\tcase w.wake <- struct{}{}:\n+\t\tdefault:\n+\t\t}\n+\t}\n+}\n"
+}

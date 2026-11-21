@@ -506,6 +506,7 @@ const RAW_EXITS: Record<RawExit, string> = {
   pre_existing: UNPOSTED_REASONS.pre_existing,
   memory_suppression: UNPOSTED_REASONS.memory_suppression,
   static_signal_match: UNPOSTED_REASONS.static_signal_match,
+  no_trigger: UNPOSTED_REASONS.no_trigger,
   reviewed_code: UNPOSTED_REASONS.reviewed_code,
   listed_earlier: UNPOSTED_REASONS.listed_earlier,
   note_cap: UNPOSTED_REASONS.note_cap,

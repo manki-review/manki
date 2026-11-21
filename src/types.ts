@@ -411,6 +411,8 @@ export interface Finding {
   judgeIfConfirmed?: 'blocker' | 'warning';
   /** The premises the judge doubts, which the refuter checks one by one. */
   doubts?: Doubt[];
+  /** The sequence of events in normal use that sets off the failure, as the judge named it. Unset when it named none. */
+  trigger?: string;
   /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings checked for a doubt the judge named. */
   refutation?: Refutation;
   /** How the second refuter, on `models.second_refuter`, came out. Set beside `refutation` when that model checked the finding. */
@@ -1010,6 +1012,11 @@ export function restsOnDrop(f: Pick<Finding, 'doubts'>): boolean {
  */
 export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' };
 
+/** Returns the premise that the `trigger` of a finding happens in realistic use, which `doubtTrigger` asks the refuter to check. */
+export function triggerDoubt(trigger: string): Doubt {
+  return { premise: `This trigger happens in realistic use: ${trigger}`, decides: 'defect' };
+}
+
 /**
  * The question each check of a blocker answers in its own `base` answer, apart from the finding's doubts. A disproof
  * says the code at the PR's base fails the same way. It is never a doubt, so no grade waits on it.
@@ -1166,7 +1173,7 @@ export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | '
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, `no_trigger` on a warning with no realistic trigger, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -1174,6 +1181,7 @@ export const UNPOSTED_REASONS = {
   pre_existing: 'on code this PR did not change',
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
+  no_trigger: 'it names no trigger that happens in realistic use',
   unsettled_check: 'a tool check could not confirm it',
   not_checked: 'nothing proves it and no tool check ran on it',
   no_proof: 'it cites no lines that prove it',
@@ -2982,6 +2990,8 @@ export interface FindingFingerprintEntry {
   judgeIfConfirmed?: 'blocker' | 'warning';
   /** Mirrors `Finding.doubts`. */
   doubts?: Doubt[];
+  /** Mirrors `Finding.trigger`. */
+  trigger?: string;
   /** Mirrors `Finding.cell`. A record from before cells has none. */
   cell?: GradeCell;
   /** Mirrors `Finding.judgeCell`. */

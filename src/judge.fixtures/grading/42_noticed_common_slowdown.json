@@ -1,0 +1,31 @@
+{
+  "name": "noticed-common-slowdown",
+  "case": "noticed-common-slowdown",
+  "allowed": [
+    "warning",
+    "blocker"
+  ],
+  "posted": true,
+  "finding": {
+    "title": "`beforeNavigate` fetches the preferences again on every page change",
+    "file": "src/router.ts",
+    "line": 13,
+    "description": "Before this change `fetchPrefs` ran once and later navigations used `cachedPrefs`. Now every navigation waits for a request to the API before the page renders, so each page change in the app takes one network round trip longer, typically 100 to 300 ms. The preferences are still right.",
+    "severity": "warning",
+    "reviewers": [
+      "Performance"
+    ],
+    "evidence": {
+      "checks": [
+        "src/router.ts:11 says the hook runs on every navigation before the page renders",
+        "src/router.ts:13 now awaits `fetchPrefs` each time"
+      ],
+      "proof": [
+        "src/router.ts:11",
+        "src/router.ts:13"
+      ]
+    },
+    "suggestedFix": "Keep `cachedPrefs ??= await fetchPrefs();` and refresh the cache only when the preferences change."
+  },
+  "prDiff": "diff --git a/src/router.ts b/src/router.ts\nindex 1111111..2222222 100644\n--- a/src/router.ts\n+++ b/src/router.ts\n@@ -8,9 +8,9 @@ import { fetchPrefs } from './api';\n \n let cachedPrefs: Prefs | undefined;\n \n /** Runs on every page navigation, before the page renders. */\n export async function beforeNavigate(to: Route): Promise<void> {\n-  cachedPrefs ??= await fetchPrefs();\n+  cachedPrefs = await fetchPrefs();\n   applyTheme(cachedPrefs.theme);\n   to.meta.prefs = cachedPrefs;\n }\n"
+}

@@ -26,7 +26,7 @@ import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
-import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
+import { bySecondReadsOnly, canLeaveOut, CELL_GRADES, CheckProgress, CellColumn, cellGrade, CellRow, columnDecidesBlock, confirmsAll, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, RefutationOutcome, restsOnDrop, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, fixThreadFiles, GradedCounts, gradedAbove, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, leadText, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, triggerDoubt, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, ruleGrade, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -239,6 +239,8 @@ export interface JudgeInput {
   prContext?: PrContext;
   linkedIssues?: LinkedIssue[];
   agentCount: number;
+  /** The names of the round's finders. A \`degraded\` warning that fewer than two of them reported gets \`doubtTrigger\`. */
+  finderNames?: readonly string[];
   isFollowUp?: boolean;
   openThreads?: OpenThread[];
   priorRounds?: RoundContext[];
@@ -317,6 +319,8 @@ export interface JudgedFinding {
   gradeIfConfirmed?: 'blocker' | 'warning';
   /** The failure the finding names that its fix does not remove. */
   fixLeaves?: string;
+  /** The sequence of events in normal use that sets off the failure, when the judge names one. */
+  trigger?: string;
   /** Whether the finding claims the code fails to compile, type-check or pass its tests. */
   buildClaim?: boolean;
   category?: FindingCategory;
@@ -470,7 +474,11 @@ ${OUTSIDE_INPUT_RULE}
 
 ## Warning Tests
 
-A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the \`improvement\` row, or the \`style\` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding's own word on the scale is not enough. When the code shown does not show the scale, contradicts the finding, or leaves you unsure whether anyone would notice, keep the warning. Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
+A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the \`improvement\` row, or the \`style\` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding's own word on the scale is not enough. When the code shown does not show the scale or contradicts the finding, keep the warning.
+
+**A \`degraded\` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in \`trigger\`, as "when X happens". Leave \`trigger\` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a \`degraded\` warning without a trigger in the round record and never posts it, so keep its row and never move it to the \`improvement\` row for this reason. On the \`severe\` and \`wrong\` rows a rare trigger changes nothing: state the cell as the table says.${toolsCheckFindings ? ' When two finders ran and only one reported a `degraded` warning, Manki checks its trigger with tools and posts the warning only when the check confirms it.' : ''}
+
+Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
 
 ## Severity Table
 
@@ -565,7 +573,7 @@ Blockers:
 
 Not blockers:
 - **Rust**: \`retry_delay\` overflows when \`attempt\` exceeds 63, but \`attempt\` comes from the code's own loop, which stops at 5. A check on a trusted internal value: \`ignore\`.
-- **Go**: the retry loop logs "3 attempts failed" without the last error. Every result is still correct, but operators lose the cause in normal use. Degraded but correct: \`degraded\` and \`normal\`, a \`warning\`.
+- **Go**: the retry loop logs "3 attempts failed" without the last error. Every result is still correct, but operators lose the cause in normal use. Degraded but correct: \`degraded\` and \`normal\`, a \`warning\`, with \`trigger\` "when a request fails three times in a row".
 - **Python**: \`merge_ranges\` returns a wrong range when two inputs share an end point, a case only the internal compaction job produces, and only after a crash recovery. Wrong behaviour in a rare internal edge case: \`wrong\` and \`rare\`, a \`warning\`, with \`reasoning\` that names the compaction job as the only code that passes \`merge_ranges\` such ranges.
 - **TypeScript**: search results are sorted case-sensitively, and the PR description says this matches the existing API. Intended but surprising: \`improvement\`, a \`note\` asking whether users expect it.
 - **Java**: the new \`parseHeader\` error branch has no test. Missing test coverage: \`improvement\`, a \`note\`.
@@ -679,6 +687,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
       "effort": "quick" | "moderate" | "larger",
       "fixLeaves": "",
+      "trigger": "When X happens in normal use, or empty",
       "reasoning": "Your verdict first, then 1-2 sentences on why",
       "proof": ["file:line of each line that shows the failure, for a blocker or a warning"]
     }
@@ -1413,6 +1422,7 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
       const doubts = parseDoubts(f.doubts);
       const fixLeaves = typeof f.fixLeaves === 'string' ? f.fixLeaves.trim().slice(0, MAX_REMAINING_CHARS) : '';
       const ruleUnseen = typeof f.ruleUnseen === 'string' ? f.ruleUnseen.trim().slice(0, MAX_DOUBT_CHARS) : '';
+      const trigger = typeof f.trigger === 'string' ? f.trigger.trim().slice(0, MAX_DOUBT_CHARS) : '';
       const dropRestsOn = row === 'none' ? parseDropRestsOn(f.dropRestsOn) : undefined;
       const statedIfConfirmed = (['blocker', 'warning'] as const).find(grade => grade === tableWord(f.gradeIfConfirmed));
       return [{
@@ -1433,6 +1443,7 @@ export function parseJudgeResponse(responseText: string, workspace: string | und
         ...(dropRestsOn && { dropRestsOn }),
         ...(statedIfConfirmed && { gradeIfConfirmed: statedIfConfirmed }),
         ...(fixLeaves && { fixLeaves }),
+        ...(trigger && { trigger }),
         ...(f.buildClaim === true && { buildClaim: true }),
         ...(category && { category }),
         ...(effort && { effort }),
@@ -1712,7 +1723,7 @@ export async function runJudgeAgent(
   const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting, !!refutation)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
-    .map(f => doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules));
+    .map(f => doubtTrigger(doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules), input.finderNames ?? []));
   const suppress = (list: Finding[], quiet = false) => {
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
@@ -1845,6 +1856,7 @@ export function mapJudgedToFindings(
     if (match.noteRank !== undefined) finding.noteRank = match.noteRank;
     if (match.fixLeaves) finding.howToFix = [finding.howToFix?.trim(), `This fix leaves part of the problem: ${match.fixLeaves}`].filter(Boolean).join(' ');
     if (match.proof) finding.evidence = mergeEvidence(finding.evidence, { checks: [], proof: match.proof });
+    if (match.trigger) finding.trigger = match.trigger;
     if (o.rule) {
       const verdict = ruleVerdict(finding, match);
       finding.rule = { ...o.rule, verdict, ...(verdict === 'unproven' && match.ruleUnseen && { unseen: match.ruleUnseen }) };
@@ -1950,6 +1962,19 @@ function doubtUnprovenRule(finding: Finding, rules?: RulesMode): Finding {
   const grade = ruleGrade(rules);
   if (!fact || !grade || !isNote(finding.severity)) return finding;
   return { ...finding, gradeIfConfirmed: grade, doubts: [...(finding.doubts ?? []), { premise: fact, decides: 'defect' }] };
+}
+
+/**
+ * Adds `triggerDoubt` to a warning on the `degraded` row when two or more of `finderNames` ran and fewer than two of
+ * them reported it. The refuter then checks that normal use produces the trigger the judge named, and the warning is
+ * posted only once a check confirms it. A tool alert and a security finding are posted without proof, so they get none.
+ */
+function doubtTrigger(finding: Finding, finderNames: readonly string[]): Finding {
+  if (finding.severity !== 'warning' || finding.cell?.row !== 'degraded' || !finding.trigger || finding.toolSource || isSecurityFinding(finding.tags, finding.reviewers)) return finding;
+  if (finderNames.length < 2 || finderNames.filter(name => finding.reviewers.includes(name)).length >= 2) return finding;
+  const doubt = triggerDoubt(finding.trigger);
+  // The judge's own doubt on a warning gets the grade of its cell as `gradeIfConfirmed` too, so both are checked alike.
+  return finding.doubts?.some(d => d.premise === doubt.premise) ? finding : { ...finding, gradeIfConfirmed: finding.gradeIfConfirmed ?? 'warning', doubts: [...(finding.doubts ?? []), doubt] };
 }
 
 /**
@@ -2153,7 +2178,7 @@ function mergedDropCheck(survivor: Finding, copy: Finding): Pick<Finding, 'cell'
 
 /**
  * Merges the duplicate `copy` into `survivor`: its reviewers, its finder grades, its prior-round match and open thread, its
- * fix in words, what it cites and its `mergedDropCheck`. The survivor is a security finding when either one is.
+ * fix in words, its trigger, what it cites and its `mergedDropCheck`. The survivor is a security finding when either one is.
  */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
   const grades = mergedFinderGrades(survivor, copy);
@@ -2164,6 +2189,7 @@ export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (c
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
   survivor.howToFix ??= copy.howToFix;
+  survivor.trigger ??= copy.trigger;
   Object.assign(survivor, mergedRule(survivor, copy));
   // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
   if (!copy.preExisting || (staysPreExisting && !staysPreExisting(copy))) delete survivor.preExisting;
