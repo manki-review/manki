@@ -1,0 +1,20 @@
+{
+  "name": "noticed-wrong-size",
+  "case": "noticed-wrong-size",
+  "allowed": [
+    "warning",
+    "blocker"
+  ],
+  "finding": {
+    "title": "ProRegTx `size()` leaves out the Evo platform fields that the encoder writes",
+    "file": "dash/src/blockdata/transaction/special_transaction/provider_registration.rs",
+    "line": 256,
+    "description": "For `version >= 2` and `HighPerformance`, `base_payload_data_encode` now writes `platform_node_id` (20), `platform_p2p_port` (2) and `platform_http_port` (2). `size()` above never adds those 24 bytes, so it reports 24 bytes less than the encoded length for every v2 Evo ProRegTx, and anything sized from it, such as a fee estimate, is too small.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "In `ProviderRegistrationPayload::size`, add `20 + 2 + 2` when `self.version >= 2 && self.masternode_type == ProviderMasternodeType::HighPerformance`, and add a size test for a v2 Evo payload."
+  },
+  "prDiff": "diff --git a/dash/src/blockdata/transaction/special_transaction/provider_registration.rs b/dash/src/blockdata/transaction/special_transaction/provider_registration.rs\nindex 1111111..2222222 100644\n--- a/dash/src/blockdata/transaction/special_transaction/provider_registration.rs\n+++ b/dash/src/blockdata/transaction/special_transaction/provider_registration.rs\n@@ -236,22 +236,27 @@\n     pub fn size(&self) -> usize {\n         let mut size = 2 + 2 + 2 + 32 + 4 + 16 + 2 + 20 + 48 + 20 + 2;\n         size += VarInt(self.script_payout.len() as u64).len() + self.script_payout.len();\n         size += 32 + VarInt(self.signature.len() as u64).len() + self.signature.len();\n         size\n     }\n \n     fn base_payload_data_encode<W: io::Write>(&self, mut s: W) -> Result<usize, io::Error> {\n         let mut len = 0;\n         len += self.version.consensus_encode(&mut s)?;\n         len += self.masternode_type.consensus_encode(&mut s)?;\n         len += self.masternode_mode.consensus_encode(&mut s)?;\n         len += self.collateral_outpoint.consensus_encode(&mut s)?;\n         len += self.service_address.consensus_encode(&mut s)?;\n         len += self.owner_key_hash.consensus_encode(&mut s)?;\n         len += self.operator_public_key.consensus_encode(&mut s)?;\n         len += self.voting_key_hash.consensus_encode(&mut s)?;\n         len += self.operator_reward.consensus_encode(&mut s)?;\n         len += self.script_payout.consensus_encode(&mut s)?;\n         len += self.inputs_hash.consensus_encode(&mut s)?;\n+        if self.version >= 2 && self.masternode_type == ProviderMasternodeType::HighPerformance {\n+            len += self.platform_node_id.consensus_encode(&mut s)?;\n+            len += self.platform_p2p_port.consensus_encode(&mut s)?;\n+            len += self.platform_http_port.consensus_encode(&mut s)?;\n+        }\n         Ok(len)\n     }\n"
+}

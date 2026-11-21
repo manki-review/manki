@@ -1,0 +1,19 @@
+{
+  "name": "unnoticed-startup-string",
+  "case": "unnoticed-startup-string",
+  "allowed": [
+    "note"
+  ],
+  "finding": {
+    "title": "The startup banner is joined twice",
+    "file": "service/main.py",
+    "line": 25,
+    "description": "`main` joins the same `parts` once for `log.info` and again for `print`. `parts` is the five short strings built on the line above, and `main` runs once per process before the server starts, so the second join happens once per start.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Join `parts` once into a `banner` variable and pass it to both calls."
+  },
+  "prDiff": "diff --git a/service/main.py b/service/main.py\nindex 1111111..2222222 100644\n--- a/service/main.py\n+++ b/service/main.py\n@@ -20,4 +20,7 @@\n def main() -> None:\n     \"\"\"Starts the service. Runs once per process, before the server accepts requests.\"\"\"\n     config = load_config()\n+    parts = [APP_NAME, __version__, platform.python_version(), config.env, config.region]\n+    log.info(\"starting %s\", \" \".join(parts))\n+    print(\"starting \" + \" \".join(parts))\n     serve(config)\n"
+}

@@ -18,7 +18,7 @@ import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
-import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { ChangeUnit, listClaimLines, listRelatedUses, listUsesOutsideDiff, MappedChange, relatedQuestions, TEST_PATH } from './symbol-uses';
 import { EarlierAnswer, EarlierAnswers, runComparisons, runPatternChecks, runRelatedChecks } from './compare';
@@ -2779,6 +2779,7 @@ ${repositoryRules && `\n${repositoryRules}\n`}
 - Don't flag TODO comments, or intentional patterns such as known workarounds in code the PR does not add. When the PR's own text calls code it adds intended or a known workaround, that is a claim to check, never a reason to skip it.
 - ${UNTRUSTED_CONTENT_RULE}
 - ${VERIFY_CLAIMS_RULE}
+- ${COST_SCALE_RULE}
 - Keep descriptions concrete and actionable. Never write "consider as a follow-up": a problem in this PR's own code is fixed in this PR.
 - If you find NO issues, respond with an empty array: []
 - When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.

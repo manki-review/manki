@@ -129,6 +129,11 @@ describe('buildJudgeSystemPrompt', () => {
     // The finders get the same definitions and the same table.
     for (const shared of [GRADE_DEFINITIONS, SEVERITY_TABLE, OUTSIDE_INPUT_RULE]) expect(prompt).toContain(shared);
     expect(prompt).toContain('- **note**: an optional improvement, never a defect.');
+    // A warning needs a consequence someone would notice, a cost nobody would notice is a note, and a tie keeps the warning.
+    expect(prompt).toContain('It has a consequence someone would notice in realistic use, for example a wrong result or a slowdown users feel.');
+    expect(prompt).toContain('Nobody would notice it in realistic use, for example an extra pass over a small input. When you cannot tell whether anyone would notice a real problem, it is a warning.');
+    expect(prompt).toContain('| `degraded`: the right result, with a cost someone would notice in realistic use, such as a slowdown users feel or a lost error cause | `warning` | `note` |');
+    expect(prompt).toContain('structure and reuse, or a cost nobody would notice | `note` | `note` |');
     expect(prompt).not.toMatch(/suggestion|nitpick/);
     expect(prompt).toContain('ignore');
   });
@@ -255,7 +260,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- `warning`: state the cell all the same, list the premise you could not settle in `doubts` with `decides` set to `defect`, and say it in `reasoning`. No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.');
     expect(prompt).not.toMatch(/keep it, list|costs a single fix/);
     const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
-    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
+    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale, contradicts the finding, or leaves you unsure whether anyone would notice, keep the warning. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
     expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
     expect(prompt).not.toMatch(/confidence/i);
     const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
@@ -356,7 +361,7 @@ describe('buildJudgeSystemPrompt', () => {
       'A test that cannot fail when the code it names breaks, for example because it sets private state instead of running the changed code, is the `degraded` row in the `normal` column, a `warning`.',
       '**Style, naming, docs and comments are the `style` row.** A doc or comment that states behaviour the code does not have is the `improvement` row',
       '**Commit messages never block.** A finding about a commit message is the `improvement` row at most.',
-      '**Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input. Otherwise it is the `degraded` row.',
+      '**Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input. Otherwise it is the `degraded` row, or the `improvement` row when nobody would notice the cost in realistic use.',
       '**Verification status is never a finding.**',
       '**A check on a trusted internal value is never a blocker.**',
       '**Behaviour that is intended but surprising is the `improvement` row.**',
@@ -6695,6 +6700,13 @@ const GRADING_CASES = [
   'doubted-heading-count',
   'doubted-lost-segment',
   'doubted-status-percent',
+  'unnoticed-extra-pass',
+  'unnoticed-double-sort',
+  'unnoticed-startup-string',
+  'noticed-wrong-size',
+  'noticed-leaked-temp-file',
+  'noticed-slowdown',
+  'noticed-slow-leak',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
@@ -6741,7 +6753,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, and a finding on unseen code that does or does not earn a blocker once that code is confirmed, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, and a cost nobody would notice beside a consequence someone would, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
@@ -6749,7 +6761,10 @@ describe('judge grading fixture corpus', () => {
     const diff = parsePRDiff(fixture.prDiff);
     expect(extractCodeContext(fixture.finding, diff)).toContain(`>>> ${fixture.finding.line}:`);
     expect(diff.files.map(f => f.path).filter(path => !shownFiles(fixture.finding).includes(path))).toEqual([]);
-    expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse');
+    expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse' || fixture.case.startsWith('noticed-'));
+    // A cost nobody would notice is a note. A consequence someone would notice stays a warning or above.
+    const noticeGrades = fixture.case.startsWith('unnoticed-') ? ['note'] : fixture.case.startsWith('noticed-') ? ['warning', 'blocker'] : fixture.allowed;
+    expect(fixture.allowed).toEqual(noticeGrades);
     expect(fixture.priorRound !== undefined).toBe(PRIOR_ROUND_CASES.includes(fixture.case));
     expect(fixture.pr !== undefined).toBe(fixture.case === 'declared-gap');
     expect(fixture.proven).toBe({ 'proven-warning': true, 'unproven-warning': false }[fixture.case as string]);

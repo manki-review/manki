@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { runComparisons, runPatternChecks, runRelatedChecks } from './compare';
-import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
+import { CLAIMS_MISSING_RULE, COST_SCALE_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { AddedPiece, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
 import { fakeClient, gitWorkspace, HANG } from './test-utils';
@@ -59,6 +59,7 @@ describe('runComparisons', () => {
     expect(repoToolsPrompt(withRelated, 'Read, Grep and Glob')).toContain(RELATED_REPO_TRUST_RULE);
     expect(field.system).toContain('You can read the repository with read-only tools.');
     expect(field.system).toContain('- **warning**: a real case that fails, but not catastrophically. List its proving lines in `proof` too.');
+    expect(field.system).toContain(`- **note**: an inconsistency that works today.\n- ${COST_SCALE_RULE}\n`);
     expect(field.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${PRE_EXISTING_RULE}\n- ${ROOT_CAUSE_FIX_RULE}`);
     // A gap in sibling code is what these calls look for, so the defect a PR fixes in one path is never pre-existing in the other.
     expect(PRE_EXISTING_RULE).toContain('Never set it either on the defect this PR fixes in one path and leaves in a sibling path, such as an auth check added to `POST /items` while `PUT /items/:id` stays open: the fix is incomplete, so report it as part of the change and cite the line of the fix in `proof`.');
@@ -209,6 +210,7 @@ describe('runRelatedChecks', () => {
     expect(reference.system).toContain('- Every defect cites a line on both sides in `proof`: at least one `file:line` of the PR\'s head commit and one `owner/name:path:line` of the related repo, each a line you read. A defect without both is dropped.');
     expect(reference.system).toContain('- When the answer is no, when the code on both sides agrees, or when you could not open the counterpart, respond with [].');
     expect(reference.system).toContain(`- ${PRE_EXISTING_RULE}\n- ${ROOT_CAUSE_FIX_RULE}\n`);
+    expect(reference.system).toContain(`- ${COST_SCALE_RULE}\n`);
     expect(reference.system).toContain(`- ${RELATED_REPO_TRUST_RULE}\n- ${UNTRUSTED_CONTENT_RULE}\n- ${VERIFY_CLAIMS_RULE}`);
     expect(reference.user).toContain('The change touches `MIN_PEER_VERSION`, and the lines below are where the reference repo holds it. Compare what the change does with what the reference does, in both directions');
     expect(reference.user).toContain('Open the counterpart\'s file with your tools before you answer. Some lines were found by a guess at what that repo calls the name');
@@ -318,6 +320,7 @@ describe('runPatternChecks', () => {
     expect(file.system).toContain('- **no_comparable**: you found fewer than two existing places that do the same kind of thing. One existing example is not a pattern.');
     expect(file.system).toContain('Manki drops a finding that cites fewer than two existing places and quotes no rule, or that is not on a line the PR adds.');
     expect(file.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${UNTRUSTED_CONTENT_RULE}\n- ${VERIFY_CLAIMS_RULE}`);
+    expect(file.system).toContain(`- ${COST_SCALE_RULE}\n`);
     expect(file.user).toContain('The change adds a new file. Find the existing places in the repository that do the same kind of thing');
     expect(file.user).toContain('```ts\nsrc/refund.ts\n1:+ export function refund(req: Request) {');
     expect(file.user).toContain("## Instruction Files\n\nThe repository's instruction files, as the base branch holds them.");

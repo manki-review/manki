@@ -2,7 +2,7 @@ import { repoToolsPrompt } from './providers/cli-utils';
 import { runSweeps, startsSweep } from './sweep';
 import { fakeClient } from './test-utils';
 import { Finding, SweepMode } from './types';
-import { RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE } from './writing-rules';
+import { COST_SCALE_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
 
@@ -69,6 +69,7 @@ describe('runSweeps', () => {
     expect(system).toContain('Never report the finding\'s own location again.');
     expect(system).toContain('Grade each place on its own, by what goes wrong there');
     expect(system).toContain('- **warning**: a real case that fails, but not catastrophically. List its proving lines in `proof` too.');
+    expect(system).toContain(`- ${COST_SCALE_RULE}\n`);
     expect(system).toContain(UNTRUSTED_CONTENT_RULE);
     expect(system).toContain(`- ${ROOT_CAUSE_FIX_RULE}`);
     expect(user).toContain('## Finding: Cache key misses the locale');

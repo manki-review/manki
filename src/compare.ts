@@ -11,7 +11,7 @@ import { isUsableElement, parseFindings } from './review';
 import { AddedPiece, CodeExcerpt, PLAIN_FILE_NAME, RelatedQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
 import { CheckProgress, EffortLevel, Finding, ParsedDiff, PATTERN_ANSWERS, RelatedRepoKind, RelatedRepoTools, RoundComparison } from './types';
 import { digestOf, mapWithConcurrency, sendWithParseRetry } from './utils';
-import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, COST_SCALE_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_FIELD_QUESTIONS = 6;
 const MAX_IMPLEMENTATION_QUESTIONS = 6;
@@ -26,7 +26,8 @@ const COMPARE_TIMEOUT_MS = 600_000;
 
 const SEVERITY_RULES = `- **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
 - **warning**: a real case that fails, but not catastrophically. List its proving lines in \`proof\` too.
-- **note**: an inconsistency that works today.`;
+- **note**: an inconsistency that works today.
+- ${COST_SCALE_RULE}`;
 
 function systemPrompt(tools: boolean): string {
   return `You compare code a pull request changes with the code beside it, to answer one question. Other reviewers read the whole change, so report only defects that answer this question.
