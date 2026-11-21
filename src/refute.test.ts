@@ -77,7 +77,7 @@ describe('refuteBlockers', () => {
       'Unsettled': { outcome: 'unsettled', reason: `The callers are generated${' and long'.repeat(60)}.`, rule: 'r'.repeat(501) },
       'Lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Unproven lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
-      'Unproven and contradicted': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'Unproven note lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Disproved without proof': { outcome: 'disproved', reason: 'Probably fine.' },
       'Disproved on made-up lines': { outcome: 'disproved', reason: 'Checked elsewhere.', proof: ['src/gone.ts:1', 'src/api.ts:99'] },
       'Disproved in its own file': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
@@ -96,7 +96,7 @@ describe('refuteBlockers', () => {
       finding('Unsettled'),
       finding('Lead confirmed', { severity: 'warning', notChecked: true, lead }),
       finding('Unproven lead confirmed', { severity: 'warning', notChecked: true, lead, tags: ['unproven-blocker'] }),
-      finding('Unproven and contradicted', { severity: 'note', notChecked: true, lead, tags: ['unproven-blocker', 'contradicts-prior-round'] }),
+      finding('Unproven note lead confirmed', { severity: 'note', notChecked: true, lead, tags: ['unproven-blocker'] }),
       finding('Disproved without proof'),
       finding('Disproved on made-up lines'),
       finding('Disproved in its own file', { notChecked: true, lead }),
@@ -126,7 +126,7 @@ describe('refuteBlockers', () => {
       ['Lead confirmed', 'warning', 'confirmed'],
       ['Unproven lead confirmed', 'blocker', 'confirmed'],
       // A cross-round contradiction lowered it after the cap, so the proving lines do not lift it.
-      ['Unproven and contradicted', 'note', 'confirmed'],
+      ['Unproven note lead confirmed', 'note', 'confirmed'],
       ['Disproved without proof', 'blocker', 'unsettled'],
       // A citation of a file the workspace lacks, or of a line past its end, settles nothing.
       ['Disproved on made-up lines', 'blocker', 'unsettled'],
@@ -169,7 +169,7 @@ describe('refuteBlockers', () => {
     expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
     expect(result[5].tags).toEqual([]);
     // Every blocker and lead was asked once, and the warning never.
-    expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven disproved', 'Unproven lead confirmed', 'Unsettled']);
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven disproved', 'Unproven lead confirmed', 'Unproven note lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15, checking: true }, timeoutMs: 600_000 });
     // The call for a finding a sweep raised is marked, so its record counts as the sweep's cost.
     expect(client.calls.filter(([, options]) => options?.sweep).map(([title]) => title)).toEqual(['Confirmed']);
