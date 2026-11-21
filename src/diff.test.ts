@@ -15,7 +15,6 @@ import {
   firstCommentableLine,
   changesNextTo,
   oldLineOf,
-  extendedLineOf,
   replacementOf,
   sliceDiff,
   compareChanges,
@@ -30,7 +29,6 @@ import {
   tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
-import { expectLinearTime } from './test-utils';
 import { DiffFile, Finding, ParsedDiff } from './types';
 
 // -- Test fixtures --
@@ -995,7 +993,7 @@ describe('isLineInDiff', () => {
   });
 });
 
-describe('oldLineOf, replacementOf, extendedLineOf and changesNextTo', () => {
+describe('oldLineOf, replacementOf and changesNextTo', () => {
   // Line 2 is replaced by two lines, and line 10 is removed.
   const file = parsePRDiff([
     'diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts',
@@ -1022,44 +1020,6 @@ describe('oldLineOf, replacementOf, extendedLineOf and changesNextTo', () => {
 
   it('returns the new lines that replace a removed old line, and none for a line the diff keeps', () => {
     expect([2, 10, 1, 3].map(line => replacementOf(file, line))).toEqual([[2, 3], [11, 10], undefined, undefined]);
-  });
-
-  it('pairs a line a run adds with the one line it removes that the new line only extends', () => {
-    const run = (...lines: string[]) => parsePRDiff(['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', `@@ -1,4 +1,${lines.filter(l => !l.startsWith('-')).length} @@`, ...lines].join('\n')).files[0];
-    // An argument added to a call or a signature keeps the old line.
-    expect(extendedLineOf(run(' one', '-send(peer, [id]);', '+send(peer, [id, at]);', ' three'), 2)).toEqual({ line: 2, text: 'send(peer, [id]);' });
-    expect(extendedLineOf(run(' one', '-def load(path):', '+def load(path, strict):', ' three'), 2)).toEqual({ line: 2, text: 'def load(path):' });
-    // A line inserted before the extended one is new, so only the extended line maps.
-    expect([2, 3].map(line => extendedLineOf(run(' one', '-b(x);', '+new();', '+b(x, y);', ' three'), line))).toEqual([undefined, { line: 2, text: 'b(x);' }]);
-    // Removed and added lines out of order still pair by their text.
-    expect([2, 3].map(line => extendedLineOf(run(' one', '-a(1)', '+a(1, 2)', '-b(1)', '+b(1, 2)', ' four'), line))).toEqual([{ line: 2, text: 'a(1)' }, { line: 3, text: 'b(1)' }]);
-    // A rewritten line, a condition negated, inverted, narrowed or widened past the list, a changed number, a change of
-    // whitespace, a comma outside any bracket, a blank removed line, a kept line and an old line two added lines both
-    // extend map to nothing.
-    expect(extendedLineOf(run(' one', '-foo(x);', '+bar(x);', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-if (x) {', '+if (!x) {', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-if (ok) {', '+if (ok === false) {', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-if (ready) {', '+if (ready && open) {', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-if (isAllowed(user)) {', '+if (isAllowed(user, role) || isAdmin()) {', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-parts = s.split(" ");', '+parts = s.split("");', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-let a b;', '+let ab;', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-  read();', '+    read();', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-return a', '+return a, b', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-ok = x > 0;', '+ok = x >= 0;', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-timeout = 5;', '+timeout = 50;', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-limit = 1;', '+limit = 1.5;', ' three'), 2)).toBeUndefined();
-    expect(extendedLineOf(run(' one', '-', '+next();', ' three'), 2)).toBeUndefined();
-    expect([2, 3].map(line => extendedLineOf(run(' one', '-f(a);', '+f(a, b);', '+f(a, c);', ' three'), line))).toEqual([undefined, undefined]);
-    expect([1, 2, 3, 4].map(line => extendedLineOf(file, line))).toEqual([undefined, undefined, undefined, undefined]);
-  });
-
-  it('reads the end of a long removed line in linear time, since the PR author writes it', async () => {
-    await expectLinearTime((size) => {
-      const file = parsePRDiff(['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', '@@ -1,1 +1,1 @@', `-f(${' )'.repeat(size)}x`, `+f(${' )'.repeat(size)}y`].join('\n')).files[0];
-      const started = performance.now();
-      expect(extendedLineOf(file, 1)).toBeUndefined();
-      return performance.now() - started;
-    }, 50_000);
   });
 
   it('tells a line right before or after a run of changed lines from the changed line and a line further away', () => {

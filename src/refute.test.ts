@@ -1183,48 +1183,6 @@ describe('refuteBlockers', () => {
     const doubtBudget = { left: 8 };
     await refuteBlockers(first, listed, { workspace, diff, restatesEarlier: linked, doubtBudget });
     expect([first.calls.map(([title]) => title), doubtBudget]).toEqual([['Unproven 1'], { left: 7 }]);
-
-    // A warning or a note a reviewer calls older than this PR is checked at the round's end, and its check asks the
-    // question about the base. A warning comes before a doubted security finding, and a note after it. A security
-    // finding that claims to be older is not checked for that, nor one a later step leaves out, nor one in a file the PR
-    // added, which has no place at the base. Nor is one a finder filed as a blocker without a second refuter, since one
-    // answer about the base never lowers it.
-    const claim = { preExisting: 'The send came before the peer was recorded already.' };
-    const claimed = [
-      finding('Older note', { severity: 'note', ...claim }),
-      doubted,
-      finding('Older warning', { severity: 'warning', ...claim }),
-      finding('Older security warning', { severity: 'warning', tags: ['security'], ...claim }),
-      finding('Older warning left out', { severity: 'warning', ...claim }),
-      finding('Older warning filed as a blocker', { severity: 'warning', reviewerSeverity: 'blocker', ...claim }),
-      finding('Older warning in an added file', { severity: 'warning', file: 'src/new.ts', line: 1, evidence: { checks: [], proof: ['src/new.ts:1'] }, ...claim }),
-    ];
-    writeFileSync(join(workspace, 'src', 'new.ts'), 'send(peer);\n');
-    const grown: ParsedDiff = { ...diff, files: [...diff.files, { path: 'src/new.ts', changeType: 'added', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, content: '+send(peer);' }] }] };
-    const leftOut = (f: Finding) => f.title.endsWith('left out');
-    // A workspace that holds no base cannot settle a claim of being older, so only the security finding is checked.
-    const baseless = fakeClient(Object.fromEntries(claimed.map(f => [f.title, answer('unsettled')])));
-    await refuteRound(baseless, claimed, { workspace, diff: grown, unpostedLater: leftOut });
-    expect(baseless.calls.map(([title]) => title)).toEqual(['Security with a doubt']);
-    mkdirSync(join(workspace, '.git'));
-    writeFileSync(join(workspace, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: [] }));
-    const olderOrder = ['Older warning', 'Security with a doubt', 'Older note'];
-    for (const left of [1, 2, 3]) {
-      const older = fakeClient(Object.fromEntries(claimed.map(f => [f.title, answer('unsettled')])));
-      const budget = { left };
-      const judged = await refuteBlockers(older, claimed, { workspace, diff: grown, doubtBudget: budget, unpostedLater: leftOut });
-      expect(older.calls).toHaveLength(0);
-      await refuteBlockers(older, judged, { workspace, diff: grown, doubtBudget: budget, unpostedLater: leftOut, roundEnd: true });
-      expect(older.calls.map(([title]) => title).sort()).toEqual(olderOrder.slice(0, left).sort());
-      expect(older.calls.find(([title]) => title === 'Older warning')![2]).toContain('## Warning a reviewer calls older than this PR: Older warning\n');
-      const asked = older.calls.filter(([title]) => title.startsWith('Older')).map(([, , user]) => user.includes(`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`));
-      expect(asked.every(Boolean)).toBe(true);
-    }
-    // A check made for the question about the base alone grades nothing. A disproof of the defect leaves the warning as
-    // it was, proven by its cited lines, since only an answer that finds the failure on the base is kept on it.
-    const disproving = fakeClient({ 'Older warning': { outcome: 'disproved', reason: 'r', proof: ['src/math.ts:2'] } });
-    const [unchanged] = await refuteBlockers(disproving, [claimed[2]], { workspace, diff, doubtBudget: { left: 8 }, roundEnd: true });
-    expect([disproving.calls.length, unchanged.severity, unchanged.refutation, checkStatus(unchanged)]).toEqual([1, 'warning', undefined, 'proven']);
   });
 
   it('asks each blocker whether its failure is the PR\'s own, apart from its outcome, and reuses a stored check only with that answer', async () => {
@@ -1275,7 +1233,7 @@ describe('refuteBlockers', () => {
     const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
     expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, true, true, true, true, false]);
     // The workspace holds the base, so the refuter cites the lines of the base and reads a changed file there.
-    expect(client.messages[0][0]).toContain('with the line the finding flags as it is numbered at the base. When this PR only extended the flagged line, keeping the old line and adding items to a list in it, cite the old line, as numbered at the base. A change that leaves the failure as it was does not make it the PR\'s own, but a failure that comes from what this PR added to the line, such as a new argument, is the PR\'s own. Any other flagged line this PR added or changed never fails the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them');
+    expect(client.messages[0][0]).toContain('with the line the finding flags as it is numbered at the base. Only a flagged line this PR left unchanged can fail the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them');
     expect(client.messages[0][0]).toContain('does not show, read that file at the base with `read_file` and `ref` set to `base`, or how this PR changed those lines with `git_history`, or answer unsettled.');
     // A check that asks shows the PR's change to the cited files and names the other files the PR changes.
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
@@ -1310,20 +1268,16 @@ describe('refuteBlockers', () => {
       expect([model, !!sameOnBase(one), !!oneCheckOnBase(one)]).toEqual([model, false, true]);
     }
 
-    // The diff maps the flagged line to the base. A line the PR only extended counts at the old line it extends. Any
-    // other line the PR added or changed never counts, nor does the same text at another line of the base, nor an
-    // unchanged line the finding's evidence cites.
-    const moved = gitWorkspace({ 'src/lines.ts': 'shared();\nb(x);\nc\nshared();\n' }, { 'src/lines.ts': 'shared();\nb(x, y);\nnew\nc\nshared();\nadded();\n' }, []);
+    // The diff maps the flagged line to the base. A line the PR changed or added never counts, nor does the same text
+    // at another line of the base, nor an unchanged line the finding's evidence cites.
+    const moved = gitWorkspace({ 'src/lines.ts': 'shared();\nb\nc\nshared();\n' }, { 'src/lines.ts': 'shared();\nb2\nnew\nc\nshared();\n' }, []);
     const at = (line: number, proof: string[], evidence = [`src/lines.ts:${line}`]) => ({ line, proof, evidence });
     const cases: Record<string, ReturnType<typeof at>> = {
       'Unchanged line at its base line': at(5, ['src/lines.ts:4']),
       'Unchanged line in a cited range': at(5, ['src/lines.ts:3-4']),
       'Unchanged line at a wrong base line': at(5, ['src/lines.ts:1']),
-      'Extended line': at(2, ['src/lines.ts:2']),
-      'Extended line at a line it does not extend': at(2, ['src/lines.ts:1']),
-      'Line added beside an extended one': at(3, ['src/lines.ts:3']),
-      'Line added beside an extended one at the line that one extends': at(3, ['src/lines.ts:2']),
-      'Line added in a run that removes nothing': at(6, ['src/lines.ts:4']),
+      'Changed line': at(2, ['src/lines.ts:2']),
+      'Added line': at(3, ['src/lines.ts:3']),
       'Changed line with an unchanged evidence line': at(2, ['src/lines.ts:4'], ['src/lines.ts:2', 'src/lines.ts:5']),
     };
     const mapped = await refuteBlockers(
@@ -1335,11 +1289,8 @@ describe('refuteBlockers', () => {
       ['Unchanged line at its base line', 'disproved'],
       ['Unchanged line in a cited range', 'disproved'],
       ['Unchanged line at a wrong base line', 'unsettled'],
-      ['Extended line', 'disproved'],
-      ['Extended line at a line it does not extend', 'unsettled'],
-      ['Line added beside an extended one', 'unsettled'],
-      ['Line added beside an extended one at the line that one extends', 'unsettled'],
-      ['Line added in a run that removes nothing', 'unsettled'],
+      ['Changed line', 'unsettled'],
+      ['Added line', 'unsettled'],
       ['Changed line with an unchanged evidence line', 'unsettled'],
     ]);
     // A change the diff does not show leaves no line to map, and no diff at all leaves the answer open too.
