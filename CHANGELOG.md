@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.0] - 2026-11-21
+
+Manki 7.7 is about the first round finding what later rounds used to find. Each finder answers for every unit of the change, a second read looks for what the first one missed, and new checks beside the finders ask whether each fix reaches its root cause and whether new code fits how the repository already does the same thing. Each slice of a large PR gets a map of the whole change, and a check can read a dependency's source at the version the PR builds against, or any file as it was before the PR. A blocker the base branch already had stops blocking once two checks prove it, and a failed review retries only the part that failed. Nothing breaks on the upgrade, but read Upgrading for the new settings and the few changes in behaviour.
+
+### Upgrading
+
+1. New top-level setting `closed_paths`, a list of globs that closes nothing by default. No review stage may read a closed path: it is left out of every diff, deleted from the checkout the reviewer tools read, and refused by Manki's tool server with a message that names the pattern. A PR that changes a closed file lists it as unread, so Manki never approves it and a person has to look. `exclude_paths` keeps its meaning ("not in the diff") ([#1785](https://github.com/manki-review/manki/pull/1785)).
+2. New setting `review.scope_blocks`, off by default. Every round that reads more than a trivial change now asks whether the PR is useful and whether it mixes topics that belong in separate PRs, and shows a doubt or the proposed PRs in a **Scope** section of the review body that never holds the approval. With the setting on, a doubt the refuter confirms from the code, or a proposed split, becomes a warning that holds the approval until its thread is resolved. A PR has at most one such thread of each kind, and a settled one opens again only when the PR title or description changes ([#1798](https://github.com/manki-review/manki/pull/1798)).
+3. New action input `openai_oauth_file` names a Codex login file (`auth.json`) on a self-hosted runner, in place of the `openai_oauth_token` secret. Manki writes the tokens Codex renews back to the file, so the login no longer goes stale and nobody has to upload the secret again. The run stops with a message when another user can read the file, when it is a symbolic link or sits in the workspace, or when `openai_oauth_token` or `openai_base_url` is set too. `docs/getting-started.md` has the steps ([#1813](https://github.com/manki-review/manki/pull/1813)).
+4. A blocker is posted as pre-existing only when two refuters on different models prove the base branch fails the same way, so set `models.second_refuter` to a model other than the judge's to use it. With one refuter the blocker keeps blocking and only gets a "Possibly older than this PR" note ([#1841](https://github.com/manki-review/manki/pull/1841), [#1868](https://github.com/manki-review/manki/pull/1868)).
+5. A `dependency` related repo without a `ref` is now read at the commit the PR's own lockfiles lock for it, instead of its default branch. A configured `ref` still wins, and a repo no lockfile locks at one commit is read at its default branch as before ([#1858](https://github.com/manki-review/manki/pull/1858)).
+6. A Gemini reviewer on a self-hosted runner no longer uses a login kept in `~/.gemini/oauth_creds.json`. Set `gemini_oauth_token` instead ([#1805](https://github.com/manki-review/manki/pull/1805)).
+
+### How finders search
+
+- Each finder answers for every unit of the change: every function the change touches and every run of lines that adds, changes or removes a condition. It gives one line per unit with what it checked and the defect it found or none. A unit without a line is asked about once more, and one still without a line shows in the round record as not covered. Unit lines are never posted ([#1853](https://github.com/manki-review/manki/pull/1853)).
+- A first review reads the change a second time inside the same round. One finder's model reads its message again with the location and title of each finding so far, and is asked only for defects the list does not cover. This costs one or two more finder calls, and the progress comment counts them on a line of their own ([#1854](https://github.com/manki-review/manki/pull/1854)).
+- A call beside the finders finds the fixes in a change, also in a feature or refactor PR, and checks each one for its root cause. A fix that only hides the symptom gets a finding that names the cause and the change there that would replace the PR's fix. The sibling comparisons, related repository checks, claim checks, sweeps and the verdict reader also propose the fix at the root cause ([#1851](https://github.com/manki-review/manki/pull/1851), [#1869](https://github.com/manki-review/manki/pull/1869)).
+- Each new file, type, function, error kind or config key gets one small call that finds at least two places in the repository doing the same kind of thing and compares the new code with them. A finding is posted only for a difference the code shows, with its practical cost, such as a new handler that skips the session check every other handler makes ([#1848](https://github.com/manki-review/manki/pull/1848)).
+- On a PR over 1,500 changed lines, each slice now gets a short map of the other slices: how each file changed and up to 6 declarations the change removes, changes or adds there. A defect split across two slices, such as a signature changed in one and called the old way in another, no longer depends on a finder opening the other file. A finder that read in slices and opened none of the listed files outside the diff is asked again, as a finder of one call already was ([#1855](https://github.com/manki-review/manki/pull/1855), [#1803](https://github.com/manki-review/manki/pull/1803)).
+- The finders, claim checks and refuters can read a dependency's published source at the version the PR builds against, named as `crates.io/<name>` or `npm/<name>`. A claim about the library's behaviour can then be confirmed or disproved from its own lines, cited as `crates.io/time@0.3.47:src/date.rs:120`. Manki reads only crates.io and npm over HTTPS, checks the archive against the lockfile's checksum, and refuses a package whenever the installed code could differ from the registry's, such as with an override, a patch or another registry ([#1793](https://github.com/manki-review/manki/pull/1793)).
+- Every stage with repository tools can read a file as it was before the PR with `read_file` and `ref: base`. A refuter can see whether the code already failed the same way, and a finder or a reply can read a file the PR deletes ([#1846](https://github.com/manki-review/manki/pull/1846)).
+
+### Earlier threads
+
+- A push that claims to fix a thread but only works around the reported case leaves the thread open as partly fixed, with the cause or the input that still fails. This holds whatever the judge found when a standing fix check calls the push a workaround within 5 lines of the thread ([#1869](https://github.com/manki-review/manki/pull/1869)).
+- A review pauses with "a blocker came back after a fix" only after a real fix was tried. A blocker the author dismissed, or said another PR fixes, while leaving the code alone is posted again as a normal blocker and automatic review goes on. A blocker settled without a fix never counts as a failed fix, and a finding that restates such a waived thread under a new title in the same file is dropped ([#1843](https://github.com/manki-review/manki/pull/1843), [#1871](https://github.com/manki-review/manki/pull/1871)).
+- A reply that says another pull request fixes a finding is checked. When that PR is merged into the default branch and replaced the finding's line, Manki confirms it and asks to update the branch, otherwise it answers Unverified with the reason. The check never resolves a thread or lifts a hold. A dismissal note and the approval name the claimed PR and whether Manki confirmed it ([#1847](https://github.com/manki-review/manki/pull/1847)).
+- Dedup against resolved and dismissed threads also catches a repeat a finder cites from another file, when it shares a cited line with the earlier finding ([#1843](https://github.com/manki-review/manki/pull/1843)).
+
+### Review loop and verdicts
+
+- A blocker whose failure the base branch already had no longer blocks the PR. A check reads the base with repository tools, and Manki accepts its answer only when the cited lines are there at the base and the flagged line is one the PR left unchanged. When two refuters on different models both pass, the finding is posted as pre-existing with "Already broken before this PR" and does not hold the approval. The judge's own call that a finding is pre-existing never lowers a grade ([#1841](https://github.com/manki-review/manki/pull/1841), [#1868](https://github.com/manki-review/manki/pull/1868)).
+- A pre-existing finding is posted only when it would block had the PR caused it, or when it is a security finding. Every other pre-existing finding goes to the round record only ([#1841](https://github.com/manki-review/manki/pull/1841)).
+- A warning needs a consequence someone would notice in realistic use. A real cost nobody would notice is a note, and a finding about a cost states the scale the code shows. When the code does not show the scale, the warning stays ([#1884](https://github.com/manki-review/manki/pull/1884)).
+- A blocker a finder filed is no longer lost when the judge drops it on an unchecked claim about code outside the diff. The refuter checks that claim, and the finding is posted only when the check disproves it ([#1839](https://github.com/manki-review/manki/pull/1839)).
+- When two finders report the same defect and only one files it as a blocker, a doubt the judge names needs every check to confirm the consequence too. Without that the finding is posted as a warning ([#1835](https://github.com/manki-review/manki/pull/1835)).
+- A warning is no longer posted as confirmed when its check left open the premise the judge said decides whether the defect exists. It stays in the round record as unsettled. A blocker keeps its grade, and only its status label can change ([#1831](https://github.com/manki-review/manki/pull/1831)).
+- A finding that repeats another one from a different file goes to the dedup model, so it is no longer posted twice. This covers sweep findings, verdict reader blockers and earlier open findings ([#1830](https://github.com/manki-review/manki/pull/1830)).
+
+### Review format
+
+- While a review runs, the progress comment shows what each stage is doing: each finder's tool steps and time so far, one line for the comparisons and claim checks, and the judge's grading, refuter checks and verdict reader. The finished comment adds up: the side checks, second reads and sweeps keep their lines, the sweeps sit under the judge, and the judge's line names merged findings and what was added before and after it ([#1825](https://github.com/manki-review/manki/pull/1825), [#1863](https://github.com/manki-review/manki/pull/1863), [#1865](https://github.com/manki-review/manki/pull/1865)).
+- A message that names a next step carries a box for it, so the step is one tick: **Review again**, **Check approval**, **Forget this learning** and **Dismiss this finding**. The text still names the command as a second way ([#1856](https://github.com/manki-review/manki/pull/1856)).
+- A "Needs a human" headline says how much the round found, such as "1 blocker came back after a fix, plus 3 blockers and 1 warning in threads." A "Changes requested" line no longer counts a warning thread as a blocker ([#1836](https://github.com/manki-review/manki/pull/1836)).
+- A finding with an open issue that tracks it shows "Tracked in #N". The link never changes a grade or a hold ([#1868](https://github.com/manki-review/manki/pull/1868)).
+- A review with a finding off the changed lines shows as one review. File-level threads no longer appear as a second, empty review ([#1840](https://github.com/manki-review/manki/pull/1840)).
+- The review box reads "Review now" until the PR's first review, and "Review again" after it ([#1819](https://github.com/manki-review/manki/pull/1819)).
+- Test files are told apart by one rule that follows each language's test tools, so Swift, Java, Kotlin, C#, Go, Python, Ruby and Rust test layouts count when notes on test files are dropped from the second round on. A data or document file counts only under a test folder ([#1803](https://github.com/manki-review/manki/pull/1803)).
+
+### Security
+
+- On a self-hosted runner, a Claude or Gemini reviewer no longer sees what the runner's user keeps in `~/.claude`, `~/.claude.json`, `~/.gemini` or `~/.agents`. Before, the Gemini CLI read the runner's instructions, extensions, MCP servers and `.env`, and the Claude CLI wrote each call's transcript into the runner's home ([#1805](https://github.com/manki-review/manki/pull/1805)).
+- Manki reads a Codex call's answer, limits and errors from the JSON events of `codex exec --json` instead of plain text. A pull request that steers the model into writing `ERROR:` lines can no longer make a failed call pass for a limit or a retry ([#1812](https://github.com/manki-review/manki/pull/1812)).
+- A maintainer can let an account without write access use Manki in one repository with `/manki allow`, `/manki disallow` and `/manki allowed`. An allowed account's commands, replies and box ticks work like a collaborator's, but it never holds a role such as `author_clear_role`. `docs/security.md` has "Who can command Manki" ([#1867](https://github.com/manki-review/manki/pull/1867)).
+
+### Reviewer groups and models
+
+- `gpt-6.2-sol` has a price, the same as GPT 6.1 Sol, so its cost is no longer unknown ([#1817](https://github.com/manki-review/manki/pull/1817)).
+- A Codex reviewer records its token counts, so the round's cost and token totals include it ([#1822](https://github.com/manki-review/manki/pull/1822)).
+- A long-prompt price applies only when one request of a call passes the limit, not when the call's requests add up past it. A CLI call with tools was estimated at about twice its cost ([#1824](https://github.com/manki-review/manki/pull/1824)).
+
+### Reliability
+
+- The next review of a commit whose round ended incomplete keeps the results of the finders and checks that finished and runs only what failed. The review says what it kept. Review again and Deeper review keep nothing ([#1849](https://github.com/manki-review/manki/pull/1849)).
+- The token service's automatic retry of an incomplete review says so in its progress comment and review. The incomplete message says when that retry comes, and the failed run's progress comment is kept and marked superseded ([#1821](https://github.com/manki-review/manki/pull/1821)).
+- A failed OIDC token request is retried and its cause is logged. Before, a runner that lost its connection to GitHub ended with "the workflow needs `id-token: write`" although the workflow granted it ([#1882](https://github.com/manki-review/manki/pull/1882)).
+
+### Docs
+
+- `docs/how-reviews-work.md` says a Codex call records `wrapUpNoted` too ([#1845](https://github.com/manki-review/manki/pull/1845)).
+
+### Internal
+
+- The round record keeps the tool steps and files read of a Codex finder too, with the file and result size of each step, and `review-stats` shows the characters per read step ([#1844](https://github.com/manki-review/manki/pull/1844)).
+- The benchmark scores what each finder reported, so a missed item shows as never reported or as dropped at a named stage, and records which step raised each finding ([#1814](https://github.com/manki-review/manki/pull/1814), [#1881](https://github.com/manki-review/manki/pull/1881)).
+- `bench-report gate` exits non-zero unless the gate passes, so the benchmark's `report` job fails on a failed gate ([#1880](https://github.com/manki-review/manki/pull/1880)).
+- `review-history` writes a line for each round record it could not decode, and `calibration` skips that PR ([#1816](https://github.com/manki-review/manki/pull/1816)).
+- New tuning cases for the pattern checks, for fixes that hide the symptom and for large PRs with defects across slices ([#1850](https://github.com/manki-review/manki/pull/1850), [#1852](https://github.com/manki-review/manki/pull/1852), [#1862](https://github.com/manki-review/manki/pull/1862)).
+- Add real findings to hold-out keys ([#1883](https://github.com/manki-review/manki/pull/1883)).
+
 ## [7.6.3] - 2026-11-18
 
 Manki 7.6.3 makes a review finish when a model is limited or its endpoint cannot be reached. A limited or unreachable reviewer moves to its fallback model, a reviewer that ran out of time is not started over, and a round keeps inside the job's time so it always posts. Codex reviewers run in a home folder of their own, with only Manki's tools, and wait until those tools are ready. A review that is held by earlier warnings now names them. No setting changes.
