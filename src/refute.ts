@@ -663,10 +663,11 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
  * whether the defect exists, and one no cited line proves. Then come such warnings that `restatesEarlier` accepts,
- * which an earlier finding keeps posted, then the warnings that `claimsOlder`, whose check of the base can keep them
+ * which an earlier finding keeps posted, then the warnings that `older` accepts, whose check of the base can keep them
  * out of the review. Then come the findings the judge doubts that are posted without proof: a security finding and one
- * `gradedByRule` under `rules`. The notes that `claimsOlder` come last, since a later step can leave a note out anyway.
- * The findings checked only because they `claimsOlder` are also returned as `baseOnly`. A round can judge findings in several calls, so only the first group is returned for a judge
+ * `gradedByRule` under `rules`. The notes `older` accepts come last, since a later step can leave a note out anyway.
+ * The findings checked only because `older` accepts them are also returned as `baseOnly`. A round can judge findings
+ * in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding with a
  * `gradeIfConfirmed` above its grade is always checked: that check is how a warning with a blocker cell becomes a
@@ -676,15 +677,15 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  */
 function doubtsToCheck(
   findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
-  roundEnd = false, rules?: RulesMode,
+  older: (finding: Finding) => boolean, roundEnd = false, rules?: RulesMode,
 ): { checked: Finding[]; reused: Finding[]; over: Finding[]; baseOnly: Finding[] } {
   const unchecked = (f: Finding): boolean => !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation;
   const warnings = findings.filter(f => f.severity === 'warning' && unchecked(f));
   const unproven = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f)));
   const statusOnly = warnings.filter(f => !needsProof(f, rules) && doubtsDefect(f));
-  const olderNotes = findings.filter(f => f.severity === 'note' && unchecked(f) && claimsOlder(f));
-  const groups = roundEnd ? [...new Set([...unproven.filter(restatesEarlier), ...warnings.filter(claimsOlder), ...statusOnly, ...olderNotes])] : unproven.filter(f => !restatesEarlier(f));
-  const baseOnly = roundEnd ? [...warnings, ...olderNotes].filter(f => claimsOlder(f) && !unproven.includes(f) && !statusOnly.includes(f)) : [];
+  const olderNotes = findings.filter(f => f.severity === 'note' && unchecked(f) && older(f));
+  const groups = roundEnd ? [...new Set([...unproven.filter(restatesEarlier), ...warnings.filter(older), ...statusOnly, ...olderNotes])] : unproven.filter(f => !restatesEarlier(f));
+  const baseOnly = roundEnd ? [...warnings, ...olderNotes].filter(f => older(f) && !unproven.includes(f) && !statusOnly.includes(f)) : [];
   const open = groups.filter(f => !noCheck(f));
   const reused = open.filter(needsNoCall);
   const ordered = open.filter(f => !reused.includes(f));
@@ -865,7 +866,9 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
   const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
-  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, roundEnd, rules);
+  // A claim of being older is worth a check only when the flagged line has a place at the base that `checkBase` accepts.
+  const older = (finding: Finding): boolean => claimsOlder(finding) && !!workspace && !!flaggedLineAtBase(finding, workspace, diff, excludedPaths ?? []);
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, older, roundEnd, rules);
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);
   const baseOnly = new Set(picked.baseOnly);
