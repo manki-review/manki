@@ -2445,7 +2445,7 @@ describe('runJudgeAgent', () => {
     }
   });
 
-  it('lowers a blocker only the judge raised when two refuters disprove it, but never in the file of an open thread that blocks', async () => {
+  it('lowers a blocker only the judge raised when two refuters disprove it, but never one that restates an open thread that blocks', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -2469,10 +2469,12 @@ describe('runJudgeAgent', () => {
 
     try {
       expect(await gradeWith([])).toBe('warning');
-      // A thread that does not block, or one in another file, leaves the finding nothing to restate.
-      expect(await gradeWith([{ severity: 'note' }, { severity: 'blocker', file: 'src/other.ts' }])).toBe('warning');
-      expect(await gradeWith([{ severity: 'blocker' }])).toBe('blocker');
-      expect(await gradeWith([{ severity: 'warning', recordedGrade: 'blocker' }])).toBe('blocker');
+      // A thread that does not block, one in another file, or an unrelated blocker in the same file leaves the finding nothing to restate.
+      const same = { title: 'Channel closed twice', line: 9 };
+      expect(await gradeWith([{ ...same, severity: 'note' }, { ...same, severity: 'blocker', file: 'src/other.ts' }])).toBe('warning');
+      expect(await gradeWith([{ severity: 'blocker' }])).toBe('warning');
+      expect(await gradeWith([{ ...same, severity: 'blocker' }])).toBe('blocker');
+      expect(await gradeWith([{ ...same, severity: 'warning', recordedGrade: 'blocker' }])).toBe('blocker');
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -5524,10 +5526,10 @@ describe('buildJudgeUserMessage with linked issues', () => {
 });
 
 describe('deduplicateFindings', () => {
-  it('removes findings with identical title and file, keeps the reviewers of both, keeps a pre-existing mark only when every copy has it, and keeps the first rule a copy quotes', () => {
+  it('removes findings with identical title and file on nearby lines, keeps the reviewers of both, keeps a pre-existing mark only when every copy has it, and keeps the first rule a copy quotes', () => {
     const findings = [
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 10, reviewers: ['R1'], preExisting: 'Old code.' }),
-      makeFinding({ title: 'Null check', file: 'src/a.ts', line: 20, reviewers: ['R2'] }),
+      makeFinding({ title: 'Null check', file: 'src/a.ts', line: 14, reviewers: ['R2'] }),
     ];
 
     const result = deduplicateFindings(findings);
@@ -5556,18 +5558,18 @@ describe('deduplicateFindings', () => {
     expect(deduplicateFindings([{ ...findings[0], rule: confirmed }, { ...findings[1], rule: { ...rule, verdict: 'confirmed' } }])[0].rule).toEqual(confirmed);
     // The line that proves a confirmed rule comes with it, and only then does a copy's evidence reach the kept finding.
     const cited = (proof: string): Finding['evidence'] => ({ checks: [], proof: [proof] });
-    const withProof = (verdict: 'confirmed' | 'not_broken') => deduplicateFindings([{ ...findings[0], evidence: cited('src/a.ts:10') }, { ...findings[1], rule: { ...other, verdict }, evidence: cited('src/a.ts:20') }])[0].evidence?.proof;
-    expect([withProof('confirmed'), withProof('not_broken')]).toEqual([['src/a.ts:10', 'src/a.ts:20'], ['src/a.ts:10']]);
+    const withProof = (verdict: 'confirmed' | 'not_broken') => deduplicateFindings([{ ...findings[0], evidence: cited('src/a.ts:10') }, { ...findings[1], rule: { ...other, verdict }, evidence: cited('src/a.ts:14') }])[0].evidence?.proof;
+    expect([withProof('confirmed'), withProof('not_broken')]).toEqual([['src/a.ts:10', 'src/a.ts:14'], ['src/a.ts:10']]);
 
     // A dropped copy on a changed line, or citing one as proof, ties the finding to this PR, so the mark goes.
-    const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: '' }] })]);
+    const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 13, oldLines: 3, newStart: 13, newLines: 3, content: '' }] })]);
     const marked = { ...findings[1], preExisting: 'Old code.' };
     const stays = (copy: Finding) => preExistingCheck(copy, diff, new Set()) === 'pre_existing';
     expect(deduplicateFindings([findings[0], marked], stays)[0].preExisting).toBeUndefined();
-    const citing = { ...marked, line: 40, evidence: { checks: [], proof: ['src/a.ts:19-20'] } };
+    const citing = { ...marked, line: 8, evidence: { checks: [], proof: ['src/a.ts:14-15'] } };
     expect(deduplicateFindings([findings[0], citing], stays)[0].preExisting).toBeUndefined();
-    expect(deduplicateFindings([findings[0], { ...marked, line: 0 }], stays)[0].preExisting).toBeUndefined();
-    expect(deduplicateFindings([findings[0], { ...marked, line: 40 }], stays)[0].preExisting).toBe('Old code.');
+    expect(deduplicateFindings([{ ...findings[0], line: 2 }, { ...marked, line: 0 }], stays)[0].preExisting).toBeUndefined();
+    expect(deduplicateFindings([findings[0], { ...marked, line: 8 }], stays)[0].preExisting).toBe('Old code.');
 
     // The kept finding takes the highest grade a finder gave any copy, read from where a copy's grade path starts.
     const raised: Finding = { ...findings[0], severity: 'blocker', reviewerSeverity: 'note', gradePath: [{ from: 'note', to: 'blocker', by: 'judge' }] };
@@ -5606,6 +5608,18 @@ describe('deduplicateFindings', () => {
 
     const result = deduplicateFindings(findings);
     expect(result).toHaveLength(2);
+  });
+
+  it('keeps the same title on distant lines apart, and keeps the highest grade of the copies it merges', () => {
+    const blocker = makeFinding({ title: 'Null check', file: 'src/a.ts', line: 10, severity: 'blocker', reviewers: ['R1'] });
+    const warning = makeFinding({ title: 'Null check', file: 'src/a.ts', line: 40, severity: 'warning', reviewers: ['R2'] });
+    expect(deduplicateFindings([warning, blocker])).toEqual([warning, blocker]);
+    // A blocker after a warning on a nearby line is kept, with the reviewers of both.
+    const [kept] = deduplicateFindings([{ ...warning, line: 12 }, blocker]);
+    expect(kept).toMatchObject({ line: 10, severity: 'blocker', reviewers: ['R1', 'R2'] });
+    // A chain of nearby copies never joins two distant ones.
+    const between = { ...warning, line: 14, reviewers: ['R3'] };
+    expect(deduplicateFindings([blocker, between, { ...warning, line: 18 }]).map(f => f.line)).toEqual([10, 18]);
   });
 
   it('preserves the first occurrence and drops subsequent duplicates', () => {
@@ -5720,18 +5734,18 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].severity).toBe('note');
   });
 
-  it('suppresses by ratchet even when line delta exceeds the window', () => {
+  it('suppresses by ratchet beyond the line window only when the judge links the finding to the prior', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 100, severity: 'note' })];
-    const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
-      severity: 'note',
-      title: 'Unused variable',
-      authorReply: 'agree',
-    }])];
+    const fingerprint = { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') };
+    const prior = [makePriorRound([{ fingerprint, severity: 'note', title: 'Unused variable', authorReply: 'agree' }])];
 
+    // The same title far away can be another place with the same defect.
     const result = applyCrossRoundSuppression(findings, prior);
-    expect(result.suppressedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.suppressedCount).toBe(0);
+    expect(result.findings[0].severity).toBe('note');
+    const linked = applyCrossRoundSuppression([{ ...findings[0], sameAs: stringifyFindingFingerprint(fingerprint) }], prior);
+    expect(linked.suppressedCount).toBe(1);
+    expect(linked.findings[0].severity).toBe('ignore');
   });
 
   it('does not demote required via contradiction (prompt injection guard)', () => {
@@ -5987,9 +6001,9 @@ describe('applyCrossRoundSuppression', () => {
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(0);
     expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
-    // Ratchet fires since the match is file+slug only (no line constraint), suppressing the finding.
-    expect(result.suppressedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('ignore');
+    // The ratchet needs the line window too, so the finding stays.
+    expect(result.suppressedCount).toBe(0);
+    expect(result.findings[0].severity).toBe('warning');
   });
 
   it('demotes a warning via contradiction at exact LINE_WINDOW boundary (inside)', () => {
@@ -6245,26 +6259,25 @@ describe('applyCrossRoundSuppression', () => {
       expect(result.findings[0].severity).toBe('note');
     });
 
-    it('matches by fuzzy line proximity when slug differs and the prior thread is resolved', () => {
+    it('matches a reworded title near a resolved prior only when the judge links the two', () => {
       const findings = [makeFinding({
         title: 'Reworded title for same concern',
         file: 'src/a.ts',
         line: 13,
         severity: 'note',
       })];
-      const prior = [makePriorRound([{
-        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Original concern') },
-        severity: 'note',
-        title: 'Original concern',
-        authorReply: 'none',
-        threadId: 'TH1',
-      }])];
+      const fingerprint = { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Original concern') };
+      const prior = [makePriorRound([{ fingerprint, severity: 'note', title: 'Original concern', authorReply: 'none', threadId: 'TH1' }])];
 
+      // A nearby line alone can hold a new defect.
       const result = applyCrossRoundSuppression(findings, prior, {
         resolvedThreadIds: new Set(['TH1']),
       });
-      expect(result.suppressedCount).toBe(1);
-      expect(result.findings[0].severity).toBe('ignore');
+      expect(result.suppressedCount).toBe(0);
+      expect(result.findings[0].severity).toBe('note');
+      const linked = applyCrossRoundSuppression([{ ...findings[0], sameAs: stringifyFindingFingerprint(fingerprint) }], prior, { resolvedThreadIds: new Set(['TH1']) });
+      expect(linked.suppressedCount).toBe(1);
+      expect(linked.findings[0].severity).toBe('ignore');
 
       // A lockfile alert on a nearby package names another package, so only the same title repeats it.
       const resolvedAlert = (title: string) => [makePriorRound([{

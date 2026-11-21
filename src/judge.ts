@@ -19,7 +19,7 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, restatesEarlier, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { lacksTrigger, MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, needsProof, refuteBlockers } from './refute';
@@ -1819,7 +1819,7 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
 
 /**
  * Applies the judge's entries to the findings they name by `id`, then folds the findings the judge marked as
- * duplicates, and then the copies `deduplicateFindings` merges by title and file. A `sameAs` or `variantOf` that names no entry of
+ * duplicates, and then the copies `deduplicateFindings` merges by title and place. A `sameAs` or `variantOf` that names no entry of
  * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
  * A drop gets a `dropCheck` only with `dropsChecked`, set when a refuter checks the round, so no record shows a check that cannot run.
  */
@@ -1833,7 +1833,7 @@ export function mapJudgedToFindings(
   const aligned = alignJudgedToFindings(original, judged);
   const roots = duplicateRoots(aligned);
   // The copies both folds merge are graded as one finding, which is filed as a blocker only when every copy was.
-  const groups = roots.map(root => mergeKey(original[root - 1]));
+  const groups = copyGroups(roots.map(root => original[root - 1]));
   // A second read's copy is graded by no finder, so it counts only where no finder's copy is.
   const copies = (i: number): Finding[] => {
     const all = original.filter((_, j) => groups[j] === groups[i]);
@@ -2263,19 +2263,16 @@ export interface CrossRoundSuppressionOptions {
 /**
  * Apply cross-round suppression rules using prior-round handover state.
  *
- * Ratchet: if a prior finding with the same slug + file exists and the author
- * agreed (or the prior thread is resolved on GitHub), suppress the current
- * finding unless it is `blocker`.
+ * Ratchet: if the judge links the current finding to a prior finding, or a
+ * prior finding with the same slug + file + line proximity exists, and the
+ * author agreed (or the prior thread is resolved on GitHub), suppress the
+ * current finding unless it is `blocker`.
  *
  * Contradiction: if a prior finding with the same slug + file + line proximity
  * exists, the author agreed, and the current finding uses a reversal word,
  * demote a `warning` to `note` and annotate `judgeNotes`. `blocker`
  * findings are intentionally excluded from contradiction demotion to prevent
  * prompt injection attacks where adversarial PR content could silently hide real bugs.
- *
- * Resolved-thread priors also match by fuzzy line proximity (±`LINE_WINDOW`)
- * when slug differs, since reflowed code can shift line numbers and authors
- * may have resolved the thread without a fingerprint-stable reply.
  */
 export function applyCrossRoundSuppression(
   findings: Finding[],
@@ -2367,21 +2364,11 @@ export function applyCrossRoundSuppression(
       if (source === 'judge-addressed' && (current.severity === 'blocker' || current.severity === 'warning')) return false;
       // A lockfile alert names its package and change, so it repeats only an alert with the same title.
       if (isLockfileAlert(current.title) || isLockfileAlert(prior.title ?? '')) return prior.title === current.title;
-      if (prior.fingerprint.slug === slug) return true;
-      // Resolved-thread and judge-addressed priors fall back to fuzzy line
-      // proximity when the slug differs, since refactors can shift line
-      // numbers and the same underlying concern may surface with a reworded
-      // title. 'resolved' priors can suppress up to and including blocker
-      // (GitHub resolution is a strong trust signal), but 'judge-addressed'
-      // is restricted to notes because that signal is LLM-derived
-      // and must not retire higher-severity findings without explicit GitHub
-      // resolution.
-      if (source !== 'resolved' && source !== 'judge-addressed') return false;
-      if (current.severity === 'warning') return false;
-      return (
-        current.line >= prior.fingerprint.lineStart - LINE_WINDOW
-        && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW
-      );
+      // Only the judge's link, or the same title on a nearby line, makes it the same finding.
+      // A reworded or moved repeat of a resolved thread is left to the dedup model before the judge.
+      return current.sameAs === stringifyFindingFingerprint(prior.fingerprint) || (prior.fingerprint.slug === slug
+        && current.line >= prior.fingerprint.lineStart - LINE_WINDOW
+        && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW);
     });
     if (ratchetMatch && current.severity !== 'blocker') {
       Object.assign(current, gradeStep(current, 'ignore', ratchetMatch.source === 'resolved' ? 'resolved_thread' : 'ratchet', `matches round ${ratchetMatch.round}`));
@@ -2401,26 +2388,42 @@ function hasReversalWord(finding: Finding): boolean {
   return REVERSAL_WORDS.some(word => new RegExp(`\\b${word}\\b`).test(haystack));
 }
 
-const mergeKey = (f: Pick<Finding, 'title' | 'file'>): string => `${f.title}::${f.file}`;
+/**
+ * Returns, for each finding, the index of the first finding it is a copy of by `sameProblem`, or its own. A copy joins
+ * the first finding that heads a group, so a chain of nearby lines never joins two distant findings.
+ */
+function copyGroups(findings: readonly Finding[]): number[] {
+  const groups: number[] = [];
+  findings.forEach((f, i) => {
+    const head = groups.findIndex((g, j) => g === j && sameProblem(findings[j], f));
+    groups.push(head === -1 ? i : head);
+  });
+  return groups;
+}
 
 /**
- * Keeps the first finding per title and file, with the reviewers of every copy, the first trigger a copy names, the
- * finder grades `mergedFinderGrades` gives, the `mergedDropCheck` and the first rule a copy quotes. A finder's copy is kept over one only second reads reported. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
- * marked so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
+ * Merges the copies of one finding that `copyGroups` finds: the same title in one file on nearby lines. The copy with the
+ * highest grade is kept, and of copies graded alike a finder's over one only second reads reported, then the first. It
+ * takes the reviewers of every copy, the first trigger a copy names, the finder grades `mergedFinderGrades` gives, the
+ * `mergedDropCheck` and the first rule a copy quotes. It is a security finding when any copy is. The kept one stays
+ * pre-existing only when every dropped copy was marked so too and `staysPreExisting` accepts it, since a dropped copy's
+ * line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
-  const kept = new Map<string, Finding>();
-  for (const f of findings) {
-    const key = mergeKey(f);
-    const earlier = kept.get(key);
+  const groups = copyGroups(findings);
+  const kept = new Map<number, Finding>();
+  const rank = (f: Finding): number => SEVERITY_ORDER.indexOf(f.severity);
+  findings.forEach((f, i) => {
+    const earlier = kept.get(groups[i]);
     if (!earlier) {
-      kept.set(key, f);
-      continue;
+      kept.set(groups[i], f);
+      return;
     }
-    const [first, copy] = bySecondReadsOnly(earlier) && !bySecondReadsOnly(f) ? [f, earlier] : [earlier, f];
+    const keepsCopy = rank(f) !== rank(earlier) ? rank(f) < rank(earlier) : bySecondReadsOnly(earlier) && !bySecondReadsOnly(f);
+    const [first, copy] = keepsCopy ? [f, earlier] : [earlier, f];
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && copy.preExisting && (!staysPreExisting || staysPreExisting(copy));
-    kept.set(key, { ...unmarked, reviewers: [...new Set([...first.reviewers, ...copy.reviewers])], ...(stays && { preExisting }), ...(!first.trigger && copy.trigger && { trigger: copy.trigger }), ...mergedFinderGrades(first, copy), ...mergedDropCheck(first, copy), ...(copy.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, copy) });
-  }
+    kept.set(groups[i], { ...unmarked, reviewers: [...new Set([...first.reviewers, ...copy.reviewers])], ...(stays && { preExisting }), ...(!first.trigger && copy.trigger && { trigger: copy.trigger }), ...mergedFinderGrades(first, copy), ...mergedDropCheck(first, copy), ...(copy.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, copy) });
+  });
   return [...kept.values()];
 }

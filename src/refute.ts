@@ -11,7 +11,7 @@ import { readBaseText, readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, LLMResponse, NotStartedError } from './providers';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
-import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
+import { parseProof, sameProblem, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
 import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
@@ -521,9 +521,9 @@ function refutationNote(label: string, check: Refutation): string {
 }
 
 /**
- * Whether `finding` restates a blocker an earlier round recorded or an open thread that blocks. A finding in the file
- * of such a thread counts too, since a later step can fold it into that thread. So does one that names an earlier
- * finding no record holds.
+ * Whether `finding` restates a blocker an earlier round recorded or an open thread that blocks: the judge links it to
+ * one, or `sameProblem` matches it with such a thread, as a later step folds it in. So does one that names an earlier
+ * finding no record holds. Another finding in the file of such a thread is a defect of its own.
  */
 function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[], blockingThreads: readonly OpenThread[]): boolean {
   const entries = priorRounds.flatMap(r => r.findings.entries);
@@ -531,7 +531,7 @@ function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[],
     .map(key => entries.filter(e => stringifyFindingFingerprint(e.fingerprint) === key));
   if (named.some(found => found.length === 0 || found.some(e => e.severity === 'blocker'))) return true;
   const threadIds = [finding.threadId, finding.answeredIn?.threadId, ...named.flat().map(e => e.threadId)];
-  return blockingThreads.some(t => t.file === finding.file || threadIds.includes(t.threadId));
+  return blockingThreads.some(t => threadIds.includes(t.threadId) || sameProblem(t, finding));
 }
 
 /**

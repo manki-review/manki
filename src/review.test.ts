@@ -4091,7 +4091,8 @@ describe('runReview', () => {
   it('sweeps the diff for other instances of the class of each kept finding `review.sweep` names, and judges what it finds', async () => {
     const original = { severity: 'blocker', title: 'Cache key misses the locale', file: 'src/cache.ts', line: 10, description: 'd', evidence: ['src/cache.ts:10 builds the key'], proof: ['src/cache.ts:10'] };
     const elsewhere = { ...original, title: 'Search key misses the tenant', file: 'src/search.ts', line: 40, evidence: ['src/search.ts:40 builds the key'], proof: ['src/search.ts:40'] };
-    const restated = { ...original, title: 'Cache key misses the locale again', line: 14 };
+    // The blocker's own title a few lines off, which is certainly the same finding without a model.
+    const restated = { ...original, line: 14 };
     // Near the blocker in other words, which the dedup model calls the same defect.
     const reworded = { ...original, title: 'Locale is ignored when caching', line: 15, evidence: ['src/cache.ts:15 reads the key'], proof: ['src/cache.ts:15'] };
     // Another finding the round judged cites a place in another file, which the sweep then reports again.
@@ -4741,10 +4742,15 @@ describe('runReview', () => {
     expect(unnamed.outcome).toBe('ADDRESS_FIRST');
     expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.', description: 'The retry loop never ends.' })]);
 
-    // A kept finding that names the problem of a reader blocker folds into it, so the problem gets one thread. The
-    // finders graded it a warning six lines away, and each cites the other's line as proof. Its fix was written for its
-    // own line, so the blocker does not take it. Nearby findings about something else stay, also one whose title shares
-    // words with the blocker's by chance, and one that cites the blocker's line but sits only in a wide range it cites.
+    // A dedup model that calls a pair the same defect only when the title of its second finding contains one of `parts`.
+    const dedupSaying = (...parts: string[]) => ({ sendMessage: jest.fn(async (_system: string, user: string) => ({
+      content: JSON.stringify([...user.matchAll(/B: "([^"]*)"/g)].map(([, b], i) => ({ pair: i + 1, sameDefect: parts.some(part => b.includes(part)) }))),
+    })) }) as unknown as LLMClient;
+
+    // A kept finding the dedup model says names the problem of a reader blocker folds into it, so the problem gets one
+    // thread. The finders graded it a warning six lines away. Its fix was written for its own line, so the blocker does
+    // not take it. Nearby findings about something else stay, also one whose title shares words with the blocker's by
+    // chance, and one that cites the blocker's line.
     const sameCause = makeClients(JSON.stringify([{ severity: 'warning', title: 'Lock held', file: 'src/a.ts', line: 6, description: 'Deadlock.' }]));
     mockedRunJudgeAgent.mockResolvedValueOnce({
       summary: 'One warning.',
@@ -4768,7 +4774,7 @@ describe('runReview', () => {
         summary: 'Deadlock.', whatThisDoes: '', whatToTest: '',
       }),
     });
-    const folded = await runReview(sameCause, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    const folded = await runReview({ ...sameCause, dedup: dedupSaying('against its doc comment') }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     // A reader that leaves less than 30 seconds starts no dedup call on a finding near its blocker, and the round ends incomplete.
     const dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as LLMClient;
     const judgedOnce = mockedRunJudgeAgent.mock.calls.length;
@@ -4796,11 +4802,9 @@ describe('runReview', () => {
     expect(folded.findings[3]).not.toHaveProperty('suggestedFix');
     expect(folded.verdictTrace?.survivingBlockers.map(e => e.title)).toEqual(['`join` holds the `tasks` lock while it waits on them']);
 
-    // Two stages can word one defect differently. A kept finding a few lines from a reader blocker that cites a proof line
-    // the blocker cites too folds into it whatever the titles say, and the blocker's description keeps the other title.
-    // A finding as near without a common proof line stays, also one that shares a line only with the finding folded in.
-    // A common proof line counts only in the findings' file near both, so neither a shared helper line in another file
-    // nor a far line folds, and a finding far from the blocker stays too.
+    // Two stages can word one defect differently. A kept finding the dedup model calls the same defect as a reader blocker
+    // folds into it whatever the titles say, and the blocker's description keeps the other title. A finding as near that
+    // the model calls another defect stays, also one sharing a proof line with the blocker, in its file or another.
     const reworded = makeClients(JSON.stringify([{ severity: 'warning', title: 'Leak', file: 'src/a.ts', line: 40, description: 'Leaks.' }]));
     mockedRunJudgeAgent.mockResolvedValueOnce({
       summary: 'Six warnings.',
@@ -4823,7 +4827,7 @@ describe('runReview', () => {
         summary: 'Leak.', whatThisDoes: '', whatToTest: '',
       }),
     });
-    const relocated = await runReview(reworded, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    const relocated = await runReview({ ...reworded, dedup: dedupSaying('Connection leaked') }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(relocated.findings).toEqual([
       expect.objectContaining({ title: 'Timeout is never applied' }),
       expect.objectContaining({ title: 'Buffer is never flushed' }),
@@ -5404,13 +5408,23 @@ describe('runReview', () => {
     expect(unrelated.findings[0].threadId).toBeUndefined();
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
-    const refusing = makeClients();
-    jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
-      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 12, title: 'Old issue is still there.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
-    });
-    const readerRepeat = await runOn(refusing, 'sha2', [], [thread('resolved')]);
+    // The verdict reader names a blocker next to the fixed one in other words, so only the dedup model can link the two.
+    const refusing = (sameDefect?: boolean) => {
+      const clients = makeClients();
+      jest.mocked(clients.judge.sendMessage).mockResolvedValue({
+        content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 12, title: 'Old issue is still there.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+      });
+      if (sameDefect !== undefined) clients.dedup = { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify([{ pair: 1, sameDefect }]) }) } as unknown as import('./providers').LLMClient;
+      return clients;
+    };
+    const readerRepeat = await runOn(refusing(true), 'sha2', [], [thread('resolved')]);
     expect(readerRepeat.outcome).toBe('NOT_CONVERGING');
     expect(readerRepeat.needsHuman?.blockers.map(b => b.title)).toEqual(['Old issue']);
+    // Another defect next to the fixed blocker, or no answer from a dedup model, links nothing, so nothing pauses.
+    for (const clients of [refusing(false), refusing()]) {
+      const readerNew = await runOn(clients, 'sha2', [], [thread('resolved')]);
+      expect([readerNew.outcome, readerNew.needsHuman]).toEqual(['ADDRESS_FIRST', undefined]);
+    }
   });
 
   it('lists an earlier blocker that no thread carries again as a finding, without asking a model about it', async () => {
@@ -5690,6 +5704,8 @@ describe('runReview', () => {
       finding('warning', 'Cache never cleared', 'src/x.ts', 40, { variantOf: 'src/x.ts:40:40:cache-never-cleared' }),
       // A note on a file the PR did not change is recorded without being posted, before the fold.
       finding('note', 'Old helper is unused', 'src/z.ts', 3, { preExisting: 'The helper predates this PR.' }),
+      // A new defect next to the open thread, citing its line, stays apart unless the dedup model says otherwise.
+      finding('warning', 'Backoff overflows', 'src/x.ts', 11, { evidence: { checks: [], proof: ['src/x.ts:10', 'src/x.ts:11'] } }),
     ];
     const judged = { findings, summary: 'Findings.', threadEvaluations: [{ threadId: 'T2', status: 'addressed' as const, reason: 'Cleared now.' }] };
     mockedRunJudgeAgent.mockResolvedValue(judged);
@@ -5717,6 +5733,7 @@ describe('runReview', () => {
       ['Caller passes a vague name', undefined, undefined, 1],
       ['Caller passes a long name', undefined, undefined, undefined],
       ['Cache never cleared', undefined, 'src/x.ts:40:40:cache-never-cleared', undefined],
+      ['Backoff overflows', undefined, undefined, undefined],
     ]);
     // A restatement of a review body finding names it, whichever check made the link.
     expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
@@ -5727,7 +5744,7 @@ describe('runReview', () => {
     expect(result.verdictTrace?.unresolvedPriors).toEqual([]);
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
     expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"\n3.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Caller passes a vague name" (src/x.ts:60): "d"');
+    expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"\n3.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Caller passes a vague name" (src/x.ts:60): "d"\n4.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "Backoff overflows" (src/x.ts:11): "d"');
     // A judge that leaves less than 30 seconds starts no dedup call on the nearby pairs, and the round ends incomplete.
     jest.mocked(dedup.sendMessage).mockClear();
     const unfolded = await lateRound((deadline, leave) => {
@@ -5775,7 +5792,9 @@ describe('runReview', () => {
       expect(lower.findings[0]).not.toHaveProperty('threadId');
     }
 
-    // A reader blocker that absorbs a finding restating an open thread takes that thread too.
+    // A reader blocker that absorbs a finding restating an open thread takes that thread too. Its title only contains the
+    // finding's, so the dedup model folds the two.
+    reading.dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}]' }) } as unknown as LLMClient;
     mockedRunJudgeAgent.mockResolvedValue({ findings: [finding('warning', 'Retry never ends', 'src/x.ts', 13)], summary: 'One warning.' });
     jest.mocked(reading.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 16, title: 'Retry never ends under load', description: 'It spins.' }], summary: 'Spins.', whatThisDoes: '', whatToTest: '' }),

@@ -2251,8 +2251,10 @@ export async function runReview(
     logOutputTokens('Verdict reader', verdictUsage);
     core.info(`Verdict reader: ${verdictReport.verdict}. ${verdictReport.summary}`);
     if (verdictReport.verdict === 'ADDRESS_FIRST') {
-      const readerBlockers = verdictReport.blockers.map(f => {
-        const sameAs = matchPriorBlocker(f, priorBlockers);
+      const priorMatches = await matchPriorBlockers(verdictReport.blockers, priorBlockers, earlierWrap?.client);
+      if (stopped) return incompleteAfterJudge(stopped);
+      const readerBlockers = verdictReport.blockers.map((f, i) => {
+        const sameAs = priorMatches[i];
         const checked = capUnconfirmedBuildClaim(f.file ? { ...f, toolEvidence: checkFindingClaims(f, claimSources) } : f);
         return sameAs ? { ...checked, sameAs } : checked;
       });
@@ -3602,13 +3604,7 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined): Promise<{ findings: Finding[]; blockers: Finding[] }> {
   const merged = blockers.map(b => ({ ...b }));
   // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
-  const matched = findings.map(f => blockers.findIndex(b => sameProblem(b, f)));
-  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => mayRestate(b, f) ? [{ i, j }] : []) : []);
-  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} finding pairs that may restate each other stay apart unchecked, since the round has no dedup model`);
-  const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [blockers[j], findings[i]]), dedup) : [];
-  pairs.forEach(({ i, j }, k) => {
-    if (answers[k] && matched[i] === -1) matched[i] = j;
-  });
+  const matched = await sameDefectIndexes(findings, blockers, dedup);
   const kept = findings.filter((f, i) => {
     const index = matched[i];
     if (index === -1) return true;
@@ -3621,6 +3617,22 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     return false;
   });
   return { findings: kept, blockers: merged };
+}
+
+/**
+ * Returns, for each of `findings`, the index of the first of `earlier` that names the same defect, or -1. `sameProblem`
+ * settles a pair at once. The pairs `mayRestate` makes go to the `dedup` model in one call, and only its explicit yes
+ * links them, so a failed call or no dedup model links none.
+ */
+async function sameDefectIndexes(findings: readonly Finding[], earlier: ReadonlyArray<Located & { description?: string }>, dedup: LLMClient | undefined): Promise<number[]> {
+  const matched = findings.map(f => earlier.findIndex(e => sameProblem(e, f)));
+  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? earlier.flatMap((e, j) => mayRestate(e, f) ? [{ i, j }] : []) : []);
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} finding pairs that may restate each other stay apart unchecked, since the round has no dedup model`);
+  const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [earlier[j], findings[i]]), dedup) : [];
+  pairs.forEach(({ i, j }, k) => {
+    if (answers[k] && matched[i] === -1) matched[i] = j;
+  });
+  return matched;
 }
 
 /** An earlier finding still present, which a finding of this round can restate. */
@@ -3835,20 +3847,14 @@ function withoutUnfitThreads(f: Finding, openThreadIndex: Map<string, OpenThread
 type Located = Pick<Finding, 'title' | 'file' | 'line' | 'evidence'>;
 
 /**
- * Whether the findings `a` and `b` in one file name one problem. A few lines apart with a proof line in common is enough,
- * whatever the titles say. When one title contains the other, a few lines apart or one citing the other's line is
- * enough. Titles that only share words, which short titles do by chance, must both cite the other's line.
+ * Whether the findings `a` and `b` are certainly one problem: the same title in one file, at most
+ * `DISMISSED_LINE_TOLERANCE` lines apart. Any other pair that `mayRestate` makes is one problem only when the dedup
+ * model says so, since a new defect can sit next to an earlier one or share its words.
  */
 export function sameProblem(a: Located, b: Located): boolean {
-  if (a.file !== b.file) return false;
-  // Without a file, no line or proof line places a finding, so only the same title names the same problem.
-  if (!a.file) return titleToSlug(a.title) === titleToSlug(b.title);
-  const near = Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
-  if (near && sharesProofLine(a, b)) return true;
-  const overlap = titleOverlapType(a.title, b.title);
-  if (overlap === null) return false;
-  if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
-  return citesLineOf(a, b) || citesLineOf(b, a) || near;
+  if (a.file !== b.file || titleToSlug(a.title) !== titleToSlug(b.title)) return false;
+  // Without a file, no line places a finding, so the same title is enough.
+  return !a.file || Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
 }
 
 /**
@@ -3901,36 +3907,14 @@ function narrowProof(f: Located): Array<{ file: string; start: number; end: numb
   });
 }
 
-/** Whether `a` cites the line of `b` as proof. */
-function citesLineOf(a: Located, b: Located): boolean {
-  return narrowProof(a).some(at => at.file === b.file && at.start <= b.line && b.line <= at.end);
-}
-
 /**
- * Whether `a` and `b` cite a common proof line in their own file, within `DISMISSED_LINE_TOLERANCE` of both. A line
- * elsewhere, such as a helper both call, can back two different defects.
+ * Returns, for each of the verdict reader's `blockers`, the key of the prior blocker it names again, by
+ * `sameDefectIndexes`. The verdict reader runs after the judge, so its blockers are matched here instead of by the judge.
  */
-function sharesProofLine(a: Located, b: Located): boolean {
-  const near = (f: Located) => ({ start: f.line - DISMISSED_LINE_TOLERANCE, end: f.line + DISMISSED_LINE_TOLERANCE });
-  const spans = (f: Located) => narrowProof(f).filter(at => at.file === a.file);
-  const cited = spans(b);
-  return spans(a).some(x => cited.some(y => {
-    const ranges = [x, y, near(a), near(b)];
-    return Math.max(...ranges.map(r => r.start)) <= Math.min(...ranges.map(r => r.end));
-  }));
-}
-
-/**
- * Returns the key of the prior blocker on the same file and nearby line whose title overlaps the finding's.
- * The verdict reader runs after the judge, so its blockers are matched here instead of by the judge.
- */
-function matchPriorBlocker(finding: Finding, priorBlockers: PriorFinding[]): string | undefined {
-  const match = priorBlockers.find(({ entry }) =>
-    entry.fingerprint.file === finding.file
-    && Math.abs(entry.fingerprint.lineStart - finding.line) <= DISMISSED_LINE_TOLERANCE
-    && titleOverlapType(finding.title, entry.title ?? '') !== null,
-  );
-  return match && stringifyFindingFingerprint(match.entry.fingerprint);
+async function matchPriorBlockers(blockers: Finding[], priorBlockers: PriorFinding[], dedup: LLMClient | undefined): Promise<Array<string | undefined>> {
+  const earlier = priorBlockers.map(({ entry }) => ({ title: entry.title ?? '', file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence }));
+  const matched = await sameDefectIndexes(blockers, earlier, dedup);
+  return matched.map(j => (j === -1 ? undefined : stringifyFindingFingerprint(priorBlockers[j].entry.fingerprint)));
 }
 
 function findingToTraceEntry(f: Finding): VerdictTraceEntry {
