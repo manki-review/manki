@@ -160,7 +160,8 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
  * Returns `findings` with the `originCheck` of each blocker and warning the round checks, at most `MAX_ORIGIN_CHECKS`,
  * the largest grades first. Each check asks `client` whether the PR caused the failure. The `pair` asks too when the
  * rules need two answers: on a flagged line the PR changed, and on a finding `oneAnswerSettles` rejects. A tool alert, a
- * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check.
+ * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check. A
+ * finding whose calls all never started keeps no `originCheck`.
  */
 export async function checkOrigins(client: LLMClient, findings: readonly Finding[], { workspace, diff, excludedPaths = [], related, effort, pair, skip, progress }: OriginOptions): Promise<Finding[]> {
   if (!baseReadsOf(workspace)) return [...findings];
@@ -193,9 +194,10 @@ export async function checkOrigins(client: LLMClient, findings: readonly Finding
     const lineChanged = !flaggedLineAtBase(finding, diff, excludedPaths);
     const second = pair && (lineChanged || !oneAnswerSettles(finding)) ? pair : undefined;
     const results = await Promise.all([ask(client, finding, 'origin check'), second ? ask(second, finding, 'second origin check') : null]);
-    const answers = results.filter((a): a is OriginAnswer => !!a);
-    progress?.ended(results.some(r => r !== null) ? 0 : undefined);
-    const originCheck: OriginCheck = { lineChanged, answers };
+    const ran = results.some(r => r !== null);
+    progress?.ended(ran ? 0 : undefined);
+    if (!ran) return finding;
+    const originCheck: OriginCheck = { lineChanged, answers: results.filter((a): a is OriginAnswer => !!a) };
     return { ...finding, originCheck };
   });
 }

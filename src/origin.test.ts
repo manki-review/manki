@@ -154,13 +154,14 @@ describe('checkOrigins', () => {
     expect(titlesOf(client)).toEqual(['Blocker', ...warnings.slice(0, MAX_ORIGIN_CHECKS - 1).map(f => f.title)].sort());
     expect(checked.filter(f => f.originCheck).length).toBe(MAX_ORIGIN_CHECKS);
     // A call that fails leaves no answer, so the finding stays the PR's own. It still ends as a check that ran, while a
-    // call that never started ends as none.
+    // call that never started ends as none and records no check.
     const progress = { started: jest.fn(), ended: jest.fn() };
     const [failed] = await checkOrigins(client, [finding('Failing', { severity: 'warning' })], { workspace: root, diff, progress });
     expect([failed.originCheck, foundOnBase(failed)]).toEqual([{ lineChanged: false, answers: [] }, undefined]);
     const idle = { repoTools: true, sendMessage: jest.fn().mockRejectedValue(new NotStartedError('no quota left')) } as unknown as LLMClient;
-    await checkOrigins(idle, [finding('Failing', { severity: 'warning' })], { workspace: root, diff, progress });
+    const [unchecked] = await checkOrigins(idle, [finding('Failing', { severity: 'warning' })], { workspace: root, diff, progress });
     expect(progress.ended.mock.calls).toEqual([[0], [undefined]]);
+    expect(unchecked.originCheck).toBeUndefined();
     rmSync(root, { recursive: true, force: true });
   }, GIT_TEST_TIMEOUT_MS);
 
