@@ -102,6 +102,27 @@ describe('resolveGitHubToken', () => {
     await expect(resolveWithRetryWait()).rejects.toThrow('(TypeError: fetch failed)');
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
+
+  // The runner sets both variables for a workflow with `id-token: write`, so a failure then is the request's own.
+  it('tries once more when GitHub fails to hand out the OIDC token, and names that failure when the retry fails too', async () => {
+    process.env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://oidc.example.com';
+    process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'request-token';
+    try {
+      const getIDToken = jest.spyOn(core, 'getIDToken').mockClear().mockRejectedValueOnce(new Error('connect ETIMEDOUT')).mockResolvedValue('fake-oidc-token');
+      mockFetch(async () => tokenReply());
+      expect(await resolveWithRetryWait()).toEqual<TokenResult>({ token: APP_TOKEN });
+      expect(getIDToken).toHaveBeenCalledTimes(2);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+
+      getIDToken.mockRejectedValue(new Error('connect ETIMEDOUT'));
+      await expect(resolveWithRetryWait()).rejects.toThrow(
+        new TokenServiceError('Error: GitHub gave no OIDC token: connect ETIMEDOUT'),
+      );
+    } finally {
+      delete process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+      delete process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+    }
+  });
 });
 
 const mockGetOctokit = github.getOctokit as jest.MockedFunction<typeof github.getOctokit>;
