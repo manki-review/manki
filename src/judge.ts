@@ -411,6 +411,7 @@ export function buildJudgeSystemPrompt(
   toolSteps = 0,
   ruleFindings = false,
   carriedWarnings = false,
+  fixElsewhere = false,
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
   const leadRule = toolsCheckFindings
@@ -420,7 +421,7 @@ export function buildJudgeSystemPrompt(
     ? 'One of the Open Review Threads in the user message is an earlier blocker'
     : `${openBlockerCount} of the Open Review Threads in the user message are earlier blockers`;
   const openBlockerInstruction = openBlockerCount > 0
-    ? `\n\n${openBlockers}, marked "earlier blocker". Each one you do not mark \`addressed\` still blocks merge, and one marked "stays open" blocks merge unless you name the file of its fix in \`fixedIn\` and later checks confirm that fix. While one is still open, never write that nothing blocks merge or that the earlier problems are fixed. Say in plain words which earlier problem is still open and what still goes wrong because of it, for example: "The new comment matches \`memory.repo\`, but the earlier blocker is still open: the memory repo still sits in another account, so the App cannot write to it."`
+    ? `\n\n${openBlockers}, marked "earlier blocker". Each one you do not mark \`addressed\` still blocks merge, and one marked "stays open" blocks merge${fixElsewhere ? ' unless you name the file of its fix in `fixedIn` and later checks confirm that fix' : ' whatever you decide'}. While one is still open, never write that nothing blocks merge or that the earlier problems are fixed. Say in plain words which earlier problem is still open and what still goes wrong because of it, for example: "The new comment matches \`memory.repo\`, but the earlier blocker is still open: the memory repo still sits in another account, so the App cannot write to it."`
     : '';
   const summaryInstruction = isFollowUp
     ? `Write one or two sentences on where the change stands now: whether the earlier problems are fixed, and what still goes wrong in practice. The review already shows each finding's title, so do not repeat a title word for word. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
@@ -698,8 +699,8 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "threadId": "PRRT_xxx",
       "status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain",
       "reason": "Brief explanation citing evidence from the inter-round diff or current code",
-      "remaining": "For partly_addressed: what still goes wrong",
-      "fixedIn": "For addressed on a thread marked stays open: the path of the other changed file that holds the fix, or empty",
+      "remaining": "For partly_addressed: what still goes wrong",${fixElsewhere ? `
+      "fixedIn": "For addressed on a thread marked stays open: the path of the other changed file that holds the fix, or empty",` : ''}
       "row": "severe" | "wrong" | "degraded" | "improvement" | "style",
       "column": "normal" | "rare"
     }
@@ -727,9 +728,9 @@ An outdated thread shows the code it named when it was posted and where that cod
 
 When the push changes code to fix a thread, ask: does it fix the root cause the concern named, or is it a hacky workaround for the reported case? A workaround acts where the wrong result shows up, such as a guard, a special case, a retry or a default, while the code that causes the problem stays as it was. Mark a workaround \`partly_addressed\`, never \`addressed\`, and in \`remaining\` cite the \`file:line\` of the code that causes the problem or name the input or path that still fails. When you can do neither, decide by the rules above.
 
-A thread marked "stays open" can be fixed by a change to another file the push changed, such as the caller that passed the bad value. When the inter-round diff shows such a fix, mark the thread \`addressed\` and set \`fixedIn\` to the path of that file. Manki then checks the fix with tools on two models and resolves the thread only when both find the failure gone. Leave \`fixedIn\` empty on every other thread.
+${fixElsewhere ? `A thread marked "stays open" can be fixed by a change to another file the push changed, such as the caller that passed the bad value. When the inter-round diff shows such a fix, mark the thread \`addressed\` and set \`fixedIn\` to the path of that file. Manki then checks the fix with tools on two models and resolves the thread only when both find the failure gone. Leave \`fixedIn\` empty on every other thread.
 
-The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence: cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
+` : ''}The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence: cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
 ` : ''}${carriedWarnings ? `
 ## Earlier Warnings Evaluation
 
@@ -840,6 +841,7 @@ export function buildJudgeUserMessage(
   linkThreads: OpenThread[] | undefined = openThreads,
   unshownFiles: readonly string[] = [],
   carriedWarnings: readonly FindingFingerprintEntry[] = [],
+  fixElsewhere = false,
 ): string {
   const parts: string[] = [];
 
@@ -883,7 +885,7 @@ export function buildJudgeUserMessage(
     }
     if (threads.length > 0) parts.push('');
     if (heldOpen.length > 0) {
-      parts.push('A thread marked "stays open" is not resolved this round unless you name the file of its fix in `fixedIn` and later checks confirm it. In the summary, say that it is still open, and never write that its problem is fixed.\n');
+      parts.push(`A thread marked "stays open" is not resolved this round ${fixElsewhere ? 'unless you name the file of its fix in `fixedIn` and later checks confirm it' : 'whatever you decide'}. In the summary, say that it is still open, and never write that its problem is fixed.\n`);
     }
     if (carriedWarnings.length > 0) {
       parts.push(`## Earlier Warnings in the Review Body\n`);
@@ -1589,10 +1591,10 @@ export async function runJudgeAgent(
     : [];
 
   const openBlockerCount = openThreads ? earlierBlockerThreadIds(openThreads, priorRounds).size : 0;
-  const judgePrompt = (steps: number) => buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount, !!refutation, steps, findings.some(f => f.rule), carried.length > 0);
+  const judgePrompt = (steps: number) => buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount, !!refutation, steps, findings.some(f => f.rule), carried.length > 0, !!refutation?.pair);
   // The prompt's sections follow the round: a follow-up, open threads, earlier blockers, a second finder, the tools
   // that settle leads, a finding that quotes a rule and carried warnings. Every one is on here, so the recorded digest changes only with the template or the repository's rules.
-  const judgeTemplate = (steps: number) => buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2, true, steps, true, true);
+  const judgeTemplate = (steps: number) => buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2, true, steps, true, true, true);
   const citedCode = refutation ? citedCodeOutsideDiff(findings, diff, refutation.workspace, refutation.related) : new Map<Finding, string[]>();
   const findingNotes = (f: Finding): string[] => {
     const area = criticalAreaOf(config.review?.critical_paths ?? [], f.file);
@@ -1608,7 +1610,7 @@ export async function runJudgeAgent(
   const citedFiles = (f: Finding) => citedLocations(f, refutation?.workspace).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
   const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...citedFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path) && !listed.has(f.path)).map(shortenLongLines) });
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles, carried);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles, carried, !!refutation?.pair);
 
   const effort = input.effort ?? 'high';
   const judgeCall = (steps: number, budgetMs = FINDER_TOOLS_TIMEOUT_MS): { systemPrompt: string; budgetMs: number; options: SendMessageOptions } => ({

@@ -5722,6 +5722,15 @@ describe('runReview', () => {
         const open = await runWith(clients, evaluation, thread, diff);
         expect([open.outcome, open.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
       }
+
+      // A thread this round names again stays open whatever a check says, so no refuter is asked about it.
+      const named = clientsWith('disproved');
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' }], summary: 'Still broken.', threadEvaluations: [fixed] });
+      const again = await runReview(named, {
+        config: makeConfig(), diff: diffChanging('src/y.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, workspace,
+        openThreads: [makePriorOpenThread({ severity: 'blocker' })], previousFindings: [], priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })])], interRoundDiff: push, headSha: 'sha2',
+      });
+      expect([again.threadEvaluations?.[0].status, jest.mocked(named.refuterPair!.sendMessage).mock.calls.filter(([system]) => system.startsWith('You check one finding')).some(([, message]) => message.includes('The push since the last review changed'))]).toEqual(['not_addressed', false]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
