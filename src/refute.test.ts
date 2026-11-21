@@ -333,7 +333,7 @@ describe('refuteBlockers', () => {
     const replies = Object.fromEntries(cases.map(([title, , reply]) => [title, reply ?? disproved('Only checked inputs reach it.')]));
     const earlier = (line: number, slug: string, severity: Finding['severity'], threadId?: string) => ({ fingerprint: { file: 'src/old.ts', lineStart: line, lineEnd: line, slug }, severity, threadId });
     const priorRounds = [{ findings: { entries: [earlier(1, 'old-blocker', 'blocker'), earlier(2, 'in-thread', 'warning', 'T1'), earlier(3, 'old-warning', 'warning', 'T2')] }, judge: {} }] as unknown as RoundContext[];
-    const blocking = (file: string) => [{ threadId: 'T1', file, line: 4, severity: 'blocker' }] as OpenThread[];
+    const blocking = (file: string, title = 'Old blocker') => [{ threadId: 'T1', title, file, line: 4, severity: 'blocker' }] as OpenThread[];
     const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts'), rules?: RulesMode) =>
       refuteBlockers(first, picked.map(([title, overrides]) => finding(title, overrides)), { workspace, diff, pair, priorRounds, blockingThreads, rules });
 
@@ -364,8 +364,10 @@ describe('refuteBlockers', () => {
     for (const pairModel of ['claude-opus-5-5', undefined]) {
       expect((await run(fakeClient(replies, pairModel), judgeRaise))[0].severity).toBe('blocker');
     }
-    // A later step can fold a finding into an open thread that blocks in its file, so it stays a blocker there.
-    expect((await run(fakeClient(replies, 'gpt-6.1-sol'), judgeRaise, blocking('src/math.ts')))[0].severity).toBe('blocker');
+    // A later step folds a finding with the title of an open thread that blocks nearby into it, so it stays a blocker
+    // there. Another blocker thread in its file is another defect, so the finding is lowered.
+    expect((await run(fakeClient(replies, 'gpt-6.1-sol'), judgeRaise, blocking('src/math.ts', 'Judge raise')))[0].severity).toBe('blocker');
+    expect((await run(fakeClient(replies, 'gpt-6.1-sol'), judgeRaise, blocking('src/math.ts')))[0].severity).toBe('warning');
 
     // A later round that restates the lowered finding as a blocker reuses both answers with their models, and lowers it again without a new call.
     const stored = { title: 'Judge raise', fingerprint: { file: 'src/math.ts', lineStart: 2, lineEnd: 2, slug: 'judge-raise' }, severity: lowered.severity, threadId: 'T3', refutation: lowered.refutation, pairRefutation: lowered.pairRefutation };

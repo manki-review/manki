@@ -79,23 +79,30 @@ describe('deduplicateFindings', () => {
     expect(deduplicateFindings(findings, [{ ...answered, answer: undefined }], new Set()).unique).toEqual(findings);
     const unrelated = [makeFinding({ title: 'Unrelated race', file: 'src/foo.ts', line: 42 })];
     expect(deduplicateFindings(unrelated, [answered], new Set()).unique).toEqual(unrelated);
+    // A title that only shares words with the answered one may name another defect, so it goes to the judge on its own.
+    const reworded = [makeFinding({ title: 'Missing null check in the parser', file: 'src/foo.ts', line: 42 })];
+    expect(deduplicateFindings(reworded, [answered], new Set())).toEqual({ unique: reworded, duplicates: [] });
   });
 
-  it('attributes match types: exact, substring, word_overlap', () => {
+  it('matches only the same title on a nearby line, and leaves a reworded or moved repeat to the dedup model', () => {
     const findings = [
       makeFinding({ title: 'Missing null check', file: 'src/a.ts', line: 10 }),
       makeFinding({ title: 'Missing null check in processBlock', file: 'src/b.ts', line: 10 }),
       makeFinding({ title: 'FFI API regression: is_ours removed with no replacement', file: 'src/c.rs', line: 10 }),
+      makeFinding({ title: 'Unsafe cast should use type guard', file: 'src/d.ts', line: 33 }),
+      makeFinding({ title: 'Missing null check before dereference', file: 'src/e.ts', line: 60 }),
     ];
     const previous = [
       makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved' }),
       makePrevious({ title: 'Missing null check', file: 'src/b.ts', line: 10, status: 'resolved' }),
       makePrevious({ title: 'FFI removes is_ours without adding replacement', file: 'src/c.rs', line: 10, status: 'resolved' }),
+      makePrevious({ title: 'Unsafe type cast without guard', file: 'src/d.ts', line: 30, status: 'resolved' }),
+      makePrevious({ title: 'Missing null check before dereference', file: 'src/e.ts', line: 45, status: 'resolved' }),
     ];
 
     const result = deduplicateFindings(findings, previous);
-    expect(result.duplicates).toHaveLength(3);
-    expect(result.duplicates.map(d => d.matchType)).toEqual(['exact', 'substring', 'word_overlap']);
+    expect(result.duplicates.map(d => [d.finding.title, d.matchType])).toEqual([['Missing null check', 'exact']]);
+    expect(result.unique).toEqual(findings.slice(1));
   });
 
   it('detects fuzzy line match within +/-5 lines', () => {
@@ -184,33 +191,6 @@ describe('deduplicateFindings', () => {
     expect(result.duplicates[0].finding.title).toBe('Unused import');
   });
 
-  it('matches by title substring', () => {
-    const findings = [makeFinding({ title: 'Missing null check in processBlock', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
-
-    const result = deduplicateFindings(findings, previous);
-    expect(result.unique).toHaveLength(0);
-    expect(result.duplicates).toHaveLength(1);
-  });
-
-  it('matches rephrased title with word overlap', () => {
-    const findings = [makeFinding({
-      title: 'FFI API regression: is_ours removed with no replacement',
-      file: 'src/ffi.rs',
-      line: 50,
-    })];
-    const previous = [makePrevious({
-      title: 'FFI removes is_ours without adding replacement',
-      file: 'src/ffi.rs',
-      line: 50,
-      status: 'resolved',
-    })];
-
-    const result = deduplicateFindings(findings, previous);
-    expect(result.unique).toHaveLength(0);
-    expect(result.duplicates).toHaveLength(1);
-  });
-
   it('does not match completely different titles', () => {
     const findings = [makeFinding({ title: 'Memory leak in connection pool', file: 'src/pool.ts', line: 10 })];
     const previous = [makePrevious({ title: 'Missing error handling in parser', file: 'src/pool.ts', line: 10, status: 'resolved' })];
@@ -218,42 +198,6 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
-  });
-
-  it('matches same file + nearby line + word overlap as duplicate', () => {
-    const findings = [makeFinding({
-      title: 'Unsafe cast should use type guard',
-      file: 'src/util.ts',
-      line: 33,
-    })];
-    const previous = [makePrevious({
-      title: 'Unsafe type cast without guard',
-      file: 'src/util.ts',
-      line: 30,
-      status: 'resolved',
-    })];
-
-    const result = deduplicateFindings(findings, previous);
-    expect(result.unique).toHaveLength(0);
-    expect(result.duplicates).toHaveLength(1);
-  });
-
-  it('matches same file + far line when word overlap is high', () => {
-    const findings = [makeFinding({
-      title: 'Missing null check before dereference',
-      file: 'src/foo.ts',
-      line: 60,
-    })];
-    const previous = [makePrevious({
-      title: 'Missing null check before dereference',
-      file: 'src/foo.ts',
-      line: 45,
-      status: 'resolved',
-    })];
-
-    const result = deduplicateFindings(findings, previous);
-    expect(result.unique).toHaveLength(0);
-    expect(result.duplicates).toHaveLength(1);
   });
 
   it('does not match when line delta exceeds relaxed threshold', () => {
@@ -323,16 +267,6 @@ describe('deduplicateFindings', () => {
     expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
     expect(result.duplicates[1].finding.title).toBe('Unused import in bar');
     expect(result.duplicates[1].matchedTitle).toBe('Unused import in bar');
-  });
-
-  it('returns matched previous title when titles differ via substring', () => {
-    const findings = [makeFinding({ title: 'Missing null check in processBlock', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
-
-    const result = deduplicateFindings(findings, previous);
-    expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].finding.title).toBe('Missing null check in processBlock');
-    expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
   });
 
   it('does not suppress findings matching open previous findings', () => {
@@ -2558,9 +2492,11 @@ describe('llmDeduplicateFindings', () => {
     expect(fileOnly).not.toContain('src/memory.ts:');
     expect(fileOnly.match(/\(src\/memory\.ts\): "/g)).toHaveLength(2);
 
-    // The static match sends the next wording to the judge with the answer in the thread of the one before.
+    // The next wording shares words with the title of the one before but is no certain match, so only the model sends
+    // it to the judge with the answer in that thread, which is still open and waives nothing.
     const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, answer: 'Unverified. The move is not in this PR.' });
-    expect(deduplicateFindings([third], [answered]).unique).toEqual([{ ...third, answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.', grade: { severity: answered.severity } } }]);
+    expect(deduplicateFindings([third], [answered]).unique).toEqual([third]);
+    expect(await llmDeduplicateFindings([third], [answered], match)).toEqual({ unique: [{ ...third, answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.', grade: { severity: answered.severity } } }], duplicates: [] });
 
     // The same problem in another file is another place, so a model match there changes nothing.
     const elsewhere = { ...second, file: 'src/index.ts' };
@@ -2592,19 +2528,22 @@ describe('llmDeduplicateFindings', () => {
     // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.
     const suggestion = { ...waived, severity: 'note' as const };
     expect(await llmDeduplicateFindings([second], [suggestion], match)).toEqual({ unique: [second], duplicates: [] });
-    expect(deduplicateFindings([third], [{ ...answered, severity: 'note' }]).unique).toEqual([third]);
-    expect(deduplicateFindings([{ ...third, severity: 'note' }], [{ ...answered, severity: 'note' }]).unique[0].answeredIn?.threadId).toBe('T2');
+    expect((await llmDeduplicateFindings([third], [{ ...answered, severity: 'note' }], match)).unique).toEqual([third]);
+    expect((await llmDeduplicateFindings([{ ...third, severity: 'note' }], [{ ...answered, severity: 'note' }], match)).unique[0].answeredIn?.threadId).toBe('T2');
   });
 
   it('does not treat replied findings as dismissed', async () => {
     const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 10 })];
-    const previous = [makePrevious({ title: 'Missing null check', status: 'replied', threadId: 'T1', answer: 'Kept. `id` can be null here.' })];
-    const mockClient = { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient;
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', status: 'replied', threadId: 'T1', answer: 'Kept. `id` can be null here.' })];
+    const mockClient = { sendMessage: jest.fn().mockResolvedValue({ content: '[{ "index": 1, "matchedResolved": 1 }]' }) } as unknown as import('./providers').LLMClient;
 
+    // A repeat of a thread still open goes to the judge with the answer there, and is never dropped.
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
-    expect(result.unique).toHaveLength(1);
-    expect(result.duplicates).toHaveLength(0);
-    expect(mockClient.sendMessage).not.toHaveBeenCalled();
+    expect(result).toEqual({ unique: [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Kept. `id` can be null here.', grade: { severity: previous[0].severity } } }], duplicates: [] });
+    // A replied thread without an answer gives the model nothing to compare.
+    const unanswered = [{ ...previous[0], answer: undefined }];
+    expect(await llmDeduplicateFindings(findings, unanswered, mockClient)).toEqual({ unique: findings, duplicates: [] });
+    expect(mockClient.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('handles LLM response with code fences', async () => {
