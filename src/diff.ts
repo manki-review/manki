@@ -594,20 +594,20 @@ export function replacementOf(file: DiffFile, oldLine: number): [number, number]
   return undefined;
 }
 
-/** Whether `text` holds every character of `part` in their order, both without whitespace. An empty `part` is held by no text. */
-function holdsInOrder(text: string, part: string): boolean {
-  const wanted = part.replace(/\s/g, '');
-  let at = 0;
-  for (const char of text.replace(/\s/g, '')) {
-    if (at < wanted.length && char === wanted[at]) at++;
-  }
-  return wanted.length > 0 && at === wanted.length;
+/**
+ * Whether `text` only adds to the end of `old`: without whitespace, it starts with `old` up to the closing brackets and
+ * separators `old` ends in, and the start does not run on into a longer word, number or member name.
+ */
+function appendsTo(text: string, old: string): boolean {
+  const kept = old.replace(/\s/g, '').replace(/[)\]}>;,:{]+$/, '');
+  const next = text.replace(/\s/g, '').slice(kept.length, kept.length + 1);
+  return kept.length > 0 && text.replace(/\s/g, '').startsWith(kept) && !(/\w$/.test(kept) && /^[\w.]/.test(next));
 }
 
 /**
  * Returns the line of the old file, with its text, that `line` of the new file only extends: the one line its run of
- * changed lines removes whose characters the new line still holds in their order, apart from whitespace. That old line
- * must fit no other line the run adds. Returns `undefined` for a line the diff keeps, and when the pair is not unique.
+ * changed lines removes that the new line `appendsTo`. That old line must fit no other line the run adds. Returns
+ * `undefined` for a line the diff keeps, and when the pair is not unique.
  */
 export function extendedLineOf(file: DiffFile, line: number): { line: number; text: string } | undefined {
   for (const hunk of file.hunks) {
@@ -625,9 +625,9 @@ export function extendedLineOf(file: DiffFile, line: number): { line: number; te
       }
       const text = run.added.get(line);
       if (text !== undefined) {
-        const fits = run.removed.filter(removed => holdsInOrder(text, removed.text));
+        const fits = run.removed.filter(removed => appendsTo(text, removed.text));
         const added = [...run.added.values()];
-        return fits.length === 1 && added.filter(other => holdsInOrder(other, fits[0].text)).length === 1 ? fits[0] : undefined;
+        return fits.length === 1 && added.filter(other => appendsTo(other, fits[0].text)).length === 1 ? fits[0] : undefined;
       }
       run = { removed: [], added: new Map() };
       oldAt++;
