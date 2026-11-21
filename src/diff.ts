@@ -594,17 +594,28 @@ export function replacementOf(file: DiffFile, oldLine: number): [number, number]
   return undefined;
 }
 
+/** Whether every bracket `part` closes is one it opened before, and it closes each one it opens. */
+function balanced(part: string): boolean {
+  let depth = 0;
+  for (const char of part) {
+    depth += '([{'.includes(char) ? 1 : ')]}'.includes(char) ? -1 : 0;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
 /**
- * Whether `text` only adds list items to `old`, or only changes its whitespace. Without whitespace, `text` must be `old`
- * with nothing or a part that starts with a comma put in before the closing brackets and separators `old` ends in.
+ * Whether `text` only adds list items to `old`, or only changes its indentation. Apart from the whitespace at either
+ * end, `text` must be `old` with nothing, or with a part that starts with a comma and leaves its brackets balanced, put
+ * in before the closing brackets and separators `old` ends in.
  */
 function appendsTo(text: string, old: string): boolean {
-  const [now, was] = [text, old].map(line => line.replace(/\s/g, ''));
-  const tail = /[)\]}>;,:{]*$/.exec(was)![0];
+  const [now, was] = [text.trim(), old.trim()];
+  const tail = /[)\]}>;,:{\s]*$/.exec(was)![0];
   const kept = was.slice(0, was.length - tail.length);
   if (!kept || now.length < was.length || !now.startsWith(kept) || !now.endsWith(tail)) return false;
   const added = now.slice(kept.length, now.length - tail.length);
-  return added === '' || added.startsWith(',');
+  return added === '' || (added.startsWith(',') && balanced(added));
 }
 
 /**
