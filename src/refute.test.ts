@@ -1184,25 +1184,29 @@ describe('refuteBlockers', () => {
     await refuteBlockers(first, listed, { workspace, diff, restatesEarlier: linked, doubtBudget });
     expect([first.calls.map(([title]) => title), doubtBudget]).toEqual([['Unproven 1'], { left: 7 }]);
 
-    // A warning or a note a reviewer calls older than this PR is checked at the round's end, a warning before a note,
-    // and its check asks the question about the base. A security finding is not, nor one a later step leaves out.
+    // A warning or a note a reviewer calls older than this PR is checked at the round's end, and its check asks the
+    // question about the base. A warning comes before a doubted security finding, and a note after it. A security
+    // finding that claims to be older is not checked for that, nor one a later step leaves out.
     const claim = { preExisting: 'The send came before the peer was recorded already.' };
     const claimed = [
       finding('Older note', { severity: 'note', ...claim }),
+      doubted,
       finding('Older warning', { severity: 'warning', ...claim }),
       finding('Older security warning', { severity: 'warning', tags: ['security'], ...claim }),
       finding('Older warning left out', { severity: 'warning', ...claim }),
     ];
     const leftOut = (f: Finding) => f.title.endsWith('left out');
-    for (const left of [1, 2]) {
+    const olderOrder = ['Older warning', 'Security with a doubt', 'Older note'];
+    for (const left of [1, 2, 3]) {
       const older = fakeClient(Object.fromEntries(claimed.map(f => [f.title, answer('unsettled')])));
       const budget = { left };
       const judged = await refuteBlockers(older, claimed, { workspace, diff, doubtBudget: budget, unpostedLater: leftOut });
       expect(older.calls).toHaveLength(0);
       await refuteBlockers(older, judged, { workspace, diff, doubtBudget: budget, unpostedLater: leftOut, roundEnd: true });
-      expect(older.calls.map(([title]) => title).sort()).toEqual(['Older warning', 'Older note'].slice(0, left).sort());
+      expect(older.calls.map(([title]) => title).sort()).toEqual(olderOrder.slice(0, left).sort());
       expect(older.calls.find(([title]) => title === 'Older warning')![2]).toContain('## Warning a reviewer calls older than this PR: Older warning\n');
-      expect(older.calls.every(([, , user]) => user.includes(`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`))).toBe(true);
+      const asked = older.calls.filter(([title]) => title.startsWith('Older')).map(([, , user]) => user.includes(`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`));
+      expect(asked.every(Boolean)).toBe(true);
     }
   });
 
