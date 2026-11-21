@@ -2351,8 +2351,8 @@ export interface RoundMeta {
   /** Set when the round kept results of an earlier attempt on the same commit that ended incomplete. */
   reusedFrom?: RoundReusedFrom;
   /**
-   * Set when the record was too large for the review even compressed: the fields of per-file and per-finding
-   * diagnostics that were left out, such as `judge.dropped`.
+   * Set when the record was too large for the review even compressed: the fields that were left out, such as
+   * `judge.dropped`, in the order they were cut.
    */
   omitted?: string[];
   /**

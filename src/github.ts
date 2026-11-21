@@ -17,7 +17,7 @@ import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fing
 import type { FixClaim, PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
-import { extractApprovalRecords, formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
+import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
 import { formatRunner } from './run-diagnostics';
 import { RELATED_REPO_HOST } from './related-repos';
@@ -1555,25 +1555,41 @@ const REVIEW_BODY_BUDGET = 60000;
 /** The most of the review body the round record may take, so the verdict and findings still show. */
 const MAX_RECORD_CHARS = REVIEW_BODY_BUDGET - 10000;
 
-/**
- * Returns the hidden stats line and round record that end a review. The record is plain JSON when
- * it fits in `room` characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even
- * compressed is posted without its bulky diagnostics, and the full record goes to the log. The raw
- * findings and the uses outside the diff are kept in short form while that fits.
- */
-function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number): string {
-  const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
-  const record = formatReviewRecord(context, room - stats.length);
-  if (stats.length + record.length <= MAX_RECORD_CHARS) return `${stats}${record}`;
+/** Characters per line of the full record in the log, since the runner's log can lose a very long line and every line after it. */
+const RECORD_LOG_LINE_CHARS = 1000;
 
-  core.warning(`The round record takes ${record.length} characters even compressed, so the review carries it without per-file and per-finding diagnostics. The full record follows in the log.`);
-  core.info(formatReviewRecord(context));
-  let slim = '';
-  for (const keepTraces of [true, false]) {
-    slim = formatReviewRecord(omitBulkyDiagnostics(context, keepTraces), room - stats.length);
-    if (stats.length + slim.length <= MAX_RECORD_CHARS) return `${stats}${slim}`;
+/**
+ * Returns the hidden stats line and round record that end a review. The record is plain JSON when it fits in `room`
+ * characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even compressed takes the first of
+ * `smallerRecords` that fits. Unless `cutLog` says it already did, the log then names what was left out and holds the
+ * full record compressed. Only a record whose last form is still over the budget throws, which takes hundreds of findings.
+ */
+function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number, cutLog: { logged: boolean }): string {
+  const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
+  const fits = (record: string): boolean => stats.length + record.length <= MAX_RECORD_CHARS;
+  // A plain record over the budget is compressed before any part of it is cut.
+  const plainRoom = Math.min(room, MAX_RECORD_CHARS) - stats.length;
+  const record = formatReviewRecord(context, plainRoom);
+  if (fits(record)) return `${stats}${record}`;
+
+  let slim = record;
+  let cut = '';
+  for (const smaller of smallerRecords(context)) {
+    slim = formatReviewRecord(smaller, plainRoom);
+    const { omitted = [], compacted = [] } = smaller.meta;
+    cut = [omitted.length > 0 && `without ${omitted.join(', ')}`, compacted.length > 0 && `with ${compacted.join(', ')} shortened`].filter(Boolean).join(' and ');
+    if (fits(slim)) break;
   }
-  throw new Error(`The round record takes ${slim.length} characters even without its diagnostics, too many for a review body`);
+  if (!cutLog.logged) {
+    cutLog.logged = true;
+    core.warning(`The round record takes ${record.length} characters even compressed, ${cut ? `so the review carries it ${cut}` : 'and has no part the review can leave out'}. The full record follows in the log.`);
+    const full = compressReviewRecord(context);
+    core.startGroup(`Full round record, gzip compressed and base64 encoded in ${Math.ceil(full.length / RECORD_LOG_LINE_CHARS)} lines`);
+    for (let i = 0; i < full.length; i += RECORD_LOG_LINE_CHARS) core.info(full.slice(i, i + RECORD_LOG_LINE_CHARS));
+    core.endGroup();
+  }
+  if (!fits(slim)) throw new Error(`The round record takes ${slim.length} characters even in its minimal form, too many for a review body`);
+  return `${stats}${slim}`;
 }
 
 /** The icon that opens a finding comment or a finding listed in the review body. */
@@ -2420,6 +2436,8 @@ export async function postReview(
   const postedComments = [...validComments, ...fileOnly].map(highlight);
   const inBody = new Set([...bodyFindings, ...listedNotes, ...unthreaded]);
   // The record with each finding's place. A finding in `refused` got no thread from GitHub, so the body carries it.
+  // A record composed again for a retried post differs only in where findings went and whether the approval was refused, so the log shows the first cut one.
+  const cutLog = { logged: false };
   const recordFor = (refused: ReadonlySet<Finding> = new Set(), approvalRefused = false): string => {
     const placeOf = (f: Finding): PostedPlace => refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
@@ -2445,7 +2463,7 @@ export async function postReview(
         output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
         ...(event === 'APPROVE' && { approval: roundApproval(approvalRefused ? 'refused' : approvalHeld, !!warningHold) }),
         ...(keptReport && { readyReport: keptReport }),
-      }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
+      }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length, cutLog)
       : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (noVerdict && result.retryAfter ? `\n${RETRY_AFTER_MARKER}${result.retryAfter} -->` : '')
       + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };

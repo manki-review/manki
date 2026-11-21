@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
+import { gunzipSync } from 'zlib';
 
 import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
@@ -1667,9 +1668,16 @@ describe('postReview with context', () => {
     const { records } = extractReviewRecords(body);
     expect(records).toHaveLength(1);
     expect(JSON.parse(records[0])).toEqual({ ...ctx, output: { bodyLength: expect.any(Number), commentLengths: [] } });
+
+    // Below a short body, a plain record over the record budget is compressed too, before anything is cut.
+    const long = makeContext({ judge: { summary: 'a'.repeat(55000) } });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', { ...result, summary: 'Short.' }, undefined, long, 1000);
+    const short = mockCreateReview.mock.calls[1][0].body as string;
+    expect(short).toContain('<!-- manki-context-gzip: ');
+    expect(JSON.parse(extractReviewRecords(short).records[0])).toEqual({ ...long, output: { bodyLength: expect.any(Number), commentLengths: [] } });
   });
 
-  it('posts a record too large even compressed without its bulky diagnostics, and fails only when the rest is too large too', async () => {
+  it('posts a record too large even compressed without its bulky diagnostics, then cuts it down to the minimal record, and fails only past that', async () => {
     const result: ReviewResult = {
       verdict: 'COMMENT', summary: 'Many findings.', findings: [],
       highlights: [], reviewComplete: true, agentNames: [],
@@ -1713,7 +1721,11 @@ describe('postReview with context', () => {
     expect(record.usesOutsideDiff).toEqual({ symbols: usesOutsideDiff.symbols, types: ['src/model.ts:12'] });
     expect(record.judge.dropped).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
-    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without judge.dropped, units, reviewers.agentMetrics.units and with reviewers.rawFindings, usesOutsideDiff shortened.'));
+    // The full record goes to the log compressed, in short lines that decode back to it.
+    const logged = infoSpy.mock.calls.map(([line]) => line as string).filter(line => /^[A-Za-z0-9+/=]+$/.test(line));
+    expect(Math.max(...logged.map(line => line.length))).toBeLessThanOrEqual(1000);
+    expect(JSON.parse(gunzipSync(Buffer.from(logged.join(''), 'base64')).toString())).toEqual({ ...ctx, output: { bodyLength: expect.any(Number), commentLengths: [] } });
 
     // When even the short form does not fit, both are left out too.
     const noisy = makeContext({
@@ -1729,10 +1741,54 @@ describe('postReview with context', () => {
     expect(dropped.usesOutsideDiff).toBeUndefined();
     expect(dropped.findings.entries).toEqual(entries);
 
+    // Past that, the parts no later round reads go first, in a fixed order, and the cutting stops once the record fits.
+    const refutation = { files: ['src/a.ts'], codeDigest: 'd', defect: 'confirmed' as const, outcome: 'confirmed' as const, proof: ['src/a.ts:1'], reason: 'Holds.' };
+    const graded = Array.from({ length: 40 }, (_, i) => ({
+      fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: `finding-${i}` }, severity: 'warning' as const, title: `Finding ${i}`,
+      threadId: `T_${i}`, judgeNotes: Array.from({ length: 8 }, noise).join(''), refutation: { ...refutation, reason: Array.from({ length: 3 }, noise).join('') }, evidence: { checks: [], proof: [`src/${i}.ts:${i}`] },
+    }));
+    const llmCalls = Array.from({ length: 300 }, () => ({ stage: 'reviewer', model: noise(), attempt: 1, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0 }));
+    const threadEvaluations = [{ threadId: 'T_OLD', status: 'addressed' as const, reason: 'Fixed.' }];
+    const cut = makeContext({
+      findings: { count: 40, severityCounts: { warning: 40 }, entries: graded },
+      judge: { summary: 'Fine.', threadEvaluations },
+      usage: { llmCalls },
+    });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, cut, 1000);
+    const [trimmed] = extractReviewRecords(mockCreateReview.mock.calls[2][0].body as string).records.map(r => JSON.parse(r) as RoundContext);
+    expect(trimmed.meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes']);
+    expect(trimmed.findings.entries.map(e => [e.threadId, e.refutation?.reason])).toEqual(graded.map(e => [e.threadId, e.refutation.reason]));
+
+    // As the last resort the review posts the minimal record, which still holds each finding with its fingerprint,
+    // grade and thread, and the judge's thread evaluations.
+    const noises = (n: number) => Array.from({ length: n }, noise).join('');
     const huge = makeContext({
+      findings: {
+        count: 100, severityCounts: { warning: 100 }, entries: Array.from({ length: 100 }, (_, i) => ({
+          fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: `finding-${i}` }, severity: 'warning' as const, title: `Finding ${i}`, threadId: `T_${i}`,
+          judgeNotes: noises(2), refutation, suggestedFix: noises(2), evidence: { checks: [noises(4)], proof: [`src/${i}.ts:${i}`] }, description: noise(),
+        })),
+      },
+      judge: { summary: 'Fine.', threadEvaluations },
+      usage: { llmCalls },
+      prClaims: { claims: [] },
+      runner: { os: 'linux', arch: 'x64', cpus: 4, memoryBytes: 1, peakCliProcesses: 1 },
+    });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, huge, 1000);
+    const hugeBody = mockCreateReview.mock.calls[3][0].body as string;
+    expect(hugeBody).toContain('Many findings.');
+    const [minimal] = extractReviewRecords(hugeBody).records.map(r => JSON.parse(r) as RoundContext);
+    expect(minimal.meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes', 'runner', 'output', 'prClaims', 'findings.entries.refutation', 'findings.entries.suggestedFix', 'findings.entries.evidence']);
+    expect(minimal.findings.entries).toEqual(huge.findings.entries.map(({ judgeNotes: _n, refutation: _r, suggestedFix: _f, evidence: _e, ...kept }) => kept));
+    expect(minimal.judge.threadEvaluations).toEqual(threadEvaluations);
+
+    // Only a record whose minimal form is still over the budget fails, after the log got the full record.
+    const absurd = makeContext({
       findings: { count: 600, severityCounts: { note: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'note' as const, title: noise() })) },
     });
-    await expect(postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, huge, 1000)).rejects.toThrow('even without its diagnostics');
+    infoSpy.mockClear();
+    await expect(postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, absurd, 1000)).rejects.toThrow('even in its minimal form');
+    expect(infoSpy.mock.calls.some(([line]) => /^[A-Za-z0-9+/=]{1000}$/.test(line as string))).toBe(true);
     infoSpy.mockRestore();
   });
 
@@ -5367,6 +5423,41 @@ describe('postReview fallback paths', () => {
     const lineError = new Error('pull_request_review_thread.line must be part of the diff');
     /** A review endpoint that refuses the line comments once, so the review posts without them and each thread is posted on its file. */
     const refusesLines = () => jest.fn().mockRejectedValueOnce(lineError).mockResolvedValue({ data: { id: 7 } });
+
+    it('logs the cut and the full record of a record too large for the review once, also when only the retried post cuts it', async () => {
+      const startGroup = jest.spyOn(core, 'startGroup').mockImplementation(() => {});
+      const info = jest.spyOn(core, 'info').mockImplementation(() => {});
+      const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const { octokit, createReview } = makeOctokit(jest.fn().mockResolvedValue({ data: { id: 1 } }), refusesLines());
+      const llmCalls = Array.from({ length: 500 }, () => ({
+        stage: 'reviewer', model: randomBytes(100).toString('hex'), attempt: 1, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0,
+      }));
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff, makeContext({ usage: { llmCalls } }), 1000);
+      expect(createReview).toHaveBeenCalledTimes(2);
+      expect(createReview.mock.calls.map(([r]) => extractReviewRecords(r.body).records.map(j => (JSON.parse(j) as RoundContext).meta.omitted))).toEqual([[['usage.llmCalls']], [['usage.llmCalls']]]);
+      expect(startGroup).toHaveBeenCalledTimes(1);
+      expect(warning.mock.calls.filter(([message]) => String(message).startsWith('The round record takes'))).toHaveLength(1);
+
+      // A record that first passes the budget once the blocker's thread is refused, and the body carries its description, is logged then.
+      startGroup.mockClear();
+      const blocker = { ...offLineBlocker, description: randomBytes(600).toString('hex') };
+      const entries = [{ fingerprint: { file: blocker.file, lineStart: blocker.line, lineEnd: blocker.line, slug: 'refused-thread' }, severity: 'blocker' as const, title: blocker.title }];
+      const padded = (chars: number) => makeContext({
+        findings: { count: 1, severityCounts: { blocker: 1 }, entries },
+        usage: { llmCalls: [{ ...llmCalls[0], model: randomBytes(chars).toString('base64').slice(0, chars) }] },
+      });
+      const trailer = (body: string): number => body.indexOf(' -->', body.indexOf('<!-- manki-context')) - body.indexOf('\n\n<!-- manki-stats');
+      const { octokit: measuring, createReview: measured } = makeOctokit(jest.fn().mockResolvedValue({ data: { id: 1 } }));
+      await postReview(measuring, 'owner', 'repo', 1, 'sha', buildResult([blocker]), diff, padded(30000), 1000);
+      const below = 30000 + 50000 - trailer(measured.mock.calls[0][0].body as string) - 250;
+      const { octokit: refusing, createReview: retried, updateReview } = makeOctokit(jest.fn().mockRejectedValue(new Error('refused')), refusesLines());
+      await postReview(refusing, 'owner', 'repo', 1, 'sha', buildResult([blocker]), diff, padded(below), 1000);
+      const omitted = (body: string) => extractReviewRecords(body).records.map(j => (JSON.parse(j) as RoundContext).meta.omitted);
+      expect([...retried.mock.calls, ...updateReview.mock.calls].map(([r]) => omitted(r.body))).toEqual([[undefined], [undefined], [['usage.llmCalls']]]);
+      expect(startGroup).toHaveBeenCalledTimes(1);
+      [startGroup, info, warning].forEach(spy => spy.mockRestore());
+    });
 
     it('posts a blocker off the changed lines inside the review on the first changed line of its file, which a later round finds again', async () => {
       const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
