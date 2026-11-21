@@ -1263,7 +1263,7 @@ describe('refuteBlockers', () => {
     const question = `- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`;
     expect(findings.map(f => message(f.title).includes(question))).toEqual([true, true, true, true, true, true, true, true, true, true, false]);
     // The workspace holds the base, so the refuter cites the lines of the base and reads a changed file there.
-    expect(client.messages[0][0]).toContain('with the line the finding flags as it is numbered at the base. When this PR changed the flagged line, cite the line it replaced, as numbered at the base. A change that leaves the failure as it was, such as one more argument on the same call, does not make it the PR\'s own. A flagged line this PR added where the base had no line never fails the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them');
+    expect(client.messages[0][0]).toContain('with the line the finding flags as it is numbered at the base. When this PR only extended the flagged line, keeping the old line and adding to it, cite the old line, as numbered at the base. A change that leaves the failure as it was, such as one more argument on the same call, does not make it the PR\'s own. Any other flagged line this PR added or changed never fails the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them');
     expect(client.messages[0][0]).toContain('does not show, read that file at the base with `read_file` and `ref` set to `base`, or how this PR changed those lines with `git_history`, or answer unsettled.');
     // A check that asks shows the PR's change to the cited files and names the other files the PR changes.
     expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, gen/client.ts');
@@ -1298,20 +1298,20 @@ describe('refuteBlockers', () => {
       expect([model, !!sameOnBase(one), !!oneCheckOnBase(one)]).toEqual([model, false, true]);
     }
 
-    // The diff maps the flagged line to the base. A line the PR changed counts only at the base line it replaced, at the
-    // same place in its run of changed lines. A line a run adds past the lines it removes never counts, nor does the same
-    // text at another line of the base, nor an unchanged line the finding's evidence cites.
+    // The diff maps the flagged line to the base. A line the PR only extended counts at the old line it extends. Any
+    // other line the PR added or changed never counts, nor does the same text at another line of the base, nor an
+    // unchanged line the finding's evidence cites.
     const moved = gitWorkspace({ 'src/lines.ts': 'shared();\nb\nc\nshared();\n' }, { 'src/lines.ts': 'shared();\nb2\nnew\nc\nshared();\nadded();\n' }, []);
     const at = (line: number, proof: string[], evidence = [`src/lines.ts:${line}`]) => ({ line, proof, evidence });
     const cases: Record<string, ReturnType<typeof at>> = {
       'Unchanged line at its base line': at(5, ['src/lines.ts:4']),
       'Unchanged line in a cited range': at(5, ['src/lines.ts:3-4']),
       'Unchanged line at a wrong base line': at(5, ['src/lines.ts:1']),
-      'Changed line': at(2, ['src/lines.ts:2']),
-      'Changed line at a line it did not replace': at(2, ['src/lines.ts:1']),
-      'Line added beside a changed one': at(3, ['src/lines.ts:3']),
-      'Line added beside a changed one at the line that one replaced': at(3, ['src/lines.ts:2']),
-      'Line added in a run that replaces nothing': at(6, ['src/lines.ts:4']),
+      'Extended line': at(2, ['src/lines.ts:2']),
+      'Extended line at a line it does not extend': at(2, ['src/lines.ts:1']),
+      'Line added beside an extended one': at(3, ['src/lines.ts:3']),
+      'Line added beside an extended one at the line that one extends': at(3, ['src/lines.ts:2']),
+      'Line added in a run that removes nothing': at(6, ['src/lines.ts:4']),
       'Changed line with an unchanged evidence line': at(2, ['src/lines.ts:4'], ['src/lines.ts:2', 'src/lines.ts:5']),
     };
     const mapped = await refuteBlockers(
@@ -1323,11 +1323,11 @@ describe('refuteBlockers', () => {
       ['Unchanged line at its base line', 'disproved'],
       ['Unchanged line in a cited range', 'disproved'],
       ['Unchanged line at a wrong base line', 'unsettled'],
-      ['Changed line', 'disproved'],
-      ['Changed line at a line it did not replace', 'unsettled'],
-      ['Line added beside a changed one', 'unsettled'],
-      ['Line added beside a changed one at the line that one replaced', 'unsettled'],
-      ['Line added in a run that replaces nothing', 'unsettled'],
+      ['Extended line', 'disproved'],
+      ['Extended line at a line it does not extend', 'unsettled'],
+      ['Line added beside an extended one', 'unsettled'],
+      ['Line added beside an extended one at the line that one extends', 'unsettled'],
+      ['Line added in a run that removes nothing', 'unsettled'],
       ['Changed line with an unchanged evidence line', 'unsettled'],
     ]);
     // A change the diff does not show leaves no line to map, and no diff at all leaves the answer open too.

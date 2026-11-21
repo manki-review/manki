@@ -594,15 +594,25 @@ export function replacementOf(file: DiffFile, oldLine: number): [number, number]
   return undefined;
 }
 
+/** Whether `text` holds every character of `part` in their order, both without whitespace. An empty `part` is held by no text. */
+function holdsInOrder(text: string, part: string): boolean {
+  const wanted = part.replace(/\s/g, '');
+  let at = 0;
+  for (const char of text.replace(/\s/g, '')) {
+    if (at < wanted.length && char === wanted[at]) at++;
+  }
+  return wanted.length > 0 && at === wanted.length;
+}
+
 /**
- * Returns the line of the old file, with its text, that `line` of the new file replaced: the line at the same place in
- * its run of changed lines, so the first line a run adds replaced the first line it removes, and so on. Returns
- * `undefined` for a line the diff keeps, and for a line a run adds past the lines it removes.
+ * Returns the line of the old file, with its text, that `line` of the new file only extends: the one line its run of
+ * changed lines removes whose characters the new line still holds in their order, apart from whitespace. That old line
+ * must fit no other line the run adds. Returns `undefined` for a line the diff keeps, and when the pair is not unique.
  */
-export function replacedLineOf(file: DiffFile, line: number): { line: number; text: string } | undefined {
+export function extendedLineOf(file: DiffFile, line: number): { line: number; text: string } | undefined {
   for (const hunk of file.hunks) {
     let [oldAt, newAt] = [hunk.oldStart, hunk.newStart];
-    let run: { removed: Array<{ line: number; text: string }>; added: number[] } = { removed: [], added: [] };
+    let run: { removed: Array<{ line: number; text: string }>; added: Map<number, string> } = { removed: [], added: new Map() };
     for (const content of [...hunk.content.split('\n'), ' ']) {
       if (content.startsWith('\\')) continue;
       if (content.startsWith('-')) {
@@ -610,12 +620,16 @@ export function replacedLineOf(file: DiffFile, line: number): { line: number; te
         continue;
       }
       if (content.startsWith('+')) {
-        run.added.push(newAt++);
+        run.added.set(newAt++, content.slice(1));
         continue;
       }
-      const at = run.added.indexOf(line);
-      if (at >= 0) return run.removed[at];
-      run = { removed: [], added: [] };
+      const text = run.added.get(line);
+      if (text !== undefined) {
+        const fits = run.removed.filter(removed => holdsInOrder(text, removed.text));
+        const added = [...run.added.values()];
+        return fits.length === 1 && added.filter(other => holdsInOrder(other, fits[0].text)).length === 1 ? fits[0] : undefined;
+      }
+      run = { removed: [], added: new Map() };
       oldAt++;
       newAt++;
     }
