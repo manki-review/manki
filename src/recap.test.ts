@@ -2514,7 +2514,7 @@ describe('llmDeduplicateFindings', () => {
     // A thread Manki resolved after an answer that accepted no fix was decided too, but only for the code its answer
     // read. After a push that may have changed it, a repeat in its own file goes to the judge with the answer, as static
     // dedup sends one, and a repeat in another file goes on its own. One whose answers do not show a decision may have
-    // been fixed, so a repeat there goes to the judge on its own.
+    // been fixed, so it drops nothing, and a repeat in its own file goes to the judge with the answer.
     const settledByReply = { ...waived, status: 'auto-resolved' as const };
     const decided = { ...settledByReply, decidedWithoutFix: true };
     const answeredIn = { threadId: 'T1', answer: waived.answer, grade: { severity: waived.severity } };
@@ -2522,7 +2522,7 @@ describe('llmDeduplicateFindings', () => {
       expect(await llmDeduplicateFindings([finding], [decided], match, paired, () => false)).toEqual(dropped(finding));
       expect(await llmDeduplicateFindings([finding], [decided], match, paired, () => true)).toEqual({ unique: [rechecked], duplicates: [] });
       expect(await llmDeduplicateFindings([finding], [decided], match, paired)).toEqual({ unique: [rechecked], duplicates: [] });
-      expect(await llmDeduplicateFindings([finding], [settledByReply], match, paired, () => false)).toEqual({ unique: [finding], duplicates: [] });
+      expect(await llmDeduplicateFindings([finding], [settledByReply], match, paired, () => false)).toEqual({ unique: [rechecked], duplicates: [] });
     }
 
     // A resolved or answered suggestion is graded below a warning, so it neither waives the warning nor answers it.

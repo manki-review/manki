@@ -1480,8 +1480,8 @@ function describeForDedup(f: DedupItem): string {
 }
 
 /**
- * Asks `client` which findings repeat an earlier resolved one, an `auto-resolved` one `decidedWithoutFix`, or one Manki
- * answered in a thread still open, in any wording. A match counts in the same file, or in another file when `acrossFiles`
+ * Asks `client` which findings repeat an earlier resolved one, an `auto-resolved` one `decidedWithoutFix`, or any other
+ * one Manki answered in its thread, in any wording. A match counts in the same file, or in another file when `acrossFiles`
  * pairs the two. A repeat of a waived resolved finding is dropped, and a repeat of a fixed one goes to the judge with a note. A repeat of an `auto-resolved` thread,
  * and any repeat in another file, is dropped only while `mayHaveChanged` says no push could have changed its code.
  * Otherwise a repeat in the thread's own file goes to the judge with the thread's answer as `answeredIn`, as static
@@ -1504,8 +1504,8 @@ async function llmDeduplicateFindings(
   const posted = withPostedLine(previousFindings);
   // A thread Manki resolved after an answer that accepted no fix was decided like one a person resolved. Any other may have been fixed.
   const resolved = posted.filter(f => f.status === 'resolved' || (f.status === 'auto-resolved' && f.decidedWithoutFix));
-  // An answered thread still open waives nothing, but a repeat of it goes to the judge with the answer.
-  const earlier = [...resolved, ...posted.filter(f => isAnswered(f) && (f.status === 'open' || f.status === 'replied'))];
+  // Any other answered thread waives nothing, but a repeat of it goes to the judge with the answer, as static dedup sends one.
+  const earlier = [...resolved, ...posted.filter(f => isAnswered(f) && !resolved.includes(f))];
   if (findings.length === 0 || earlier.length === 0) {
     return { unique: findings, duplicates: [] };
   }
