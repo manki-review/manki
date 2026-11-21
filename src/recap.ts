@@ -810,17 +810,19 @@ function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement
 
 /**
  * Whether Manki settled the latest reply by a person since it last reopened the thread: a later comment of Manki's
- * records a settling answer to that very reply, or a dismissal it accepted. Answering takes a while, so an answer to an
- * earlier reply can land after a later one, and the record's `answers` tells them apart. A reply Manki has not
- * answered, or answered without settling, agrees to nothing.
+ * records a settling answer to that very reply, or a dismissal it accepted from that reply's writer. Answering takes a
+ * while, so an answer to an earlier reply can land after a later one, and the record's `answers` tells them apart. A
+ * reply Manki has not answered, or answered without settling, agrees to nothing, and neither does a dismissal by
+ * someone else, since who may clear the thread is read from the reply's writer.
  */
 function replyAgreed(bot: BotIdentity, comments: ThreadCommentNode[]): boolean {
   const since = [comments[0], ...sinceLastReopen(bot, comments)];
   const reply = latestPersonReply(bot, since);
   if (!reply) return false;
   const answersReply = (body: string) => reply.databaseId !== undefined && settledReplyId(body) === reply.databaseId;
+  const dismissedByReplier = (body: string) => isLogin(ownMarker(body, DISMISS_RECORD_OPENER, COMMENT_MARKER), reply.author?.login);
   return since.slice(since.indexOf(reply) + 1).some(c => isBotLogin(bot, c.author?.login)
-    && (answersReply(c.body ?? '') || ownMarker(c.body ?? '', DISMISS_RECORD_OPENER, COMMENT_MARKER) !== undefined));
+    && (answersReply(c.body ?? '') || dismissedByReplier(c.body ?? '')));
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */

@@ -1477,7 +1477,8 @@ describe('fetchRecapState', () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
       // `answer`: how Manki answered the reply, as its reply record or its record of a dismissal says.
-      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string; answer?: ReplyDecision['thread'] | 'dismiss' }; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
+      // `dismissedBy`: whose dismissal Manki recorded, when not the reply's writer.
+      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string; answer?: ReplyDecision['thread'] | 'dismiss'; dismissedBy?: string }; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
       const bounded = 'Every caller bounds both inputs.';
       const cases: Record<string, Case> = {
         // A Manki reply that quotes the fix does not count as a reopen.
@@ -1493,6 +1494,8 @@ describe('fetchRecapState', () => {
         // Agreeing needs Manki's answer, so a reply it has not answered yet leaves the thread blocking.
         'src/collaborator-unanswered.ts': { reply: { login: 'bob', association: 'MEMBER' }, security: true, blocks: true },
         'src/collaborator-dismissed.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: '@manki dismiss', answer: 'dismiss' }, security: true, blocks: false },
+        // A dismissal Manki recorded for the PR author agrees to nothing for the maintainer whose reply came before it.
+        'src/collaborator-reply-author-dismissed.ts': { reply: { login: 'bob', association: 'MEMBER', answer: 'dismiss', dismissedBy: 'author' }, security: true, blocks: true },
         // Manki's own resolve settles a security thread only after a reply from someone who may clear it, whatever the reply says.
         'src/collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: false },
         'src/author-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'author', association: 'OWNER', text: bounded }, security: true, blocks: true },
@@ -1560,7 +1563,7 @@ describe('fetchRecapState', () => {
             ...(foundAgain ? [{ body: `This came up again.\n\n${quoted}\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: BOT_LOGIN } }] : []),
             ...(dismissed ? [{ body: `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'author')}`, author: { login: BOT_LOGIN } }] : []),
             ...(reply ? [{ databaseId: REPLY_ID, body: reply.text ?? 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
-            ...(reply?.answer === 'dismiss' ? [{ body: `Finding dismissed by \`@${reply.login}\`.\n\n<!-- manki -->\n${dismissRecordMarker(reply.login)}`, author: { login: BOT_LOGIN } }] : []),
+            ...(reply?.answer === 'dismiss' ? [{ body: `Finding dismissed by \`@${reply.dismissedBy ?? reply.login}\`.\n\n<!-- manki -->\n${dismissRecordMarker(reply.dismissedBy ?? reply.login)}`, author: { login: BOT_LOGIN } }] : []),
             ...(reply?.answer && reply.answer !== 'dismiss' ? [{ body: `**Agreed.** No change needed.\n\n<!-- manki -->\n${formatReplyRecord({
               kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: reply.answer }, answers: REPLY_ID,
             })}`, author: { login: BOT_LOGIN } }] : []),
@@ -1586,6 +1589,7 @@ describe('fetchRecapState', () => {
       // `auto-resolved`: neither open nor dismissed.
       expect(state.previousFindings.filter(f => f.authorReplyMayClear).map(f => [f.file, f.status, replyClassOf(f)])).toEqual([
         ['src/collaborator-agreed.ts', 'replied', 'agree'], ['src/collaborator-unanswered.ts', 'replied', 'none'], ['src/collaborator-dismissed.ts', 'auto-resolved', 'agree'],
+        ['src/collaborator-reply-author-dismissed.ts', 'replied', 'none'],
         ['src/collaborator-settled.ts', 'auto-resolved', 'none'], ['src/author-resolved-after-reply.ts', 'replied', 'none'],
         ['src/private-member-agreed.ts', 'replied', 'agree'], ['src/blocker-collaborator-settled.ts', 'auto-resolved', 'none'],
       ]);
