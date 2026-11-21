@@ -1923,9 +1923,13 @@ describe('runJudgeAgent', () => {
       { id: 7, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
       { id: 8, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
     ];
-    const graded = async (finderNames: string[]) => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-trigger-'));
+    const refuter = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'unsettled', reason: 'r' }) }) } as unknown as LLMClient;
+    const graded = async (finderNames: string[], checked = true) => {
       mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: entries }) });
-      const result = await runJudgeAgent(mockClient, makeConfig(), { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: finderNames.length, finderNames });
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: finderNames.length, finderNames, ...(checked && { refutation: { client: refuter, workspace } }),
+      });
       return result.findings.map(f => [f.title, f.trigger, f.gradeIfConfirmed, f.doubts?.map(d => d.premise)]);
     };
     expect(await graded(['First', 'Second'])).toEqual([
@@ -1940,6 +1944,9 @@ describe('runJudgeAgent', () => {
     expect((await graded(['First'])).map(([title, , , doubts]) => [title, doubts])).toEqual([
       ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]], ['Same title', undefined],
     ]);
+    // Without a refuter no check could confirm the trigger, so a warning that cites its lines stays proven.
+    expect((await graded(['First', 'Second'], false)).find(([title]) => title === 'One finder')).toEqual(['One finder', trigger, undefined, undefined]);
+    fs.rmSync(workspace, { recursive: true, force: true });
   });
 
   it('asks once more only for the findings a reply left out, and fails when one is still left out', async () => {

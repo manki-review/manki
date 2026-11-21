@@ -1723,7 +1723,8 @@ export async function runJudgeAgent(
   const mapped = mapJudgedToFindings(findings, judgeResult.findings, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting, !!refutation)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f))
     // The duplicates are folded and the rule has graded by here, so the drop sees the grade the finding ends with.
-    .map(f => doubtTrigger(doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules), input.finderNames ?? []));
+    // Without a refuter no check could confirm a trigger, so no finding gets the doubt.
+    .map(f => doubtTrigger(doubtUnprovenRule(applyOwnProposal(gradeConfirmedRule(f, config.review?.rules), provenanceMap), config.review?.rules), refutation ? input.finderNames ?? [] : []));
   const suppress = (list: Finding[], quiet = false) => {
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
