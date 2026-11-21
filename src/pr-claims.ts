@@ -12,7 +12,7 @@ import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
 import { CheckProgress, EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
 import { digestOf, mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
-import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, COST_SCALE_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const EXTRACT_TIMEOUT_MS = 45_000;
 /** Claims checked in one round, the first ones listed, so no PR text can start more calls than this. */
@@ -76,6 +76,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 - **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
 - **warning**: a real case that fails, but not catastrophically. List its proving lines in \`proof\` too.
 - **note**: a comment the change adds states behaviour the code does not have, while the code works. A false statement in the PR description alone, with nothing wrong in the code, is no finding.
+- ${COST_SCALE_RULE}
 - Put each finding on the changed line that relies on the statement.
 - ${CLAIMS_MISSING_RULE}
 - ${PRE_EXISTING_RULE}

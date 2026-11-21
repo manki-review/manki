@@ -470,7 +470,7 @@ ${OUTSIDE_INPUT_RULE}
 
 ## Warning Tests
 
-A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the \`improvement\` row, or the \`style\` row when the point is only wording. Grade a finding a note on this ground only when its own description shows no consequence anyone would notice, and keep the warning when you cannot tell whether anyone would. Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
+A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the \`improvement\` row, or the \`style\` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding's own word on the scale is not enough. When the code shown does not show the scale, contradicts the finding, or leaves you unsure whether anyone would notice, keep the warning. Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
 
 ## Severity Table
 
@@ -569,7 +569,7 @@ Not blockers:
 - **Python**: \`merge_ranges\` returns a wrong range when two inputs share an end point, a case only the internal compaction job produces, and only after a crash recovery. Wrong behaviour in a rare internal edge case: \`wrong\` and \`rare\`, a \`warning\`, with \`reasoning\` that names the compaction job as the only code that passes \`merge_ranges\` such ranges.
 - **TypeScript**: search results are sorted case-sensitively, and the PR description says this matches the existing API. Intended but surprising: \`improvement\`, a \`note\` asking whether users expect it.
 - **Java**: the new \`parseHeader\` error branch has no test. Missing test coverage: \`improvement\`, a \`note\`.
-- **Kotlin**: a new debug log line copies a cart's items into a list only to print their count. The log and the result are right, and a cart holds a few dozen items. A cost nobody would notice: \`improvement\`, a \`note\`.
+- **Kotlin**: a new debug log line copies a cart's items into a list only to print their count. The log and the result are right, and the code caps a cart at 50 items with \`MAX_CART_ITEMS\`. A cost nobody would notice: \`improvement\`, a \`note\`.
 
 ## Evaluation Criteria
 

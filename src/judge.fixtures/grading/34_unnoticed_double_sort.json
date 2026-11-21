@@ -1,0 +1,19 @@
+{
+  "name": "unnoticed-double-sort",
+  "case": "unnoticed-double-sort",
+  "allowed": [
+    "note"
+  ],
+  "finding": {
+    "title": "`config_keys_help` sorts `KNOWN_KEYS` twice",
+    "file": "src/cli/help.rs",
+    "line": 17,
+    "description": "`has_duplicates` copies and sorts `KNOWN_KEYS`, and `config_keys_help` then copies and sorts the same keys again to print them. `KNOWN_KEYS` is the fixed array of 12 keys declared just above, and the help text is built once per `--help` run, so the second sort is one more sort of 12 short strings.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Sort once and check the sorted copy for neighbours that are equal, or move the duplicate check into a unit test."
+  },
+  "prDiff": "diff --git a/src/cli/help.rs b/src/cli/help.rs\nindex 1111111..2222222 100644\n--- a/src/cli/help.rs\n+++ b/src/cli/help.rs\n@@ -8,6 +8,19 @@\n /// The keys a config file may set. `validate_config` rejects any other key.\n const KNOWN_KEYS: [&str; 12] = [\n     \"timeout\", \"retries\", \"proxy\", \"cache_dir\", \"log_level\", \"color\",\n     \"editor\", \"pager\", \"theme\", \"locale\", \"telemetry\", \"update_check\",\n ];\n \n+/// Returns the `--help` section that lists the config keys, one per line in sorted order.\n+pub fn config_keys_help() -> String {\n+    assert!(!has_duplicates(&KNOWN_KEYS), \"duplicate config key\");\n+    let mut keys = KNOWN_KEYS.to_vec();\n+    keys.sort_unstable();\n+    keys.iter().map(|key| format!(\"  {key}\")).collect::<Vec<_>>().join(\"\\n\")\n+}\n+\n+fn has_duplicates(keys: &[&str]) -> bool {\n+    let mut sorted = keys.to_vec();\n+    sorted.sort_unstable();\n+    sorted.windows(2).any(|pair| pair[0] == pair[1])\n+}\n"
+}

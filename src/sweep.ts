@@ -10,7 +10,7 @@ import { repoTools } from './related-repos';
 import { parseFindings, parseLocation, parseProof, truncateDiff } from './review';
 import { CheckProgress, CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode, sweepName } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
-import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, COST_SCALE_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_SWEEPS = 3;
 const SWEEP_STEPS = 15;
@@ -42,6 +42,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 - **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
 - **warning**: a real case that fails, but not catastrophically. List its proving lines in \`proof\` too.
 - **note**: an inconsistency that works today.
+- ${COST_SCALE_RULE}
 - When no other place makes the mistake, return an empty \`findings\` list.
 - ${CLAIMS_MISSING_RULE}
 - ${PRE_EXISTING_RULE}

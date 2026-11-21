@@ -260,7 +260,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- `warning`: state the cell all the same, list the premise you could not settle in `doubts` with `decides` set to `defect`, and say it in `reasoning`. No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.');
     expect(prompt).not.toMatch(/keep it, list|costs a single fix/);
     const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
-    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its own description shows no consequence anyone would notice, and keep the warning when you cannot tell whether anyone would. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
+    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale, contradicts the finding, or leaves you unsure whether anyone would notice, keep the warning. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
     expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
     expect(prompt).not.toMatch(/confidence/i);
     const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
@@ -6701,8 +6701,8 @@ const GRADING_CASES = [
   'doubted-lost-segment',
   'doubted-status-percent',
   'unnoticed-extra-pass',
-  'unnoticed-memory-spike',
-  'unnoticed-display-length',
+  'unnoticed-double-sort',
+  'unnoticed-startup-string',
   'noticed-wrong-size',
   'noticed-leaked-temp-file',
   'noticed-slowdown',
