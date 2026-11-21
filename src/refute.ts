@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import * as core from '@actions/core';
 
 import { holdsLines } from './code-window';
-import { isLineInDiff, oldLineOf, rebuildRawDiff, replacedLineOf, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { extendedLineOf, isLineInDiff, oldLineOf, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { readBaseText, readFileInRoot, resolveInRoot } from './mcp-server';
@@ -62,7 +62,7 @@ To refute it:
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
-- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does${readsBase ? '' : ', or the change shown is cut'}, answer \`base\` unsettled.${readsBase ? ' When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.' : ''} In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path${readsBase ? ' at the base, with the line the finding flags as it is numbered at the base. When this PR changed the flagged line, cite the line it replaced, as numbered at the base. A change that leaves the failure as it was, such as one more argument on the same call, does not make it the PR\'s own. A flagged line this PR added where the base had no line never fails the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them, and a line the base does not hold leaves the answer unsettled' : ''}. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
+- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does${readsBase ? '' : ', or the change shown is cut'}, answer \`base\` unsettled.${readsBase ? ' When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.' : ''} In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path${readsBase ? ' at the base, with the line the finding flags as it is numbered at the base. When this PR only extended the flagged line, keeping the old line and adding to it, cite the old line, as numbered at the base. A change that leaves the failure as it was, such as one more argument on the same call, does not make it the PR\'s own. Any other flagged line this PR added or changed never fails the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them, and a line the base does not hold leaves the answer unsettled' : ''}. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
 - **confirmed**: the failure path holds. Cite the lines that show the failure in \`proof\`.
@@ -357,10 +357,10 @@ function parseBase(answer: unknown, cut: boolean, workspace: string, related?: R
 
 /**
  * Returns where the line `finding` flags sat at the PR's base, as git's path and line, with the text that line has
- * there. A line the PR left as it was stands for itself, with its text at the head. A line the PR changed stands for
- * the line it replaced by `replacedLineOf`, with its text in the diff. A line a run of changed lines adds past the
- * lines it removes, a file the PR added, and a change the diff does not show have no such line. A changed file whose
- * patch GitHub left out, as `binarySkipped` or as a file listed without lines, is one of those.
+ * there. A line the PR left as it was stands for itself, with its text at the head. A line the PR only extended stands
+ * for the line it extends by `extendedLineOf`, with its text in the diff. Any other line the PR added or changed, a file
+ * the PR added, and a change the diff does not show have no such line. A changed file whose patch GitHub left out, as
+ * `binarySkipped` or as a file listed without lines, is one of those.
  */
 function flaggedLineAtBase(finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { file: string; line: number; text: string } | undefined {
   if (!diff || excludedPaths.includes(finding.file) || diff.binarySkipped?.some(f => f.path === finding.file)) return undefined;
@@ -369,8 +369,8 @@ function flaggedLineAtBase(finding: Finding, workspace: string, diff: ParsedDiff
   const file = changed ? changed.oldPath ?? changed.path : finding.file;
   const line = changed ? oldLineOf(changed, finding.line) : finding.line;
   if (changed && line === undefined) {
-    const replaced = replacedLineOf(changed, finding.line);
-    return replaced && { file, ...replaced };
+    const extended = extendedLineOf(changed, finding.line);
+    return extended && { file, ...extended };
   }
   const head = readFileInRoot(workspace, finding.file);
   const text = head && head !== 'too large' ? head.lines[finding.line - 1] : undefined;
@@ -381,7 +381,7 @@ function flaggedLineAtBase(finding: Finding, workspace: string, diff: ParsedDiff
  * Returns `check` with its `base` answer checked against the PR's base commit, which `BASE_REF` in `workspace` points
  * at. Only the `proof` lines that their file holds there are kept, with the `commit` they were found at. A disproof
  * can lower a finding, so it stands only when every line it cites is there and one of them stands for the flagged line
- * at the base by `flaggedLineAtBase`, with the same text. So a line the PR only added is never lowered. Any doubt
+ * at the base by `flaggedLineAtBase`, with the same text. So a line the PR added or rewrote is never lowered. Any doubt
  * leaves it unsettled: a workspace without a base, a file that cannot be read there, a line it does not hold, or no
  * citation of the flagged line. An answer that the failure is the PR's own stands as given, since it
  * keeps the blocker. An unsettled answer needs one line that is there, or a line of a related repo, as a premise does.

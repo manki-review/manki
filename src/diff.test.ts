@@ -15,7 +15,7 @@ import {
   firstCommentableLine,
   changesNextTo,
   oldLineOf,
-  replacedLineOf,
+  extendedLineOf,
   replacementOf,
   sliceDiff,
   compareChanges,
@@ -994,7 +994,7 @@ describe('isLineInDiff', () => {
   });
 });
 
-describe('oldLineOf, replacementOf, replacedLineOf and changesNextTo', () => {
+describe('oldLineOf, replacementOf, extendedLineOf and changesNextTo', () => {
   // Line 2 is replaced by two lines, and line 10 is removed.
   const file = parsePRDiff([
     'diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts',
@@ -1023,12 +1023,19 @@ describe('oldLineOf, replacementOf, replacedLineOf and changesNextTo', () => {
     expect([2, 10, 1, 3].map(line => replacementOf(file, line))).toEqual([[2, 3], [11, 10], undefined, undefined]);
   });
 
-  it('pairs each line a run adds with the line at the same place among the lines it removes', () => {
-    // The first added line replaced line 2. The second sits past the one removed line, and a kept line replaced nothing.
-    expect([2, 3, 1, 4, 10].map(line => replacedLineOf(file, line))).toEqual([{ line: 2, text: 'two' }, undefined, undefined, undefined, undefined]);
-    // A run that removes lines out of order with the lines it adds still pairs them by place.
-    const mixed = parsePRDiff(['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', '@@ -1,4 +1,4 @@\n one\n-a\n+a2\n-b\n+b2\n four'].join('\n')).files[0];
-    expect([2, 3].map(line => replacedLineOf(mixed, line))).toEqual([{ line: 2, text: 'a' }, { line: 3, text: 'b' }]);
+  it('pairs a line a run adds with the one line it removes that the new line only extends', () => {
+    const run = (...lines: string[]) => parsePRDiff(['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', `@@ -1,4 +1,${lines.filter(l => !l.startsWith('-')).length} @@`, ...lines].join('\n')).files[0];
+    // An argument added to a call, and a line indented again, keep the old line.
+    expect(extendedLineOf(run(' one', '-send(peer, [id]);', '+send(peer, [id, at]);', ' three'), 2)).toEqual({ line: 2, text: 'send(peer, [id]);' });
+    expect(extendedLineOf(run(' one', '-  read();', '+    read();', ' three'), 2)).toEqual({ line: 2, text: '  read();' });
+    // A line inserted before the extended one is new, so only the extended line maps.
+    expect([2, 3].map(line => extendedLineOf(run(' one', '-b', '+new', '+b2', ' three'), line))).toEqual([undefined, { line: 2, text: 'b' }]);
+    // Removed and added lines out of order still pair by their text.
+    expect([2, 3].map(line => extendedLineOf(run(' one', '-a', '+a2', '-b', '+b2', ' four'), line))).toEqual([{ line: 2, text: 'a' }, { line: 3, text: 'b' }]);
+    // A rewritten line, a blank removed line, a kept line and an old line two added lines both extend map to nothing.
+    expect(extendedLineOf(run(' one', '-foo(x);', '+bar(x);', ' three'), 2)).toBeUndefined();
+    expect(extendedLineOf(run(' one', '-', '+next();', ' three'), 2)).toBeUndefined();
+    expect([1, 2, 3, 4].map(line => extendedLineOf(file, line))).toEqual([undefined, undefined, undefined, undefined]);
   });
 
   it('tells a line right before or after a run of changed lines from the changed line and a line further away', () => {

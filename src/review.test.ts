@@ -3815,7 +3815,7 @@ describe('runReview', () => {
     // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
     // security finding without both refuters, a workspace without the base, a line the base
     // does not hold, no citation of the flagged line at its base line, a re-indented flagged line cited at a line it did
-    // not replace, a flagged comment line the PR only added, and a round with no check at all keep the blocker its cell gives.
+    // not extend, a flagged comment line the PR only added, and a round with no check at all keep the blocker its cell gives.
     const kept: Array<[RefutationOutcome, Options]> = [
       ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: 'judge-model', security: true }],
       ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
@@ -3831,7 +3831,7 @@ describe('runReview', () => {
     // Both refuters, on different models, lower a security blocker.
     const both = await run('disproved', { security: true });
     expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
-    // The PR re-indented the flagged head line 4, which replaced base line 3. Both answers cite that line, so the failure
+    // The PR re-indented the flagged head line 4, which extends base line 3. Both answers cite that line, so the failure
     // is the same before this PR. One answer only notes that the blocker may be older.
     const reindented = await run('disproved', { line: 4 });
     expect([reindented.result.outcome, reindented.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['pre-existing', 'follow-up']]]]);
@@ -3846,7 +3846,7 @@ describe('runReview', () => {
     const title = 'Send happens before the peer is recorded';
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     // `sameBefore` is each check's answer whether the failure is the PR's own, and `pairBefore` the second refuter's,
-    // which runs only when given. The finding flags head line 2, which replaced base line 2. With `doubt`, the judge
+    // which runs only when given. The finding flags head line 2, which extends base line 2. With `doubt`, the judge
     // doubts whether the defect exists, and the check leaves that open.
     type Options = { pairBefore?: RefutationOutcome; row?: string; filed?: string; baseProof?: string[]; doubt?: boolean };
     const run = async (sameBefore: RefutationOutcome, { pairBefore, row = 'degraded', filed = 'warning', baseProof = ['src/send.ts:2', 'src/send.ts:3'], doubt = false }: Options = {}) => {
@@ -3897,7 +3897,7 @@ describe('runReview', () => {
     expect(placed((await run('disproved', { row: 'style' })).result)).toEqual([[], [['note', true, 'The base sent before it recorded the peer too.']]]);
 
     // A change that makes the failure the PR's own, an open answer, a second check that finds the failure the PR's own,
-    // an answer that cites no line the change replaced, and with one check only, a warning a finder filed as a blocker
+    // an answer that cites no line the flagged line extends, and with one check only, a warning a finder filed as a blocker
     // or one whose cell gives a blocker keep the warning posted as the PR's own.
     const posted: Array<[RefutationOutcome, Options]> = [
       ['confirmed', {}], ['unsettled', {}], ['disproved', { pairBefore: 'confirmed' }], ['disproved', { baseProof: ['src/send.ts:3'] }], ['disproved', { filed: 'blocker' }],
@@ -3947,19 +3947,17 @@ describe('runReview', () => {
       }
     };
 
-    // The findings on `masternodes/manager.rs` and on `instantsend/manager.rs` line 185 flag a line this PR left
-    // unchanged, and their answers cite it at its place in the base. The finding on `instantsend/manager.rs` line 162
-    // flags a line this PR changed, and its answer cites the line it replaced. Two refuters on different models make all
-    // three pre-existing, the security one too. The others keep blocking. The one on `sml_engine.rs` flags a line of a
-    // new block past the two lines that block replaced, so its answer cites no line it replaced.
-    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
+    // Only the findings on `masternodes/manager.rs` and on `instantsend/manager.rs` line 185 flag a line this PR left
+    // unchanged, and their answers cite it at its place in the base. Two refuters on different models make both
+    // pre-existing, the security one too. The others flag lines this PR added or rewrote and keep blocking.
+    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'blocker', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
     expect(await run({ pair: true })).toEqual(fixture.findings.map(f => [f.title, f.expected]));
-    // One refuter changes no grade. Those blockers only note that they may be older than this PR.
-    expect((await run()).map(([, posted]) => posted)).toEqual(['blocker', 'older', 'blocker', 'older', 'blocker', 'older']);
+    // One refuter changes no grade. Both blockers only note that they may be older than this PR.
+    expect((await run()).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'older', 'blocker', 'older']);
     // The flagged line cited at its head number, which is another line at the base, proves nothing, so the blocker stays.
     const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[3].title
       ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[3].file}:${fixture.findings[3].line}`] } } : recorded;
-    expect((await run({ pair: true, answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'pre-existing', 'blocker', 'blocker', 'blocker', 'pre-existing']);
+    expect((await run({ pair: true, answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker', 'pre-existing']);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {
