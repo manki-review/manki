@@ -32,7 +32,7 @@ body: |
   - `npm run typecheck`. The full suite runs in CI.
 
   Closes #1173
-key_version: 2
+key_version: 3
 must_catch:
   - id: K1
     severity: blocker
@@ -60,3 +60,21 @@ nice_to_have:
     mechanism: "`formatFindingFold` renders the title with `inlineHtml`, which turns `**x**` inside it into a nested `<b>x</b>`. `bodyFinding` reads the title with the lazy `<b>(.*?)<\\/b>`, which stops at the inner closing tag, so the issue a tick files gets a title cut off after the first bold word."
     locations: ["src/issue-tick.ts", "bodyFinding", "src/github.ts", "inlineHtml", "formatFindingFold"]
     source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N3
+    severity: warning
+    mechanism: "When filing fails, `handleReviewBoxTick` only logs a `core.warning`, and `filedLine` puts the unticked box back. A failed tick on a thread gets a reply with the error and asks for a new tick, but a failed tick in the review body gets no message, so the person who ticked sees the box clear and no issue appear, with no reason given."
+    locations: ["src/issue-tick.ts", "handleReviewBoxTick", "filedLine"]
+    fix: "0f41cc203e5ae85eb3eb2e1de28952b0b454de24"
+    source: "hold-out pass on the bench runs 44712446217, 43784302924 and 43828805084"
+  - id: N4
+    severity: warning
+    mechanism: "`handleReviewBoxTick` builds every write from the `review.body` it was handed when the run started and saves the whole body with `updateReview`, without reading the current review first. A box ticked after that read, such as a second box ticked while the first is being filed, is written back unticked, so that tick can be lost without a message. Any other edit made to the body in the meantime is overwritten too."
+    locations: ["src/issue-tick.ts", "handleReviewBoxTick", "updateReview"]
+    fix: "0f41cc203e5ae85eb3eb2e1de28952b0b454de24"
+    source: "hold-out pass on the bench runs 44712446217, 43784302924 and 43828805084"
+  - id: N5
+    severity: warning
+    mechanism: "In `handleIssueBoxTick`, a failed filing now sends its error reply inside the `catch`, before `replaceIssueBox` and `updateReviewComment` clear the box. When `replyToReviewThread` fails as well, which the outage or rate limit that failed `issues.create` makes likely, the error leaves the handler: the box stays ticked with no issue behind it, and the boxes after it in the loop are not handled."
+    locations: ["src/issue-tick.ts", "handleIssueBoxTick", "replyToReviewThread", "replaceIssueBox"]
+    fix: "4aa46139f33da3c718127590189f7d9fabc6f306"
+    source: "hold-out pass on the bench runs 44712446217, 43784302924 and 43828805084"

@@ -14,7 +14,7 @@ body: |
   I've been meaning to make this change for a while, but the need to do so becomes more urgent with JDK commit cc05530b813564a40c233eaaa80b906795c6d752, which makes a number of `java.time` fields `transient`. That means that, in JDK 26, the reflective-based adapter will no longer work with the classes that were changed.
 
   This addresses upstream issues 1059 and 739. All relevant classes in the `java.time` package are covered.
-key_version: 2
+key_version: 3
 must_catch:
   - id: K1
     severity: warning
@@ -46,3 +46,9 @@ nice_to_have:
     mechanism: "`roundTrip` in `DefaultTypeAdaptersTest` compares with `ReflectiveTypeAdapterFactory` only when `JAVA_TIME_FIELDS_ARE_ACCESSIBLE` is true. Surefire runs the tests with `--illegal-access=deny` and CI uses JDK 11, 17, 21 and 25, where `setAccessible` on `Instant.seconds` throws `InaccessibleObjectException`. `checkReflectiveTypeAdapterFactory` therefore never runs in CI, and nothing checks that the frozen format equals the reflective one."
     locations: ["gson/src/test/java/com/google/gson/functional/DefaultTypeAdaptersTest.java", "JAVA_TIME_FIELDS_ARE_ACCESSIBLE", "checkReflectiveTypeAdapterFactory", "roundTrip"]
     source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N5
+    severity: warning
+    mechanism: "The PR says every relevant `java.time` class is covered, but `JAVA_TIME_FACTORY` has no adapter for `ZonedDateTime`, whose branch is commented out while the public `ZONED_DATE_TIME` adapter is marked as not working, nor for `OffsetDateTime`, `OffsetTime`, `Period`, `Year`, `YearMonth` and `MonthDay`. These types still go through `ReflectiveTypeAdapterFactory`, which fails on a JDK that denies reflective access to `java.time` and once the JDK makes their fields `transient`, the breakage the PR sets out to prevent."
+    locations: ["gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java", "JAVA_TIME_FACTORY", "ZONED_DATE_TIME", "ZonedDateTime", "OffsetDateTime"]
+    fix: "c47db7bc13875db690bcfb76e02b1e1bbb3a3353"
+    source: "hold-out pass on the bench runs 44712446217, 43784302924 and 43828805084"
