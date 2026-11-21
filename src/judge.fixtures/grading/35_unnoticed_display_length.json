@@ -8,7 +8,7 @@
     "title": "A long single-sentence description now shows in full, past the visible budget",
     "file": "src/github.ts",
     "line": 1049,
-    "description": "When the first sentence alone is longer than `room`, `splitLead` returns a cut lead and `rest` set to the whole description. If that description is one sentence, `rest.split(...)` has length 1 and holds no newline, so `folds` is false. `formatFindingComment` then prints `description.trim()` uncut, so a 2000-character description shows in full instead of a cut lead plus a `Details` fold. This breaks the 700-character visible cap.",
+    "description": "When the first sentence alone is longer than `room`, `splitLead` returns a cut lead and `rest` set to the whole description. If that description is one sentence, `rest.split(...)` has length 1 and holds no newline, so `folds` is false. `formatFindingComment` then prints `description.trim()` uncut, so a 2000-character description shows in full instead of a cut lead plus a `Details` fold, past the 700-character `MAX_VISIBLE_COMMENT` budget. The text shown is the whole description, complete and correct, so it misleads no one. Only a description that is a single sentence longer than `room` takes this path, and the comment is then longer on screen than the budget aims for.",
     "severity": "warning",
     "reviewers": [
       "Correctness"

@@ -8,7 +8,7 @@
   "finding": {
     "title": "`seen` is now a list, so each duplicate check scans every email seen so far",
     "file": "contacts/importer.py",
-    "line": 21,
+    "line": 16,
     "description": "`email in seen` on a list compares against every earlier email, so an import of N rows does about N²/2 string comparisons. At the 50,000 rows `MAX_IMPORT_ROWS` allows, that is over a billion comparisons: an upload that took well under a second with the set now takes minutes while the user waits on the import page.",
     "severity": "warning",
     "reviewers": [
@@ -16,5 +16,5 @@
     ],
     "suggestedFix": "Keep the set for the membership check and append to the list only for the report order, or use a `dict` as an ordered set."
   },
-  "prDiff": "diff --git a/contacts/importer.py b/contacts/importer.py\nindex 1111111..2222222 100644\n--- a/contacts/importer.py\n+++ b/contacts/importer.py\n@@ -14,11 +14,13 @@\n def import_contacts(rows: Iterable[dict[str, str]]) -> ImportReport:\n     \"\"\"Imports the rows of an uploaded CSV file, at most `MAX_IMPORT_ROWS` (50,000), skipping repeated emails.\"\"\"\n-    seen: set[str] = set()\n+    # A list keeps the emails in upload order for the report.\n+    seen: list[str] = []\n     report = ImportReport()\n     for row in rows:\n         email = row[\"email\"].strip().lower()\n+        if email in seen:\n             report.skipped.append(email)\n             continue\n-        seen.add(email)\n+        seen.append(email)\n         report.imported.append(Contact.objects.create(email=email, name=row.get(\"name\", \"\")))\n     return report\n"
+  "prDiff": "diff --git a/contacts/importer.py b/contacts/importer.py\nindex 1111111..2222222 100644\n--- a/contacts/importer.py\n+++ b/contacts/importer.py\n@@ -14,12 +14,12 @@\n def import_contacts(rows: Iterable[dict[str, str]]) -> ImportReport:\n     \"\"\"Imports the rows of an uploaded CSV file, at most `MAX_IMPORT_ROWS` (50,000), skipping repeated emails.\"\"\"\n-    seen: set[str] = set()\n+    seen: list[str] = []\n     report = ImportReport()\n     for row in rows:\n         email = row[\"email\"].strip().lower()\n         if email in seen:\n             report.skipped.append(email)\n             continue\n-        seen.add(email)\n+        seen.append(email)\n         report.imported.append(Contact.objects.create(email=email, name=row.get(\"name\", \"\")))\n     return report\n"
 }

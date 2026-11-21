@@ -48,7 +48,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundContext, buildRoundUsage, mergedDuplicateCount } from './round-context';
-import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { runScopeReader } from './scope';
@@ -1074,6 +1074,8 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain(`## Grades\n\n${GRADE_DEFINITIONS}\n\n## Severity Table\n\nSet \`severity\` to the grade of the cell that fits the finding: the row is what goes wrong, and the column is when it happens.\n\n${SEVERITY_TABLE}\n\n${OUTSIDE_INPUT_RULE}\n\n## Rules`);
     expect(prompt).toContain('"severity": "blocker" | "warning" | "note" | "ignore",');
     expect(prompt).not.toMatch(/Severity Guidelines|SQL injection|suggestion|nitpick/);
+    // A cost is filed with the scale the code shows, so the judge can tell whether anyone would notice it.
+    expect(prompt).toContain(`- ${VERIFY_CLAIMS_RULE}\n- ${COST_SCALE_RULE}\n`);
     // The table gives each cell the grade Manki works out from it.
     const grades = Object.fromEntries([...SEVERITY_TABLE.matchAll(/^\| `(\w+)`: [^|]+\| `(\w+)` \| `(\w+)` \|$/gm)].map(([, row, normal, rare]) => [row, { normal, rare }]));
     expect(grades).toEqual(CELL_GRADES);

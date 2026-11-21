@@ -26,6 +26,9 @@ export const VERIFY_CLAIMS_RULE = "Every claim you are given is something to che
 
 export const CLAIMS_MISSING_RULE = 'When a finding says something is missing or handled nowhere, set `"claimsMissing": true` and put the search that came back empty in `emptySearch`, such as "grep `close(` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.';
 
+/** How a finder grades a finding whose consequence is a cost. The finders get it beside the grade definitions. */
+export const COST_SCALE_RULE = "When a finding's consequence is a cost, such as time, memory, calls, size or display space, state the realistic scale the code shows, such as how many items, how often or how large, and what that costs in practice. When the code shows the scale is small and nobody would notice the cost, file the finding as a `note`. When the code does not show the scale, say so.";
+
 /** Where a finding's fix advice goes. Every prompt that writes `howToFix` gets it. */
 export const ROOT_CAUSE_FIX_RULE = "Propose the fix for the root cause of the problem, never another patch for its symptom: when your evidence shows where the problem starts, the fix goes there. Never advise repeating the PR's own handling on another path when one change at the root cause covers every path.";
 
