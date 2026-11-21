@@ -866,8 +866,8 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
   const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
-  // A claim of being older is worth a check only when the flagged line has a place at the base that `checkBase` accepts.
-  const older = (finding: Finding): boolean => claimsOlder(finding) && !!workspace && !!flaggedLineAtBase(finding, workspace, diff, excludedPaths ?? []);
+  // A claim of being older is worth a check only when the workspace holds the base and the flagged line has a place there.
+  const older = (finding: Finding): boolean => readsBase && claimsOlder(finding) && !!flaggedLineAtBase(finding, workspace, diff, excludedPaths ?? []);
   const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, older, roundEnd, rules);
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);

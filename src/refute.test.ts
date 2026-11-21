@@ -1200,6 +1200,12 @@ describe('refuteBlockers', () => {
     writeFileSync(join(workspace, 'src', 'new.ts'), 'send(peer);\n');
     const grown: ParsedDiff = { ...diff, files: [...diff.files, { path: 'src/new.ts', changeType: 'added', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, content: '+send(peer);' }] }] };
     const leftOut = (f: Finding) => f.title.endsWith('left out');
+    // A workspace that holds no base cannot settle a claim of being older, so only the security finding is checked.
+    const baseless = fakeClient(Object.fromEntries(claimed.map(f => [f.title, answer('unsettled')])));
+    await refuteRound(baseless, claimed, { workspace, diff: grown, unpostedLater: leftOut });
+    expect(baseless.calls.map(([title]) => title)).toEqual(['Security with a doubt']);
+    mkdirSync(join(workspace, '.git'));
+    writeFileSync(join(workspace, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: [] }));
     const olderOrder = ['Older warning', 'Security with a doubt', 'Older note'];
     for (const left of [1, 2, 3]) {
       const older = fakeClient(Object.fromEntries(claimed.map(f => [f.title, answer('unsettled')])));
