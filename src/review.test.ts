@@ -3840,20 +3840,21 @@ describe('runReview', () => {
     const title = 'Send happens before the peer is recorded';
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     // `sameBefore` is each check's answer whether the failure is the PR's own, and `pairBefore` the second refuter's,
-    // which runs only when given. The finding flags head line 2, which extends base line 2. With `doubt`, the judge
-    // doubts whether the defect exists, and the check leaves that open.
+    // which runs only when given. The finding flags head line 2, which extends base line 2. One finder reports it, so the
+    // check also asks about its trigger and confirms it. With `doubt`, the judge doubts whether the defect exists, and the
+    // check leaves that open.
     type Options = { pairBefore?: RefutationOutcome; row?: string; filed?: string; baseProof?: string[]; doubt?: boolean };
     const run = async (sameBefore: RefutationOutcome, { pairBefore, row = 'degraded', filed = 'warning', baseProof = ['src/send.ts:2', 'src/send.ts:3'], doubt = false }: Options = {}) => {
       const { root, diff } = gitWorkspace({ 'src/send.ts': before }, { 'src/send.ts': after }, []);
       const refuterMessages: string[] = [];
-      const reply = (model: string, outcome: RefutationOutcome) => ({
+      const reply = (model: string, outcome: RefutationOutcome, user: string) => ({
         model, content: JSON.stringify({
           outcome: 'confirmed', reason: 'The peer is recorded after the send.', proof: ['src/send.ts:2', 'src/send.ts:3'],
-          premises: [{ outcome: 'unsettled', reason: 'Not decided.', proof: ['src/send.ts:2'] }],
+          premises: [...user.matchAll(/^ {2}\d+\. (.*)$/gm)].map(([, premise]) => ({ outcome: premise.startsWith('This trigger') ? 'confirmed' : 'unsettled', reason: 'r', proof: ['src/send.ts:2'] })),
           base: { outcome, reason: 'The base sent before it recorded the peer too.', proof: baseProof },
         }),
       });
-      const pair = pairBefore && { repoTools: true, sendMessage: jest.fn().mockResolvedValue(reply('pair-model', pairBefore)) } as unknown as LLMClient;
+      const pair = pairBefore && { repoTools: true, sendMessage: jest.fn().mockImplementation(async (_system: string, user: string) => reply('pair-model', pairBefore, user)) } as unknown as LLMClient;
       const clients = { ...makeClients(), ...(pair && { refuterPair: pair }) };
       jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify([{
         severity: filed, title, file: 'src/send.ts', line: 2, description: 'A reply can arrive before the peer is known.', evidence: ['src/send.ts:3 records it after'], proof: ['src/send.ts:2', 'src/send.ts:3'],
@@ -3862,11 +3863,11 @@ describe('runReview', () => {
       Object.assign(clients.judge, { repoTools: true });
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
         if (system.startsWith('You are a code review judge')) {
-          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row, ...(doubt && { doubts: [{ premise: 'A reply can arrive before the record', decides: 'defect' }] }), reasoning: 'r' }] }) };
+          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row, trigger: 'When a reply arrives before the record', ...(doubt && { doubts: [{ premise: 'A reply can arrive before the record', decides: 'defect' }] }), reasoning: 'r' }] }) };
         }
         if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
         refuterMessages.push(user);
-        return reply('judge-model', sameBefore);
+        return reply('judge-model', sameBefore, user);
       });
       try {
         return { result: await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root }), refuterMessages };
@@ -3883,7 +3884,7 @@ describe('runReview', () => {
     // check sees the change and asks about the base.
     const { result, refuterMessages } = await run('disproved');
     expect(refuterMessages).toHaveLength(1);
-    expect(refuterMessages[0]).toContain('## Warning a reviewer calls older than this PR: Send happens before the peer is recorded\n');
+    expect(refuterMessages[0]).toContain('## Finding the judge could not settle without tools: Send happens before the peer is recorded\n');
     expect(refuterMessages[0]).toContain(`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`);
     expect(refuterMessages[0]).toContain('+  transport.send(peer, [id, at]);');
     expect([result.outcome, ...placed(result)]).toEqual(['READY', [], [['warning', true, 'The base sent before it recorded the peer too.']]]);
