@@ -5411,6 +5411,23 @@ describe('postReview fallback paths', () => {
     /** A review endpoint that refuses the line comments once, so the review posts without them and each thread is posted on its file. */
     const refusesLines = () => jest.fn().mockRejectedValueOnce(lineError).mockResolvedValue({ data: { id: 7 } });
 
+    it('logs the cut and the full record of a record too large for the review once, also when the post is retried', async () => {
+      const startGroup = jest.spyOn(core, 'startGroup').mockImplementation(() => {});
+      const info = jest.spyOn(core, 'info').mockImplementation(() => {});
+      const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const { octokit, createReview } = makeOctokit(jest.fn().mockResolvedValue({ data: { id: 1 } }), refusesLines());
+      const llmCalls = Array.from({ length: 500 }, () => ({
+        stage: 'reviewer', model: randomBytes(100).toString('hex'), attempt: 1, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0,
+      }));
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff, makeContext({ usage: { llmCalls } }), 1000);
+      expect(createReview).toHaveBeenCalledTimes(2);
+      expect(createReview.mock.calls.map(([r]) => extractReviewRecords(r.body).records.map(j => (JSON.parse(j) as RoundContext).meta.omitted))).toEqual([[['usage.llmCalls']], [['usage.llmCalls']]]);
+      expect(startGroup).toHaveBeenCalledTimes(1);
+      expect(warning.mock.calls.filter(([message]) => String(message).startsWith('The round record takes'))).toHaveLength(1);
+      [startGroup, info, warning].forEach(spy => spy.mockRestore());
+    });
+
     it('posts a blocker off the changed lines inside the review on the first changed line of its file, which a later round finds again', async () => {
       const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const { octokit, createReview } = makeOctokit(createReviewComment);
