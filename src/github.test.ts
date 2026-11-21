@@ -4533,6 +4533,9 @@ describe('fetchInterRoundDiff', () => {
     const since = (compareCommits: jest.Mock, base = 'posted') => fetchChangesSince(makeOctokit(compareCommits), 'owner', 'repo', base, 'head', ['src/a.ts']);
     const ahead = jest.fn().mockResolvedValue({ data: { status: 'ahead', files } });
     expect(await since(ahead)).toBe(listedFilesDiff([files[0]]));
+    // A file renamed since the commit is found by its old name.
+    const renamed = [{ filename: 'src/moved.ts', previous_filename: 'src/a.ts', status: 'renamed', patch }, files[1]];
+    expect(await since(jest.fn().mockResolvedValue({ data: { status: 'ahead', files: renamed } }))).toBe(listedFilesDiff([renamed[0]]));
     expect(ahead).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', base: 'posted', head: 'head' });
     expect(await since(jest.fn().mockResolvedValue({ data: { status: 'diverged', files } }))).toBeUndefined();
     expect(await since(jest.fn().mockRejectedValue(new Error('Server Error')))).toBeUndefined();
