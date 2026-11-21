@@ -30,6 +30,7 @@ import {
   PlannerOutcomeSink,
   FINDER_TOOLS_TIMEOUT_MS,
   WORKAROUND_REASON,
+  formatFinderError,
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveFallbackModel, resolveModel } from './config';
@@ -52,7 +53,7 @@ import { COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TR
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, TimeoutError, UnreachableError, withModelFallback, withSignal, wrapClientForUsage } from './providers';
 import { isClaimCheck } from './pr-claims';
 import { runScopeReader } from './scope';
-import { repoToolsPrompt } from './providers/cli-utils';
+import { repoToolsPrompt, withExitCode } from './providers/cli-utils';
 
 /** A planner whose call fails, so the round takes the fail-safe triage. */
 const failedPlanner = (): LLMClient => ({ sendMessage: jest.fn().mockRejectedValue(new Error('planner unavailable')) });
@@ -6218,12 +6219,15 @@ describe('runReview', () => {
     expect(jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[0])).toEqual([prompt, prompt, prompt]);
   });
 
-  it.each<[string, () => Promise<LLMResponse>, string]>([
-    ['the provider call rejects', () => Promise.reject(new Error('API error')), 'API error'],
-    ['the output is not JSON', () => Promise.resolve({ content: 'I cannot review this.' }), 'malformed response'],
-    ['the output is truncated', () => Promise.resolve({ content: '[]', truncated: true }), 'truncated at the output token limit'],
-    ['no element of the output has a title or a description', () => Promise.resolve({ content: '[{"finding":{"title":"Unchecked sum"}}]' }), 'no element has a title or a description (1 element(s), keys: finding)'],
-  ])('returns COMMENT verdict after retries when all agents fail because %s', async (_label, respond, reason) => {
+  it.each<[string, () => Promise<LLMResponse>, string, string]>([
+    ['the provider call rejects', () => Promise.reject(new Error('API error')), 'API error', 'Error'],
+    ['the SDK request fails', () => Promise.reject(Object.assign(new (class InternalServerError extends Error {})('500 Internal server error'), { status: 500 })), '500 Internal server error', 'InternalServerError (HTTP 500)'],
+    ['the CLI exits with an error', () => Promise.reject(withExitCode(new Error('Claude CLI invocation failed (exit 1: <empty stderr>)'), 1)), 'Claude CLI invocation failed', 'Error (exit 1)'],
+    ['the output is not JSON', () => Promise.resolve({ content: 'I cannot review this.' }), 'malformed response', 'FinderReplyError (reply did not parse)'],
+    ['the output is truncated', () => Promise.resolve({ content: '[]', truncated: true }), 'truncated at the output token limit', 'Error'],
+    ['no element of the output has a title or a description', () => Promise.resolve({ content: '[{"finding":{"title":"Unchecked sum"}}]' }), 'no element has a title or a description (1 element(s), keys: finding)', 'FinderReplyError (reply did not parse)'],
+  ])('returns COMMENT verdict after retries when all agents fail because %s', async (_label, respond, reason, cause) => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const sendMessage = jest.fn().mockImplementation(respond);
     const clients: ReviewClients = {
       planner: failedPlanner(),
@@ -6242,10 +6246,17 @@ describe('runReview', () => {
     expect(result.failedAgents).toBeDefined();
     expect(result.failedAgents!.length).toBe(2);
     expect(sendMessage).toHaveBeenCalledTimes(2 * (MAX_AGENT_RETRIES + 1));
+    const logged = warning.mock.calls.map(([line]) => String(line));
     for (const name of result.failedAgents!) {
-      expect(result.agentFailureReasons?.[name]).toContain(reason);
-      expect(result.agentWarnings?.get(name)).toEqual(Array(MAX_AGENT_RETRIES + 1).fill(result.agentFailureReasons?.[name]));
+      const message = result.agentFailureReasons?.[name];
+      expect(message).toContain(reason);
+      expect(result.agentWarnings?.get(name)).toEqual(Array(MAX_AGENT_RETRIES + 1).fill(message));
+      // Each failed attempt keeps its cause, and the log names it for the first attempt and for each retry.
+      expect(result.agentErrors?.get(name)?.map(e => formatFinderError(e))).toEqual(Array(MAX_AGENT_RETRIES + 1).fill(`${cause}: ${message}`));
+      expect(logged).toContain(`${name} failed: ${cause}: ${message}`);
+      for (let retry = 1; retry <= MAX_AGENT_RETRIES; retry++) expect(logged).toContain(`${name}: retry ${retry} failed: ${cause}: ${message}`);
     }
+    warning.mockRestore();
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 

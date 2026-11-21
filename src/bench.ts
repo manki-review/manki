@@ -12,10 +12,10 @@ import { isFixCheck } from './fixes';
 import { isClaimCheck } from './pr-claims';
 import { cutLegacyCommands, estimateCostUsd, hasAnyProviderCredentials, parseModelSpec, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
-import { NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
+import { formatFinderError, NAMED_AGAIN_REASON, UNCONFIRMED_FIX_ENDING, WORKAROUND_REASON } from './review';
 import { buildLLMClient } from './review-clients';
 import {
-  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
+  CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FinderError, FindingFingerprintEntry, FindingSeverity, GradeCell, GradeChange, GradeStep, gradedAbove, isGradeCell, isSecondReadName, isSecurityFinding, isSweepName, leftOutUnproven,
   migrateLegacySeverity, migrateStoredSeverities, PRE_EXISTING_TAG, Refutation, RoundContext, RoundRawFinding, RoundRelatedRepo, SCOPE_READER_NAME, SEVERITY_ORDER, SideCheckKind, ThreadEvaluation, UNPOSTED_REASONS, UnpostedReason,
   UnprovenReason, VERDICT_READER_NAME, VerdictReason,
 } from './types';
@@ -588,6 +588,8 @@ interface RunScore {
   complete: boolean;
   /** Why the run failed or the review did not complete. */
   error?: string;
+  /** The cause of each attempt that failed a finder, in order per finder, also when a retry then succeeded. A report from a ref that does not store it has none. */
+  finderErrors?: Array<FinderError & { finder: string }>;
   /** Each finding with the text the matcher read. A report from a ref that kept no finding text holds no `description`, and one from a ref that stored no route holds no `route`. `foldedInto` is the id of the earlier open thread the round folded the finding into, by `foldedThread`. */
   findings: Array<Omit<MatchedFinding, 'description'> & Partial<Pick<MatchedFinding, 'description'>> & { route?: GradeRoute; foldedInto?: string }>;
   matches: ItemMatch[];
@@ -929,13 +931,15 @@ function gradeRoute(f: Finding): GradeRoute {
 }
 
 /** What a run records about its review whether or not the findings could be matched. `earlier` is the round a follow-up case follows. */
-function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'findings' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview, earlier?: EarlierRound): Pick<RunScore, 'outcome' | 'verdictReason' | 'finderErrors' | 'findings' | 'finders' | 'secondReads' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   const secondReads = finderSteps(review, true);
-  const { outcome, verdictReason } = review.result;
+  const { outcome, verdictReason, agentErrors } = review.result;
+  const finderErrors = [...agentErrors ?? []].flatMap(([finder, causes]) => causes.map(cause => ({ finder, ...cause })));
   return {
     outcome,
     ...(verdictReason && { verdictReason }),
+    ...(finderErrors.length > 0 && { finderErrors }),
     findings: raisedFindings(review).map((f) => {
       const { severity, title, file, line, description, howToFix, suggestedFix } = f;
       const foldedInto = foldedThread(earlier, f);
@@ -1795,6 +1799,8 @@ export function formatBenchSummary(report: BenchReport): string {
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}`
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}${readAgain}, $${run.costUsd.toFixed(2)}`);
+        // A hold-out case shows only the kind and codes, since a message can quote what the model answered.
+        for (const cause of run.finderErrors ?? []) lines.push(`    ${cause.finder} failed: ${oneLine(formatFinderError(cause, shown))}`);
         const lost = run.complete ? run.raw?.caught.filter(caught => !caught.posted) ?? [] : [];
         if (run.complete && run.raw?.unscored) lines.push(`    the matcher failed on the finders' findings: ${shown ? oneLine(run.raw.error ?? 'no reason given') : 'the reason is in the report'}`);
         if (lost.length > 0) lines.push(`    found by a finder and missed by the review: ${lost.map(l => `${l.item} (${(l.exits ?? ['unknown']).map(exit => RAW_EXITS[exit]).join(', ')})`).join(', ')}`);

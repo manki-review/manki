@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, closedCallsFile, fileReadBy, MankiCommand, matchQuotaText, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, toolServerReadings, warnReplyTail, withPromptDir } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, closedCallsFile, fileReadBy, MankiCommand, matchQuotaText, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, toolServerReadings, warnReplyTail, withExitCode, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -466,7 +466,7 @@ export class AnthropicClient implements LLMClient {
       core.warning(`${lead}Claude CLI failed (${msg})`);
       warnReplyTail('Claude CLI', replyTail);
       const message = `${lead}Claude CLI invocation failed (${msg})`;
-      throw carryReadings(refusal ? new RefusalError(message, refusal) : new Error(message), readings());
+      throw carryReadings(withExitCode(refusal ? new RefusalError(message, refusal) : new Error(message), code), readings());
     }
     if (truncated) {
       core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);

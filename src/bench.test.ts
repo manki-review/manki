@@ -1056,7 +1056,9 @@ describe('runBench and buildReport', () => {
         const posted = [finding('blocker'), finding('warning')];
         const raw = { title: `raw title ${text}`, file: 'src/read.rs', description: `raw description ${text}`, howToFix: `raw fix ${text}`, reviewers: [`finder ${text}`] };
         const dropped = { ...raw, line: 1, gradePath: [{ from: 'warning' as const, to: 'ignore' as const, by: 'judge' as const }] };
-        return makeReview('ADDRESS_FIRST', posted, true, rawRecord([raw], posted, { judge: { dropped: [dropped] } }));
+        const review = makeReview('ADDRESS_FIRST', posted, true, rawRecord([raw], posted, { judge: { dropped: [dropped] } }));
+        // A first attempt of the finder failed, and its retry answered.
+        return { ...review, result: { ...review.result, agentErrors: new Map([['finder-a', [{ kind: 'Error', message: `CLI failed on ${text}`, exitCode: 1 }]]]) } };
       });
     };
     // The matcher's client logs each reply through `@actions/core`, as the provider clients do, and the reply quotes the finding.
@@ -1083,15 +1085,16 @@ describe('runBench and buildReport', () => {
       const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results);
       // The report itself keeps the text, which the hold-out pass reads.
       for (const text of [`description ${SECRET}`, `reason ${SECRET}`, `raw description ${SECRET}`, `finder ${SECRET}`]) expect(JSON.stringify(report.variants[0].cases[1])).toContain(text);
+      expect(report.variants[0].cases[1].runs[0].finderErrors).toEqual([{ finder: 'finder-a', kind: 'Error', message: `CLI failed on ${SECRET}`, exitCode: 1 }]);
       const printed = () => [
         formatBenchSummary(report), formatUnmatched(report.variants), formatGate(gateReports([report, { ...report, startedAt: '2026-11-09T01:00:00.000Z' }], [report])),
       ].join('\n');
-      for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    | description SHOWN-TEXT']) expect(printed()).toContain(text);
+      for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', '\n    finder-a failed: Error (exit 1): CLI failed on SHOWN-TEXT\n', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    | description SHOWN-TEXT']) expect(printed()).toContain(text);
       expect(printed()).toContain('\nheld-1\n');
       expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
       expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
       // What became of the finders' findings shows as the item's id and fixed words, with the finders' names left out.
-      expect(printed().split('\nheld-1\n')[1]).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates, files read finder-a 3 (asked again) (2 units not covered), by second reads Second read 1 1, $1.25\n    found by a finder and missed by the review: K1 (dropped by the judge)\n');
+      expect(printed().split('\nheld-1\n')[1]).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates, files read finder-a 3 (asked again) (2 units not covered), by second reads Second read 1 1, $1.25\n    finder-a failed: Error (exit 1)\n    found by a finder and missed by the review: K1 (dropped by the judge)\n');
       expect(printed().split("\nFinders' findings: 1 of 2 must-catch items found by a finder, 0 found by the review. Missed by the review after a finder found it: dropped by the judge 1. Matcher cost of this scoring unknown, since a call has no known price.\n")).toHaveLength(3);
       expect(printed()).not.toContain(SECRET);
 

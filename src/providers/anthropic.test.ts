@@ -324,6 +324,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(error?.message.startsWith(`Claude CLI error: ${cliError}. `)).toBe(true);
     expect(error?.message).toContain('claude setup-token');
     expect(error?.message).toMatch(/Claude CLI invocation failed \(exit 1: <empty stderr>/);
+    expect(error).toMatchObject({ exitCode: 1 });
     const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(allWarnings).toContain(`Claude CLI error: ${cliError}`);
     expect(allWarnings).toContain('Claude CLI failed');
