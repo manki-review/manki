@@ -6,7 +6,7 @@ import { BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
-import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settlingDecision } from './review-record';
+import { extractReviewRecords, FIXED_MARKER_OPENER, hasOwnMarker, hasReviewRecord, settledReplyId, settlingDecision } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, EarlierAttempt, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, gradedAbove, isSecurityFinding } from './types';
 import { COMMENT_MARKER, escapeRegExp, ownMarker } from './utils';
 
@@ -810,13 +810,17 @@ function settlement(bot: BotIdentity, comments: ThreadCommentNode[]): Settlement
 
 /**
  * Whether Manki settled the latest reply by a person since it last reopened the thread: a later comment of Manki's
- * records a settling answer or a dismissal it accepted. A reply Manki has not answered, or answered without settling, agrees to nothing.
+ * records a settling answer to that very reply, or a dismissal it accepted. Answering takes a while, so an answer to an
+ * earlier reply can land after a later one, and the record's `answers` tells them apart. A reply Manki has not
+ * answered, or answered without settling, agrees to nothing.
  */
 function replyAgreed(bot: BotIdentity, comments: ThreadCommentNode[]): boolean {
   const since = [comments[0], ...sinceLastReopen(bot, comments)];
   const reply = latestPersonReply(bot, since);
-  return !!reply && since.slice(since.indexOf(reply) + 1).some(c => isBotLogin(bot, c.author?.login)
-    && (!!settlingDecision(c.body ?? '') || ownMarker(c.body ?? '', DISMISS_RECORD_OPENER, COMMENT_MARKER) !== undefined));
+  if (!reply) return false;
+  const answersReply = (body: string) => reply.databaseId !== undefined && settledReplyId(body) === reply.databaseId;
+  return since.slice(since.indexOf(reply) + 1).some(c => isBotLogin(bot, c.author?.login)
+    && (answersReply(c.body ?? '') || ownMarker(c.body ?? '', DISMISS_RECORD_OPENER, COMMENT_MARKER) !== undefined));
 }
 
 /** The replies in a thread that neither Manki nor another bot wrote. GraphQL types a bot's comment author as `Bot`. */
@@ -1109,7 +1113,7 @@ interface FetchReviewThreadsResult {
   state: OpenThreadsState;
 }
 
-const THREAD_COMMENT_FIELDS = 'body url authorAssociation author { login __typename } originalCommit { oid }';
+const THREAD_COMMENT_FIELDS = 'databaseId body url authorAssociation author { login __typename } originalCommit { oid }';
 
 const THREAD_COMMENTS_QUERY = `
   query($threadId: ID!, $cursor: String) {
@@ -1125,6 +1129,7 @@ const THREAD_COMMENTS_QUERY = `
 `;
 
 interface ThreadCommentNode {
+  databaseId?: number;
   body: string;
   url?: string;
   authorAssociation?: string;

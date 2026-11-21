@@ -66,11 +66,21 @@ const SETTLING_FATES: ReadonlySet<string> = new Set(['resolves', 'already_resolv
  * finding. A record that cannot be read, or one whose thread stayed open, settles nothing.
  */
 export function settlingDecision(body: string): ReplyDecision | undefined {
-  const [record] = extractReplyRecords(body);
-  if (!record) return undefined;
+  return settlingRecord(body)?.decision;
+}
+
+/** Returns the id of the developer's comment that the reply record of `body` answers, when that answer settled the finding. */
+export function settledReplyId(body: string): number | undefined {
+  const answers = settlingRecord(body)?.answers;
+  return typeof answers === 'number' ? answers : undefined;
+}
+
+function settlingRecord(body: string): (Partial<ReplyRecord> & { decision: ReplyDecision }) | undefined {
+  const [text] = extractReplyRecords(body);
+  if (!text) return undefined;
   try {
-    const decision = (JSON.parse(record) as Partial<ReplyRecord> | null)?.decision;
-    return decision && SETTLING_FATES.has(decision.thread) ? decision : undefined;
+    const record = JSON.parse(text) as Partial<ReplyRecord> | null;
+    return record?.decision && SETTLING_FATES.has(record.decision.thread) ? { ...record, decision: record.decision } : undefined;
   } catch {
     return undefined;
   }
