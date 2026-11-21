@@ -5411,7 +5411,7 @@ describe('postReview fallback paths', () => {
     /** A review endpoint that refuses the line comments once, so the review posts without them and each thread is posted on its file. */
     const refusesLines = () => jest.fn().mockRejectedValueOnce(lineError).mockResolvedValue({ data: { id: 7 } });
 
-    it('logs the cut and the full record of a record too large for the review once, also when the post is retried', async () => {
+    it('logs the cut and the full record of a record too large for the review once, also when only the retried post cuts it', async () => {
       const startGroup = jest.spyOn(core, 'startGroup').mockImplementation(() => {});
       const info = jest.spyOn(core, 'info').mockImplementation(() => {});
       const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
@@ -5425,6 +5425,24 @@ describe('postReview fallback paths', () => {
       expect(createReview.mock.calls.map(([r]) => extractReviewRecords(r.body).records.map(j => (JSON.parse(j) as RoundContext).meta.omitted))).toEqual([[['usage.llmCalls']], [['usage.llmCalls']]]);
       expect(startGroup).toHaveBeenCalledTimes(1);
       expect(warning.mock.calls.filter(([message]) => String(message).startsWith('The round record takes'))).toHaveLength(1);
+
+      // A record that first passes the budget once the blocker's thread is refused, and the body carries its description, is logged then.
+      startGroup.mockClear();
+      const blocker = { ...offLineBlocker, description: randomBytes(600).toString('hex') };
+      const entries = [{ fingerprint: { file: blocker.file, lineStart: blocker.line, lineEnd: blocker.line, slug: 'refused-thread' }, severity: 'blocker' as const, title: blocker.title }];
+      const padded = (chars: number) => makeContext({
+        findings: { count: 1, severityCounts: { blocker: 1 }, entries },
+        usage: { llmCalls: [{ ...llmCalls[0], model: randomBytes(chars).toString('base64').slice(0, chars) }] },
+      });
+      const trailer = (body: string): number => body.indexOf(' -->', body.indexOf('<!-- manki-context')) - body.indexOf('\n\n<!-- manki-stats');
+      const { octokit: measuring, createReview: measured } = makeOctokit(jest.fn().mockResolvedValue({ data: { id: 1 } }));
+      await postReview(measuring, 'owner', 'repo', 1, 'sha', buildResult([blocker]), diff, padded(30000), 1000);
+      const below = 30000 + 50000 - trailer(measured.mock.calls[0][0].body as string) - 250;
+      const { octokit: refusing, createReview: retried, updateReview } = makeOctokit(jest.fn().mockRejectedValue(new Error('refused')), refusesLines());
+      await postReview(refusing, 'owner', 'repo', 1, 'sha', buildResult([blocker]), diff, padded(below), 1000);
+      const omitted = (body: string) => extractReviewRecords(body).records.map(j => (JSON.parse(j) as RoundContext).meta.omitted);
+      expect([...retried.mock.calls, ...updateReview.mock.calls].map(([r]) => omitted(r.body))).toEqual([[undefined], [undefined], [['usage.llmCalls']]]);
+      expect(startGroup).toHaveBeenCalledTimes(1);
       [startGroup, info, warning].forEach(spy => spy.mockRestore());
     });
 
