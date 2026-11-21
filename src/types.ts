@@ -1144,6 +1144,18 @@ export function oneCheckOnBase(finding: Pick<Finding, 'refutation' | 'pairRefuta
   return [finding.refutation, finding.pairRefutation].find(failsOnBase)?.base;
 }
 
+/**
+ * Returns the answer of the checks that the code before this PR fails the same way as `f`. Both refuters must give it
+ * (`sameOnBase`), except on a finding that would never block and is no security finding. One check's answer
+ * (`oneCheckOnBase`) is enough there, since it only keeps the finding out of the review. A warning whose cell gives a
+ * blocker (`staysWarningIfConfirmed`) needs both, as a blocker does.
+ */
+export function foundOnBase(f: Finding): PremiseCheck | undefined {
+  if (f.severity === 'ignore') return undefined;
+  const lone = f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isSecurityFinding(f.tags, f.reviewers);
+  return sameOnBase(f) ?? (lone ? oneCheckOnBase(f) : undefined);
+}
+
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
 export function confirmsAll(checks: readonly Refutation[]): boolean {
   return checks.length > 0 && checks.every(r => r.defect === 'confirmed' && r.outcome === 'confirmed');
