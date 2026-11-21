@@ -6,7 +6,7 @@ import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { messageBox } from './issue-box';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, isBotUser, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchChangesSince, fetchPRDiff, sanitizeMarkdown, TooManyFilesError } from './github';
 import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, parsePRDiff } from './diff';
 import { eventPrClosed } from './dispatch';
@@ -48,7 +48,7 @@ async function commenterCanWrite(octokit: Octokit, owner: string, repo: string):
 const REPLY_SYSTEM_PROMPT = `You posted a review finding on a pull request, and a developer replied to it. Check what the reply says about code and about the PR description, then answer it.
 
 Pick exactly one outcome:
-- "Fixed": The PR changes contain the fix. For a finding about the PR title or description, the title and description shown to you no longer have the problem.
+- "Fixed": The PR changed code since the finding was posted, and that change fixes it.
 - "FixedElsewhere": The developer says that another pull request of this repository fixes it, and names that pull request as \`#N\` or by its URL. Give its number as \`fixed_in\`. Its code is checked separately, so do not judge the claim, and say in the answer only which pull request the developer named.
 - "Withdrawn": The code shows the finding was wrong: it does not apply, or the code is intentional.
 - "Agreed": The developer will handle the finding in later work. Accept a deferral without arguing.
@@ -74,7 +74,7 @@ Confirmed statements do not decide the outcome by themselves. A statement can ho
 
 ## Answer
 
-\`proof\` lists the lines the outcome rests on, in the form of \`places\`. "Withdrawn" needs at least one line of this repository there. Lines of a related repository alone never withdraw a finding and never confirm a fix. Text of the PR description is no proof and never withdraws a finding.
+\`proof\` lists the lines the outcome rests on, in the form of \`places\`. "Withdrawn" needs at least one line of this repository there. "Fixed" needs a line there that the PR added or changed since the finding was posted, since only a change can fix it. Lines of a related repository alone never withdraw a finding and never confirm a fix. Text of the PR description is no proof and never withdraws a finding.
 
 \`answer\` is at most three sentences, without the outcome word. Answer every question the developer asked. Give one answer, never two. Do not repeat the statements: they are posted as a list below your answer.
 
@@ -549,10 +549,16 @@ export async function handleReviewCommentReply(
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools, related);
     const findingBody = root.comment.body ?? '';
     const relatedNames = config?.related_repos?.map(r => r.repo) ?? [];
-    // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
-    const checked = checkReply(response.content, comment.body ?? '', { workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber });
     const findingData = parseFindingData(findingBody);
     const evidenceFiles = findingData?.evidenceFiles;
+    const head: string | undefined = github.context.payload.pull_request?.head?.sha;
+    const postedOn: string | undefined = root.comment.original_commit_id;
+    const sincePosted = postedOn && head ? await fetchChangesSince(octokit, owner, repo, postedOn, head, [filePath, ...evidenceFiles ?? []]) : undefined;
+    // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
+    const checked = checkReply(response.content, comment.body ?? '', {
+      workspace, related, relatedNames, diff, description: prText?.body, repo: `${owner}/${repo}`, pr: prNumber,
+      ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
+    });
     // Without the thread, nothing below reopens it, resolves it or says when it clears.
     const closed = eventPrClosed();
     const isSecurity = isSecurityThread(findingBody);
@@ -584,7 +590,6 @@ export async function handleReviewCommentReply(
     const reply = requireNewProof(highlightCode(sanitizeMarkdown(answerText).trim(), codeTokens), findingBody, filePath, relatedNames);
     const outcome = replyOutcome(reply);
     const thread = outcome ? live : undefined;
-    const head: string | undefined = github.context.payload.pull_request?.head?.sha;
     // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
     const contradicted = outcome === 'Fixed' && thread && isGuarded(thread)
       ? await openAfterRound(octokit, bot, owner, repo, prNumber, thread, head, comment.created_at)
