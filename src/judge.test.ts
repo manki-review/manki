@@ -2164,7 +2164,7 @@ describe('runJudgeAgent', () => {
         { id: 4, title: 'Unseen kept', row: 'wrong', column: 'rare', reasoning: 'r' },
         { id: 5, title: 'Unseen dropped', row: 'none', doubts: [{ premise: 'The handler is registered', decides: 'defect' }], reasoning: 'r' },
         { id: 7, title: 'Second cache left stale', row: 'wrong', column: 'rare', doubts: [{ premise: 'A request reads the second cache after the write', decides: 'grade' }], reasoning: 'warning. Not sure a request reads it, since only the sweeper seems to.' },
-        { id: 8, title: 'Copy never removed', row: 'degraded', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.' },
+        { id: 8, title: 'Copy never removed', row: 'degraded', trigger: 'When a user edits a record', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.' },
         { id: 9, title: 'Doubted nit', row: 'degraded', column: 'rare', doubts: [{ premise: 'A request logs the name', decides: 'grade' }], reasoning: 'r' },
         { id: 10, title: 'Wrong retry count', row: 'wrong', column: 'normal', gradeIfConfirmed: 'warning', doubts: [{ premise: 'The status line prints the counter', decides: 'defect' }], reasoning: 'blocker. Test 3 fails even then: only the status line shows the count.' },
         { id: 11, title: 'Stale index after rename', row: 'wrong', column: 'normal', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'The rename path skips the index update', decides: 'defect' }], reasoning: 'warning. The rename path sits outside the code shown.' },
@@ -2682,7 +2682,7 @@ describe('runJudgeAgent', () => {
       // The finder cites no search, and the refuter's check of the fact is that search.
       'Fact confirmed without a search': unseen,
       // The fact is no premise of a finding graded by its own damage, so the judge's other doubt cannot stand in for it.
-      'Another premise confirmed': { ...unseen, row: 'degraded', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
+      'Another premise confirmed': { ...unseen, row: 'degraded', trigger: 'When a request arrives', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
       // The judge's own doubt is about the damage. A disproof of it leaves the confirmed rule broken.
       'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // The judge confirmed the rule, so the refuter's own answer that the defect does not exist drops nothing either.
@@ -6486,7 +6486,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
         id: i + 1, title, reasoning: 'r',
-        ...(i === 2 || i > 3 ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
+        ...(i === 2 || i > 3 ? { row: 'degraded', trigger: 'When a request retries', doubts: leak } : title === 'Open lead' ? { row: 'degraded', trigger: 'When a request retries' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
     const refuterCalls: string[] = [];

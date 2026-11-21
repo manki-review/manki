@@ -3653,6 +3653,11 @@ describe('runReview', () => {
         ends: r => r.memorySuppressed?.filter(f => f.title === 'Remembered pattern no finder filed as a blocker').map(f => [f.suppressedBy, f.cell, f.gradeIfConfirmed, f.refutation]),
         as: [['sup-1', { row: 'wrong', column: 'normal' }, 'warning', undefined]],
       },
+      {
+        // A `degraded` warning with no trigger is kept in the round record whatever a check says.
+        step: 'no trigger', title: 'Cost with no trigger', verdict: { trigger: '' },
+        ends: r => r.unposted?.filter(f => f.title === 'Cost with no trigger').map(f => [f.unpostedReason, f.refutation]), as: [['no_trigger', undefined]],
+      },
     ];
     // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
     const postable = Array.from({ length: 8 }, (_, i) => `Postable ${i + 1}`);
@@ -3688,7 +3693,7 @@ describe('runReview', () => {
     expect(refuterCalls.sort()).toEqual(postable);
     expect(hidden.map(row => [row.step, row.ends(result)])).toEqual(hidden.map(row => [row.step, row.as]));
     expect(result.findings.filter(f => postable.includes(f.title)).map(f => f.severity)).toEqual(postable.map(() => 'warning'));
-    expect(result.unposted).toBeUndefined();
+    expect(result.unposted?.map(f => f.title)).toEqual(['Cost with no trigger']);
   });
 
   it('answers once a round whether a finding sits on unchanged code, so a lockfile `exclude_paths` left out counts as changed in every step', async () => {
