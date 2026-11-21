@@ -2867,7 +2867,7 @@ export interface RoundSuppressedFinding {
 /**
  * Author-reply re-classification attribution recorded by `refreshAuthorReplyClass`.
  * The cached `authorReplyClass` on each prior-round fingerprint is `'none'` at
- * emit time. When live thread state shifts it to `agree`/`disagree`/`partial`,
+ * emit time. When live thread state shifts it to `agree` or back to `none`,
  * this records the flip so noise debugging can attribute prior-unaddressed
  * decisions to the reply state at recap time.
  */
