@@ -1918,6 +1918,8 @@ export interface ThreadEvaluation {
   reason: string;
   /** For `partly_addressed`, what still goes wrong. */
   remaining?: string;
+  /** For `addressed`, the file the judge says holds the fix when the push changed neither the thread's file nor a file its finding cited. */
+  fixedIn?: string;
   /**
    * The grade the thread keeps after this round when a partial fix sets or changes it: on `partly_addressed` the grade
    * the remaining damage earns, and on a thread an earlier partial fix lowered, its own grade once it is open again.

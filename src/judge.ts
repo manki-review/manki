@@ -699,6 +699,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain",
       "reason": "Brief explanation citing evidence from the inter-round diff or current code",
       "remaining": "For partly_addressed: what still goes wrong",
+      "fixedIn": "For addressed on a thread marked stays open: the path of the other changed file that holds the fix, or empty",
       "row": "severe" | "wrong" | "degraded" | "improvement" | "style",
       "column": "normal" | "rare"
     }
@@ -725,6 +726,8 @@ You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries, one f
 An outdated thread shows the code it named when it was posted and where that code sits now, or that it is gone. Judge the concern against the current code. An unchanged file, or no current code shown, is no evidence that the concern still holds. When a thread shows Manki's answer in it, such as a "Fixed." reply and the lines it cites, answer that evidence: confirm it, or say which part of it is wrong and cite the code, before you mark the thread \`not_addressed\`. When a thread shows a reply from a developer, say in \`reason\` why the reply does or does not settle the concern, and never mark a thread \`addressed\` because of a reply: only the code shown can do that.
 
 When the push changes code to fix a thread, ask: does it fix the root cause the concern named, or is it a hacky workaround for the reported case? A workaround acts where the wrong result shows up, such as a guard, a special case, a retry or a default, while the code that causes the problem stays as it was. Mark a workaround \`partly_addressed\`, never \`addressed\`, and in \`remaining\` cite the \`file:line\` of the code that causes the problem or name the input or path that still fails. When you can do neither, decide by the rules above.
+
+A thread marked "stays open" can be fixed by a change to another file the push changed, such as the caller that passed the bad value. When the inter-round diff shows such a fix, mark the thread \`addressed\` and set \`fixedIn\` to the path of that file. Manki then checks the fix with tools on two models and resolves the thread only when both find the failure gone. Leave \`fixedIn\` empty on every other thread.
 
 The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence: cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
 ` : ''}${carriedWarnings ? `
@@ -880,7 +883,7 @@ export function buildJudgeUserMessage(
     }
     if (threads.length > 0) parts.push('');
     if (heldOpen.length > 0) {
-      parts.push('A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.\n');
+      parts.push('A thread marked "stays open" is not resolved this round unless you name the file of its fix in `fixedIn` and later checks confirm it. In the summary, say that it is still open, and never write that its problem is fixed.\n');
     }
     if (carriedWarnings.length > 0) {
       parts.push(`## Earlier Warnings in the Review Body\n`);
@@ -1389,6 +1392,8 @@ function parseThreadEvaluations(value: unknown): ThreadEvaluation[] | undefined 
     .filter(t => typeof t.threadId === 'string' && t.threadId.length > 0)
     .map((t): ThreadEvaluation => {
       const evaluation = { threadId: String(t.threadId), status: validateThreadStatus(t.status), reason: typeof t.reason === 'string' ? t.reason : '' };
+      const fixedIn = typeof t.fixedIn === 'string' ? t.fixedIn.trim() : '';
+      if (evaluation.status === 'addressed' && fixedIn) return { ...evaluation, fixedIn };
       if (evaluation.status !== 'partly_addressed') return evaluation;
       const remaining = typeof t.remaining === 'string' ? safeTruncate(t.remaining.trim(), MAX_REMAINING_CHARS) : '';
       // A partial fix that names nothing left over gives the reply nothing to say, so the thread counts as not addressed.

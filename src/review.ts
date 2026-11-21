@@ -16,7 +16,7 @@ import { classifyRelatedWork, linkTrackingIssues } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
-import { checkStatus, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, confirmFixesElsewhere, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -2188,7 +2188,13 @@ export async function runReview(
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnfitThreads(f, openThreadIndex, previousFindings, priorThreads);
   finalFindings = finalFindings.map(guard);
-  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
+  const fixedElsewhere = refutation
+    ? await confirmFixesElsewhere(refutation.client, refutation.pair, fixesElsewhere(judgeThreadEvaluations, openThreadIndex, pushChangedFiles), parsePRDiff(interRoundDiff ?? ''), {
+      workspace: refutation.workspace, related: refutation.related, diff: diffWithLockfiles, effort: judgeEffort, excludedPaths: options.excludedPaths,
+    })
+    : new Set<string>();
+  const gradeThreads = (findings: Finding[]) => confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(findings, priorBlockers), pushChangedFiles, standingWorkarounds, fixedElsewhere);
+  let threadEvaluations = gradeThreads(finalFindings);
   // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
   if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
   const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
@@ -2200,7 +2206,7 @@ export async function runReview(
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   if (stopped) return incompleteAfterJudge(stopped);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
-  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
+  threadEvaluations = gradeThreads(finalFindings);
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
   const proven = hideUnprovenWarnings(finalFindings, config.review?.rules);
   finalFindings = proven.posted;
@@ -2275,7 +2281,7 @@ export async function runReview(
       // A reader blocker takes the thread of a finding it absorbs, so the guard checks that link before the threads are graded.
       const readerFindings = hideUnprovenWarnings(folded.blockers.map(guard).map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), config.review?.rules, () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
-      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles, standingWorkarounds);
+      threadEvaluations = gradeThreads(finalFindings);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
       if (readerFindings.some(f => f.severity === 'blocker')) {
         outcome = 'ADDRESS_FIRST';
@@ -3502,6 +3508,18 @@ export function guardedThreadStaysOpen(thread: OpenThread, pushChangedFiles: Rea
 }
 
 /**
+ * Returns the guarded threads the judge found fixed by a change to `fixedIn`, another file the push changed, with that
+ * file. A security thread and a thread tied to no file are left out, so only a person can clear them.
+ */
+function fixesElsewhere(evaluations: ThreadEvaluation[] | undefined, openThreadIndex: Map<string, OpenThread>, pushChangedFiles: ReadonlySet<string>): Array<{ thread: OpenThread; fixedIn: string }> {
+  return (evaluations ?? []).flatMap(({ threadId, status, fixedIn }) => {
+    const thread = openThreadIndex.get(threadId);
+    const fits = status === 'addressed' && !!fixedIn && pushChangedFiles.has(fixedIn) && !!thread?.file && !thread.isSecurity && guardedThreadStaysOpen(thread, pushChangedFiles);
+    return fits ? [{ thread: thread!, fixedIn: fixedIn! }] : [];
+  });
+}
+
+/**
  * Returns the grade `evaluation` leaves its thread at when a partial fix sets or changes it, never above the highest
  * grade the thread had: its own, or a blocker an earlier round carried on it. A partly fixed thread takes the judge's
  * grade for what remains, but drops below the grade it carries only after a push to its file or a file its finding
@@ -3539,7 +3557,7 @@ export const UNCONFIRMED_FIX_ENDING = ', so the fix is not confirmed.';
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
  * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A guarded thread counts as
  * fixed only when the push changed its file or a file its finding cited, so a judge reading unchanged code cannot clear
- * it. A thread one of `workarounds` concerns is only partly fixed, since a fix check found that the push hides the
+ * it, or when it is in `fixedElsewhere`, whose fix two refuters confirmed in another changed file. A thread one of `workarounds` concerns is only partly fixed, since a fix check found that the push hides the
  * symptom there. The judge's cell stays as `cell` only when it gives that grade, and as `judgeCell` otherwise.
  */
 function confirmFixes(
@@ -3548,11 +3566,12 @@ function confirmFixes(
   namedThreadIds: Set<string>,
   pushChangedFiles: ReadonlySet<string>,
   workarounds: readonly RoundFix[],
+  fixedElsewhere: ReadonlySet<string>,
 ): ThreadEvaluation[] | undefined {
   const confirm = (e: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: NAMED_AGAIN_REASON };
-    if (thread && guardedThreadStaysOpen(thread, pushChangedFiles)) {
+    if (thread && guardedThreadStaysOpen(thread, pushChangedFiles) && !fixedElsewhere.has(e.threadId)) {
       const why = thread.file ? `The push did not change ${[thread.file, ...(thread.evidenceFiles ?? [])].map(f => `\`${f}\``).join(' or ')}` : 'This thread is not tied to a file, which only a person can clear';
       return { ...e, status: 'uncertain', reason: `${why}${UNCONFIRMED_FIX_ENDING}` };
     }
