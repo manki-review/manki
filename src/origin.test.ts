@@ -1,0 +1,220 @@
+import { rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+
+import { parsePRDiff } from './diff';
+import { checkOrigins, MAX_ORIGIN_CHECKS } from './origin';
+import { LLMClient } from './providers';
+import { AnthropicClient } from './providers/anthropic';
+import { baseProofFixture, fakeClient, FakeCall, git, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
+import { Finding, foundOnBase, oneCheckOnBase, OriginAnswer, ParsedDiff, sameOnBase } from './types';
+import { BASE_READS_FILE, fetchWorkspace } from './workspace';
+
+jest.mock('@actions/core');
+
+const finding = (title: string, overrides: Partial<Finding> = {}): Finding => ({
+  severity: 'blocker', title, file: 'src/math.ts', line: 2, description: 'Large inputs overflow.', reviewers: ['R'],
+  evidence: { checks: [], proof: ['src/math.ts:2'] }, ...overrides,
+});
+
+/** A client on `model` that answers each finding, picked by its title in the user message, with the reply `replies` holds for it. */
+function originClient(replies: Record<string, unknown>, model: string): LLMClient & { calls: FakeCall[] } {
+  const client = fakeClient(user => replies[Object.keys(replies).find(title => user.includes(`: ${title}\n`))!]);
+  return { ...client, sendMessage: async (...args) => ({ ...await client.sendMessage(...args), model }) };
+}
+
+const titlesOf = (client: { calls: FakeCall[] }): string[] => client.calls.map(c => c.user.split('\n')[0].replace(/^## \w+: /, '')).sort();
+
+describe('checkOrigins', () => {
+  const math = 'export function add(a: number, b: number) {\n  return a + b;\n}\n';
+  const same = { origin: 'pre_existing', reason: 'The sum overflowed the same way before this PR.', head: ['src/math.ts:2'], base: ['src/math.ts:2'] };
+
+  it('keeps a pre-existing answer only with lines the code finds on both sides, the flagged line among them when the PR left it unchanged', async () => {
+    // The base holds the same `src/math.ts`, one line less of `src/api.ts` and no `src/new.ts`.
+    const { root, diff } = gitWorkspace(
+      { 'src/math.ts': math, 'src/api.ts': '// handler\n'.repeat(8), 'README.md': 'Old notes.\n' },
+      { 'src/api.ts': `${'// handler\n'.repeat(8)}if (a > 1000 || b > 1000) throw new Error();\n`, 'src/new.ts': 'export const sum = (a: number) => a + 1;\n' },
+      [],
+    );
+    const baseCommit = git(root, 'rev-parse', 'HEAD');
+    const replies: Record<string, unknown> = {
+      'Same before': same,
+      'Claimed older': same,
+      'No line at the base': { ...same, base: [] },
+      'An unrelated file at the base': { ...same, base: ['README.md:1'] },
+      // Line 9 of `src/api.ts` is there at the head only, so it is no line of the base, whatever the head holds.
+      'A line of the head': { ...same, base: ['src/math.ts:2', 'src/api.ts:9'] },
+      'No line at the head': { ...same, head: [] },
+      'Introduced': { origin: 'introduced', reason: 'This PR adds the caller.', head: ['src/api.ts:9'] },
+      'Note': same,
+      'Tool alert': same,
+      // A line the PR added has no place at the base, so any line the base holds can show the same failure there.
+      'In a file the PR added': { ...same, head: ['src/new.ts:1'], base: ['src/math.ts:2'] },
+    };
+    const client = originClient(replies, 'first-model');
+    const pair = originClient(replies, 'pair-model');
+    const progress = { started: jest.fn(), ended: jest.fn() };
+    const findings = [
+      ...['Same before', 'No line at the base', 'An unrelated file at the base', 'A line of the head', 'No line at the head', 'Introduced'].map(title => finding(title)),
+      finding('Claimed older', { severity: 'warning', preExisting: 'The sum never had a bound.' }),
+      finding('Note', { severity: 'note' }),
+      finding('Tool alert', { toolSource: 'eslint' }),
+      finding('In a file the PR added', { severity: 'warning', file: 'src/new.ts', line: 1, evidence: { checks: [], proof: ['src/new.ts:1'] } }),
+    ];
+
+    const checked = await checkOrigins(client, findings, { workspace: root, diff, pair, excludedPaths: ['gen/client.ts'], progress });
+
+    expect(checked.map(f => [f.title, f.originCheck?.lineChanged, f.originCheck?.answers.map(a => `${a.model}:${a.verdict}`)])).toEqual([
+      ['Same before', false, ['first-model:pre_existing', 'pair-model:pre_existing']],
+      ['No line at the base', false, ['first-model:unsure', 'pair-model:unsure']],
+      ['An unrelated file at the base', false, ['first-model:unsure', 'pair-model:unsure']],
+      ['A line of the head', false, ['first-model:unsure', 'pair-model:unsure']],
+      ['No line at the head', false, ['first-model:unsure', 'pair-model:unsure']],
+      ['Introduced', false, ['first-model:introduced', 'pair-model:introduced']],
+      // One answer settles a warning on an unchanged line, so the second refuter is not asked.
+      ['Claimed older', false, ['first-model:pre_existing']],
+      ['Note', undefined, undefined],
+      ['Tool alert', undefined, undefined],
+      ['In a file the PR added', true, ['first-model:pre_existing', 'pair-model:pre_existing']],
+    ]);
+    expect(checked[0].originCheck?.answers[0]).toEqual({ verdict: 'pre_existing', reason: same.reason, head: ['src/math.ts:2'], base: ['src/math.ts:2'], commit: baseCommit, model: 'first-model' });
+    // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.
+    expect(checked[3].originCheck?.answers[0].base).toEqual(['src/math.ts:2']);
+    expect([progress.started.mock.calls, progress.ended.mock.calls.length]).toEqual([[[8]], 8]);
+    // The message shows the claim as one to check, the other files the PR changes, and the PR's change to a cited file.
+    const message = (title: string) => client.calls.find(c => c.user.includes(`: ${title}\n`))!.user;
+    expect(message('Claimed older')).toContain("- **A reviewer's claim that it is older than this PR**, to check: The sum never had a bound.");
+    expect(message('Same before')).not.toContain('claim that it is older');
+    expect(message('Same before')).toContain('- **Other files this PR changes**: src/api.ts, src/new.ts, gen/client.ts');
+    expect(message('In a file the PR added')).toContain("## The PR's Change to the Cited Files");
+    expect(client.calls[0].system).toContain("A failure that comes from what this PR added to a line, such as a new argument, is the PR's own.");
+    expect(client.calls[0].options?.repoTools).toMatchObject({ root, steps: 10 });
+
+    // A base that `exclude_paths` keeps from the tools leaves the answer unsure, and a workspace without a base asks nothing.
+    writeFileSync(join(root, '.git', BASE_READS_FILE), JSON.stringify({ excludePaths: ['src/math.ts'] }));
+    const [excluded] = await checkOrigins(client, [finding('Same before')], { workspace: root, diff });
+    expect(excluded.originCheck?.answers.map(a => a.verdict)).toEqual(['unsure']);
+    rmSync(join(root, '.git', BASE_READS_FILE));
+    const asked = client.calls.length;
+    expect(await checkOrigins(client, [finding('Same before')], { workspace: root, diff })).toEqual([finding('Same before')]);
+    expect(client.calls).toHaveLength(asked);
+    rmSync(root, { recursive: true, force: true });
+  }, GIT_TEST_TIMEOUT_MS);
+
+  it('places the flagged line at the base only when the PR left it unchanged', async () => {
+    const moved = gitWorkspace({ 'src/lines.ts': 'shared();\nb\nc\nshared();\n' }, { 'src/lines.ts': 'shared();\nb2\nnew\nc\nshared();\n' }, []);
+    const at = (line: number, base: string[]) => ({ ...same, head: [`src/lines.ts:${line}`], base });
+    const replies = {
+      'Unchanged line at its base line': at(5, ['src/lines.ts:4']),
+      'Unchanged line in a cited range': at(5, ['src/lines.ts:3-4']),
+      'Unchanged line at a wrong base line': at(5, ['src/lines.ts:1']),
+      'Changed line': at(2, ['src/lines.ts:2']),
+      'Added line': at(3, ['src/lines.ts:3']),
+    };
+    const flagged = (title: string, line: number) => finding(title, { severity: 'warning', file: 'src/lines.ts', line, evidence: { checks: [], proof: [`src/lines.ts:${line}`] } });
+    const lines = { 'Unchanged line at its base line': 5, 'Unchanged line in a cited range': 5, 'Unchanged line at a wrong base line': 5, 'Changed line': 2, 'Added line': 3 };
+    const checked = await checkOrigins(originClient(replies, 'm'), Object.entries(lines).map(([title, line]) => flagged(title, line)), { workspace: moved.root, diff: moved.diff });
+    expect(checked.map(f => [f.title, f.originCheck?.lineChanged, f.originCheck?.answers[0].verdict])).toEqual([
+      ['Unchanged line at its base line', false, 'pre_existing'],
+      ['Unchanged line in a cited range', false, 'pre_existing'],
+      ['Unchanged line at a wrong base line', false, 'unsure'],
+      // A changed or added line has no place at the base, so the answer stands with lines the base holds, and the rules
+      // ask a second model for it.
+      ['Changed line', true, 'pre_existing'],
+      ['Added line', true, 'pre_existing'],
+    ]);
+    expect(checked.map(f => !!foundOnBase(f))).toEqual([true, true, false, false, false]);
+    // A changed file whose patch GitHub left out, a file `exclude_paths` left out of the diff, and no diff at all are
+    // not unchanged, so even head line 1, which reads the same at the base, counts as changed.
+    const first = { 'First line': at(1, ['src/lines.ts:1']) };
+    const omitted: Array<[ParsedDiff | undefined, readonly string[]]> = [
+      [{ ...moved.diff, files: [], binarySkipped: [{ path: 'src/lines.ts', header: '' }] }, []],
+      [{ ...moved.diff, files: [{ path: 'src/lines.ts', changeType: 'modified', hunks: [] }] }, []],
+      [moved.diff, ['src/lines.ts']],
+      [undefined, []],
+    ];
+    for (const [diff, excludedPaths] of omitted) {
+      const [unmapped] = await checkOrigins(originClient(first, 'm'), [flagged('First line', 1)], { workspace: moved.root, diff, excludedPaths });
+      expect(unmapped.originCheck?.lineChanged).toBe(true);
+    }
+    const [mapped] = await checkOrigins(originClient(first, 'm'), [flagged('First line', 1)], { workspace: moved.root, diff: moved.diff });
+    expect(mapped.originCheck?.lineChanged).toBe(false);
+    rmSync(moved.root, { recursive: true, force: true });
+  }, GIT_TEST_TIMEOUT_MS);
+
+  it('checks at most the round\'s limit, the largest grades first, and none a later step decides or a call that fails', async () => {
+    const { root, diff } = gitWorkspace({ 'src/math.ts': math }, {}, []);
+    const warnings = Array.from({ length: MAX_ORIGIN_CHECKS }, (_, i) => finding(`Warning ${i + 1}`, { severity: 'warning' }));
+    const replies: Record<string, unknown> = Object.fromEntries([...warnings.map(f => f.title), 'Blocker', 'Decided', 'Failing'].map(title => [title, same]));
+    replies.Failing = new Error('timed out');
+    const client = originClient(replies, 'm');
+    const checked = await checkOrigins(client, [...warnings, finding('Decided'), finding('Blocker'), finding('Failing', { severity: 'warning' })], {
+      workspace: root, diff, skip: f => f.title === 'Decided',
+    });
+    // The blocker goes first, so the last warning and the failing one are over the limit.
+    expect(titlesOf(client)).toEqual(['Blocker', ...warnings.slice(0, MAX_ORIGIN_CHECKS - 1).map(f => f.title)].sort());
+    expect(checked.filter(f => f.originCheck).length).toBe(MAX_ORIGIN_CHECKS);
+    // A call that fails leaves no answer, so the finding stays the PR's own.
+    const [failed] = await checkOrigins(client, [finding('Failing', { severity: 'warning' })], { workspace: root, diff });
+    expect([failed.originCheck, foundOnBase(failed)]).toEqual([{ lineChanged: false, answers: [] }, undefined]);
+    rmSync(root, { recursive: true, force: true });
+  }, GIT_TEST_TIMEOUT_MS);
+
+  it('keeps a finding out of the review on one answer only for a warning or note on an unchanged line that would never block', () => {
+    const proven = (model?: string): OriginAnswer => ({ verdict: 'pre_existing', reason: 'r', head: ['src/math.ts:2'], base: ['src/math.ts:2'], commit: 'base', ...(model && { model }) });
+    const withAnswers = (answers: OriginAnswer[], overrides: Partial<Finding> = {}, lineChanged = false): Finding => finding('F', { severity: 'warning', originCheck: { lineChanged, answers }, ...overrides });
+    const one = [proven('a')];
+    const two = [proven('a'), proven('b')];
+    expect([
+      foundOnBase(withAnswers(one)),
+      foundOnBase(withAnswers(one, { severity: 'note' })),
+      // A changed line, a blocker, a would-block warning, a blocker-cell warning and a security finding need two models.
+      foundOnBase(withAnswers(one, {}, true)),
+      foundOnBase(withAnswers(one, { severity: 'blocker' })),
+      foundOnBase(withAnswers(one, { reviewerSeverity: 'blocker' })),
+      foundOnBase(withAnswers(one, { cell: { row: 'severe', column: 'normal' }, gradeIfConfirmed: 'warning' })),
+      foundOnBase(withAnswers(one, { tags: ['security'] })),
+    ].map(Boolean)).toEqual([true, true, false, false, false, false, false]);
+    for (const overrides of [{}, { severity: 'blocker' as const }, { tags: ['security'] }]) {
+      expect(foundOnBase(withAnswers(two, overrides, true))).toEqual(proven('a'));
+    }
+    // Two answers on one model, or on a model nobody named, count as one. An answer that the PR caused or worsened the
+    // failure, or one stored without its base commit, leaves the finding the PR's own and adds no note.
+    expect([sameOnBase(withAnswers([proven('a'), proven('a')])), sameOnBase(withAnswers([proven(), proven('b')]))]).toEqual([undefined, undefined]);
+    expect(oneCheckOnBase(withAnswers([proven('a'), proven('a')], { severity: 'blocker' }))).toEqual(proven('a'));
+    for (const other of [{ verdict: 'introduced' as const, reason: 'r' }, { verdict: 'worsened' as const, reason: 'r' }]) {
+      const disputed = withAnswers([proven('a'), { ...other, model: 'b' }], {}, true);
+      expect([sameOnBase(disputed), oneCheckOnBase(disputed), foundOnBase(disputed)]).toEqual([undefined, undefined, undefined]);
+    }
+    expect(oneCheckOnBase(withAnswers([{ ...proven('a'), commit: undefined }]))).toBeUndefined();
+    expect(foundOnBase(withAnswers(two, { severity: 'ignore' }))).toBeUndefined();
+  });
+});
+
+// The live replay fetches the fixture's repository and asks a real model, so it runs only with
+// RUN_REFUTE_LIVE_FIXTURES=1 and the token `claude setup-token` prints in CLAUDE_CODE_OAUTH_TOKEN. CI skips it.
+const LIVE_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
+if (process.env.RUN_REFUTE_LIVE_FIXTURES === '1' && !LIVE_TOKEN) {
+  console.warn('Skipping the live origin replay: set CLAUDE_CODE_OAUTH_TOKEN to the token `claude setup-token` prints.');
+}
+const liveIt = process.env.RUN_REFUTE_LIVE_FIXTURES === '1' && LIVE_TOKEN ? it : it.skip;
+
+describe('live origin replay', () => {
+  liveIt('live origin check finds at the base each rust-dashcore blocker the base already had', async () => {
+    const fixture = baseProofFixture('base-proof-rust-dashcore');
+    const workspace = await fetchWorkspace(fixture.repository, fixture.head, undefined, [], { sha: fixture.base, excludePaths: [] });
+    try {
+      const diff = parsePRDiff(git(workspace, 'diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', fixture.base, fixture.head));
+      const client = new AnthropicClient({ auth: { kind: 'oauth', token: LIVE_TOKEN }, model: process.env.REFUTE_LIVE_MODEL ?? 'claude-opus-5-5' });
+      const findings: Finding[] = fixture.findings.map(f => ({
+        severity: 'blocker', title: f.title, file: f.file, line: f.line, description: f.description, reviewers: ['replay'],
+        evidence: { checks: [], proof: f.proof }, ...(f.security && { tags: ['security'] }),
+      }));
+      const checked = await checkOrigins(client, findings, { workspace, diff, effort: 'high' });
+      for (const f of checked) console.log(`[live-origin] ${f.title}: ${JSON.stringify(f.originCheck)}`);
+      // Without a second model, a blocker the base already had only notes that it may be older.
+      expect(checked.map(f => [f.title, oneCheckOnBase(f) ? 'pre-existing' : 'blocker'])).toEqual(fixture.findings.map(f => [f.title, f.expected]));
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 60 * 60_000);
+});

@@ -174,7 +174,7 @@
         "dash-spv/src/sync/instantsend/manager.rs:181",
         "dash-spv/src/sync/instantsend/manager.rs:196"
       ],
-      "expected": "blocker",
+      "expected": "pre-existing",
       "recorded": {
         "outcome": "confirmed",
         "reason": "process_instantlock caches a lock under its txid even when verification returned MissingQuorumData (validated=false).",
@@ -214,7 +214,7 @@
         "dash-spv/src/sml_engine.rs:987-989",
         "dash-spv/src/sml_engine.rs:1017-1024"
       ],
-      "expected": "blocker",
+      "expected": "pre-existing",
       "recorded": {
         "outcome": "confirmed",
         "reason": "Only two places store a cycle: the tip set (sml_engine.rs:1019) and the work-block list at h (sml_engine.rs:727).",
@@ -295,7 +295,7 @@
         "dash-spv/src/sync/instantsend/manager.rs:143",
         "dash-spv/src/sync/instantsend/manager.rs:162"
       ],
-      "expected": "blocker",
+      "expected": "pre-existing",
       "recorded": {
         "outcome": "confirmed",
         "reason": "The structure check lets a lock carry up to 2,000,000/41 = 48,780 inputs.",
