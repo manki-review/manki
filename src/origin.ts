@@ -169,7 +169,8 @@ export async function checkOrigins(client: LLMClient, findings: readonly Finding
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
   const checked = new Set(asked.slice(0, MAX_ORIGIN_CHECKS));
   for (const over of asked.slice(MAX_ORIGIN_CHECKS)) core.info(`Not checking the origin of "${over.title}", since the round's ${MAX_ORIGIN_CHECKS} origin checks are used up`);
-  const ask = async (asking: LLMClient, finding: Finding, label: string): Promise<OriginAnswer | undefined> => {
+  // Resolves to `null` when the call never started, and to undefined when it failed.
+  const ask = async (asking: LLMClient, finding: Finding, label: string): Promise<OriginAnswer | null | undefined> => {
     try {
       const raw = await sendWithParseRetry(
         buildOriginMessage(finding, diff, excludedPaths),
@@ -181,7 +182,8 @@ export async function checkOrigins(client: LLMClient, findings: readonly Finding
       core.info(`The ${label} of "${finding.title}": ${answer.verdict}`);
       return answer;
     } catch (error) {
-      if (!(error instanceof NotStartedError)) core.warning(`Could not check "${finding.title}" for its origin: ${error}`);
+      if (error instanceof NotStartedError) return null;
+      core.warning(`Could not check "${finding.title}" for its origin: ${error}`);
       return undefined;
     }
   };
@@ -190,9 +192,9 @@ export async function checkOrigins(client: LLMClient, findings: readonly Finding
     if (!checked.has(finding)) return finding;
     const lineChanged = !flaggedLineAtBase(finding, diff, excludedPaths);
     const second = pair && (lineChanged || !oneAnswerSettles(finding)) ? pair : undefined;
-    const answers = (await Promise.all([ask(client, finding, 'origin check'), second && ask(second, finding, 'second origin check')]))
-      .filter((a): a is OriginAnswer => !!a);
-    progress?.ended(0);
+    const results = await Promise.all([ask(client, finding, 'origin check'), second ? ask(second, finding, 'second origin check') : null]);
+    const answers = results.filter((a): a is OriginAnswer => !!a);
+    progress?.ended(results.some(r => r !== null) ? 0 : undefined);
     const originCheck: OriginCheck = { lineChanged, answers };
     return { ...finding, originCheck };
   });
