@@ -36,7 +36,7 @@ body: |
 
   Part of #1284, whose item 3 follows in a second PR that closes it.
   Part of #1281
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -78,4 +78,10 @@ must_catch:
     mechanism: '`siblingImplementations` adds each method with `groups.set(key, [...groups.get(key) ?? [], m])`, copying the whole group on every insert. A generated Go file where every type has `String()` or `Reset()`, plus the files beside it, makes the copies grow with the square of the group size.'
     locations: ["src/symbol-uses.ts", "siblingImplementations", "groups.set"]
     fix: "cd58d9a25bce3b7b5560c5e5cf736b66d1f5e595"
+  - id: K9
+    severity: blocker
+    mechanism: "`FIELD_DECLARATION_LINE` lets its lazy type group match spaces and follows it with `\\s+`, so on a line with a long run of spaces and no field name after it every split between the two is tried and the match takes time quadratic in the line length. `classOnLines` runs `fieldOnLine` on the uncapped text of every `git grep` hit of a lookup field in a file without a grammar, and on each line of the class around it, so one long line in a file the PR adds hangs the review before any model runs."
+    locations: ["src/symbol-uses.ts", "FIELD_DECLARATION_LINE", "fieldOnLine", "classOnLines"]
+    fix: "d04507ef9d57cbf5328caf57f8840c73fcc53d86"
+    source: "Manki 7.7 development bench run on the tuning set"
 nice_to_have: []

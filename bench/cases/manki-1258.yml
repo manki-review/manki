@@ -34,7 +34,7 @@ body: |
 
   Closes #1141
   Part of #1242
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -46,4 +46,19 @@ must_catch:
     mechanism: "`diffEntries` pairs removed and added entries of one name only when both sides hold the same number of versions, and only paired entries go through `changeFlags`, which raises `downgrade`. When the count differs, for example `syn 2.0.60` becoming `syn 1.0.109` and `syn 2.0.10`, the entries are listed as plain removals and additions and the downgrade is never flagged."
     locations: ["src/lockfile.ts", "diffEntries", "changeFlags"]
     fix: "29bb4ec602fe95c11018282be9152fd6dc5aa111"
+  - id: K3
+    severity: blocker
+    mechanism: "`runReview` and `selectTeam` classify the PR from `diff`, which `exclude_paths` (`*.lock`) leaves without the parsed lockfile. For a PR that changes only a parsed lockfile the file list is empty, so the `supply_chain` floor class, which matches `**/*.lock` and the npm and pnpm lockfiles, never applies and `couldBeTrivial` is true for the empty list. A planner answer of `trivial` then sends a dependency bump to the single quick verifier, and since this PR drops the approval hold for a parsed lockfile, Manki can approve it without a person."
+    locations: ["src/index.ts", "src/review.ts", "selectTeam", "src/routing.ts", "classifyPr", "couldBeTrivial"]
+    fix: "3c2acf62f441ff0ea1bcf5bd0b4bbde23d96ed80"
+  - id: K4
+    severity: blocker
+    mechanism: "`describeChange` prints the source of an added package only when `showSource` finds a flag, and `sourceFlags` raises none for a registry source such as `registry+https://evil.example/index` or `sparse+https://...`, or for an https tarball on any host whose path is `<name>/-/<name>-<version>.tgz`. Added entries are also built with `fields: []`. A new package from an attacker's registry or host is listed only as `added foo 1.0.0` and raises no alert, while the lockfile no longer holds the approval."
+    locations: ["src/lockfile.ts", "describeChange", "showSource", "sourceFlags", "diffEntries"]
+    fix: "3c2acf62f441ff0ea1bcf5bd0b4bbde23d96ed80"
+  - id: K5
+    severity: blocker
+    mechanism: "`postRound` passes `diff`, which leaves out the parsed lockfile, to `postReview`, so a blocker on a lockfile line finds no diff file and is posted in the review body with no thread. On the next push `runReview` builds `changedFiles` from `diff.files`, which still lacks the lockfile, and `isPriorLikelyUnresolved` keeps a prior blocker without a thread only when its file is in `changedFiles`. The lockfile blocker stops blocking, so the round can reach READY and approve while the lockfile change is still in the PR."
+    locations: ["src/index.ts", "postRound", "src/review.ts", "isPriorLikelyUnresolved", "changedFiles"]
+    fix: "c2b6f62ed6b6a1c49bb58616d771563c69b0b848"
 nice_to_have: []
