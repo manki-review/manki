@@ -74,6 +74,7 @@ Manki 7.7 is about the first round finding what later rounds used to find. Each 
 - The next review of a commit whose round ended incomplete keeps the results of the finders and checks that finished and runs only what failed. The review says what it kept. Review again and Deeper review keep nothing ([#1849](https://github.com/manki-review/manki/pull/1849)).
 - The token service's automatic retry of an incomplete review says so in its progress comment and review. The incomplete message says when that retry comes, and the failed run's progress comment is kept and marked superseded ([#1821](https://github.com/manki-review/manki/pull/1821)).
 - A failed OIDC token request is retried and its cause is logged. Before, a runner that lost its connection to GitHub ended with "the workflow needs `id-token: write`" although the workflow granted it ([#1882](https://github.com/manki-review/manki/pull/1882)).
+- A finder that fails now logs why each attempt failed: the error type, the HTTP status or CLI exit code, and whether its answer could not be read. Before, the log said only that it failed after retries ([#1887](https://github.com/manki-review/manki/pull/1887)).
 
 ### Docs
 
