@@ -1,13 +1,13 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
+import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchChangesSince, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { BASE_QUESTION, DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases, RoundFix, SideCheckState } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { contentAnswer, makeFindingFingerprintEntry, namingCommit, paginateSinglePage, TEST_BOT, TEST_LINKS, testSha } from './test-utils';
 import { withMarkers } from './utils';
-import { parsePRDiff } from './diff';
+import { listedFilesDiff, parsePRDiff } from './diff';
 import { extractReviewRecords, formatApprovalRecord, hasOwnMarker } from './review-record';
 import { withoutFences } from './issue-box';
 import { scopeWarnings } from './scope';
@@ -4469,6 +4469,23 @@ describe('fetchInterRoundDiff', () => {
     expect(await since({ status: 'diverged', total_commits: 2, commits: [commit('a'), commit('b')] })).toEqual([]);
     expect(await since({ status: 'ahead', total_commits: 2, commits: [commit('a'), commit('m', 2)] })).toEqual([]);
     expect(await since({ status: 'ahead', total_commits: 120, commits: [commit('a')] })).toEqual([]);
+  });
+
+  it('returns the change to the named files since a commit with `fetchChangesSince`, and nothing after a force push or a failed comparison', async () => {
+    const patch = '@@ -9,2 +9,3 @@\n a\n+b\n c';
+    const files = [{ filename: 'src/a.ts', status: 'modified', patch }, { filename: 'src/b.ts', status: 'modified', patch }];
+    const since = (compareCommits: jest.Mock, base = 'posted') => fetchChangesSince(makeOctokit(compareCommits), 'owner', 'repo', base, 'head', ['src/a.ts']);
+    const ahead = jest.fn().mockResolvedValue({ data: { status: 'ahead', files } });
+    expect(await since(ahead)).toBe(listedFilesDiff([files[0]]));
+    // A file renamed since the commit is found by its old name.
+    const renamed = [{ filename: 'src/moved.ts', previous_filename: 'src/a.ts', status: 'renamed', patch }, files[1]];
+    expect(await since(jest.fn().mockResolvedValue({ data: { status: 'ahead', files: renamed } }))).toBe(listedFilesDiff([renamed[0]]));
+    expect(ahead).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', base: 'posted', head: 'head' });
+    expect(await since(jest.fn().mockResolvedValue({ data: { status: 'diverged', files } }))).toBeUndefined();
+    expect(await since(jest.fn().mockRejectedValue(new Error('Server Error')))).toBeUndefined();
+    const unasked = jest.fn();
+    expect(await since(unasked, 'head')).toBe('');
+    expect(unasked).not.toHaveBeenCalled();
   });
 
   it('returns empty string when base equals head and skips the API call', async () => {
