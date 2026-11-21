@@ -1566,13 +1566,15 @@ const RECORD_LOG_LINE_CHARS = 1000;
 function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number): string {
   const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
   const fits = (record: string): boolean => stats.length + record.length <= MAX_RECORD_CHARS;
-  const record = formatReviewRecord(context, room - stats.length);
+  // A plain record over the budget is compressed before any part of it is cut.
+  const plainRoom = Math.min(room, MAX_RECORD_CHARS) - stats.length;
+  const record = formatReviewRecord(context, plainRoom);
   if (fits(record)) return `${stats}${record}`;
 
   let slim = record;
   let left: string[] = [];
   for (const smaller of smallerRecords(context)) {
-    slim = formatReviewRecord(smaller, room - stats.length);
+    slim = formatReviewRecord(smaller, plainRoom);
     left = smaller.meta.omitted ?? [];
     if (fits(slim)) break;
   }

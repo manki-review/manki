@@ -1668,6 +1668,13 @@ describe('postReview with context', () => {
     const { records } = extractReviewRecords(body);
     expect(records).toHaveLength(1);
     expect(JSON.parse(records[0])).toEqual({ ...ctx, output: { bodyLength: expect.any(Number), commentLengths: [] } });
+
+    // Below a short body, a plain record over the record budget is compressed too, before anything is cut.
+    const long = makeContext({ judge: { summary: 'a'.repeat(55000) } });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', { ...result, summary: 'Short.' }, undefined, long, 1000);
+    const short = mockCreateReview.mock.calls[1][0].body as string;
+    expect(short).toContain('<!-- manki-context-gzip: ');
+    expect(JSON.parse(extractReviewRecords(short).records[0])).toEqual({ ...long, output: { bodyLength: expect.any(Number), commentLengths: [] } });
   });
 
   it('posts a record too large even compressed without its bulky diagnostics, then cuts it further down to the minimal record', async () => {
