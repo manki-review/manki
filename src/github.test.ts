@@ -691,16 +691,20 @@ describe('formatFindingComment', () => {
     // The other check disagreed, so the lines of the confirming one are no proof of the finding either.
     expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first. ${seen42}\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
 
-    // A blocker of the judge's that two disproofs put back at its finders' grade says that it does not block.
+    // A blocker its disproofs lowered says that it does not block, and that the second check agreed only when one on
+    // another model did.
     const loweredFinding: Finding = {
       ...baseFinding, severity: 'warning', evidence: { checks: [], proof: [] },
       gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation' }],
-      refutation: { outcome: 'disproved', reason: 'A `sync.Once` guards the close.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
-      pairRefutation: { outcome: 'disproved', reason: 'Both paths close through one guard.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
+      refutation: { outcome: 'disproved', reason: 'A `sync.Once` guards the close.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc', model: 'first-model' },
+      pairRefutation: { outcome: 'disproved', reason: 'Both paths close through one guard.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc', model: 'pair-model' },
     };
     const lowered = render(loweredFinding);
     expect(lowered).toContain('**Doubt found**\nManki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself. A `sync.Once` guards the close.');
     expect(lowered).toContain('**Second check, on another model**\nDoubt found. Both paths close through one guard.');
+    const alone = 'Manki found a reason this may not happen, so this does not block. Please check it yourself. A `sync.Once` guards the close.';
+    expect(render({ ...loweredFinding, pairRefutation: undefined })).toContain(`**Doubt found:** ${alone}`);
+    expect(render({ ...loweredFinding, pairRefutation: { ...loweredFinding.pairRefutation!, model: 'first-model' } })).toContain(`**Doubt found**\n${alone}`);
     // One that breaks a confirmed rule reads the same on both checks, and neither says the rule keeps it.
     const loweredRule = render({ ...loweredFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } });
     expect(loweredRule).toContain('so this does not block. Please check it yourself. A `sync.Once` guards the close.');

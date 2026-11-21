@@ -981,8 +981,8 @@ export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 
   return pendingGrade(f) === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
 }
 
-/** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */
-export function isDisprovedRaise(finding: Pick<Finding, 'gradePath'>): boolean {
+/** Whether `applyRefutation` lowered the blocker `finding` because every refuter that ran disproved it. */
+export function isDisprovedBlocker(finding: Pick<Finding, 'gradePath'>): boolean {
   return !!finding.gradePath?.some(step => step.by === 'refutation' && step.from === 'blocker');
 }
 

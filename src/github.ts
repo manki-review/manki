@@ -15,7 +15,7 @@ import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedBlocker, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { extractApprovalRecords, formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
@@ -3294,10 +3294,11 @@ const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }> = {
   confirmed: { label: 'Double-checked', text: 'Manki tried to disprove this by reading the code and could not.' },
   unsettled: { label: 'Not settled', text: 'Manki tried to disprove this by reading the code and could not decide.' },
-  // A posted disproved finding is a blocker, a security finding, one a second check confirmed, one `isDisprovedRaise` names or one that `gradedByRule`, since a disproof drops any other.
+  // A posted disproved finding is a blocker, a security finding, one a second check confirmed, one `isDisprovedBlocker` names or one that `gradedByRule`, since a disproof drops any other.
   disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.' },
 };
-const DISPROVED_RAISE_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
+const DISPROVED_TEXT = 'Manki found a reason this may not happen, so this does not block. Please check it yourself.';
+const DISPROVED_PAIR_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
 const OVERRULED_DISPROOF_TEXT = 'The finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself.';
 const PAIR_REFUTATION_LABEL = 'Second check, on another model';
 
@@ -3608,11 +3609,12 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
   const shown = (check: Refutation): RefutationOutcome =>
     (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && !confirmsDefect(check, finding) ? 'unsettled' : outcomeOf(check));
   const pairLead = pairRefutation && REFUTATION_SUMMARY[shown(pairRefutation)];
-  // A blocker two disproofs lowered says so on its first check, and its rule only set how far it went down.
-  const keptByRule = !isDisprovedRaise(finding) && !!overruledDisproof(finding, links.rules);
+  // A blocker its disproofs lowered says so on its first check, and its rule only set how far it went down.
+  const keptByRule = !isDisprovedBlocker(finding) && !!overruledDisproof(finding, links.rules);
   // Each check that disproved a finding its rule keeps says why the finding stays.
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
-  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[shown(refutation)].text));
+  const pairAgreed = !!pairRefutation?.model && pairRefutation.model !== refutation?.model && outcomeOf(pairRefutation) === 'disproved';
+  const lead = refutation && (isDisprovedBlocker(finding) ? (pairAgreed ? DISPROVED_PAIR_TEXT : DISPROVED_TEXT) : text(refutation, REFUTATION_PART[shown(refutation)].text));
   return [
     ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, finding.evidence, links, known)] : []),
     ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, finding.evidence, links, known)] : []),

@@ -2258,8 +2258,8 @@ export async function runReview(
         const checked = capUnconfirmedBuildClaim(f.file ? { ...f, toolEvidence: checkFindingClaims(f, claimSources) } : f);
         return sameAs ? { ...checked, sameAs } : checked;
       });
-      // A disproof never lowers a blocker of the reader's, so the outcome stands and the refutation only shows what it
-      // found. It drops a claimed build failure that was posted as a warning. A blocker the check finds failing the same
+      // A blocker of the reader's that every refuter disproved is posted as a warning, which holds the approval as any
+      // warning does. A disproof drops a claimed build failure that was posted as a warning. A blocker the check finds failing the same
       // way before this PR is pre-existing, as any other.
       const attributed = markPreExisting((refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, progress: refutation.progress, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input, excludedPaths: options.excludedPaths })
