@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import * as core from '@actions/core';
 
 import { holdsLines } from './code-window';
-import { isLineInDiff, oldLineOf, rebuildRawDiff, removedOldLines, replacementOf, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { isLineInDiff, oldLineOf, rebuildRawDiff, replacedLineOf, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { readBaseText, readFileInRoot, resolveInRoot } from './mcp-server';
@@ -356,28 +356,25 @@ function parseBase(answer: unknown, cut: boolean, workspace: string, related?: R
 }
 
 /**
- * Returns where the line `finding` flags sat at the PR's base, as git's path and the base lines that stand for it, each
- * with the text it has there. A line the PR left as it was stands for itself, with its text at the head. A line the PR
- * changed stands for the lines that its run of changed lines removed, with their text in the diff. A line in a run
- * that removes nothing, a file the PR added, and a change the diff does not show have no such line. A changed file
- * whose patch GitHub left out, as `binarySkipped` or as a file listed without lines, is one of those.
+ * Returns where the line `finding` flags sat at the PR's base, as git's path and line, with the text that line has
+ * there. A line the PR left as it was stands for itself, with its text at the head. A line the PR changed stands for
+ * the line it replaced by `replacedLineOf`, with its text in the diff. A line a run of changed lines adds past the
+ * lines it removes, a file the PR added, and a change the diff does not show have no such line. A changed file whose
+ * patch GitHub left out, as `binarySkipped` or as a file listed without lines, is one of those.
  */
-function flaggedLineAtBase(finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { file: string; lines: Array<{ line: number; text: string }> } | undefined {
+function flaggedLineAtBase(finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { file: string; line: number; text: string } | undefined {
   if (!diff || excludedPaths.includes(finding.file) || diff.binarySkipped?.some(f => f.path === finding.file)) return undefined;
   const changed = diff.files.find(f => f.path === finding.file);
   if (changed && (changed.changeType === 'added' || changed.hunks.length === 0)) return undefined;
   const file = changed ? changed.oldPath ?? changed.path : finding.file;
   const line = changed ? oldLineOf(changed, finding.line) : finding.line;
   if (changed && line === undefined) {
-    const replaced = [...removedOldLines(changed)].filter(([old]) => {
-      const run = replacementOf(changed, old);
-      return !!run && run[0] <= finding.line && finding.line <= run[1];
-    });
-    return replaced.length > 0 ? { file, lines: replaced.map(([at, text]) => ({ line: at, text })) } : undefined;
+    const replaced = replacedLineOf(changed, finding.line);
+    return replaced && { file, ...replaced };
   }
   const head = readFileInRoot(workspace, finding.file);
   const text = head && head !== 'too large' ? head.lines[finding.line - 1] : undefined;
-  return line === undefined || text === undefined ? undefined : { file, lines: [{ line, text }] };
+  return line === undefined || text === undefined ? undefined : { file, line, text };
 }
 
 /**
@@ -401,7 +398,7 @@ async function checkBase(check: Refutation, finding: Finding, workspace: string,
     const at = flaggedLineAtBase(finding, workspace, diff, excludedPaths);
     return !!at && held.some(h => {
       const [start, end] = locationLines(h.location);
-      return locationFile(h.location) === at.file && at.lines.some(({ line, text }) => start <= line && line <= end && h.lines[line - start] === text);
+      return locationFile(h.location) === at.file && start <= at.line && at.line <= end && h.lines[at.line - start] === at.text;
     });
   };
   const outcome = !commit ? 'unsettled'

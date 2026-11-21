@@ -3943,18 +3943,18 @@ describe('runReview', () => {
     };
 
     // The findings on `masternodes/manager.rs` and on `instantsend/manager.rs` line 185 flag a line this PR left
-    // unchanged, and their answers cite it at its place in the base. The findings on `instantsend/manager.rs` line 162
-    // and on `sml_engine.rs` flag lines this PR changed, and their answers cite a line the change replaced. Two refuters
-    // on different models make all four pre-existing, the security one too. The others flag lines this PR added, or
-    // cite no line the change replaced, and keep blocking.
-    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'pre-existing', 'blocker', 'pre-existing']);
+    // unchanged, and their answers cite it at its place in the base. The finding on `instantsend/manager.rs` line 162
+    // flags a line this PR changed, and its answer cites the line it replaced. Two refuters on different models make all
+    // three pre-existing, the security one too. The others keep blocking. The one on `sml_engine.rs` flags a line of a
+    // new block past the two lines that block replaced, so its answer cites no line it replaced.
+    expect(fixture.findings.map(f => f.expected)).toEqual(['blocker', 'pre-existing', 'blocker', 'pre-existing', 'blocker', 'pre-existing']);
     expect(await run({ pair: true })).toEqual(fixture.findings.map(f => [f.title, f.expected]));
     // One refuter changes no grade. Those blockers only note that they may be older than this PR.
-    expect((await run()).map(([, posted]) => posted)).toEqual(['blocker', 'older', 'older', 'older', 'blocker', 'older']);
+    expect((await run()).map(([, posted]) => posted)).toEqual(['blocker', 'older', 'blocker', 'older', 'blocker', 'older']);
     // The flagged line cited at its head number, which is another line at the base, proves nothing, so the blocker stays.
     const headLines = (recorded: Record<string, unknown>, title: string) => title === fixture.findings[3].title
       ? { ...recorded, base: { ...(recorded.base as object), proof: [`${fixture.findings[3].file}:${fixture.findings[3].line}`] } } : recorded;
-    expect((await run({ pair: true, answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'pre-existing', 'pre-existing', 'blocker', 'blocker', 'pre-existing']);
+    expect((await run({ pair: true, answer: headLines })).map(([, posted]) => posted)).toEqual(['blocker', 'pre-existing', 'blocker', 'blocker', 'blocker', 'pre-existing']);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('records a pre-existing warning in the `rare` column without a check, since no answer makes it a blocker', async () => {

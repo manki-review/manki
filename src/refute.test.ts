@@ -1289,9 +1289,9 @@ describe('refuteBlockers', () => {
       expect([model, !!sameOnBase(one), !!oneCheckOnBase(one)]).toEqual([model, false, true]);
     }
 
-    // The diff maps the flagged line to the base. A line the PR changed counts only at a base line its run of changed
-    // lines replaced. A line in a run that replaces nothing never counts, nor does the same text at another line of the
-    // base, nor an unchanged line the finding's evidence cites.
+    // The diff maps the flagged line to the base. A line the PR changed counts only at the base line it replaced, at the
+    // same place in its run of changed lines. A line a run adds past the lines it removes never counts, nor does the same
+    // text at another line of the base, nor an unchanged line the finding's evidence cites.
     const moved = gitWorkspace({ 'src/lines.ts': 'shared();\nb\nc\nshared();\n' }, { 'src/lines.ts': 'shared();\nb2\nnew\nc\nshared();\nadded();\n' }, []);
     const at = (line: number, proof: string[], evidence = [`src/lines.ts:${line}`]) => ({ line, proof, evidence });
     const cases: Record<string, ReturnType<typeof at>> = {
@@ -1299,9 +1299,9 @@ describe('refuteBlockers', () => {
       'Unchanged line in a cited range': at(5, ['src/lines.ts:3-4']),
       'Unchanged line at a wrong base line': at(5, ['src/lines.ts:1']),
       'Changed line': at(2, ['src/lines.ts:2']),
-      'Changed line at a line its run did not replace': at(2, ['src/lines.ts:1']),
+      'Changed line at a line it did not replace': at(2, ['src/lines.ts:1']),
       'Line added beside a changed one': at(3, ['src/lines.ts:3']),
-      'Line added beside a changed one at the replaced line': at(3, ['src/lines.ts:2']),
+      'Line added beside a changed one at the line that one replaced': at(3, ['src/lines.ts:2']),
       'Line added in a run that replaces nothing': at(6, ['src/lines.ts:4']),
       'Changed line with an unchanged evidence line': at(2, ['src/lines.ts:4'], ['src/lines.ts:2', 'src/lines.ts:5']),
     };
@@ -1315,9 +1315,9 @@ describe('refuteBlockers', () => {
       ['Unchanged line in a cited range', 'disproved'],
       ['Unchanged line at a wrong base line', 'unsettled'],
       ['Changed line', 'disproved'],
-      ['Changed line at a line its run did not replace', 'unsettled'],
+      ['Changed line at a line it did not replace', 'unsettled'],
       ['Line added beside a changed one', 'unsettled'],
-      ['Line added beside a changed one at the replaced line', 'disproved'],
+      ['Line added beside a changed one at the line that one replaced', 'unsettled'],
       ['Line added in a run that replaces nothing', 'unsettled'],
       ['Changed line with an unchanged evidence line', 'unsettled'],
     ]);
