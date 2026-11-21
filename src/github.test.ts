@@ -6423,9 +6423,9 @@ describe('postReview non-blocking findings', () => {
     const several = await carriedBody([carriedEntry('Retry never ends', 10, 1, 12), carriedEntry('Queue has no `limit`', 7, 2)]);
     // A carried warning no round raised again never holds the approval.
     expect(several).toMatch(/^\u2705 \*\*Approved\.\*\* 2 warnings and 1 suggestion, none of which block\./u);
-    expect(several).toContain('### Earlier warnings, code unchanged · 2 warnings\n\nAn earlier round listed these, and this round did not raise them again. The line each points at still reads the same, so they stay listed. None of them blocks.\n\n- `src/a.ts:12`: Retry never ends (round 1)\n- `src/a.ts`: Queue has no `limit` (round 2)\n\n');
-    expect(several.indexOf('### Found this round')).toBeLessThan(several.indexOf('### Earlier warnings, code unchanged'));
-    expect(await carriedBody([carriedEntry('Retry never ends', 10, 1, 10)])).toContain('### Earlier warnings, code unchanged · 1 warning\n\nAn earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.\n\n- `src/a.ts:10`: Retry never ends (round 1)');
+    expect(several).toContain('### Earlier warnings, not fixed · 2 warnings\n\nAn earlier round listed these, and this round neither raised them again nor found them fixed, so they stay listed. None of them blocks.\n\n- `src/a.ts:12`: Retry never ends (round 1)\n- `src/a.ts`: Queue has no `limit` (round 2)\n\n');
+    expect(several.indexOf('### Found this round')).toBeLessThan(several.indexOf('### Earlier warnings, not fixed'));
+    expect(await carriedBody([carriedEntry('Retry never ends', 10, 1, 10)])).toContain('### Earlier warnings, not fixed · 1 warning\n\nAn earlier round listed it, and this round neither raised it again nor found it fixed, so it stays listed. It doesn\'t block.\n\n- `src/a.ts:10`: Retry never ends (round 1)');
     expect(await carriedBody(undefined)).not.toContain('Earlier warnings');
     // The record keeps a hash of the line a warning listed only in the body points at, with the lines around it, and how
     // many places of its file read the same, and the warning's description for a later judge. A line the file does not have gives none.

@@ -849,6 +849,11 @@ describe('buildJudgeUserMessage', () => {
     expect(unpushed).toContain('"Token logged" at src/log.ts:7 (stays open: the push did not change this file)\n');
     const staysOpenRule = 'A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.';
     expect(unpushed).toContain(staysOpenRule);
+    // Only with a second refuter can a fix in another file resolve such a thread, so only then is the judge told so.
+    const paired = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [...openThreads, agreed, security], rounds, '', undefined, undefined, '', '', '', undefined, [], [], true);
+    expect(paired).toContain('A thread marked "stays open" is not resolved this round unless it is tied to a file, is not a security thread, and you name the file of its fix in `fixedIn` and later checks confirm it. In the summary, say that it is still open, or, where you named the file of its fix in `fixedIn`, that this fix still awaits a check.');
+    const systemWith = (fixElsewhere: boolean) => buildJudgeSystemPrompt(makeConfig(), 1, true, 2, undefined, 1, true, 0, false, false, fixElsewhere);
+    expect([systemWith(true), systemWith(false)].map(prompt => [prompt.includes('"fixedIn"'), prompt.includes('set `fixedIn` to the path'), prompt.includes('blocks merge whatever you decide'), prompt.includes('still awaits a check, since the check runs after your summary')])).toEqual([[true, true, false, true], [false, false, true, false]]);
     // A thread on another file than its finding's can name no file, and GitHub reports it on line 1.
     const nowhere = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [{ ...openThreads[0], file: '', line: 1 }], rounds, '');
     expect(nowhere).toContain('"Null check missing" not tied to a file (earlier blocker, stays open: only a person can clear a thread that is not tied to a file)\n');
@@ -1415,14 +1420,15 @@ describe('parseJudgeResponse', () => {
       summary: 'Follow-up review.',
       findings: [],
       threadEvaluations: [
-        { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' },
-        { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Still applies' },
+        { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff', fixedIn: ' ' },
+        { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Still applies', fixedIn: 'src/caller.ts' },
         { threadId: 'PRRT_ghi', status: 'uncertain', reason: 'No clear evidence' },
         { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: ' The upload still has no timeout. ', row: ' Degraded ', grade: 'note' },
         { threadId: 'PRRT_mno', status: 'partly_addressed', reason: 'r', remaining: 'Still slow.', row: 'ignore', grade: 'note' },
         { threadId: 'PRRT_pqr', status: 'partly_addressed', reason: 'Some of it', row: 'degraded' },
         { threadId: 'PRRT_stu', status: 'partly_addressed', reason: 'r', remaining: 'A slow client still holds the connection.', row: 'wrong', column: 'rare' },
         { threadId: 'PRRT_vwx', status: 'partly_addressed', reason: 'r', remaining: 'The retry still logs twice.', row: 'degraded', column: 'Rare' },
+        { threadId: 'PRRT_yz', status: 'addressed', reason: 'The caller returns early.', fixedIn: ' src/caller.ts ' },
       ],
     });
 
@@ -1437,6 +1443,8 @@ describe('parseJudgeResponse', () => {
       // Nothing checks a `rare` claim on a thread, so where the column decides the block what remains is graded as `normal`.
       { threadId: 'PRRT_stu', status: 'partly_addressed', reason: 'r', remaining: 'A slow client still holds the connection.', cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, grade: 'blocker' },
       { threadId: 'PRRT_vwx', status: 'partly_addressed', reason: 'r', remaining: 'The retry still logs twice.', cell: { row: 'degraded', column: 'rare' }, grade: 'note' },
+      // Only an addressed thread names the file of its fix, and an empty name is none.
+      { threadId: 'PRRT_yz', status: 'addressed', reason: 'The caller returns early.', fixedIn: 'src/caller.ts' },
     ]);
     result.threadEvaluations!.length = 3;
     expect(result.threadEvaluations![0]).toEqual({ threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' });

@@ -1871,9 +1871,9 @@ function formatFindingSection(heading: string, folds: string[], intro?: string, 
 /** Returns the warnings carried from earlier rounds as one short list, a line each with the round that listed it first. A warning without `currentLine` shows only its file. */
 function formatCarriedWarnings(carried: FindingFingerprintEntry[]): string | null {
   const lines = carried.map(e => `${formatTraceEntry({ file: e.fingerprint.file, line: e.currentLine ?? 0, title: e.title ?? '' })} (round ${e.raisedIn})`);
-  return formatFindingSection(`Earlier warnings, code unchanged · ${formatSeverityCounts(carried)}`, lines.length > 0 ? [lines.join('\n')] : [], carried.length === 1
-    ? 'An earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.'
-    : 'An earlier round listed these, and this round did not raise them again. The line each points at still reads the same, so they stay listed. None of them blocks.', '###');
+  return formatFindingSection(`Earlier warnings, not fixed · ${formatSeverityCounts(carried)}`, lines.length > 0 ? [lines.join('\n')] : [], carried.length === 1
+    ? 'An earlier round listed it, and this round neither raised it again nor found it fixed, so it stays listed. It doesn\'t block.'
+    : 'An earlier round listed these, and this round neither raised them again nor found them fixed, so they stay listed. None of them blocks.', '###');
 }
 
 /** Returns the section for the holding warnings that got no thread, which says what clears them, or null when there are none. */

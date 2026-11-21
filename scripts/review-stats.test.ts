@@ -386,7 +386,7 @@ describe('review stats', () => {
         // A warning nothing proves counts under what kept it unproven.
         ...(['unsettled_check', 'not_checked', 'not_checked', 'no_proof'] as const).map(unpostedReason => ({ ...makeFindingFingerprintEntry({ severity: 'warning' }), unpostedReason, posted: 'record' as const }))],
         carried: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), raisedIn: 1 }],
-        carriedEnded: [{ key: 'src/a.ts:3:3:x', reason: 'line_changed' }, { key: 'src/a.ts:4:4:y', reason: 'line_changed' }, { key: 'src/a.ts:5:5:z', reason: 'judge_dropped' }],
+        carriedEnded: [{ key: 'src/a.ts:3:3:x', reason: 'fixed' }, { key: 'src/a.ts:4:4:y', reason: 'fixed' }, { key: 'src/a.ts:5:5:z', reason: 'judge_dropped' }],
       },
       judge: {
         summary: '', fixClaimedThreads: ['T1', 'T2'],
@@ -454,7 +454,7 @@ describe('review stats', () => {
         'own_proposal, severity not recorded': 4, 'test_file, severity not recorded': 5, 'static_signal, severity not recorded': 1,
       },
       'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)': {
-        'listed again, 1 round on': 1, 'ended, line_changed': 2, 'ended, judge_dropped': 1,
+        'listed again, 1 round on': 1, 'ended, fixed': 2, 'ended, judge_dropped': 1,
       },
       'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },
       'Second reads (per round: reads run, blockers and warnings added, why they stopped)': { '2 run, 1 added, failed': 1 },
