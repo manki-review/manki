@@ -164,7 +164,6 @@ jest.mock('./recap', () => ({
   fetchRecapState: jest.fn().mockResolvedValue({ previousFindings: [], priorRounds: [] }),
   deduplicateFindings: jest.fn().mockReturnValue({ unique: [], duplicates: [] }),
   llmDeduplicateFindings: jest.fn().mockResolvedValue({ unique: [], duplicates: [] }),
-  classifyAuthorReply: jest.fn().mockReturnValue('none'),
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
   currentFindingLine: jest.requireActual('./recap').currentFindingLine,
   parseContextBlocks: jest.requireActual('./recap').parseContextBlocks,
@@ -4835,7 +4834,7 @@ describe('runFullReview orchestration', () => {
         reclassifiedPriorCount: 2,
         reclassifiedPriors: [
           { threadId: 'thread-a', from: 'none', to: 'agree' },
-          { threadId: 'thread-b', from: 'none', to: 'disagree' },
+          { threadId: 'thread-b', from: 'agree', to: 'none' },
         ],
       });
       jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -4852,7 +4851,7 @@ describe('runFullReview orchestration', () => {
         reclassifiedPriorCount: 2,
         reclassifiedPriors: [
           { threadId: 'thread-a', from: 'none', to: 'agree' },
-          { threadId: 'thread-b', from: 'none', to: 'disagree' },
+          { threadId: 'thread-b', from: 'agree', to: 'none' },
         ],
       });
     });
@@ -6837,7 +6836,7 @@ describe('runFullReview orchestration', () => {
           { title: 'Timeout', file: 'src/app.ts', line: 4, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl', recordedGrade: 'warning' as const },
           {
             title: 'Cache', file: 'src/app.ts', line: 5, severity: 'blocker' as const, status: 'replied' as const, threadId: 'PRRT_mno', recordedGrade: 'warning' as const,
-            authorReplyText: 'Agreed, no change needed.', authorReplyLogin: 'bob', authorReplyMayClear: true,
+            authorReplyText: 'Agreed, no change needed.', authorReplyLogin: 'bob', authorReplyMayClear: true, replyAgreed: true,
           },
         ],
         priorRounds: [roundContextFromLegacy({ round: 1, commitSha: lastReviewed, timestamp: 't', findings: [] })],

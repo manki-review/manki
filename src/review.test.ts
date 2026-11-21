@@ -601,14 +601,6 @@ describe('determineOutcome', () => {
       expect(determineOutcome([answered], fingerprintEntriesFromLegacy(priors), open).verdictTrace.unresolvedPriors).toEqual([]);
     });
 
-    it.each(['disagree', 'partial'] as const)('blocks APPROVE when authorReply is %s', (reply) => {
-      const priors = [makePriorBlocker({ authorReply: reply })];
-      const open = [makeOpenThread()];
-      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open);
-      expect(result.outcome).toBe('ADDRESS_FIRST');
-      expect(result.verdictReason).toBe('prior_unaddressed');
-    });
-
     it('blocks when at least one of multiple priors is still unresolved', () => {
       const resolved = makePriorBlocker({ threadId: 'T_RESOLVED', authorReply: 'agree' });
       const unresolved = makePriorBlocker({ threadId: 'T_OPEN' });
@@ -5289,7 +5281,7 @@ describe('runReview', () => {
     // Nobody claims a fix by replying in the thread, nor does the PR author by resolving it, which leaves a blocker
     // thread open. Each still requests changes, and none pauses automatic review. That holds for a dismissal on a
     // security thread too, when the PR author or someone without write access wrote it, for the author's "Fixed." on a
-    // thread graded below blocker since, and for a maintainer's reply that does not agree.
+    // thread graded below blocker since, and for a maintainer's reply that Manki did not settle.
     const dismissed = { isSecurity: true, authorReplyText: '@manki dismiss' };
     const notCleared: Partial<PreviousFinding>[] = [
       { ...dismissed, authorReplyLogin: 'author' }, { ...dismissed, authorReplyLogin: 'reader' },
@@ -5309,7 +5301,7 @@ describe('runReview', () => {
     // is how a maintainer's answer or dismissal clears a thread the PR author had resolved.
     // With the open threads unknown, only the status says so. A security thread cleared that way keeps the status
     // `replied` and stays among the open threads, so the reply of someone who may clear it says so.
-    const clearedSecurity = { ...thread('replied'), ...dismissed, authorReplyLogin: 'maintainer', authorReplyMayClear: true };
+    const clearedSecurity = { ...thread('replied'), ...dismissed, authorReplyLogin: 'maintainer', authorReplyMayClear: true, replyAgreed: true };
     for (const [openThreads, previous] of [[[], thread('auto-resolved')], [null, thread('auto-resolved')], [[openThread], clearedSecurity], [null, clearedSecurity]] as const) {
       const cleared = await runOn(makeClients(RAISED), 'sha2', openThreads && [...openThreads], [previous]);
       expect([cleared.outcome, cleared.needsHuman?.cause, cleared.fixClaimedThreadIds]).toEqual(['NOT_CONVERGING', 'repeated', ['T1']]);
@@ -6785,6 +6777,7 @@ describe('runReview', () => {
         status: 'replied' as const,
         authorReplyText: 'Fixed, thanks!',
         authorReplyLogin: 'pr-author',
+        replyAgreed: true,
       },
     ];
 
