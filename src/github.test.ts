@@ -708,6 +708,9 @@ describe('formatFindingComment', () => {
     const alone = 'Manki found a reason this may not happen, so this does not block. Please check it yourself. A `sync.Once` guards the close.';
     expect(render({ ...loweredFinding, pairRefutation: undefined })).toContain(`**Doubt found:** ${alone}`);
     expect(render({ ...loweredFinding, pairRefutation: { ...loweredFinding.pairRefutation!, model: 'first-model' } })).toContain(`**Doubt found**\n${alone}`);
+    expect(render({ ...loweredFinding, refutation: { ...loweredFinding.refutation!, model: undefined } })).toContain(`**Doubt found**\n${alone}`);
+    // When only the second check answered, it says that the finding does not block.
+    expect(render({ ...loweredFinding, refutation: undefined })).toContain('**Second check, on another model:** Manki found a reason this may not happen, so this does not block. Please check it yourself. Both paths close through one guard.');
     // One that breaks a confirmed rule reads the same on both checks, and neither says the rule keeps it.
     const loweredRule = render({ ...loweredFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } });
     expect(loweredRule).toContain('so this does not block. Please check it yourself. A `sync.Once` guards the close.');

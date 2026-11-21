@@ -3657,11 +3657,13 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
   const keptByRule = !isDisprovedBlocker(finding) && !!overruledDisproof(finding, links.rules);
   // Each check that disproved a finding its rule keeps says why the finding stays.
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
-  const pairAgreed = !!pairRefutation?.model && pairRefutation.model !== refutation?.model && outcomeOf(pairRefutation) === 'disproved';
+  const pairAgreed = !!pairRefutation?.model && !!refutation?.model && pairRefutation.model !== refutation.model && outcomeOf(pairRefutation) === 'disproved';
   const lead = refutation && (isDisprovedBlocker(finding) ? (pairAgreed ? DISPROVED_PAIR_TEXT : DISPROVED_TEXT) : text(refutation, REFUTATION_PART[shown(refutation)].text));
+  // A lowered blocker whose first check failed says on the second one that it does not block.
+  const pairText = pairLead && (!refutation && isDisprovedBlocker(finding) ? DISPROVED_TEXT : `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`);
   return [
     ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, finding.evidence, links, known)] : []),
-    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, finding.evidence, links, known)] : []),
+    ...(pairRefutation && pairText ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, pairText), pairRefutation, finding.evidence, links, known)] : []),
   ];
 }
 
