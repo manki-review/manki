@@ -1,5 +1,5 @@
 import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, mentionsMankiUser, isReviewRequest, isBotMentionNonReview, handleBoxCommand, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
-import { Finding, ReplyRecord, ReviewConfig } from './types';
+import { Finding, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { extractReplyRecords, formatReviewRecord, settlingDecision } from './review-record';
 import { RELATED_REPO_TRUST_RULE, WRITING_RULES } from './writing-rules';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
@@ -449,6 +449,8 @@ function findingComment(kind: FindingKind, detached = false, evidence?: Finding[
 
 function createMockOctokit() {
   return {
+    // Manki's reviews, from which a reply reads the round records. None by default.
+    paginate: jest.fn().mockResolvedValue([]),
     rest: {
       issues: {
         createComment: jest.fn().mockResolvedValue({ data: {} }),
@@ -1283,12 +1285,49 @@ describe('handleReviewCommentReply', () => {
 
     expect(ghUtils.fetchChangesSince).toHaveBeenLastCalledWith(octokit, 'test-owner', 'test-repo', POSTED_ON, 'a'.repeat(40), ['src/file.ts', 'src/util.ts']);
     // The model sees the change since the thread was posted, which its proof has to cite.
-    const shown = jest.mocked(client.sendMessage).mock.calls[0][1].split('## Changes Since the Finding Was Posted\n\n')[1];
+    const shown = jest.mocked(client.sendMessage).mock.calls[0][1].split('## Changes That Can Show a Fix\n\n')[1];
     expect(since === 'unknown' ? shown.startsWith('Unknown, so no line shows a fix.') : since === '' ? shown.startsWith('None.') : shown.includes('```diff\n')).toBe(true);
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(settles ? 'Fixed. The guard now runs first.' : `Unverified. The guard now runs first. ${UNPROVEN}`);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(settles ? [[octokit, 'PRRT_this', 'ADDRESSED']] : []);
     expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([settles ? { outcome: 'Fixed', thread: 'resolves' } : undefined]);
+  });
+
+  it('counts the change for a "Fixed." from the latest round that kept the thread open, and no change when the rounds cannot be read', async () => {
+    const head = 'a'.repeat(40);
+    const judged = 'c'.repeat(40);
+    setContext({
+      comment: { id: 1, body: 'Fixed in the last push.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
+      pull_request: { number: 1, user: { login: 'pr-author' }, head: { sha: head } },
+      sender: { login: 'pr-author' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    const round = (status: ThreadEvaluation['status']) => makeRoundContext(2, {
+      meta: { prNumber: 1, commitSha: judged, round: 2, timestamp: '2026-11-06T14:34:11Z', mankiVersion: '7.0.1' },
+      judge: { summary: '', threadEvaluations: [{ threadId: 'PRRT_this', status, reason: 'r' }] },
+    } as Parameters<typeof makeRoundContext>[1]);
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.', { proof: ['src/file.ts:10'] }) });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'This' }]);
+    jest.mocked(state.authorResolvedNote).mockResolvedValue(undefined);
+    const reply = async (reviews: Promise<unknown>) => {
+      octokit.paginate = jest.fn().mockReturnValue(reviews);
+      jest.mocked(ghUtils.fetchChangesSince).mockClear();
+      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
+      return jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    };
+    const files = ['src/file.ts'];
+    // A change that round already judged cannot show a fix, so only what came after it counts.
+    await reply(Promise.resolve([{ id: 7, body: `Changes requested.\n\n${formatReviewRecord(round('not_addressed'))}`, user: { login: 'manki-review[bot]' } }]));
+    expect(ghUtils.fetchChangesSince).toHaveBeenLastCalledWith(octokit, 'test-owner', 'test-repo', judged, head, files);
+    // A round that found it addressed leaves the count at the commit the thread was posted on.
+    await reply(Promise.resolve([{ id: 7, body: `Approved.\n\n${formatReviewRecord(round('addressed'))}`, user: { login: 'manki-review[bot]' } }]));
+    expect(ghUtils.fetchChangesSince).toHaveBeenLastCalledWith(octokit, 'test-owner', 'test-repo', POSTED_ON, head, files);
+    // Rounds that cannot be read may hold such a judgment, so no change counts.
+    const body = await reply(Promise.reject(new Error('Server Error')));
+    expect(ghUtils.fetchChangesSince).not.toHaveBeenCalled();
+    expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${UNPROVEN}`);
   });
 
   // A statement about the PR description rests on the description GitHub returns when the reply is answered, never on the event's copy.
