@@ -134,7 +134,7 @@ function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean): Round
 type RecordCut = [field: string, cut: (context: RoundContext) => RoundContext | undefined];
 
 /** Returns `context` with `field` left out of each finding it records, or `undefined` when no finding has it. */
-function withoutEntryField(context: RoundContext, field: 'judgeNotes' | 'refutation' | 'pairRefutation' | 'suggestedFix' | 'evidence' | 'description'): RoundContext | undefined {
+function withoutEntryField(context: RoundContext, field: 'judgeNotes' | 'refutation' | 'pairRefutation' | 'suggestedFix' | 'evidence'): RoundContext | undefined {
   const { entries, unposted, carried } = context.findings;
   if (![...entries, ...unposted ?? [], ...carried ?? []].some(e => e[field] !== undefined)) return undefined;
   const cut = (list: FindingFingerprintEntry[]): FindingFingerprintEntry[] => list.map(e => ({ ...e, [field]: undefined }));
@@ -164,16 +164,15 @@ const RECORD_CUTS: RecordCut[] = [
   ['findings.entries.pairRefutation', c => withoutEntryField(c, 'pairRefutation')],
   ['findings.entries.suggestedFix', c => withoutEntryField(c, 'suggestedFix')],
   ['findings.entries.evidence', c => withoutEntryField(c, 'evidence')],
-  ['findings.entries.description', c => withoutEntryField(c, 'description')],
 ];
 
 /**
  * Returns ever smaller forms of `context` for a record too large for the review. The first two are `omitBulkyDiagnostics`
  * with and without traces, and each later one also leaves out the next part of `RECORD_CUTS` the record has. The last
- * keeps what later rounds need to follow findings and threads: the meta, each finding with its fingerprint, grade and
- * thread, and the judge's thread evaluations. It loses each finding's stored checks, proposed fix, evidence and
- * description, so a later round checks such a finding again, its own-proposal check does not see the fix, and a carried
- * warning is listed without its description. `meta.omitted` names every part a form left out.
+ * keeps what later rounds need to follow findings and threads: the meta, each finding with its fingerprint, grade,
+ * thread and the description a finding without a thread is listed again with, and the judge's thread evaluations. It
+ * loses each finding's stored checks, proposed fix and evidence, so a later round checks such a finding again and its
+ * own-proposal check does not see the fix. `meta.omitted` names every part a form left out.
  */
 export function* smallerRecords(context: RoundContext): Generator<RoundContext> {
   yield omitBulkyDiagnostics(context, true);
