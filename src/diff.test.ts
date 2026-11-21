@@ -30,6 +30,7 @@ import {
   tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
+import { expectLinearTime } from './test-utils';
 import { DiffFile, Finding, ParsedDiff } from './types';
 
 // -- Test fixtures --
@@ -1050,6 +1051,15 @@ describe('oldLineOf, replacementOf, extendedLineOf and changesNextTo', () => {
     expect(extendedLineOf(run(' one', '-', '+next();', ' three'), 2)).toBeUndefined();
     expect([2, 3].map(line => extendedLineOf(run(' one', '-f(a);', '+f(a, b);', '+f(a, c);', ' three'), line))).toEqual([undefined, undefined]);
     expect([1, 2, 3, 4].map(line => extendedLineOf(file, line))).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  it('reads the end of a long removed line in linear time, since the PR author writes it', async () => {
+    await expectLinearTime((size) => {
+      const file = parsePRDiff(['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', '@@ -1,1 +1,1 @@', `-f(${' )'.repeat(size)}x`, `+f(${' )'.repeat(size)}y`].join('\n')).files[0];
+      const started = performance.now();
+      expect(extendedLineOf(file, 1)).toBeUndefined();
+      return performance.now() - started;
+    }, 50_000);
   });
 
   it('tells a line right before or after a run of changed lines from the changed line and a line further away', () => {

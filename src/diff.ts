@@ -610,8 +610,9 @@ function openBrackets(part: string): number | undefined {
  * rest of `old` leaves open.
  */
 function appendsTo(text: string, old: string): boolean {
-  const tail = /[)\]}>;,:{\s]*$/.exec(old)![0];
-  const kept = old.slice(0, old.length - tail.length);
+  let end = old.length;
+  while (end > 0 && /[)\]}>;,:{\s]/.test(old[end - 1])) end--;
+  const [kept, tail] = [old.slice(0, end), old.slice(end)];
   if (!kept.trim() || text.length <= old.length || !text.startsWith(kept) || !text.endsWith(tail)) return false;
   const added = text.slice(kept.length, text.length - tail.length);
   return added.startsWith(',') && openBrackets(added) === 0 && (openBrackets(kept) ?? 0) > 0;
