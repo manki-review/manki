@@ -1,6 +1,6 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
-import type { ApprovalRecord, ReplyDecision, ReplyRecord, RoundContext } from './types';
+import type { ApprovalRecord, FindingFingerprintEntry, ReplyDecision, ReplyRecord, RoundContext } from './types';
 import { COMMENT_MARKER, linesBelow, ownMarker, redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
 /** Opens a round record, plain or compressed. */
@@ -95,7 +95,7 @@ function recordJson(record: object): string {
  * severities and reviewers, and the uses outside the diff keep only names and locations, so a missed defect can still be
  * traced. `meta.omitted` names each field it left out, and `meta.compacted` each field it shortened.
  */
-export function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean): RoundContext {
+function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean): RoundContext {
   const { perFile: _perFile, excludedFiles: _excludedFiles, binarySkipped: _binarySkipped, ...diff } = context.diff;
   const { rawFindings, ...reviewersWithLines } = context.reviewers;
   // The units of the change and each finder's lines for them are diagnostics too.
@@ -128,6 +128,60 @@ export function omitBulkyDiagnostics(context: RoundContext, keepTraces: boolean)
     dedup,
     ...(context.recap && { recap: { ...context.recap, reclassifiedPriors: undefined } }),
   };
+}
+
+/** A part of a round record and the record without it, `undefined` when the record has no such part. */
+type RecordCut = [field: string, cut: (context: RoundContext) => RoundContext | undefined];
+
+/** Returns `context` with `field` left out of each finding it records, or `undefined` when no finding has it. */
+function withoutEntryField(context: RoundContext, field: 'judgeNotes' | 'refutation' | 'pairRefutation' | 'suggestedFix'): RoundContext | undefined {
+  const { entries, unposted, carried } = context.findings;
+  if (![...entries, ...unposted ?? [], ...carried ?? []].some(e => e[field] !== undefined)) return undefined;
+  const cut = (list: FindingFingerprintEntry[]): FindingFingerprintEntry[] => list.map(e => ({ ...e, [field]: undefined }));
+  return { ...context, findings: { ...context.findings, entries: cut(entries), ...(unposted && { unposted: cut(unposted) }), ...(carried && { carried: cut(carried) }) } };
+}
+
+function withoutSection(key: 'relatedWork' | 'sweeps' | 'staticAnalysis' | 'dependencySources' | 'instructions' | 'slicing' | 'tokenService'
+  | 'runner' | 'notStarted' | 'recap' | 'output' | 'comparisons' | 'prClaims' | 'fixes' | 'secondReads' | 'relatedRepos'): RecordCut {
+  return [key, c => (c[key] === undefined ? undefined : { ...c, [key]: undefined })];
+}
+
+/**
+ * The parts a record that is still too large without its diagnostics leaves out, in this order. No later round reads
+ * the parts up to `output`. The parts from `comparisons` to `models.fallbacks` are read only to reuse an attempt, and a
+ * cut record is never reused. Without a finding's stored checks or proposed fix, a later round checks the finding again
+ * and does not see the proposal.
+ */
+const RECORD_CUTS: RecordCut[] = [
+  ['usage.llmCalls', c => c.usage.llmCalls && { ...c, usage: { ...c.usage, llmCalls: undefined } }],
+  ['findings.entries.judgeNotes', c => withoutEntryField(c, 'judgeNotes')],
+  ['findings.unposted', c => c.findings.unposted && { ...c, findings: { ...c.findings, unposted: undefined } }],
+  ['memory.suppressed', c => c.memory.suppressed && { ...c, memory: { ...c.memory, suppressed: undefined } }],
+  ...(['relatedWork', 'sweeps', 'staticAnalysis', 'dependencySources', 'instructions', 'slicing', 'tokenService', 'runner', 'notStarted', 'recap', 'output'] as const).map(withoutSection),
+  ...(['comparisons', 'prClaims', 'fixes', 'secondReads', 'relatedRepos'] as const).map(withoutSection),
+  ['reviewers.agentMetrics', c => c.reviewers.agentMetrics && { ...c, reviewers: { ...c.reviewers, agentMetrics: undefined } }],
+  ['models.fallbacks', c => c.models.fallbacks && { ...c, models: { ...c.models, fallbacks: undefined } }],
+  ['findings.entries.refutation', c => withoutEntryField(c, 'refutation')],
+  ['findings.entries.pairRefutation', c => withoutEntryField(c, 'pairRefutation')],
+  ['findings.entries.suggestedFix', c => withoutEntryField(c, 'suggestedFix')],
+];
+
+/**
+ * Returns ever smaller forms of `context` for a record too large for the review. The first two are `omitBulkyDiagnostics`
+ * with and without traces, and each later one also leaves out the next part of `RECORD_CUTS` the record has. The last
+ * keeps only what later rounds need, such as the meta, each finding with its fingerprint, grade and thread, and the
+ * judge's thread evaluations. `meta.omitted` names every part a form left out.
+ */
+export function* smallerRecords(context: RoundContext): Generator<RoundContext> {
+  yield omitBulkyDiagnostics(context, true);
+  let cut = omitBulkyDiagnostics(context, false);
+  yield cut;
+  for (const [field, drop] of RECORD_CUTS) {
+    const next = drop(cut);
+    if (!next) continue;
+    cut = { ...next, meta: { ...next.meta, omitted: [...next.meta.omitted ?? [], field] } };
+    yield cut;
+  }
 }
 
 /** Whether `body` carries a round record. */

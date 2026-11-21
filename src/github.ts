@@ -17,7 +17,7 @@ import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fing
 import type { FixClaim, PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
-import { extractApprovalRecords, formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
+import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
 import { formatRunner } from './run-diagnostics';
 import { RELATED_REPO_HOST } from './related-repos';
@@ -1555,25 +1555,33 @@ const REVIEW_BODY_BUDGET = 60000;
 /** The most of the review body the round record may take, so the verdict and findings still show. */
 const MAX_RECORD_CHARS = REVIEW_BODY_BUDGET - 10000;
 
+/** Characters per line of the full record in the log, since the runner's log can lose a very long line and every line after it. */
+const RECORD_LOG_LINE_CHARS = 1000;
+
 /**
- * Returns the hidden stats line and round record that end a review. The record is plain JSON when
- * it fits in `room` characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even
- * compressed is posted without its bulky diagnostics, and the full record goes to the log. The raw
- * findings and the uses outside the diff are kept in short form while that fits.
+ * Returns the hidden stats line and round record that end a review. The record is plain JSON when it fits in `room`
+ * characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even compressed takes the first of
+ * `smallerRecords` that fits, or the last one, and the full record goes to the log compressed.
  */
 function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number): string {
   const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
+  const fits = (record: string): boolean => stats.length + record.length <= MAX_RECORD_CHARS;
   const record = formatReviewRecord(context, room - stats.length);
-  if (stats.length + record.length <= MAX_RECORD_CHARS) return `${stats}${record}`;
+  if (fits(record)) return `${stats}${record}`;
 
-  core.warning(`The round record takes ${record.length} characters even compressed, so the review carries it without per-file and per-finding diagnostics. The full record follows in the log.`);
-  core.info(formatReviewRecord(context));
-  let slim = '';
-  for (const keepTraces of [true, false]) {
-    slim = formatReviewRecord(omitBulkyDiagnostics(context, keepTraces), room - stats.length);
-    if (stats.length + slim.length <= MAX_RECORD_CHARS) return `${stats}${slim}`;
+  let slim = record;
+  let left: string[] = [];
+  for (const smaller of smallerRecords(context)) {
+    slim = formatReviewRecord(smaller, room - stats.length);
+    left = smaller.meta.omitted ?? [];
+    if (fits(slim)) break;
   }
-  throw new Error(`The round record takes ${slim.length} characters even without its diagnostics, too many for a review body`);
+  core.warning(`The round record takes ${record.length} characters even compressed, ${left.length > 0 ? `so the review carries it without ${left.join(', ')}` : 'and has no part the review can leave out'}.${fits(slim) ? '' : ` That record still takes ${slim.length} characters, so the review body is shortened to make room.`} The full record follows in the log.`);
+  const full = compressReviewRecord(context);
+  core.startGroup(`Full round record, gzip compressed and base64 encoded in ${Math.ceil(full.length / RECORD_LOG_LINE_CHARS)} lines`);
+  for (let i = 0; i < full.length; i += RECORD_LOG_LINE_CHARS) core.info(full.slice(i, i + RECORD_LOG_LINE_CHARS));
+  core.endGroup();
+  return `${stats}${slim}`;
 }
 
 /** The icon that opens a finding comment or a finding listed in the review body. */

@@ -3,7 +3,7 @@ import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, 
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
-import { fixedMarker, formatReplyRecord } from './review-record';
+import { fixedMarker, formatReplyRecord, formatReviewRecord, smallerRecords } from './review-record';
 import { highlightCode } from './highlight';
 import { applyCrossRoundSuppression } from './judge';
 
@@ -1209,7 +1209,7 @@ describe('fetchRecapState', () => {
       expect(state.lastApprovalAt).toBe('2026-01-01T01:00:00Z');
     });
 
-    it('round-trips findings.entries with specialist, suggestedFix, and title fields', async () => {
+    it('round-trips findings.entries with specialist, suggestedFix, and title fields, also from a minimal record', async () => {
       const entry = {
         fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 12, slug: 'misleading-variable-name' },
         severity: 'warning' as const,
@@ -1220,12 +1220,25 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: { count: 1, severityCounts: { blocker: 0, warning: 1, note: 0 }, entries: [entry] },
       });
+      // A round too large for its review posts the last of `smallerRecords`, which later rounds read like any other.
+      const blocker = { fingerprint: { file: 'src/bar.ts', lineStart: 4, lineEnd: 4, slug: 'lost-update' }, severity: 'blocker' as const, title: 'Lost update', threadId: 'T_BLOCKER', judgeNotes: 'Long reasoning.' };
+      const threadEvaluations: ThreadEvaluation[] = [{ threadId: 'T_OLD', status: 'partly_addressed', reason: 'Half done.', grade: 'warning' }];
+      const [minimal] = [...smallerRecords(makeRoundContext(2, {
+        findings: { count: 1, severityCounts: { blocker: 1, warning: 0, note: 0 }, entries: [blocker] },
+        judge: { summary: 'ok', threadEvaluations },
+        usage: { llmCalls: [] },
+      }))].slice(-1);
       const octokit = mockOctokit([], [
         { id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
+        { id: 101, body: formatReviewRecord(minimal, 0), user: { login: BOT_LOGIN } },
       ]);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds).toHaveLength(2);
       expect(state.priorRounds[0].findings.entries).toEqual([entry]);
+      const { judgeNotes: _notes, ...kept } = blocker;
+      expect(state.priorRounds[1].meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes']);
+      expect(state.priorRounds[1].findings.entries).toEqual([kept]);
+      expect(state.priorRounds[1].judge.threadEvaluations).toEqual(threadEvaluations);
     });
 
     it('attaches each prior to its Manki thread by marker, file and nearest line', async () => {

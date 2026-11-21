@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
+import { gunzipSync } from 'zlib';
 
 import { relatedCommits, ApprovalHeld, plainCitedFiles, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, postAutoApproveProgressComment, autoApproveHeadMarker, reviewedCommit, updateProgressDashboard, startLiveEdits, LIVE_EDIT_MS, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, fetchApprovalHold, SupersededError, isFailedProgress, markFailedProgressSuperseded, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince, TooManyFilesError, githubRepoFiles, openRepoFiles, UnreadFileError } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
@@ -1669,7 +1670,7 @@ describe('postReview with context', () => {
     expect(JSON.parse(records[0])).toEqual({ ...ctx, output: { bodyLength: expect.any(Number), commentLengths: [] } });
   });
 
-  it('posts a record too large even compressed without its bulky diagnostics, and fails only when the rest is too large too', async () => {
+  it('posts a record too large even compressed without its bulky diagnostics, then cuts it further down to the minimal record', async () => {
     const result: ReviewResult = {
       verdict: 'COMMENT', summary: 'Many findings.', findings: [],
       highlights: [], reviewComplete: true, agentNames: [],
@@ -1713,7 +1714,11 @@ describe('postReview with context', () => {
     expect(record.usesOutsideDiff).toEqual({ symbols: usesOutsideDiff.symbols, types: ['src/model.ts:12'] });
     expect(record.judge.dropped).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
-    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without judge.dropped, units, reviewers.agentMetrics.units.'));
+    // The full record goes to the log compressed, in short lines that decode back to it.
+    const logged = infoSpy.mock.calls.map(([line]) => line as string).filter(line => /^[A-Za-z0-9+/=]+$/.test(line));
+    expect(Math.max(...logged.map(line => line.length))).toBeLessThanOrEqual(1000);
+    expect(JSON.parse(gunzipSync(Buffer.from(logged.join(''), 'base64')).toString())).toEqual({ ...ctx, output: { bodyLength: expect.any(Number), commentLengths: [] } });
 
     // When even the short form does not fit, both are left out too.
     const noisy = makeContext({
@@ -1729,10 +1734,41 @@ describe('postReview with context', () => {
     expect(dropped.usesOutsideDiff).toBeUndefined();
     expect(dropped.findings.entries).toEqual(entries);
 
-    const huge = makeContext({
-      findings: { count: 600, severityCounts: { note: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'note' as const, title: noise() })) },
+    // Past that, the parts no later round reads go first, in a fixed order, and the cutting stops once the record fits.
+    const refutation = { files: ['src/a.ts'], codeDigest: 'd', defect: 'confirmed' as const, outcome: 'confirmed' as const, proof: ['src/a.ts:1'], reason: 'Holds.' };
+    const graded = Array.from({ length: 40 }, (_, i) => ({
+      fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: `finding-${i}` }, severity: 'warning' as const, title: `Finding ${i}`,
+      threadId: `T_${i}`, judgeNotes: Array.from({ length: 8 }, noise).join(''), refutation: { ...refutation, reason: Array.from({ length: 3 }, noise).join('') }, evidence: { checks: [], proof: [`src/${i}.ts:${i}`] },
+    }));
+    const llmCalls = Array.from({ length: 300 }, () => ({ stage: 'reviewer', model: noise(), attempt: 1, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0 }));
+    const threadEvaluations = [{ threadId: 'T_OLD', status: 'addressed' as const, reason: 'Fixed.' }];
+    const cut = makeContext({
+      findings: { count: 40, severityCounts: { warning: 40 }, entries: graded },
+      judge: { summary: 'Fine.', threadEvaluations },
+      usage: { llmCalls },
     });
-    await expect(postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, huge, 1000)).rejects.toThrow('even without its diagnostics');
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, cut, 1000);
+    const [trimmed] = extractReviewRecords(mockCreateReview.mock.calls[2][0].body as string).records.map(r => JSON.parse(r) as RoundContext);
+    expect(trimmed.meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes']);
+    expect(trimmed.findings.entries.map(e => [e.threadId, e.refutation?.reason])).toEqual(graded.map(e => [e.threadId, e.refutation.reason]));
+
+    // As the last resort the review posts the minimal record, which still holds each finding with its fingerprint,
+    // grade and thread, and the judge's thread evaluations.
+    const huge = makeContext({
+      findings: { count: 600, severityCounts: { note: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'note' as const, title: noise(), threadId: `T_${i}`, judgeNotes: noise(), refutation, suggestedFix: noise() })) },
+      judge: { summary: 'Fine.', threadEvaluations },
+      usage: { llmCalls },
+      prClaims: { claims: [] },
+      runner: { os: 'linux', arch: 'x64', cpus: 4, memoryBytes: 1, peakCliProcesses: 1 },
+    });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, huge, 1000);
+    const hugeBody = mockCreateReview.mock.calls[3][0].body as string;
+    expect(hugeBody).toContain('*(Review body truncated)*');
+    const [minimal] = extractReviewRecords(hugeBody).records.map(r => JSON.parse(r) as RoundContext);
+    expect(minimal.meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes', 'runner', 'output', 'prClaims', 'findings.entries.refutation', 'findings.entries.suggestedFix']);
+    expect(minimal.findings.entries).toEqual(huge.findings.entries.map(({ judgeNotes: _n, refutation: _r, suggestedFix: _f, ...kept }) => kept));
+    expect(minimal.judge.threadEvaluations).toEqual(threadEvaluations);
+    expect(warningSpy).toHaveBeenLastCalledWith(expect.stringContaining('so the review body is shortened to make room'));
     infoSpy.mockRestore();
   });
 
