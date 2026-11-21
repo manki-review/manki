@@ -1561,8 +1561,8 @@ const RECORD_LOG_LINE_CHARS = 1000;
 /**
  * Returns the hidden stats line and round record that end a review. The record is plain JSON when it fits in `room`
  * characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even compressed takes the first of
- * `smallerRecords` that fits, or the last one. Unless `cutLog` says it already did, the log then names what was left out
- * and holds the full record compressed. GitHub still refuses a review whose last form alone passes its body limit, which takes hundreds of findings.
+ * `smallerRecords` that fits. Unless `cutLog` says it already did, the log then names what was left out and holds the
+ * full record compressed. Only a record whose last form is still over the budget throws, which takes hundreds of findings.
  */
 function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number, cutLog: { logged: boolean }): string {
   const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
@@ -1579,13 +1579,15 @@ function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: 
     left = smaller.meta.omitted ?? [];
     if (fits(slim)) break;
   }
-  if (cutLog.logged) return `${stats}${slim}`;
-  cutLog.logged = true;
-  core.warning(`The round record takes ${record.length} characters even compressed, ${left.length > 0 ? `so the review carries it without ${left.join(', ')}` : 'and has no part the review can leave out'}.${fits(slim) ? '' : ` That record still takes ${slim.length} characters, so the review body is shortened to make room.`} The full record follows in the log.`);
-  const full = compressReviewRecord(context);
-  core.startGroup(`Full round record, gzip compressed and base64 encoded in ${Math.ceil(full.length / RECORD_LOG_LINE_CHARS)} lines`);
-  for (let i = 0; i < full.length; i += RECORD_LOG_LINE_CHARS) core.info(full.slice(i, i + RECORD_LOG_LINE_CHARS));
-  core.endGroup();
+  if (!cutLog.logged) {
+    cutLog.logged = true;
+    core.warning(`The round record takes ${record.length} characters even compressed, ${left.length > 0 ? `so the review carries it without ${left.join(', ')}` : 'and has no part the review can leave out'}. The full record follows in the log.`);
+    const full = compressReviewRecord(context);
+    core.startGroup(`Full round record, gzip compressed and base64 encoded in ${Math.ceil(full.length / RECORD_LOG_LINE_CHARS)} lines`);
+    for (let i = 0; i < full.length; i += RECORD_LOG_LINE_CHARS) core.info(full.slice(i, i + RECORD_LOG_LINE_CHARS));
+    core.endGroup();
+  }
+  if (!fits(slim)) throw new Error(`The round record takes ${slim.length} characters even in its minimal form, too many for a review body`);
   return `${stats}${slim}`;
 }
 

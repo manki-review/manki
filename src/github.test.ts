@@ -1677,7 +1677,7 @@ describe('postReview with context', () => {
     expect(JSON.parse(extractReviewRecords(short).records[0])).toEqual({ ...long, output: { bodyLength: expect.any(Number), commentLengths: [] } });
   });
 
-  it('posts a record too large even compressed without its bulky diagnostics, then cuts it further down to the minimal record', async () => {
+  it('posts a record too large even compressed without its bulky diagnostics, then cuts it down to the minimal record, and fails only past that', async () => {
     const result: ReviewResult = {
       verdict: 'COMMENT', summary: 'Many findings.', findings: [],
       highlights: [], reviewComplete: true, agentNames: [],
@@ -1761,8 +1761,14 @@ describe('postReview with context', () => {
 
     // As the last resort the review posts the minimal record, which still holds each finding with its fingerprint,
     // grade and thread, and the judge's thread evaluations.
+    const noises = (n: number) => Array.from({ length: n }, noise).join('');
     const huge = makeContext({
-      findings: { count: 600, severityCounts: { note: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'note' as const, title: noise(), threadId: `T_${i}`, judgeNotes: noise(), refutation, suggestedFix: noise() })) },
+      findings: {
+        count: 100, severityCounts: { warning: 100 }, entries: Array.from({ length: 100 }, (_, i) => ({
+          fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: `finding-${i}` }, severity: 'warning' as const, title: `Finding ${i}`, threadId: `T_${i}`,
+          judgeNotes: noises(2), refutation, suggestedFix: noises(2), evidence: { checks: [noises(2)], proof: [`src/${i}.ts:${i}`] }, description: noise(),
+        })),
+      },
       judge: { summary: 'Fine.', threadEvaluations },
       usage: { llmCalls },
       prClaims: { claims: [] },
@@ -1770,12 +1776,19 @@ describe('postReview with context', () => {
     });
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, huge, 1000);
     const hugeBody = mockCreateReview.mock.calls[3][0].body as string;
-    expect(hugeBody).toContain('*(Review body truncated)*');
+    expect(hugeBody).toContain('Many findings.');
     const [minimal] = extractReviewRecords(hugeBody).records.map(r => JSON.parse(r) as RoundContext);
-    expect(minimal.meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes', 'runner', 'output', 'prClaims', 'findings.entries.refutation', 'findings.entries.suggestedFix']);
-    expect(minimal.findings.entries).toEqual(huge.findings.entries.map(({ judgeNotes: _n, refutation: _r, suggestedFix: _f, ...kept }) => kept));
+    expect(minimal.meta.omitted).toEqual(['usage.llmCalls', 'findings.entries.judgeNotes', 'runner', 'output', 'prClaims', 'findings.entries.refutation', 'findings.entries.suggestedFix', 'findings.entries.evidence']);
+    expect(minimal.findings.entries).toEqual(huge.findings.entries.map(({ judgeNotes: _n, refutation: _r, suggestedFix: _f, evidence: _e, ...kept }) => kept));
     expect(minimal.judge.threadEvaluations).toEqual(threadEvaluations);
-    expect(warningSpy).toHaveBeenLastCalledWith(expect.stringContaining('so the review body is shortened to make room'));
+
+    // Only a record whose minimal form is still over the budget fails, after the log got the full record.
+    const absurd = makeContext({
+      findings: { count: 600, severityCounts: { note: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'note' as const, title: noise() })) },
+    });
+    infoSpy.mockClear();
+    await expect(postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, absurd, 1000)).rejects.toThrow('even in its minimal form');
+    expect(infoSpy.mock.calls.some(([line]) => /^[A-Za-z0-9+/=]{1000}$/.test(line as string))).toBe(true);
     infoSpy.mockRestore();
   });
 
