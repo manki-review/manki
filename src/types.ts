@@ -1288,7 +1288,8 @@ export interface FindingFingerprint {
   slug: string;
 }
 
-export type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
+/** `agree` when Manki settled the latest reply by a person in the finding's thread, by `replyClassOf`. */
+export type AuthorReplyClass = 'agree' | 'none';
 
 /** Reason why a prior-round thread's fingerprint is suppressing current findings. */
 export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';

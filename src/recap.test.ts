@@ -1,5 +1,5 @@
-import { Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
+import { AuthorReplyClass, Finding, FindingFingerprintEntry, ReplyDecision, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
+import { collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, dismissRecordMarker, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment, threadSeverity } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -34,6 +34,11 @@ const makePrevious = (overrides: Partial<PreviousFinding> = {}): PreviousFinding
   status: 'open',
   ...overrides,
 });
+
+/** Manki's answer to a reply, with the reply record that says how it decided the thread. */
+const recordedAnswer = (outcome: ReplyDecision['outcome'], thread: ReplyDecision['thread'] = 'resolves'): string => `**${outcome}.** Checked.\n\n<!-- manki -->\n${formatReplyRecord({
+  kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome, thread },
+})}`;
 
 describe('deduplicateFindings', () => {
   it('detects exact match by title, file, and line', () => {
@@ -285,74 +290,6 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
-  });
-});
-
-describe('classifyAuthorReply', () => {
-  it('classifies acknowledgments as agree', () => {
-    expect(classifyAuthorReply('Fixed, done.')).toBe('agree');
-    expect(classifyAuthorReply('Good catch, will fix.')).toBe('agree');
-    expect(classifyAuthorReply('Addressed in latest push.')).toBe('agree');
-  });
-
-  it('classifies pushback as disagree', () => {
-    expect(classifyAuthorReply('This is intentional by design')).toBe('disagree');
-    expect(classifyAuthorReply('Disagree, keeping as-is.')).toBe('disagree');
-    expect(classifyAuthorReply('Not a bug, this is fine.')).toBe('disagree');
-  });
-
-  it('classifies partial acknowledgments as partial', () => {
-    expect(classifyAuthorReply("I'll handle most of it in a follow-up")).toBe('partial');
-    expect(classifyAuthorReply('Working on it')).toBe('partial');
-    expect(classifyAuthorReply('Partially handled')).toBe('partial');
-  });
-
-  it('classifies a reply that opens with a dismiss command as agree', () => {
-    expect(classifyAuthorReply('@manki dismiss')).toBe('agree');
-    expect(classifyAuthorReply('/manki dismiss the token is test data')).toBe('agree');
-    expect(classifyAuthorReply('Please do not @manki dismiss this.')).not.toBe('agree');
-  });
-
-  it('returns none for undefined or empty text', () => {
-    expect(classifyAuthorReply(undefined)).toBe('none');
-    expect(classifyAuthorReply('')).toBe('none');
-  });
-
-  it('classifies emoji reactions', () => {
-    expect(classifyAuthorReply('\u{1F44D}')).toBe('agree');
-    expect(classifyAuthorReply('\u{1F44E}')).toBe('disagree');
-  });
-
-  it('returns none for neutral text with no signal words', () => {
-    expect(classifyAuthorReply('I will take a look later.')).toBe('none');
-  });
-
-  it('prefers agree over disagree when both signals are present', () => {
-    expect(classifyAuthorReply('Good catch, but I disagree on severity.')).toBe('agree');
-  });
-
-  it('returns none for negated agree signals', () => {
-    expect(classifyAuthorReply('not fixed')).toBe('none');
-    expect(classifyAuthorReply('not addressed')).toBe('none');
-    expect(classifyAuthorReply("didn't fix this")).toBe('none');
-    expect(classifyAuthorReply('not resolved yet')).toBe('none');
-    expect(classifyAuthorReply('not agreed')).toBe('none');
-  });
-
-  it('still classifies non-negated agree signals correctly', () => {
-    expect(classifyAuthorReply('fixed now')).toBe('agree');
-    expect(classifyAuthorReply('addressed in latest commit')).toBe('agree');
-    expect(classifyAuthorReply('resolved by the refactor')).toBe('agree');
-  });
-
-  it('returns none for negated disagree signals', () => {
-    expect(classifyAuthorReply('not intentional')).toBe('none');
-    expect(classifyAuthorReply("wasn't intentional")).toBe('none');
-  });
-
-  it('still classifies disagree signals correctly when not negated', () => {
-    expect(classifyAuthorReply('this is intentional')).toBe('disagree');
-    expect(classifyAuthorReply('Not a bug, this is fine.')).toBe('disagree');
   });
 });
 
@@ -1524,7 +1461,8 @@ describe('fetchRecapState', () => {
     it('keeps a blocking or security finding blocking until someone other than the PR author dismisses it', async () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
-      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
+      // `answer`: how Manki answered the reply, as its reply record or its record of a dismissal says.
+      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string; answer?: ReplyDecision['thread'] | 'dismiss' }; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
       const bounded = 'Every caller bounds both inputs.';
       const cases: Record<string, Case> = {
         // A Manki reply that quotes the fix does not count as a reopen.
@@ -1533,11 +1471,13 @@ describe('fetchRecapState', () => {
         'src/author-dismissed.ts': { resolver: BOT_LOGIN, dismissed: true, security: true, blocks: true },
         'src/bot-resolved.ts': { resolver: BOT_LOGIN, security: true, blocks: true },
         'src/author-resolved-again.ts': { resolver: 'author', reopened: true, security: true, blocks: true },
-        'src/author-agreed.ts': { reply: { login: 'author', association: 'OWNER' }, security: true, blocks: true },
-        'src/outsider-agreed.ts': { reply: { login: 'carol', association: 'CONTRIBUTOR' }, security: true, blocks: true },
+        'src/author-agreed.ts': { reply: { login: 'author', association: 'OWNER', answer: 'stays_open' }, security: true, blocks: true },
+        'src/outsider-agreed.ts': { reply: { login: 'carol', association: 'CONTRIBUTOR', answer: 'no_permission' }, security: true, blocks: true },
         'src/collaborator-resolved.ts': { resolver: 'alice', security: true, blocks: false },
-        'src/collaborator-agreed.ts': { reply: { login: 'bob', association: 'MEMBER' }, security: true, blocks: false },
-        'src/collaborator-dismissed.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: '@manki dismiss' }, security: true, blocks: false },
+        'src/collaborator-agreed.ts': { reply: { login: 'bob', association: 'MEMBER', answer: 'resolves' }, security: true, blocks: false },
+        // Agreeing needs Manki's answer, so a reply it has not answered yet leaves the thread blocking.
+        'src/collaborator-unanswered.ts': { reply: { login: 'bob', association: 'MEMBER' }, security: true, blocks: true },
+        'src/collaborator-dismissed.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: '@manki dismiss', answer: 'dismiss' }, security: true, blocks: false },
         // Manki's own resolve settles a security thread only after a reply from someone who may clear it, whatever the reply says.
         'src/collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: false },
         'src/author-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'author', association: 'OWNER', text: bounded }, security: true, blocks: true },
@@ -1545,16 +1485,16 @@ describe('fetchRecapState', () => {
         // Such a reply does not make the PR author's own resolve count.
         'src/author-resolved-after-reply.ts': { resolver: 'author', reopened: true, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: true },
         // `MEMBER` covers an org member with read access, so write access comes from the API.
-        'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER' }, security: true, blocks: true },
+        'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER', answer: 'no_permission' }, security: true, blocks: true },
         // A private org member shows as `NONE`.
-        'src/private-member-agreed.ts': { reply: { login: 'erin', association: 'NONE' }, security: true, blocks: false },
+        'src/private-member-agreed.ts': { reply: { login: 'erin', association: 'NONE', answer: 'resolves' }, security: true, blocks: false },
         'src/judge-addressed.ts': { resolver: BOT_LOGIN, security: true, blocks: false },
         // The record backs only Manki's own resolve, so the PR author resolving the thread later does not clear it.
         'src/judge-addressed-author-resolved.ts': { resolver: 'author', security: true, blocks: true },
         'src/plain-author-resolved.ts': { resolver: 'author', security: false, blocks: false },
-        'src/plain-author-agreed.ts': { reply: { login: 'author', association: 'NONE' }, security: false, blocks: false },
+        'src/plain-author-agreed.ts': { reply: { login: 'author', association: 'NONE', answer: 'resolves' }, security: false, blocks: false },
         'src/blocker-author-resolved.ts': { resolver: 'author', security: false, blocker: true, blocks: true },
-        'src/blocker-author-agreed.ts': { reply: { login: 'author', association: 'OWNER' }, security: false, blocker: true, blocks: true },
+        'src/blocker-author-agreed.ts': { reply: { login: 'author', association: 'OWNER', answer: 'stays_open' }, security: false, blocker: true, blocks: true },
         'src/blocker-collaborator-resolved.ts': { resolver: 'alice', security: false, blocker: true, blocks: false },
         // A blocker thread follows the same rule as a security thread: Manki's own resolve alone settles nothing.
         'src/blocker-bot-resolved.ts': { resolver: BOT_LOGIN, security: false, blocker: true, blocks: true },
@@ -1605,6 +1545,10 @@ describe('fetchRecapState', () => {
             ...(foundAgain ? [{ body: `This came up again.\n\n${quoted}\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: BOT_LOGIN } }] : []),
             ...(dismissed ? [{ body: `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'author')}`, author: { login: BOT_LOGIN } }] : []),
             ...(reply ? [{ body: reply.text ?? 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
+            ...(reply?.answer === 'dismiss' ? [{ body: `Finding dismissed by \`@${reply.login}\`.\n\n<!-- manki -->\n${dismissRecordMarker(reply.login)}`, author: { login: BOT_LOGIN } }] : []),
+            ...(reply?.answer && reply.answer !== 'dismiss' ? [{ body: `**Agreed.** No change needed.\n\n<!-- manki -->\n${formatReplyRecord({
+              kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: reply.answer },
+            })}`, author: { login: BOT_LOGIN } }] : []),
           ] },
         });
       }), [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
@@ -1626,7 +1570,7 @@ describe('fetchRecapState', () => {
       // A thread someone with write access agreed away stays `replied`. Once Manki resolved it for such a person it is
       // `auto-resolved`: neither open nor dismissed.
       expect(state.previousFindings.filter(f => f.authorReplyMayClear).map(f => [f.file, f.status, replyClassOf(f)])).toEqual([
-        ['src/collaborator-agreed.ts', 'replied', 'agree'], ['src/collaborator-dismissed.ts', 'auto-resolved', 'agree'],
+        ['src/collaborator-agreed.ts', 'replied', 'agree'], ['src/collaborator-unanswered.ts', 'replied', 'none'], ['src/collaborator-dismissed.ts', 'auto-resolved', 'agree'],
         ['src/collaborator-settled.ts', 'auto-resolved', 'none'], ['src/author-resolved-after-reply.ts', 'replied', 'none'],
         ['src/private-member-agreed.ts', 'replied', 'agree'], ['src/blocker-collaborator-settled.ts', 'auto-resolved', 'none'],
       ]);
@@ -1652,9 +1596,9 @@ describe('fetchRecapState', () => {
       expect(unknownAuthor.previousFindings.filter(f => f.isSecurity && f.status === 'resolved').map(f => f.file))
         .toEqual(['src/author-resolved.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/author-resolved-after-reply.ts', 'src/judge-addressed.ts', 'src/judge-addressed-author-resolved.ts']);
 
-      // A reply from someone with write access agrees a security thread away under the same fallback.
+      // Only a reply Manki settled agrees a security thread away under the same fallback, so the PR author's reply it kept open does not.
       expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
-        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts', 'src/blocker-author-agreed.ts']);
+        .toEqual(['src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts']);
 
       // An author with the `maintain` role clears their own resolved threads at that level. Nothing is reopened, and the override waits for Manki's reply.
       // Permissions are cached per client, so each lookup of a changed role needs a fresh one.
@@ -2010,6 +1954,7 @@ describe('fetchRecapState', () => {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> **Warning**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
             { body: 'Fixed in latest push', author: { login: 'author' } },
+            { body: recordedAnswer('Fixed'), author: { login: BOT_LOGIN } },
           ],
         },
       });
@@ -2039,6 +1984,7 @@ describe('fetchRecapState', () => {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> ⚠️ **Warning**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed, will fix', author: { login: 'author' } },
+            { body: recordedAnswer('Agreed'), author: { login: BOT_LOGIN } },
           ],
         },
       });
@@ -2090,34 +2036,43 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('none');
     });
 
-    it('re-classifies to disagree when author reply signals disagreement', async () => {
-      const ctx = makeRoundContext(1, {
-        findings: {
-          count: 1,
-          severityCounts: { blocker: 1 },
-          entries: [{
-            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
-            severity: 'blocker',
-            threadId: 'thread-disagree',
-            authorReplyClass: 'none',
-            title: 'Null check',
-          }],
-        },
-      });
-      const thread = makeThread({
-        id: 'thread-disagree',
-        comments: {
-          nodes: [
-            { body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
-            { body: 'I disagree with this finding, the code is correct', author: { login: 'author' } },
-          ],
-        },
-      });
-      const octokit = mockOctokit([thread], [
-        { id: 200, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
-      ]);
-      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('disagree');
+    it('reads a reply as agreement only when Manki settled it, whatever the reply says', async () => {
+      const cases: Array<[string, string[], AuthorReplyClass]> = [
+        ['Has this been addressed?', [], 'none'],
+        ["I haven't fixed this yet", [], 'none'],
+        ['done', [], 'none'],
+        ['done', [recordedAnswer('Fixed', 'stays_open')], 'none'],
+        ['done', ['**Unverified.** I could not check this reply.\n\n<!-- manki -->'], 'none'],
+        ['done', [recordedAnswer('Fixed')], 'agree'],
+        ['The caller checks it.', [recordedAnswer('Withdrawn', 'already_resolved')], 'agree'],
+        // A later reply waits for its own answer, so an answer to an earlier one counts for nothing.
+        ['Actually, it still breaks.', [recordedAnswer('Fixed'), 'LATER'], 'none'],
+        // So does an answer from before Manki last reopened the thread.
+        ['done', [recordedAnswer('Fixed'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], 'none'],
+      ];
+      for (const [reply, after, expected] of cases) {
+        const ctx = makeRoundContext(1, {
+          findings: {
+            count: 1,
+            severityCounts: { warning: 1 },
+            entries: [{ fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' }, severity: 'warning', threadId: 'T1', authorReplyClass: 'none', title: 'Null check' }],
+          },
+        });
+        const comments = after.flatMap(body => body === 'LATER'
+          ? [{ body: reply, author: { login: 'author' } }]
+          : [{ body, author: { login: BOT_LOGIN } }]);
+        const thread = makeThread({
+          id: 'T1',
+          comments: { nodes: [
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check\n\nDescription.', author: { login: BOT_LOGIN } },
+            { body: after.includes('LATER') ? 'Fixed in the last push.' : reply, author: { login: 'author' } },
+            ...comments,
+          ] },
+        });
+        const state = await fetchRecapState(mockOctokit([thread], [{ id: 200, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]), TEST_BOT, 'owner', 'repo', 1, 'author');
+        expect([reply, after.length, state.priorRounds[0].findings.entries[0].authorReplyClass]).toEqual([reply, after.length, expected]);
+        expect(collectInPrSuppressions(state.previousFindings, 'author').length).toBe(expected === 'agree' ? 1 : 0);
+      }
     });
 
     it('records reclassified-prior count and attribution when authorReplyClass flips', async () => {
@@ -2149,6 +2104,7 @@ describe('fetchRecapState', () => {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed, will fix', author: { login: 'author' } },
+            { body: recordedAnswer('Agreed'), author: { login: BOT_LOGIN } },
           ],
         },
       });
@@ -2189,6 +2145,7 @@ describe('fetchRecapState', () => {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed, will fix', author: { login: 'author' } },
+            { body: recordedAnswer('Agreed'), author: { login: BOT_LOGIN } },
           ],
         },
       });
@@ -2239,12 +2196,12 @@ describe('collectInPrSuppressions', () => {
   // non-bot reply as `replied`, so a PreviousFinding with `status: 'open'`
   // and a non-empty `authorReplyText` is not produced today. The `open+...`
   // cases below pin that `inPrSuppressionReasonFor` is status-agnostic for
-  // the agree-reply branch (the gate is login + classification, not status),
+  // the agree-reply branch (the gate is login + Manki's answer, not status),
   // so the same logic continues to apply if the status taxonomy ever changes.
   // The realistic production cases are covered by the `replied+...` tests.
   it('suppresses open threads whose latest author reply is agree from PR author', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed, thanks!', authorReplyLogin: 'pr-author' }),
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed, thanks!', authorReplyLogin: 'pr-author', replyAgreed: true }),
     ], 'pr-author');
     expect(result).toHaveLength(1);
     expect(result[0].reason).toBe('agree-reply');
@@ -2253,7 +2210,7 @@ describe('collectInPrSuppressions', () => {
 
   it('suppresses replied threads whose author reply is agree from PR author', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Null check', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Fixed, done.', authorReplyLogin: 'pr-author' }),
+      makePrevious({ title: 'Null check', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Fixed, done.', authorReplyLogin: 'pr-author', replyAgreed: true }),
     ], 'pr-author');
     expect(result).toHaveLength(1);
     expect(result[0].reason).toBe('agree-reply');
@@ -2262,14 +2219,14 @@ describe('collectInPrSuppressions', () => {
 
   it('does not suppress agree-reply from a third-party commenter (different login than PR author)', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed!', authorReplyLogin: 'random-user' }),
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed!', authorReplyLogin: 'random-user', replyAgreed: true }),
     ], 'pr-author');
     expect(result).toHaveLength(0);
   });
 
   it('does not suppress agree-reply when prAuthorLogin is undefined', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed!', authorReplyLogin: 'pr-author' }),
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed!', authorReplyLogin: 'pr-author', replyAgreed: true }),
     ]);
     expect(result).toHaveLength(0);
   });
@@ -2283,24 +2240,10 @@ describe('collectInPrSuppressions', () => {
     expect(result[0].authorLogin).toBeUndefined();
   });
 
-  it('does not suppress open threads whose author reply is disagree', () => {
-    const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'I disagree, this is intentional.', authorReplyLogin: 'pr-author' }),
-    ], 'pr-author');
-    expect(result).toHaveLength(0);
-  });
-
-  it('does not suppress replied threads whose author reply is partial', () => {
-    const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Still working on it.', authorReplyLogin: 'pr-author' }),
-    ], 'pr-author');
-    expect(result).toHaveLength(0);
-  });
-
-  it('does not suppress open threads whose author reply is partial', () => {
-    const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Working on it.', authorReplyLogin: 'pr-author' }),
-    ], 'pr-author');
+  it('does not suppress a thread whose reply Manki did not settle, whatever the reply says', () => {
+    const replies = ['Fixed, done.', 'I disagree, this is intentional.', 'Still working on it.'];
+    const result = collectInPrSuppressions(replies.flatMap((authorReplyText, i) => (['open', 'replied'] as const).map(status =>
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10 + i, status, authorReplyText, authorReplyLogin: 'pr-author' }))), 'pr-author');
     expect(result).toHaveLength(0);
   });
 
@@ -2344,7 +2287,7 @@ describe('collectInPrSuppressions', () => {
   it('collects a mix of resolved and agree-reply reasons in one pass', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'Resolved finding', file: 'f.ts', line: 1, status: 'resolved' }),
-      makePrevious({ title: 'Agreed finding', file: 'f.ts', line: 2, status: 'open', authorReplyText: 'addressed in a1b2c3d', authorReplyLogin: 'pr-author' }),
+      makePrevious({ title: 'Agreed finding', file: 'f.ts', line: 2, status: 'open', authorReplyText: 'addressed in a1b2c3d', authorReplyLogin: 'pr-author', replyAgreed: true }),
       makePrevious({ title: 'Kept finding', file: 'f.ts', line: 3, status: 'open', authorReplyText: "no, keeping it", authorReplyLogin: 'pr-author' }),
     ], 'pr-author');
     expect(result.map(r => r.reason)).toEqual(['resolved-thread', 'agree-reply']);
@@ -2865,7 +2808,7 @@ describe('refreshAuthorReplyClass', () => {
     const entry = makeEntry({ threadId: 'T1', authorReplyClass: 'none' });
     const rounds = [makeRound([entry])];
     const previousFindings: PreviousFinding[] = [
-      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note', status: 'resolved', threadId: 'T1', authorReplyText: 'LGTM fixed' },
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note', status: 'resolved', threadId: 'T1', authorReplyText: 'LGTM fixed', replyAgreed: true },
     ];
 
     const result = refreshAuthorReplyClass(rounds, previousFindings);
@@ -2878,7 +2821,7 @@ describe('refreshAuthorReplyClass', () => {
     const entry = makeEntry({ threadId: undefined, fingerprint: { file: 'src/foo.ts', slug: 'Test-finding', lineStart: 10, lineEnd: 10 }, authorReplyClass: 'none' });
     const rounds = [makeRound([entry])];
     const previousFindings: PreviousFinding[] = [
-      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note', status: 'resolved', authorReplyText: 'fixed' },
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note', status: 'resolved', authorReplyText: 'fixed', replyAgreed: true },
     ];
 
     const result = refreshAuthorReplyClass(rounds, previousFindings);
@@ -2889,7 +2832,7 @@ describe('refreshAuthorReplyClass', () => {
   it('records every flip', () => {
     const entries = Array.from({ length: 55 }, (_, i) => makeEntry({ threadId: `T${i}`, authorReplyClass: 'none' }));
     const previousFindings: PreviousFinding[] = entries.map((e, i) => ({
-      title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note' as const, status: 'resolved' as const, threadId: `T${i}`, authorReplyText: 'fixed',
+      title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note' as const, status: 'resolved' as const, threadId: `T${i}`, authorReplyText: 'fixed', replyAgreed: true,
     }));
 
     const result = refreshAuthorReplyClass([makeRound(entries)], previousFindings);

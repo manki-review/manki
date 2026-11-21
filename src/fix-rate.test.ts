@@ -98,8 +98,8 @@ describe('recordFixRate', () => {
       previousFindings: [
         thread('T_B', { status: 'resolved' }),
         thread('T_C', { status: 'resolved' }),
-        thread('T_D', { status: 'replied', authorReplyLogin: 'author', authorReplyText: 'Good catch' }),
-        thread('T_F', { status: 'replied', authorReplyLogin: 'someone', authorReplyText: 'Good catch' }),
+        thread('T_D', { status: 'replied', authorReplyLogin: 'author', authorReplyText: 'Good catch', replyAgreed: true }),
+        thread('T_F', { status: 'replied', authorReplyLogin: 'someone', authorReplyText: 'Good catch', replyAgreed: true }),
       ],
     });
   });

@@ -943,7 +943,7 @@ describe('buildJudgeUserMessage', () => {
           fingerprint: { file: 'src/b.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Unused import') },
           severity: 'note',
           title: 'Unused import',
-          authorReply: 'disagree',
+          authorReply: 'none',
         },
         { fingerprint: { file: 'src/b.ts', lineStart: 30, lineEnd: 30, slug: titleToSlug('Retry never ends') }, severity: 'warning', title: 'Retry never ends', authorReply: 'none', threadId: 'PRRT_2' },
         { fingerprint: { file: 'src/b.ts', lineStart: 40, lineEnd: 40, slug: titleToSlug('Cache never cleared') }, severity: 'warning', title: 'Cache never cleared', authorReply: 'none', threadId: 'PRRT_3' },
@@ -3583,8 +3583,8 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('Verify whether the concern still applies.');
   });
 
-  it('priorRounds with partial authorReply does not suppress the finding', async () => {
-    // Only 'agree' triggers dismissal; 'partial' leaves the finding in play.
+  it('priorRounds without an agreed reply does not suppress the finding', async () => {
+    // Only 'agree' triggers dismissal, so any other prior leaves the finding in play.
     const judgedResponse = JSON.stringify({
       summary: 'Finding still live.',
       findings: [
@@ -3601,7 +3601,7 @@ describe('runJudgeAgent', () => {
         fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
         severity: 'note',
         title: 'Unused variable',
-        authorReply: 'partial',
+        authorReply: 'none',
       }],
     }];
 
@@ -5692,13 +5692,13 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags).toBeUndefined();
   });
 
-  it('does not suppress when prior authorReply is disagree', () => {
+  it('does not suppress when prior authorReply is none', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'note' })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'note',
       title: 'Unused variable',
-      authorReply: 'disagree',
+      authorReply: 'none',
     }])];
 
     const result = applyCrossRoundSuppression(findings, prior);
@@ -6130,7 +6130,7 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
   });
 
-  it('ratchet fires when same slug+file was agreed in round 2 even if disagreed in round 1', () => {
+  it('ratchet fires when same slug+file was agreed in round 2 even if not agreed in round 1', () => {
     const findings = [makeFinding({
       title: 'Unused variable',
       file: 'src/a.ts',
@@ -6142,7 +6142,7 @@ describe('applyCrossRoundSuppression', () => {
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
         severity: 'note',
         title: 'Unused variable',
-        authorReply: 'disagree',
+        authorReply: 'none',
       }], 1),
       makePriorRound([{
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
@@ -6248,7 +6248,7 @@ describe('applyCrossRoundSuppression', () => {
         fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') },
         severity: 'note',
         title: 'Old issue',
-        authorReply: 'disagree',
+        authorReply: 'none',
         threadId: 'TH1',
       }])];
 
