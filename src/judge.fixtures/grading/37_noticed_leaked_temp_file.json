@@ -1,0 +1,20 @@
+{
+  "name": "noticed-leaked-temp-file",
+  "case": "noticed-leaked-temp-file",
+  "allowed": [
+    "warning",
+    "blocker"
+  ],
+  "finding": {
+    "title": "The temporary file is left in the user's directory when the write fails",
+    "file": "internal/command/fmt.go",
+    "line": 291,
+    "description": "When `tmp.Write` fails, the function returns without removing the temp file, so a `main.tf-fmt123456` file stays next to the user's config. The failure this change guards against, a write error such as a full disk or `ulimit -f`, is exactly what takes this branch, so every such run leaves another stray file in the user's directory.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Remove the temp file on every error path after a successful `CreateTemp`, for example with a deferred `os.Remove` guarded by a `renamed` flag."
+  },
+  "prDiff": "diff --git a/internal/command/fmt.go b/internal/command/fmt.go\nindex 1111111..2222222 100644\n--- a/internal/command/fmt.go\n+++ b/internal/command/fmt.go\n@@ -280,5 +280,19 @@\n \tif bytes.Equal(src, result) {\n \t\treturn nil\n \t}\n-\treturn os.WriteFile(path, result, 0644)\n+\t// Write to a temporary file next to the original and rename it over, so a failed write never leaves the\n+\t// user with an empty or half-written config file.\n+\ttmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+\"-fmt\")\n+\tif err != nil {\n+\t\treturn err\n+\t}\n+\tif _, err := tmp.Write(result); err != nil {\n+\t\ttmp.Close()\n+\t\treturn err\n+\t}\n+\tif err := tmp.Close(); err != nil {\n+\t\tos.Remove(tmp.Name())\n+\t\treturn err\n+\t}\n+\treturn os.Rename(tmp.Name(), path)\n }\n"
+}

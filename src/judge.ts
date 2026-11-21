@@ -470,7 +470,7 @@ ${OUTSIDE_INPUT_RULE}
 
 ## Warning Tests
 
-A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
+A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the \`improvement\` row, or the \`style\` row when the point is only wording. Grade a finding a note on this ground only when its own description shows no consequence anyone would notice, and keep the warning when you cannot tell whether anyone would. Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
 
 ## Severity Table
 
@@ -489,7 +489,7 @@ A rule below that gives a finding a grade names the row to state: \`degraded\` i
 - **Missing test coverage is the \`improvement\` row.** A missing test is never \`blocker\` or \`warning\`. A test that cannot fail when the code it names breaks, for example because it sets private state instead of running the changed code, is the \`degraded\` row in the \`normal\` column, a \`warning\`.
 - **Style, naming, docs and comments are the \`style\` row.** A doc or comment that states behaviour the code does not have is the \`improvement\` row, since readers act on it.
 - **Commit messages never block.** A finding about a commit message is the \`improvement\` row at most.
-- **Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input. Otherwise it is the \`degraded\` row.
+- **Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input. Otherwise it is the \`degraded\` row, or the \`improvement\` row when nobody would notice the cost in realistic use.
 - **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
 - **A check on a trusted internal value is never a blocker.** A missing guard is the \`improvement\` row at most when the code's own logic produces the value and keeps it valid. When code in the PR can produce a bad value, the guard is not the finding: state the cell of the failure that bad value causes.
 - **Behaviour that is intended but surprising is the \`improvement\` row.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. The author's word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer. This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit: choosing to remove a guard does not make the damage it let through intended. The outside input and examples under Repository Rules outrank it. A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the cell its damage earns. \`reasoning\` may note that the author lists it, but the note never changes the cell. A declared placeholder or a TODO with a tracking issue still follows test 5. A statement that the behaviour is safe, or that other code handles what it leaves out, is no choice either: it is a fact about code, under The author's word never clears a finding.
@@ -569,6 +569,7 @@ Not blockers:
 - **Python**: \`merge_ranges\` returns a wrong range when two inputs share an end point, a case only the internal compaction job produces, and only after a crash recovery. Wrong behaviour in a rare internal edge case: \`wrong\` and \`rare\`, a \`warning\`, with \`reasoning\` that names the compaction job as the only code that passes \`merge_ranges\` such ranges.
 - **TypeScript**: search results are sorted case-sensitively, and the PR description says this matches the existing API. Intended but surprising: \`improvement\`, a \`note\` asking whether users expect it.
 - **Java**: the new \`parseHeader\` error branch has no test. Missing test coverage: \`improvement\`, a \`note\`.
+- **Kotlin**: a new debug log line copies a cart's items into a list only to print their count. The log and the result are right, and a cart holds a few dozen items. A cost nobody would notice: \`improvement\`, a \`note\`.
 
 ## Evaluation Criteria
 

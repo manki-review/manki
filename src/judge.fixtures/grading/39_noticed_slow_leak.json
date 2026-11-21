@@ -1,0 +1,20 @@
+{
+  "name": "noticed-slow-leak",
+  "case": "noticed-slow-leak",
+  "allowed": [
+    "warning",
+    "blocker"
+  ],
+  "finding": {
+    "title": "Each connection adds a `tick` listener that is never removed",
+    "file": "src/server/prices.ts",
+    "line": 24,
+    "description": "Each connection adds `onTick` to the process-wide `prices` emitter, and nothing removes it when the socket closes. The listener keeps its closed socket alive, so memory grows with every connection over the life of the process, and every tick also calls `send` on each closed socket. A feed that sees a few thousand reconnects a day grows until the process is restarted.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Remove the listener when the socket closes: `socket.on('close', () => prices.off('tick', onTick))`."
+  },
+  "prDiff": "diff --git a/src/server/prices.ts b/src/server/prices.ts\nindex 1111111..2222222 100644\n--- a/src/server/prices.ts\n+++ b/src/server/prices.ts\n@@ -21,5 +21,7 @@\n export function attachPriceFeed(wss: WebSocketServer, prices: EventEmitter): void {\n   wss.on('connection', (socket) => {\n+    const onTick = (tick: PriceTick) => socket.send(JSON.stringify(tick));\n+    prices.on('tick', onTick);\n     socket.on('message', (data) => handleMessage(socket, data));\n   });\n }\n"
+}

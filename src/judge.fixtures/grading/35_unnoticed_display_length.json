@@ -1,0 +1,19 @@
+{
+  "name": "unnoticed-display-length",
+  "case": "unnoticed-display-length",
+  "allowed": [
+    "note"
+  ],
+  "finding": {
+    "title": "A long single-sentence description now shows in full, past the visible budget",
+    "file": "src/github.ts",
+    "line": 1049,
+    "description": "When the first sentence alone is longer than `room`, `splitLead` returns a cut lead and `rest` set to the whole description. If that description is one sentence, `rest.split(...)` has length 1 and holds no newline, so `folds` is false. `formatFindingComment` then prints `description.trim()` uncut, so a 2000-character description shows in full instead of a cut lead plus a `Details` fold. This breaks the 700-character visible cap.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Fold whenever `splitLead` cut the lead, for example with a `truncated` flag it returns. Show `description.trim()` only when `rest` is one sentence and the total still fits `room`."
+  },
+  "prDiff": "diff --git a/src/github.ts b/src/github.ts\nindex 1111111..2222222 100644\n--- a/src/github.ts\n+++ b/src/github.ts\n@@ -1029,8 +1029,24 @@\n const MAX_VISIBLE_COMMENT = 700;\n \n+/** Splits `text` into a lead of at most `maxSentences` sentences and `maxLength` characters, and the rest. */\n+function splitLead(text: string, maxSentences: number, maxLength: number): { lead: string; rest: string } {\n+  const trimmed = text.trim();\n+  const parts = trimmed.split(/(?<=[.!?])(\\s+)/);\n+  let end = 1;\n+  while (end + 1 < parts.length && (end + 1) / 2 < maxSentences && parts.slice(0, end + 2).join('').length <= maxLength) end += 2;\n+  const lead = parts.slice(0, end).join('');\n+  if (lead.length <= maxLength) return { lead, rest: trimmed.slice(lead.length).trim() };\n+  return { lead: safeTruncate(lead, maxLength), rest: trimmed };\n+}\n+\n function formatFindingComment(finding: Finding): string {\n   let comment = `${formatFindingHeader(finding)}\\n\\n**${sanitizeMarkdown(finding.title)}**\\n\\n`;\n   const description = sanitizeMarkdown(finding.description);\n-  comment += description.trim();\n+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length);\n+  const { lead, rest } = splitLead(description, 3, room);\n+  // A fold never holds a single sentence, so one sentence past the lead shows with it.\n+  const folds = rest.includes('\\n') || rest.split(/(?<=[.!?])\\s+/).length > 1;\n+  comment += folds ? lead : description.trim();\n+  if (folds) comment += `\\n\\n<details>\\n<summary>Details</summary>\\n\\n${rest}\\n\\n</details>`;\n   return comment;\n }\n"
+}

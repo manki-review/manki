@@ -34,15 +34,15 @@ export const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not c
 
 /** What each grade means. The finders and the judge both get this list. */
 export const GRADE_DEFINITIONS = `- **blocker**: a defect that does serious damage, which is a \`blocker\` cell of the Severity Table below. Must be fixed before merge.
-- **warning**: a real problem the author should fix that is not a blocker.
-- **note**: an optional improvement, never a defect. The code works today but could be better, or the point is cosmetic, such as wording, formatting or naming.
+- **warning**: a real problem the author should fix that is not a blocker. It has a consequence someone would notice in realistic use, for example a wrong result or a slowdown users feel.
+- **note**: an optional improvement, never a defect. The code works today but could be better, or the point is cosmetic, such as wording, formatting or naming. Nobody would notice it in realistic use, for example an extra pass over a small input. When you cannot tell whether anyone would notice a real problem, it is a warning.
 - **ignore**: not a real issue: a false positive, a matter of preference, a misunderstanding of the code or an intended pattern.`;
 
 const ROW_MEANINGS: Readonly<Record<CellRow, string>> = {
   severe: 'lost or corrupted data, security, memory safety or undefined behaviour, a broken public contract',
   wrong: 'a wrong result, a crash, a hang or resource exhaustion',
-  degraded: 'slower, noisier or harder to debug, with the right result',
-  improvement: 'the code works but could be better, such as a missing test, a comment that misstates the code, or structure and reuse',
+  degraded: 'the right result, with a cost someone would notice in realistic use, such as a slowdown users feel or a lost error cause',
+  improvement: 'the code works but could be better, such as a missing test, a comment that misstates the code, structure and reuse, or a cost nobody would notice',
   style: 'wording, formatting, naming, docs',
 };
 

@@ -1,0 +1,19 @@
+{
+  "name": "unnoticed-extra-pass",
+  "case": "unnoticed-extra-pass",
+  "allowed": [
+    "note"
+  ],
+  "finding": {
+    "title": "Debug log iterates the resource sequence an extra time",
+    "file": "internal/terraform/policy.go",
+    "line": 72,
+    "description": "`len(slices.Collect(resourceFunc))` runs the whole generator just for a log line. On the apply path this decodes every state instance of the resource twice.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Drop the count from the log, or collect once into a slice and range over it."
+  },
+  "prDiff": "diff --git a/internal/terraform/policy.go b/internal/terraform/policy.go\nindex 1111111..2222222 100644\n--- a/internal/terraform/policy.go\n+++ b/internal/terraform/policy.go\n@@ -52,7 +52,24 @@\n \t\t\tvar resourceFunc iter.Seq[cty.Value]\n \t\t\tif walkOperation == walkApply {\n+\t\t\t\tresources := state.ResourceInstancesByConfig(addr)\n+\t\t\t\tresourceFunc = func(yield func(cty.Value) bool) {\n+\t\t\t\t\tfor _, inst := range resources {\n+\t\t\t\t\t\tif inst.Current == nil {\n+\t\t\t\t\t\t\tcontinue\n+\t\t\t\t\t\t}\n+\t\t\t\t\t\trsc, err := inst.Current.Decode(schema.SchemaForResourceAddr(addr.Resource))\n+\t\t\t\t\t\tif err != nil {\n+\t\t\t\t\t\t\tlog.Printf(\"[ERROR] getresources: failed to decode resource %q: %v\", addr, err)\n+\t\t\t\t\t\t\tcontinue\n+\t\t\t\t\t\t}\n+\t\t\t\t\t\tif !yield(rsc.Value) {\n+\t\t\t\t\t\t\treturn\n+\t\t\t\t\t\t}\n+\t\t\t\t\t}\n+\t\t\t\t}\n \t\t\t}\n \n+\t\t\tlog.Printf(\"[DEBUG] getresources: found %d resources for policy target %q\", len(slices.Collect(resourceFunc)), target)\n \t\t\tfor resource := range resourceFunc {\n \t\t\t\tif attrs.IsNull() {\n \t\t\t\t\tfound = append(found, resource)\n"
+}
