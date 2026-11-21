@@ -1573,15 +1573,16 @@ function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: 
   if (fits(record)) return `${stats}${record}`;
 
   let slim = record;
-  let left: string[] = [];
+  let cut = '';
   for (const smaller of smallerRecords(context)) {
     slim = formatReviewRecord(smaller, plainRoom);
-    left = smaller.meta.omitted ?? [];
+    const { omitted = [], compacted = [] } = smaller.meta;
+    cut = [omitted.length > 0 && `without ${omitted.join(', ')}`, compacted.length > 0 && `with ${compacted.join(', ')} shortened`].filter(Boolean).join(' and ');
     if (fits(slim)) break;
   }
   if (!cutLog.logged) {
     cutLog.logged = true;
-    core.warning(`The round record takes ${record.length} characters even compressed, ${left.length > 0 ? `so the review carries it without ${left.join(', ')}` : 'and has no part the review can leave out'}. The full record follows in the log.`);
+    core.warning(`The round record takes ${record.length} characters even compressed, ${cut ? `so the review carries it ${cut}` : 'and has no part the review can leave out'}. The full record follows in the log.`);
     const full = compressReviewRecord(context);
     core.startGroup(`Full round record, gzip compressed and base64 encoded in ${Math.ceil(full.length / RECORD_LOG_LINE_CHARS)} lines`);
     for (let i = 0; i < full.length; i += RECORD_LOG_LINE_CHARS) core.info(full.slice(i, i + RECORD_LOG_LINE_CHARS));

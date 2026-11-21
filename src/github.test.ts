@@ -1721,7 +1721,7 @@ describe('postReview with context', () => {
     expect(record.usesOutsideDiff).toEqual({ symbols: usesOutsideDiff.symbols, types: ['src/model.ts:12'] });
     expect(record.judge.dropped).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
-    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without judge.dropped, units, reviewers.agentMetrics.units.'));
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without judge.dropped, units, reviewers.agentMetrics.units and with reviewers.rawFindings, usesOutsideDiff shortened.'));
     // The full record goes to the log compressed, in short lines that decode back to it.
     const logged = infoSpy.mock.calls.map(([line]) => line as string).filter(line => /^[A-Za-z0-9+/=]+$/.test(line));
     expect(Math.max(...logged.map(line => line.length))).toBeLessThanOrEqual(1000);
