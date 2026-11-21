@@ -53,6 +53,8 @@ export interface OriginOptions {
   pair?: LLMClient;
   /** A finding the round decides about whatever the check says, such as one the location already finds pre-existing. */
   skip?: (finding: Finding) => boolean;
+  /** The checks the round has left, shared by its calls and lowered by each. Without it a call may make `MAX_ORIGIN_CHECKS`. */
+  budget?: { left: number };
   progress?: CheckProgress<number>;
 }
 
@@ -157,19 +159,21 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
 }
 
 /**
- * Returns `findings` with the `originCheck` of each blocker and warning the round checks, at most `MAX_ORIGIN_CHECKS`,
+ * Returns `findings` with the `originCheck` of each blocker and warning the round checks, at most what `budget` has left,
  * the largest grades first. Each check asks `client` whether the PR caused the failure. The `pair` asks too when the
  * rules need two answers: on a flagged line the PR changed, and on a finding `oneAnswerSettles` rejects. A tool alert, a
  * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check. A
  * finding whose calls all never started keeps no `originCheck`.
  */
-export async function checkOrigins(client: LLMClient, findings: readonly Finding[], { workspace, diff, excludedPaths = [], related, effort, pair, skip, progress }: OriginOptions): Promise<Finding[]> {
+export async function checkOrigins(client: LLMClient, findings: readonly Finding[], { workspace, diff, excludedPaths = [], related, effort, pair, skip, budget, progress }: OriginOptions): Promise<Finding[]> {
   if (!baseReadsOf(workspace)) return [...findings];
   const asked = findings
     .filter(f => (f.severity === 'blocker' || f.severity === 'warning') && !f.toolSource && !skip?.(f) && !!codeDigest(workspace, [f.file]))
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
-  const checked = new Set(asked.slice(0, MAX_ORIGIN_CHECKS));
-  for (const over of asked.slice(MAX_ORIGIN_CHECKS)) core.info(`Not checking the origin of "${over.title}", since the round's ${MAX_ORIGIN_CHECKS} origin checks are used up`);
+  const limit = Math.max(0, budget?.left ?? MAX_ORIGIN_CHECKS);
+  const checked = new Set(asked.slice(0, limit));
+  if (budget) budget.left = limit - checked.size;
+  for (const over of asked.slice(limit)) core.info(`Not checking the origin of "${over.title}", since the round's ${MAX_ORIGIN_CHECKS} origin checks are used up`);
   // Resolves to `null` when the call never started, and to undefined when it failed.
   const ask = async (asking: LLMClient, finding: Finding, label: string): Promise<OriginAnswer | null | undefined> => {
     try {

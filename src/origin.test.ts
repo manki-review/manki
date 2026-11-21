@@ -141,7 +141,7 @@ describe('checkOrigins', () => {
     rmSync(moved.root, { recursive: true, force: true });
   }, GIT_TEST_TIMEOUT_MS);
 
-  it('checks at most the round\'s limit, the largest grades first, and none a later step decides or a call that fails', async () => {
+  it('checks at most the round\'s limit, shared by its calls, the largest grades first, and none a later step decides or a call that fails', async () => {
     const { root, diff } = gitWorkspace({ 'src/math.ts': math }, {}, []);
     const warnings = Array.from({ length: MAX_ORIGIN_CHECKS }, (_, i) => finding(`Warning ${i + 1}`, { severity: 'warning' }));
     const replies: Record<string, unknown> = Object.fromEntries([...warnings.map(f => f.title), 'Blocker', 'Decided', 'Failing'].map(title => [title, same]));
@@ -153,6 +153,12 @@ describe('checkOrigins', () => {
     // The blocker goes first, so the last warning and the failing one are over the limit.
     expect(titlesOf(client)).toEqual(['Blocker', ...warnings.slice(0, MAX_ORIGIN_CHECKS - 1).map(f => f.title)].sort());
     expect(checked.filter(f => f.originCheck).length).toBe(MAX_ORIGIN_CHECKS);
+    // A budget shared by the round's calls caps them together, so a later call checks only what the earlier one left.
+    const budget = { left: 2 };
+    const counted = originClient(replies, 'm');
+    await checkOrigins(counted, [finding('Blocker')], { workspace: root, diff, budget });
+    const later = await checkOrigins(counted, warnings.slice(0, 2), { workspace: root, diff, budget });
+    expect([titlesOf(counted), later.map(f => !!f.originCheck), budget.left]).toEqual([['Blocker', 'Warning 1'], [true, false], 0]);
     // A call that fails leaves no answer, so the finding stays the PR's own. It still ends as a check that ran, while a
     // call that never started ends as none and records no check.
     const progress = { started: jest.fn(), ended: jest.fn() };

@@ -16,7 +16,7 @@ import { classifyRelatedWork, linkTrackingIssues } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
-import { checkOrigins } from './origin';
+import { checkOrigins, MAX_ORIGIN_CHECKS } from './origin';
 import { checkStatus, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -1913,12 +1913,13 @@ export async function runReview(
     doubtBudget: { left: MAX_DOUBT_CHECKS },
     ...(onProgress && { progress: reportChecks<RefutationOutcome>(event => onProgress({ phase: 'refuter', refuterCheck: event })) }),
     originProgress: sideProgress('origin'),
+    originBudget: { left: MAX_ORIGIN_CHECKS },
   } : undefined;
   if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.second_refuter` needs the PR head checked out and repository tools on both its model and the judge\'s');
   // Each blocker and warning asks whether the PR caused it, on the refuter's clients. `skip` names a finding decided without the check.
   const originsOf = (findings: Finding[], skip?: (finding: Finding) => boolean): Promise<Finding[]> => (refutation
     ? checkOrigins(refutation.client, findings, {
-      workspace: refutation.workspace, diff: diffWithLockfiles, excludedPaths: options.excludedPaths, related: refutation.related, effort: judgeEffort, pair: refutation.pair, skip, progress: refutation.originProgress,
+      workspace: refutation.workspace, diff: diffWithLockfiles, excludedPaths: options.excludedPaths, related: refutation.related, effort: judgeEffort, pair: refutation.pair, skip, budget: refutation.originBudget, progress: refutation.originProgress,
     })
     : Promise.resolve(findings));
   const judgeInput: JudgeInput = {
