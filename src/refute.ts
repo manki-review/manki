@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, LLMResponse, NotStartedError } from './providers';
 import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { parseProof, sameProblem, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
-import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
+import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
 import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
@@ -890,7 +890,8 @@ export async function confirmFixesElsewhere(
     const added = changed ? addedLines(changed) : new Map<number, string>();
     const citesFix = (check: Refutation | undefined): check is Refutation => check?.outcome === 'disproved' && !!check.model && (check.proof ?? []).some(at => {
       const [start, end] = locationLines(at);
-      return locationFile(at) === fixedIn && [...added.keys()].some(line => start <= line && line <= end);
+      // A wide range could rest on any line in it, so only a narrow one counts as resting on the added code.
+      return locationFile(at) === fixedIn && end - start + 1 <= MAX_QUOTED_RANGE && [...added.keys()].some(line => start <= line && line <= end);
     });
     const { refutation, pairRefutation } = checked[i];
     const agreed = citesFix(refutation) && citesFix(pairRefutation) && refutation.model !== pairRefutation.model;

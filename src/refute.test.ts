@@ -72,14 +72,16 @@ describe('refuteBlockers', () => {
     const pushDiff = parsePRDiff('diff --git a/src/api.ts b/src/api.ts\n--- a/src/api.ts\n+++ b/src/api.ts\n@@ -8,1 +8,2 @@\n // handler\n+if (a > 1000 || b > 1000) throw new Error();\n');
     const thread = (title: string): { thread: OpenThread; fixedIn: string } => ({ thread: { threadId: title, title, file: 'src/math.ts', line: 2, severity: 'blocker', description: 'Large inputs overflow.' }, fixedIn: 'src/api.ts' });
     const answer = (outcome: RefutationOutcome, proof = ['src/api.ts:9']) => ({ outcome, reason: 'The caller rejects large inputs.', proof });
-    const titles = ['Fixed in the caller', 'Pair unsure', 'Pair failed', 'Rests on other lines', 'Still overflows'];
+    const titles = ['Fixed in the caller', 'Pair unsure', 'Pair failed', 'Rests on other lines', 'Wide range', 'Still overflows'];
     const first = fakeClient({
       'Fixed in the caller': answer('disproved'), 'Pair unsure': answer('disproved'), 'Pair failed': answer('disproved'),
-      'Rests on other lines': answer('disproved', ['src/api.ts:3', 'src/math.ts:2']), 'Still overflows': answer('confirmed', ['src/math.ts:2']),
+      'Rests on other lines': answer('disproved', ['src/api.ts:3', 'src/math.ts:2']), 'Wide range': answer('disproved', ['src/api.ts:1-9']),
+      'Still overflows': answer('confirmed', ['src/math.ts:2']),
     }, 'claude-opus-5-5');
     const replies = {
       'Fixed in the caller': answer('disproved'), 'Pair unsure': answer('unsettled'), 'Pair failed': new Error('timeout'),
-      'Rests on other lines': answer('disproved', ['src/api.ts:3', 'src/math.ts:2']), 'Still overflows': answer('disproved'),
+      'Rests on other lines': answer('disproved', ['src/api.ts:3', 'src/math.ts:2']), 'Wide range': answer('disproved', ['src/api.ts:1-9']),
+      'Still overflows': answer('disproved'),
     };
     const run = (pair: LLMClient | undefined) => confirmFixesElsewhere(first, pair, titles.map(thread), pushDiff, { workspace, diff });
 

@@ -27,7 +27,7 @@ const MAX_CITATIONS = 10;
 /** How far from a cited line of a related repo the code a reviewer quotes for it may sit. */
 const QUOTE_LINE_WINDOW = 3;
 /** In a cited range of more lines than this a quote could sit anywhere, so finding it there says nothing. It is as many lines as the window around one line. */
-const MAX_QUOTED_RANGE = 2 * QUOTE_LINE_WINDOW + 1;
+export const MAX_QUOTED_RANGE = 2 * QUOTE_LINE_WINDOW + 1;
 /** A quote shorter than this, without its whitespace, could match almost any line, and is mostly a name in a sentence. */
 const MIN_QUOTE_CHARS = 6;
 // `owner/name:path:line` or `owner/name:path:start-end`, the form reviewers cite a related repo's code in.
