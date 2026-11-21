@@ -3846,14 +3846,16 @@ describe('runReview', () => {
     const title = 'Send happens before the peer is recorded';
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     // `sameBefore` is each check's answer whether the failure is the PR's own, and `pairBefore` the second refuter's,
-    // which runs only when given. The finding flags head line 2, which replaced base line 2.
-    type Options = { pairBefore?: RefutationOutcome; row?: string; filed?: string; baseProof?: string[] };
-    const run = async (sameBefore: RefutationOutcome, { pairBefore, row = 'degraded', filed = 'warning', baseProof = ['src/send.ts:2', 'src/send.ts:3'] }: Options = {}) => {
+    // which runs only when given. The finding flags head line 2, which replaced base line 2. With `doubt`, the judge
+    // doubts whether the defect exists, and the check leaves that open.
+    type Options = { pairBefore?: RefutationOutcome; row?: string; filed?: string; baseProof?: string[]; doubt?: boolean };
+    const run = async (sameBefore: RefutationOutcome, { pairBefore, row = 'degraded', filed = 'warning', baseProof = ['src/send.ts:2', 'src/send.ts:3'], doubt = false }: Options = {}) => {
       const { root, diff } = gitWorkspace({ 'src/send.ts': before }, { 'src/send.ts': after }, []);
       const refuterMessages: string[] = [];
       const reply = (model: string, outcome: RefutationOutcome) => ({
         model, content: JSON.stringify({
           outcome: 'confirmed', reason: 'The peer is recorded after the send.', proof: ['src/send.ts:2', 'src/send.ts:3'],
+          premises: [{ outcome: 'unsettled', reason: 'Not decided.', proof: ['src/send.ts:2'] }],
           base: { outcome, reason: 'The base sent before it recorded the peer too.', proof: baseProof },
         }),
       });
@@ -3865,7 +3867,9 @@ describe('runReview', () => {
       }]) });
       Object.assign(clients.judge, { repoTools: true });
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
-        if (system.startsWith('You are a code review judge')) return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row, reasoning: 'r' }] }) };
+        if (system.startsWith('You are a code review judge')) {
+          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row, ...(doubt && { doubts: [{ premise: 'A reply can arrive before the record', decides: 'defect' }] }), reasoning: 'r' }] }) };
+        }
         if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
         refuterMessages.push(user);
         return reply('judge-model', sameBefore);
@@ -3893,10 +3897,11 @@ describe('runReview', () => {
     expect(placed((await run('disproved', { row: 'style' })).result)).toEqual([[], [['note', true, 'The base sent before it recorded the peer too.']]]);
 
     // A change that makes the failure the PR's own, an open answer, a second check that finds the failure the PR's own,
-    // an answer that cites no line the change replaced, and a warning a finder filed as a blocker with one check only
-    // keep the warning posted as the PR's own.
+    // an answer that cites no line the change replaced, and with one check only, a warning a finder filed as a blocker
+    // or one whose cell gives a blocker keep the warning posted as the PR's own.
     const posted: Array<[RefutationOutcome, Options]> = [
       ['confirmed', {}], ['unsettled', {}], ['disproved', { pairBefore: 'confirmed' }], ['disproved', { baseProof: ['src/send.ts:3'] }], ['disproved', { filed: 'blocker' }],
+      ['disproved', { row: 'severe', doubt: true }],
     ];
     for (const [sameBefore, options] of posted) {
       const round = await run(sameBefore, options);
