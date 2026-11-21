@@ -1187,7 +1187,8 @@ describe('refuteBlockers', () => {
     // A warning or a note a reviewer calls older than this PR is checked at the round's end, and its check asks the
     // question about the base. A warning comes before a doubted security finding, and a note after it. A security
     // finding that claims to be older is not checked for that, nor one a later step leaves out, nor one in a file the PR
-    // added, which has no place at the base.
+    // added, which has no place at the base. Nor is one a finder filed as a blocker without a second refuter, since one
+    // answer about the base never lowers it.
     const claim = { preExisting: 'The send came before the peer was recorded already.' };
     const claimed = [
       finding('Older note', { severity: 'note', ...claim }),
@@ -1195,6 +1196,7 @@ describe('refuteBlockers', () => {
       finding('Older warning', { severity: 'warning', ...claim }),
       finding('Older security warning', { severity: 'warning', tags: ['security'], ...claim }),
       finding('Older warning left out', { severity: 'warning', ...claim }),
+      finding('Older warning filed as a blocker', { severity: 'warning', reviewerSeverity: 'blocker', ...claim }),
       finding('Older warning in an added file', { severity: 'warning', file: 'src/new.ts', line: 1, evidence: { checks: [], proof: ['src/new.ts:1'] }, ...claim }),
     ];
     writeFileSync(join(workspace, 'src', 'new.ts'), 'send(peer);\n');
