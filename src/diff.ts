@@ -595,13 +595,16 @@ export function replacementOf(file: DiffFile, oldLine: number): [number, number]
 }
 
 /**
- * Whether `text` only adds to the end of `old`: without whitespace, it starts with `old` up to the closing brackets and
- * separators `old` ends in, and the start does not run on into a longer word, number or member name.
+ * Whether `text` only adds list items to `old`, or only changes its whitespace. Without whitespace, `text` must be `old`
+ * with nothing or a part that starts with a comma put in before the closing brackets and separators `old` ends in.
  */
 function appendsTo(text: string, old: string): boolean {
-  const kept = old.replace(/\s/g, '').replace(/[)\]}>;,:{]+$/, '');
-  const next = text.replace(/\s/g, '').slice(kept.length, kept.length + 1);
-  return kept.length > 0 && text.replace(/\s/g, '').startsWith(kept) && !(/\w$/.test(kept) && /^[\w.]/.test(next));
+  const [now, was] = [text, old].map(line => line.replace(/\s/g, ''));
+  const tail = /[)\]}>;,:{]*$/.exec(was)![0];
+  const kept = was.slice(0, was.length - tail.length);
+  if (!kept || now.length < was.length || !now.startsWith(kept) || !now.endsWith(tail)) return false;
+  const added = now.slice(kept.length, now.length - tail.length);
+  return added === '' || added.startsWith(',');
 }
 
 /**
