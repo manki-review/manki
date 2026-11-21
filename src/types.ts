@@ -3079,6 +3079,8 @@ export interface ReplyRecord {
   relatedRepos?: RoundRelatedRepo[];
   /** What a thread reply that settles the finding decided. */
   decision?: ReplyDecision;
+  /** The id of the developer's comment a thread reply answers, so a later reply in the thread never counts as answered by it. */
+  answers?: number;
   /** The statements of the developer's reply that a thread reply checked, in the order it lists them. */
   statements?: ReplyStatementRecord[];
   /** How many statements a thread reply left unchecked because the developer's reply held more than it checks. */

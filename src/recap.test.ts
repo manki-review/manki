@@ -36,8 +36,10 @@ const makePrevious = (overrides: Partial<PreviousFinding> = {}): PreviousFinding
 });
 
 /** Manki's answer to a reply, with the reply record that says how it decided the thread. */
-const recordedAnswer = (outcome: ReplyDecision['outcome'], thread: ReplyDecision['thread'] = 'resolves'): string => `**${outcome}.** Checked.\n\n<!-- manki -->\n${formatReplyRecord({
-  kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome, thread },
+/** The id of the developer's reply that `recordedAnswer` answers by default. */
+const REPLY_ID = 7;
+const recordedAnswer = (outcome: ReplyDecision['outcome'], thread: ReplyDecision['thread'] = 'resolves', answers = REPLY_ID): string => `**${outcome}.** Checked.\n\n<!-- manki -->\n${formatReplyRecord({
+  kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome, thread }, answers,
 })}`;
 
 describe('deduplicateFindings', () => {
@@ -1544,10 +1546,10 @@ describe('fetchRecapState', () => {
             ...(reopened ? [{ body: `<!-- manki -->\n${REOPENED_MARKER}\nReopened.`, author: { login: BOT_LOGIN } }] : []),
             ...(foundAgain ? [{ body: `This came up again.\n\n${quoted}\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: BOT_LOGIN } }] : []),
             ...(dismissed ? [{ body: `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'author')}`, author: { login: BOT_LOGIN } }] : []),
-            ...(reply ? [{ body: reply.text ?? 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
+            ...(reply ? [{ databaseId: REPLY_ID, body: reply.text ?? 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
             ...(reply?.answer === 'dismiss' ? [{ body: `Finding dismissed by \`@${reply.login}\`.\n\n<!-- manki -->\n${dismissRecordMarker(reply.login)}`, author: { login: BOT_LOGIN } }] : []),
             ...(reply?.answer && reply.answer !== 'dismiss' ? [{ body: `**Agreed.** No change needed.\n\n<!-- manki -->\n${formatReplyRecord({
-              kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: reply.answer },
+              kind: 'thread-reply', prNumber: 1, timestamp: '2026-11-18T10:00:00Z', mankiVersion: '7.7.0', usage: {}, decision: { outcome: 'Agreed', thread: reply.answer }, answers: REPLY_ID,
             })}`, author: { login: BOT_LOGIN } }] : []),
           ] },
         });
@@ -1953,7 +1955,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> **Warning**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
-            { body: 'Fixed in latest push', author: { login: 'author' } },
+            { databaseId: REPLY_ID, body: 'Fixed in latest push', author: { login: 'author' } },
             { body: recordedAnswer('Fixed'), author: { login: BOT_LOGIN } },
           ],
         },
@@ -1983,7 +1985,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> ⚠️ **Warning**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
-            { body: 'Agreed, will fix', author: { login: 'author' } },
+            { databaseId: REPLY_ID, body: 'Agreed, will fix', author: { login: 'author' } },
             { body: recordedAnswer('Agreed'), author: { login: BOT_LOGIN } },
           ],
         },
@@ -2045,8 +2047,13 @@ describe('fetchRecapState', () => {
         ['done', ['**Unverified.** I could not check this reply.\n\n<!-- manki -->'], 'none'],
         ['done', [recordedAnswer('Fixed')], 'agree'],
         ['The caller checks it.', [recordedAnswer('Withdrawn', 'already_resolved')], 'agree'],
-        // A later reply waits for its own answer, so an answer to an earlier one counts for nothing.
+        // A later reply waits for its own answer, so an answer to an earlier one counts for nothing, also when it lands
+        // after the later reply, as a slow answer does. Only an answer that names the later reply settles it.
         ['Actually, it still breaks.', [recordedAnswer('Fixed'), 'LATER'], 'none'],
+        ['Actually, it still breaks.', ['LATER', recordedAnswer('Fixed')], 'none'],
+        ['Actually, it still breaks.', ['LATER', recordedAnswer('Fixed', 'resolves', REPLY_ID + 1)], 'agree'],
+        // A record that names no reply settles none.
+        ['done', [recordedAnswer('Fixed').replace(`,"answers":${REPLY_ID}`, '')], 'none'],
         // So does an answer from before Manki last reopened the thread.
         ['done', [recordedAnswer('Fixed'), `Reopened.\n\n<!-- manki -->\n${REOPENED_MARKER}`], 'none'],
       ];
@@ -2059,13 +2066,13 @@ describe('fetchRecapState', () => {
           },
         });
         const comments = after.flatMap(body => body === 'LATER'
-          ? [{ body: reply, author: { login: 'author' } }]
+          ? [{ databaseId: REPLY_ID + 1, body: reply, author: { login: 'author' } }]
           : [{ body, author: { login: BOT_LOGIN } }]);
         const thread = makeThread({
           id: 'T1',
           comments: { nodes: [
             { body: '<!-- manki:warning:Null-check --> **Warning**: Null check\n\nDescription.', author: { login: BOT_LOGIN } },
-            { body: after.includes('LATER') ? 'Fixed in the last push.' : reply, author: { login: 'author' } },
+            { databaseId: REPLY_ID, body: after.includes('LATER') ? 'Fixed in the last push.' : reply, author: { login: 'author' } },
             ...comments,
           ] },
         });
@@ -2103,7 +2110,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'manki-review[bot]' } },
-            { body: 'Agreed, will fix', author: { login: 'author' } },
+            { databaseId: REPLY_ID, body: 'Agreed, will fix', author: { login: 'author' } },
             { body: recordedAnswer('Agreed'), author: { login: BOT_LOGIN } },
           ],
         },
@@ -2144,7 +2151,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'manki-review[bot]' } },
-            { body: 'Agreed, will fix', author: { login: 'author' } },
+            { databaseId: REPLY_ID, body: 'Agreed, will fix', author: { login: 'author' } },
             { body: recordedAnswer('Agreed'), author: { login: BOT_LOGIN } },
           ],
         },

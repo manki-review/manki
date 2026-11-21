@@ -1136,6 +1136,8 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     const fate = allowed ? 'resolves' : kind === 'warning' ? 'no_permission' : 'stays_open';
     expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Agreed', thread: fate }]);
+    // The record names the reply it answers, so a later reply never reads as settled by it.
+    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).answers)).toEqual([1]);
     expect(accessQuestions()).toEqual([{ owner: 'test-owner', repo: 'test-repo', user_id: 31 }]);
   });
 
@@ -1280,6 +1282,9 @@ describe('handleReviewCommentReply', () => {
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, CONFIG);
 
     expect(ghUtils.fetchChangesSince).toHaveBeenLastCalledWith(octokit, 'test-owner', 'test-repo', POSTED_ON, 'a'.repeat(40), ['src/file.ts', 'src/util.ts']);
+    // The model sees the change since the thread was posted, which its proof has to cite.
+    const shown = jest.mocked(client.sendMessage).mock.calls[0][1].split('## Changes Since the Finding Was Posted\n\n')[1];
+    expect(since === 'unknown' ? shown.startsWith('Unknown, so no line shows a fix.') : since === '' ? shown.startsWith('None.') : shown.includes('```diff\n')).toBe(true);
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(settles ? 'Fixed. The guard now runs first.' : `Unverified. The guard now runs first. ${UNPROVEN}`);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(settles ? [[octokit, 'PRRT_this', 'ADDRESSED']] : []);
