@@ -1208,6 +1208,11 @@ describe('refuteBlockers', () => {
       const asked = older.calls.filter(([title]) => title.startsWith('Older')).map(([, , user]) => user.includes(`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`));
       expect(asked.every(Boolean)).toBe(true);
     }
+    // A check made for the question about the base alone grades nothing. A disproof of the defect leaves the warning as
+    // it was, proven by its cited lines, since only an answer that finds the failure on the base is kept on it.
+    const disproving = fakeClient({ 'Older warning': { outcome: 'disproved', reason: 'r', proof: ['src/math.ts:2'] } });
+    const [unchanged] = await refuteBlockers(disproving, [claimed[2]], { workspace, diff, doubtBudget: { left: 8 }, roundEnd: true });
+    expect([disproving.calls.length, unchanged.severity, unchanged.refutation, checkStatus(unchanged)]).toEqual([1, 'warning', undefined, 'proven']);
   });
 
   it('asks each blocker whether its failure is the PR\'s own, apart from its outcome, and reuses a stored check only with that answer', async () => {
