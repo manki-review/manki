@@ -1562,7 +1562,7 @@ const RECORD_LOG_LINE_CHARS = 1000;
  * Returns the hidden stats line and round record that end a review. The record is plain JSON when it fits in `room`
  * characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even compressed takes the first of
  * `smallerRecords` that fits, or the last one. With `logCut`, the log names what was left out and holds the full record
- * compressed.
+ * compressed. GitHub still refuses a review whose last form alone passes its body limit, which takes hundreds of findings.
  */
 function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number, logCut: boolean): string {
   const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
