@@ -207,16 +207,16 @@ describe('reviewLocal', () => {
     ]);
     expect(review.context.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Rename', 'reviewed_code'], ['Name the constant', 'listed_earlier'], ['Fifth again', 'note_cap']]);
     expect(review.context.findings.count).toBe(6);
-    // A warning the earlier round listed in its body is carried while the place it points at reads the same, with the
-    // line that place is on now, whatever else the push changed in its file. One on a line the file does not have is not carried.
-    // One in a file that cannot be read stays carried without a line.
-    expect(review.result.carried?.map(e => [e.title, e.raisedIn, e.currentLine])).toEqual([['Tenth value is wrong', 1, 10], ['End runs late', 1, 6], ['Outside the repo', 1, undefined]]);
-    expect(review.context.findings.carried).toEqual(review.result.carried);
-    // An edited line ends its warning, in a file outside the diff too. So does a note that names it, which `review.notes` left out.
-    expect(review.context.findings.carriedEnded).toEqual([
-      { key: 'guides/conventions.md:1:1:Guide-is-vague', reason: 'line_changed' }, { key: 'src/c.ts:2:2:Null-is-returned', reason: 'line_changed' },
-      { key: 'src/b.ts:5:5:Fifth-value-is-wrong', reason: 'hidden_note' },
+    // A warning the earlier round listed in its body is carried with the line the place it points at is on now, whatever
+    // else the push changed in its file. One on a line the file does not have is not carried. An edited line ends no
+    // warning without the judge, in a file outside the diff too, so its warning stays carried without a line, as one in a
+    // file that cannot be read does.
+    expect(review.result.carried?.map(e => [e.title, e.raisedIn, e.currentLine])).toEqual([
+      ['Tenth value is wrong', 1, 10], ['Guide is vague', 1, undefined], ['Null is returned', 1, undefined], ['End runs late', 1, 6], ['Outside the repo', 1, undefined],
     ]);
+    expect(review.context.findings.carried).toEqual(review.result.carried);
+    // A note that names a carried warning ends it, also when `review.notes` left the note out.
+    expect(review.context.findings.carriedEnded).toEqual([{ key: 'src/b.ts:5:5:Fifth-value-is-wrong', reason: 'hidden_note' }]);
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
   }, GIT_TEST_TIMEOUT_MS);
 

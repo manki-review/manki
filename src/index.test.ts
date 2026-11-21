@@ -3026,11 +3026,12 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(ghUtils.githubRepoFiles)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'abc123');
       expect(read.mock.calls).toEqual([['src/app.ts']]);
       const [, , , , , result, , record] = jest.mocked(ghUtils.postReview).mock.calls[0];
-      expect(result.carried?.map(e => [e.title, e.raisedIn])).toEqual([['Retry never ends', 1]]);
+      // The queue line changed, which ends nothing without the judge, so that warning names no line now.
+      expect(result.carried?.map(e => [e.title, e.raisedIn])).toEqual([['Queue has no limit', 2], ['Retry never ends', 1]]);
       expect(record?.findings.carried).toEqual(result.carried);
-      expect(record?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }]);
+      expect(record?.findings.carriedEnded).toBeUndefined();
       expect([result.findings, record?.findings.count]).toEqual([[], 0]);
-      expect(result.carried?.map(e => e.currentLine)).toEqual([2]);
+      expect(result.carried?.map(e => e.currentLine)).toEqual([undefined, 2]);
 
       // A note that names a carried warning ends it as a hidden note when `review.notes` leaves the note out.
       const note = (title: string, line: number): Finding => ({ severity: 'note', title, file: 'src/app.ts', line, description: 'd', reviewers: ['general'] });
@@ -3039,8 +3040,8 @@ describe('runFullReview orchestration', () => {
       await runWith({ fullReview: true });
       const capped = jest.mocked(ghUtils.postReview).mock.calls[1][7];
       expect(capped?.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Retry never ends', 'note_cap']]);
-      expect(capped?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }, { key: 'src/app.ts:2:2:Retry-never-ends', reason: 'hidden_note' }]);
-      expect(capped?.findings.carried).toBeUndefined();
+      expect(capped?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:2:2:Retry-never-ends', reason: 'hidden_note' }]);
+      expect(capped?.findings.carried?.map(e => e.title)).toEqual(['Queue has no limit']);
 
       // While paths are closed, the file is read without following a symlink, and a closed file is never read. Its warnings
       // stay listed, since a file that cannot be read is not a file that is gone.
