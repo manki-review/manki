@@ -11,7 +11,7 @@ import { namedPullRequests } from './recap';
 import { isDiffLocation, locationFile, locationLines, shownLines } from './refute';
 import { fetchedRelatedRepos } from './related-repos';
 import { parseProof } from './review';
-import { leadingRelatedCitation } from './static-signals';
+import { leadingRelatedCitation, MAX_QUOTED_RANGE } from './static-signals';
 import { DiffFile, ParsedDiff, RelatedRepoTools, ReplyStatementRecord, UncheckedReason } from './types';
 
 type Octokit = ReturnType<typeof getOctokit>;
@@ -122,12 +122,18 @@ function changedLineNumbers(file: DiffFile): Set<number> {
   return lines;
 }
 
-/** Whether `location` cites a line that one of `changed` adds, or a line right next to code it removes. */
+/**
+ * Whether `location` cites a line that one of `changed` adds, or a line right next to code it removes. A range over
+ * `MAX_QUOTED_RANGE` lines counts only when every line in it is such a line, since a wide range holds an unrelated
+ * change as easily as a fix.
+ */
 function citesChangedLine(location: string, changed: readonly DiffFile[] = []): boolean {
   const file = changed.find(f => f.path === locationFile(location));
   if (!file) return false;
   const [start, end] = locationLines(location);
-  return [...changedLineNumbers(file)].some(line => line >= start && line <= end);
+  const lines = changedLineNumbers(file);
+  const range = Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  return range.length <= MAX_QUOTED_RANGE ? range.some(line => lines.has(line)) : range.every(line => lines.has(line));
 }
 
 /**
