@@ -381,9 +381,9 @@ function flaggedLineAtBase(finding: Finding, workspace: string, diff: ParsedDiff
  * Returns `check` with its `base` answer checked against the PR's base commit, which `BASE_REF` in `workspace` points
  * at. Only the `proof` lines that their file holds there are kept, with the `commit` they were found at. A disproof
  * can lower a finding, so it stands only when every line it cites is there and one of them stands for the flagged line
- * at the base by `flaggedLineAtBase`, with the same text. So a line the PR added or rewrote is never lowered. Any doubt
- * leaves it unsettled: a workspace without a base, a file that cannot be read there, a line it does not hold, or no
- * citation of the flagged line. An answer that the failure is the PR's own stands as given, since it
+ * at the base by `flaggedLineAtBase`, with the same text. So only a line the PR left unchanged or only extended can be
+ * lowered. Any doubt leaves it unsettled: a workspace without a base, a file that cannot be read there, a line it does
+ * not hold, or no citation of the flagged line. An answer that the failure is the PR's own stands as given, since it
  * keeps the blocker. An unsettled answer needs one line that is there, or a line of a related repo, as a premise does.
  */
 async function checkBase(check: Refutation, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): Promise<Refutation> {
