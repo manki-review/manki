@@ -3653,6 +3653,11 @@ describe('runReview', () => {
         ends: r => r.memorySuppressed?.filter(f => f.title === 'Remembered pattern no finder filed as a blocker').map(f => [f.suppressedBy, f.cell, f.gradeIfConfirmed, f.refutation]),
         as: [['sup-1', { row: 'wrong', column: 'normal' }, 'warning', undefined]],
       },
+      {
+        // A `degraded` warning with no trigger is kept in the round record whatever a check says.
+        step: 'no trigger', title: 'Cost with no trigger', verdict: { trigger: '' },
+        ends: r => r.unposted?.filter(f => f.title === 'Cost with no trigger').map(f => [f.unpostedReason, f.refutation]), as: [['no_trigger', undefined]],
+      },
     ];
     // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
     const postable = Array.from({ length: 8 }, (_, i) => `Postable ${i + 1}`);
@@ -3668,7 +3673,7 @@ describe('runReview', () => {
     jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
       if (system.startsWith('You are a code review judge')) {
         // Both finders report every finding, so the judge answers for each copy.
-        return { content: JSON.stringify({ summary: 's', threadEvaluations: [{ threadId: 'T2', status: 'not_addressed', reason: 'r' }], findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', doubts: doubt, reasoning: 'r', ...hidden.find(row => row.title === title)?.verdict })) }) };
+        return { content: JSON.stringify({ summary: 's', threadEvaluations: [{ threadId: 'T2', status: 'not_addressed', reason: 'r' }], findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', trigger: 'When a user saves a record', doubts: doubt, reasoning: 'r', ...hidden.find(row => row.title === title)?.verdict })) }) };
       }
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);
@@ -3688,7 +3693,7 @@ describe('runReview', () => {
     expect(refuterCalls.sort()).toEqual(postable);
     expect(hidden.map(row => [row.step, row.ends(result)])).toEqual(hidden.map(row => [row.step, row.as]));
     expect(result.findings.filter(f => postable.includes(f.title)).map(f => f.severity)).toEqual(postable.map(() => 'warning'));
-    expect(result.unposted).toBeUndefined();
+    expect(result.unposted?.map(f => f.title)).toEqual(['Cost with no trigger']);
   });
 
   it('answers once a round whether a finding sits on unchanged code, so a lockfile `exclude_paths` left out counts as changed in every step', async () => {
@@ -3712,11 +3717,12 @@ describe('runReview', () => {
     Object.assign(clients.judge, { repoTools: true });
     jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
       if (system.startsWith('You are a code review judge')) {
-        return { content: JSON.stringify({ summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'degraded', preExisting: true, reasoning: 'r' })) }) };
+        return { content: JSON.stringify({ summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'degraded', trigger: 'When a user loads the lockfile', preExisting: true, reasoning: 'r' })) }) };
       }
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterMessages.push(user.split('\n')[0]);
-      return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It is ignored.', proof: ['src/old.ts:16'] }) };
+      const confirmed = { outcome: 'confirmed', reason: 'It is ignored.', proof: ['src/old.ts:16'] };
+      return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     let result: ReviewResult;
@@ -3727,11 +3733,11 @@ describe('runReview', () => {
     }
 
     expect(result.reviewComplete).toBe(true);
-    // Neither takes a check. The first is on changed code for the refuter too, and its cited lines prove it. The second
-    // is pre-existing and would not block had this PR caused it, so it is never posted.
-    expect(refuterMessages).toEqual([]);
+    // The first is on changed code for the refuter too. Only one of the two finders reported it, so it takes a check of
+    // its trigger. The second is pre-existing and would not block had this PR caused it, so it is never posted or checked.
+    expect(refuterMessages).toEqual(['## Finding the judge could not settle without tools: Loader breaks on the new hex']);
     expect(result.findings.map(f => [f.title, f.severity, f.preExistingCheck, f.tags?.includes('pre-existing') ?? false, f.checkStatus])).toEqual([
-      ['Loader breaks on the new hex', 'warning', 'touches_diff', false, 'proven'],
+      ['Loader breaks on the new hex', 'warning', 'touches_diff', false, 'confirmed'],
     ]);
     expect(result.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck])).toEqual([['Loader ignores the lock entry', 'pre_existing']]);
   });
@@ -4002,7 +4008,7 @@ describe('runReview', () => {
         if (late && late.at !== 'parallel' && (late.at === 'sweep') === user.includes(swept.title)) late.leave(90_000);
         if (late?.at === 'fails') throw new TimeoutError('The judge call timed out');
         const judged = user.includes(swept.title)
-          ? [{ id: 1, title: swept.title, row: 'degraded', doubts: [{ premise: 'No caller adds the tenant', decides: 'defect' }], reasoning: 'r' }]
+          ? [{ id: 1, title: swept.title, row: 'degraded', trigger: 'When a tenant searches', doubts: [{ premise: 'No caller adds the tenant', decides: 'defect' }], reasoning: 'r' }]
           : [{ id: 1, title: blocker.title, row: 'severe', reasoning: 'r' }, ...old.map((f, i) => ({ id: i + 2, title: f.title, row: 'degraded', security: true, doubts: [{ premise: 'The loop never ends', decides: 'defect' }], preExisting: true, reasoning: 'r' }))];
         return { content: JSON.stringify({ summary: 's', findings: judged }) };
       }
@@ -4022,7 +4028,7 @@ describe('runReview', () => {
         }
       }
       const confirmed = { outcome: 'confirmed', reason: 'It does.', proof: [title.startsWith('Old') ? 'src/old.ts:11' : 'src/app.ts:3'] };
-      return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
+      return { content: JSON.stringify({ ...confirmed, premises: [confirmed, confirmed] }) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     const options = { config: makeConfig({ review: { sweep: 'warnings' as const } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root };
@@ -4565,6 +4571,7 @@ describe('runReview', () => {
       refutation: { ...checked(premise === 'confirmed' ? 'confirmed' : 'unsettled').refutation, defect: 'confirmed' as const, premises: [{ premise: doubts[0].premise, outcome: premise, reason: `It is ${premise}.` }] },
     });
     const proof = { evidence: { checks: [], proof: ['src/a.ts:1'] } };
+    const degraded = { row: 'degraded' as const, column: 'normal' as const };
     /** Runs a round whose judge returns one finding per entry of `judged`, by title, with or without repository tools. */
     const review = async (judged: Record<string, Partial<Finding>>, tools: boolean) => {
       const clients = makeClients();
@@ -4596,6 +4603,13 @@ describe('runReview', () => {
         // Only a warning is left out.
         'A doubted note': { severity: 'note', doubts },
         'A blocker': { severity: 'blocker', ...proof },
+        // A cost on the `degraded` row needs a realistic trigger. A serious consequence, a finder's blocker or a security finding keeps it without one.
+        'Proven cost with a trigger': { ...proof, cell: degraded, trigger: 'When a user opens the page' },
+        'Proven cost without a trigger': { ...proof, cell: degraded },
+        'Unproven cost without a trigger': { cell: degraded },
+        'Rare wrong result without a trigger': { ...proof, cell: { row: 'wrong', column: 'rare' } },
+        'Cost a finder filed as a blocker': { ...proof, cell: degraded, reviewerSeverity: 'blocker' },
+        'Security cost without a trigger': { ...proof, cell: degraded, tags: ['security'] },
       }, true);
 
       expect(shown(result)).toEqual([
@@ -4603,6 +4617,7 @@ describe('runReview', () => {
         ['The check confirmed it without cited lines', 'confirmed'],
         // Only a blocker or a warning says how it was checked. A doubt no check could settle leaves a posted warning unconfirmed.
         ['Doubted and no check could run', 'unconfirmed'], ['A doubted note', undefined], ['A blocker', 'proven'],
+        ['Proven cost with a trigger', 'proven'], ['Rare wrong result without a trigger', 'proven'], ['Cost a finder filed as a blocker', 'proven'], ['Security cost without a trigger', 'proven'],
       ]);
       expect(recordedOnly(result)).toEqual([
         ['The check left the premise that decides the defect open', 'warning', 'unsettled_check'],
@@ -4611,6 +4626,9 @@ describe('runReview', () => {
         ['Doubted and past the limit of checks', 'warning', 'not_checked'],
         ['No cited lines and no check could run', 'warning', 'no_proof'],
         ['Names an earlier finding no round still shows', 'warning', 'no_proof'],
+        // A missing trigger is the reason whatever proves the warning.
+        ['Proven cost without a trigger', 'warning', 'no_trigger'],
+        ['Unproven cost without a trigger', 'warning', 'no_trigger'],
       ]);
       // The judged list still holds each one, so the progress comment can name it.
       expect(result.allJudgedFindings?.map(f => f.title)).toEqual(expect.arrayContaining(['The check settled nothing', 'No cited lines and no check could run']));

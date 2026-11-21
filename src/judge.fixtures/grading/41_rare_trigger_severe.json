@@ -1,0 +1,33 @@
+{
+  "name": "rare-trigger-severe",
+  "case": "rare-trigger-severe",
+  "allowed": [
+    "warning",
+    "blocker"
+  ],
+  "posted": true,
+  "finding": {
+    "title": "Two saves at once write the same temporary file and can corrupt the settings file",
+    "file": "store/settings.py",
+    "line": 16,
+    "description": "Every `save` writes to the same `<path>.tmp`. When the Save button runs while the autosave thread is still writing, `open(tmp, \"w\")` truncates the other thread's half-written file, and one of the two `os.replace` calls moves a mix of both writes over the settings file. The next `load` fails on the broken JSON and the user's settings are gone. Both callers are named in the class docstring.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "store/settings.py:16 every call uses the same temporary path",
+        "store/settings.py:17 opens it with `w`, which truncates it",
+        "store/settings.py:19 replaces the settings file with it"
+      ],
+      "proof": [
+        "store/settings.py:16",
+        "store/settings.py:17",
+        "store/settings.py:19"
+      ]
+    },
+    "suggestedFix": "Write to a unique temporary file per call, such as one from `tempfile.NamedTemporaryFile(dir=..., delete=False)`, or hold a lock across the write and the replace."
+  },
+  "prDiff": "diff --git a/store/settings.py b/store/settings.py\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/store/settings.py\n@@ -0,0 +1,23 @@\n+import json\n+import os\n+\n+\n+class SettingsStore:\n+    \"\"\"Keeps a user's settings in one JSON file.\n+\n+    The editor's autosave thread calls `save` every 30 seconds, and the\n+    Save button calls it from the UI thread.\n+    \"\"\"\n+\n+    def __init__(self, path: str):\n+        self._path = path\n+\n+    def save(self, settings: dict) -> None:\n+        tmp = self._path + \".tmp\"\n+        with open(tmp, \"w\") as f:\n+            json.dump(settings, f)\n+        os.replace(tmp, self._path)\n+\n+    def load(self) -> dict:\n+        with open(self._path) as f:\n+            return json.load(f)\n"
+}

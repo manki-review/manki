@@ -16,7 +16,7 @@ import { classifyRelatedWork, linkTrackingIssues } from './related-work';
 import { FULL_GROUP, GroupChoice, chooseGroup, classifyPr, distinctModels, findersOf, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { currentFindingLine, indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
-import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, lacksTrigger, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, COST_SCALE_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, ROOT_CAUSE_FIX_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -105,17 +105,17 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
 
 /**
  * Splits off the warnings that `needsProof` and that nothing proves, by `unprovenReason`, as `unposted` with that
- * reason, for the round record only. A warning is left out only when it is certain that no rule keeps it, so these
- * stay `posted` too: a finding `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and
- * a finding that `wouldBlock`. A finding that `isRareClaim` stays `posted` as well, whatever its check answered, and so
- * does one that `staysWarningIfConfirmed`, since its cell gives a blocker. Each posted blocker and warning that no tool
- * reported gets its `checkStatus`.
+ * reason, for the round record only. A warning that `lacksTrigger` goes there too, with `no_trigger`. A warning is left
+ * out only when it is certain that no rule keeps it, so these stay `posted` too: a finding `foldIntoEarlierFindings` or
+ * the judge put under one an earlier round still shows, and a finding that `wouldBlock`. A finding that `isRareClaim`
+ * stays `posted` as well, whatever its check answered, and so does one that `staysWarningIfConfirmed`, since its cell
+ * gives a blocker. Each posted blocker and warning that no tool reported gets its `checkStatus`.
  */
 function hideUnprovenWarnings(findings: Finding[], rules: RulesMode | undefined, wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
-    const unpostedReason = needsProof(f, rules) ? unprovenReason(f) : undefined;
+    const unpostedReason = !needsProof(f, rules) ? undefined : lacksTrigger(f) ? 'no_trigger' : unprovenReason(f);
     if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined || wouldBlock(f) || isRareClaim(f.cell) || staysWarningIfConfirmed(f)) {
       posted.push(isBlockingSeverity(f.severity) && !f.toolSource ? { ...f, checkStatus: checkStatus(f) } : f);
     } else {
@@ -1920,6 +1920,7 @@ export async function runReview(
     prContext,
     linkedIssues,
     agentCount: team.finders.length,
+    finderNames: team.finders.map(f => f.name),
     isFollowUp,
     openThreads: openThreads ?? undefined,
     priorRounds,

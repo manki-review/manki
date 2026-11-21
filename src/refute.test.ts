@@ -7,10 +7,10 @@ import * as core from '@actions/core';
 import { parsePRDiff } from './diff';
 import { LLMClient, SendMessageOptions } from './providers';
 import { AnthropicClient } from './providers/anthropic';
-import { checkStatus, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, lacksTrigger, needsProof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { parseFindings } from './review';
-import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, oneCheckOnBase, sameOnBase, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { agreedOutcome, BASE_QUESTION, disproof, Finding, OpenThread, outcomeOf, ParsedDiff, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, RulesMode, oneCheckOnBase, sameOnBase, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
 import { baseProofFixture, git, GIT_TEST_TIMEOUT_MS, gitWorkspace } from './test-utils';
 import { BASE_READS_FILE, fetchWorkspace } from './workspace';
 import { RELATED_REPO_TRUST_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -1110,6 +1110,30 @@ describe('refuteBlockers', () => {
     expect([left('Warning the judge doubts'), left('Warning in the rare column')]).toEqual(['unsettled_check', undefined]);
     // The same holds where no check runs at all, as on a round without tools: what a finder did not finish checking is not proven by the lines it cites.
     expect([finding('Lead', lead), finding('Not finished', { severity: 'warning', notChecked: true }), finding('Finished', { severity: 'warning' })].map(checkStatus)).toEqual(['unconfirmed', 'unconfirmed', 'proven']);
+  });
+
+  it('posts a `degraded` warning only with a realistic trigger, and confirms its trigger, not only the defect, before it shows as confirmed', async () => {
+    const degraded = { row: 'degraded' as const, column: 'normal' as const };
+    const trigger = 'When a user saves a record';
+    const withTrigger = (title: string) => finding(title, { severity: 'warning', cell: degraded, trigger, gradeIfConfirmed: 'warning', doubts: [triggerDoubt(trigger)] });
+    const answer = (outcome: RefutationOutcome) => ({ outcome, reason: 'r', proof: ['src/math.ts:2'] });
+    // Every check confirms the defect itself. Only the answer about the trigger differs.
+    const outcomes: Record<string, RefutationOutcome> = { 'Trigger confirmed': 'confirmed', 'Trigger disproved': 'disproved', 'Trigger open': 'unsettled' };
+    const client = fakeClient(Object.fromEntries(Object.entries(outcomes).map(([title, outcome]) => [title, { ...answer('confirmed'), premises: [answer(outcome)] }])));
+    const checked = await refuteRound(client, Object.keys(outcomes).map(withTrigger), { workspace, diff });
+    expect(checked.map(f => [f.title, f.severity, lacksTrigger(f), unprovenReason(f), checkStatus(f)])).toEqual([
+      ['Trigger confirmed', 'warning', false, undefined, 'confirmed'],
+      ['Trigger disproved', 'warning', true, 'unsettled_check', 'unconfirmed'],
+      ['Trigger open', 'warning', false, 'unsettled_check', 'unconfirmed'],
+    ]);
+    // Without a check, a `degraded` warning lacks a trigger only when the judge named none. No other row and no other grade needs one.
+    expect([
+      finding('No trigger', { severity: 'warning', cell: degraded }),
+      finding('Named trigger', { severity: 'warning', cell: degraded, trigger }),
+      finding('Rare wrong result', { severity: 'warning', cell: { row: 'wrong', column: 'rare' } }),
+      finding('Degraded note', { severity: 'note', cell: { row: 'degraded', column: 'rare' } }),
+      finding('No cell', { severity: 'warning' }),
+    ].map(lacksTrigger)).toEqual([true, false, false, false, false]);
   });
 
   it('takes no check for a warning a later step leaves out, such as a pre-existing one, and checks the rest in order inside the same limit', async () => {

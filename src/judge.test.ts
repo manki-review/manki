@@ -29,11 +29,11 @@ import * as mcpServer from './mcp-server';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { parseFindings, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
-import { unprovenReason } from './refute';
+import { lacksTrigger, unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, finderGrade, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, triggerDoubt, wouldBlockIfTrue } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -260,11 +260,13 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('- `warning`: state the cell all the same, list the premise you could not settle in `doubts` with `decides` set to `defect`, and say it in `reasoning`. No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.');
     expect(prompt).not.toMatch(/keep it, list|costs a single fix/);
     const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
-    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale, contradicts the finding, or leaves you unsure whether anyone would notice, keep the warning. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
+    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Y is a consequence someone would notice in realistic use. A cost nobody would notice is a note: state the `improvement` row, or the `style` row when the point is only wording. Grade a finding a note on this ground only when its description names no consequence anyone would notice and the code shown confirms that the scale is small. The finding\'s own word on the scale is not enough. When the code shown does not show the scale or contradicts the finding, keep the warning.\n\n**A `degraded` warning needs a realistic trigger**, by the rule under the Severity Table below. On every finding you keep, put that sequence of events in `trigger`, as "when X happens". Leave `trigger` empty when the trigger is not realistic or you are unsure whether anyone would notice the failure. Manki records a `degraded` warning without a trigger in the round record and never posts it, so keep its row and never move it to the `improvement` row for this reason. On the `severe` and `wrong` rows a rare trigger changes nothing: state the cell as the table says.\n\nManki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
     expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
     expect(prompt).not.toMatch(/confidence/i);
     const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
     expect(warningTests(withTools)).toContain('For one you cannot prove from the code shown or your tools, follow When You Are Unsure.');
+    expect(warningTests(withTools)).toContain('When two finders ran and fewer than two of them reported a `degraded` warning, Manki checks its trigger with tools and posts the warning only when the check confirms it.');
+    expect(prompt).toContain('"trigger": "When X happens in normal use, or empty",');
     expect(withTools).toContain('and say it in `reasoning`. Manki checks the premise with tools and posts the warning only when the check confirms it.\n');
     expect(withTools).not.toContain('No tool check runs on this review');
     expect(prompt).toContain('- `note`: drop it (`ignore`)');
@@ -1294,6 +1296,19 @@ describe('parseJudgeResponse', () => {
     const base = { severity: 'warning' as const, file: 'src/upload.ts', line: 3, description: 'd', reviewers: ['r'] };
     const mapped = mapJudgedToFindings([{ ...base, title: 'Upload unbounded', howToFix: 'Check the size.' }, { ...base, title: 'Covered', line: 9 }], leaves);
     expect(mapped.map(f => f.howToFix)).toEqual(['Check the size. This fix leaves part of the problem: The upload still has no timeout.', undefined]);
+    // A trigger is kept trimmed, and an empty or non-text one is none. A merged copy's trigger fills a survivor without one.
+    const triggers = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
+      { id: 1, title: 'Upload unbounded', row: 'degraded', reasoning: 'r', trigger: '  When a user uploads a large file ' },
+      { id: 2, title: 'Covered', row: 'degraded', reasoning: 'r', trigger: '' },
+      { id: 3, title: 'Covered again', row: 'degraded', reasoning: 'r', trigger: 3, duplicateOf: 2 },
+    ] }), undefined).findings;
+    expect(triggers.map(f => f.trigger)).toEqual(['When a user uploads a large file', undefined, undefined]);
+    expect(mapJudgedToFindings([{ ...base, title: 'Upload unbounded' }, { ...base, title: 'Covered', line: 9 }, { ...base, title: 'Covered again', line: 9 }], triggers).map(f => f.trigger))
+      .toEqual(['When a user uploads a large file', undefined]);
+    const filled = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
+      { id: 1, title: 'Covered', row: 'degraded', reasoning: 'r' }, { id: 2, title: 'Covered again', row: 'degraded', reasoning: 'r', trigger: 'When a page loads', duplicateOf: 1 },
+    ] }), undefined).findings;
+    expect(mapJudgedToFindings([{ ...base, title: 'Covered' }, { ...base, title: 'Covered again' }], filled).map(f => f.trigger)).toEqual(['When a page loads']);
     // A doubt keeps only a premise it names, and one that does not decide only the grade decides whether the defect exists.
     const doubts = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'A', row: 'degraded', reasoning: 'r', doubts: [
@@ -1885,6 +1900,59 @@ describe('runJudgeAgent', () => {
     expect(second.startsWith(`${first}\n\nYour previous reply could not be used: `)).toBe(true);
   });
 
+  it('has the trigger of a `degraded` warning checked when two finders ran and only one reported it', async () => {
+    const trigger = 'When a page loads';
+    const findings = [
+      makeFinding({ title: 'One finder', severity: 'warning', line: 3, reviewers: ['First'] }),
+      makeFinding({ title: 'Both finders', severity: 'warning', line: 5, reviewers: ['First'] }),
+      makeFinding({ title: 'Both finders too', severity: 'warning', line: 5, reviewers: ['Second'] }),
+      makeFinding({ title: 'No trigger', severity: 'warning', line: 7, reviewers: ['First'] }),
+      makeFinding({ title: 'Security', severity: 'warning', line: 9, reviewers: ['First'] }),
+      makeFinding({ title: 'Rare wrong result', severity: 'warning', line: 11, reviewers: ['First'] }),
+      makeFinding({ title: 'Same title', severity: 'warning', line: 13, reviewers: ['First'] }),
+      makeFinding({ title: 'Same title', severity: 'warning', line: 14, reviewers: ['Second'] }),
+      makeFinding({ title: 'Sweep only', severity: 'warning', line: 15, reviewers: ['Sweep 1'] }),
+    ];
+    const entries = [
+      { id: 1, title: 'One finder', row: 'degraded', reasoning: 'r', trigger },
+      { id: 2, title: 'Both finders', row: 'degraded', reasoning: 'r', trigger },
+      { id: 3, title: 'Both finders too', row: 'degraded', reasoning: 'r', trigger, duplicateOf: 2 },
+      { id: 4, title: 'No trigger', row: 'degraded', reasoning: 'r' },
+      { id: 5, title: 'Security', row: 'degraded', security: true, reasoning: 'r', trigger },
+      { id: 6, title: 'Rare wrong result', row: 'wrong', column: 'rare', reasoning: 'r', trigger },
+      // The judge marks no duplicate here, so the merge by title and file folds the two copies.
+      { id: 7, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
+      { id: 8, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
+      { id: 9, title: 'Sweep only', row: 'degraded', reasoning: 'r', trigger },
+    ];
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-trigger-'));
+    const refuter = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'unsettled', reason: 'r' }) }) } as unknown as LLMClient;
+    const graded = async (finderNames: string[], checked = true) => {
+      mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: entries }) });
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: finderNames.length, finderNames, ...(checked && { refutation: { client: refuter, workspace } }),
+      });
+      return result.findings.map(f => [f.title, f.trigger, f.gradeIfConfirmed, f.doubts?.map(d => d.premise)]);
+    };
+    expect(await graded(['First', 'Second'])).toEqual([
+      ['One finder', trigger, 'warning', [triggerDoubt(trigger).premise]],
+      ['Both finders', trigger, undefined, undefined],
+      ['No trigger', undefined, undefined, undefined],
+      ['Security', trigger, undefined, undefined],
+      ['Rare wrong result', trigger, 'blocker', [REACH_DOUBT.premise]],
+      ['Same title', trigger, undefined, undefined],
+      // A sweep is no finder, so a warning only it found has fewer than two finders behind it too.
+      ['Sweep only', trigger, 'warning', [triggerDoubt(trigger).premise]],
+    ]);
+    // With one finder there is no second one to agree, so no warning gets the check.
+    expect((await graded(['First'])).map(([title, , , doubts]) => [title, doubts])).toEqual([
+      ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]], ['Same title', undefined], ['Sweep only', undefined],
+    ]);
+    // Without a refuter no check could confirm the trigger, so a warning that cites its lines stays proven.
+    expect((await graded(['First', 'Second'], false)).find(([title]) => title === 'One finder')).toEqual(['One finder', trigger, undefined, undefined]);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
   it('asks once more only for the findings a reply left out, and fails when one is still left out', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const input: JudgeInput = {
@@ -2100,7 +2168,7 @@ describe('runJudgeAgent', () => {
         { id: 4, title: 'Unseen kept', row: 'wrong', column: 'rare', reasoning: 'r' },
         { id: 5, title: 'Unseen dropped', row: 'none', doubts: [{ premise: 'The handler is registered', decides: 'defect' }], reasoning: 'r' },
         { id: 7, title: 'Second cache left stale', row: 'wrong', column: 'rare', doubts: [{ premise: 'A request reads the second cache after the write', decides: 'grade' }], reasoning: 'warning. Not sure a request reads it, since only the sweeper seems to.' },
-        { id: 8, title: 'Copy never removed', row: 'degraded', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.' },
+        { id: 8, title: 'Copy never removed', row: 'degraded', trigger: 'When a user edits a record', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.' },
         { id: 9, title: 'Doubted nit', row: 'degraded', column: 'rare', doubts: [{ premise: 'A request logs the name', decides: 'grade' }], reasoning: 'r' },
         { id: 10, title: 'Wrong retry count', row: 'wrong', column: 'normal', gradeIfConfirmed: 'warning', doubts: [{ premise: 'The status line prints the counter', decides: 'defect' }], reasoning: 'blocker. Test 3 fails even then: only the status line shows the count.' },
         { id: 11, title: 'Stale index after rename', row: 'wrong', column: 'normal', gradeIfConfirmed: 'blocker', doubts: [{ premise: 'The rename path skips the index update', decides: 'defect' }], reasoning: 'warning. The rename path sits outside the code shown.' },
@@ -2618,7 +2686,7 @@ describe('runJudgeAgent', () => {
       // The finder cites no search, and the refuter's check of the fact is that search.
       'Fact confirmed without a search': unseen,
       // The fact is no premise of a finding graded by its own damage, so the judge's other doubt cannot stand in for it.
-      'Another premise confirmed': { ...unseen, row: 'degraded', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
+      'Another premise confirmed': { ...unseen, row: 'degraded', trigger: 'When a request arrives', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
       // The judge's own doubt is about the damage. A disproof of it leaves the confirmed rule broken.
       'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // The judge confirmed the rule, so the refuter's own answer that the defect does not exist drops nothing either.
@@ -5456,7 +5524,7 @@ describe('buildJudgeUserMessage with linked issues', () => {
 });
 
 describe('deduplicateFindings', () => {
-  it('removes findings with identical title and file, keeps a pre-existing mark only when every copy has it, and keeps the first rule a copy quotes', () => {
+  it('removes findings with identical title and file, keeps the reviewers of both, keeps a pre-existing mark only when every copy has it, and keeps the first rule a copy quotes', () => {
     const findings = [
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 10, reviewers: ['R1'], preExisting: 'Old code.' }),
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 20, reviewers: ['R2'] }),
@@ -5464,8 +5532,11 @@ describe('deduplicateFindings', () => {
 
     const result = deduplicateFindings(findings);
     expect(result).toHaveLength(1);
-    expect(result[0].reviewers).toEqual(['R1']);
+    expect(result[0].reviewers).toEqual(['R1', 'R2']);
     expect(result[0].preExisting).toBeUndefined();
+    // The kept finding takes the trigger of a copy when it names none, so the merge never leaves a `degraded` warning without one.
+    expect(deduplicateFindings([findings[0], { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a page loads');
+    expect(deduplicateFindings([{ ...findings[0], trigger: 'When a user saves' }, { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a user saves');
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
     // A dropped copy's security tag stays on the kept finding, next to the tags it has.
     expect(deduplicateFindings([{ ...findings[0], tags: ['follow-up'] }, { ...findings[1], tags: ['security'] }])[0].tags).toEqual(['follow-up', 'security']);
@@ -5501,7 +5572,7 @@ describe('deduplicateFindings', () => {
     // The kept finding takes the highest grade a finder gave any copy, read from where a copy's grade path starts.
     const raised: Finding = { ...findings[0], severity: 'blocker', reviewerSeverity: 'note', gradePath: [{ from: 'note', to: 'blocker', by: 'judge' }] };
     const capped: Finding = { ...findings[1], severity: 'warning', gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] };
-    expect(deduplicateFindings([raised, capped])[0]).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note', reviewers: ['R1'] });
+    expect(deduplicateFindings([raised, capped])[0]).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note', reviewers: ['R1', 'R2'] });
     expect(deduplicateFindings([raised, { ...findings[1], severity: 'warning' }])[0]).toMatchObject({ reviewerSeverity: 'warning', lowestReviewerSeverity: 'note' });
     expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0]).toMatchObject({ reviewerSeverity: 'note' });
     expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0]).not.toHaveProperty('lowestReviewerSeverity');
@@ -5511,7 +5582,7 @@ describe('deduplicateFindings', () => {
     const read: Finding = { ...findings[1], severity: 'blocker', reviewers: ['Second read 1'] };
     for (const order of [[raised, read], [read, raised]]) {
       const [kept] = deduplicateFindings(order);
-      expect(kept).toMatchObject({ line: 10, reviewers: ['R1'], severity: 'blocker', reviewerSeverity: 'note' });
+      expect(kept).toMatchObject({ line: 10, reviewers: ['R1', 'Second read 1'], severity: 'blocker', reviewerSeverity: 'note' });
       expect(kept).not.toHaveProperty('lowestReviewerSeverity');
     }
     expect(deduplicateFindings([read, { ...read, severity: 'note' }])[0]).toMatchObject({ reviewers: ['Second read 1'], lowestReviewerSeverity: 'note' });
@@ -6419,7 +6490,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
         id: i + 1, title, reasoning: 'r',
-        ...(i === 2 || i > 3 ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
+        ...(i === 2 || i > 3 ? { row: 'degraded', trigger: 'When a request retries', doubts: leak } : title === 'Open lead' ? { row: 'degraded', trigger: 'When a request retries' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
     const refuterCalls: string[] = [];
@@ -6707,6 +6778,9 @@ const GRADING_CASES = [
   'noticed-leaked-temp-file',
   'noticed-slowdown',
   'noticed-slow-leak',
+  'rare-window-minor',
+  'rare-trigger-severe',
+  'noticed-common-slowdown',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
@@ -6725,7 +6799,12 @@ interface GradingFixture {
   proven?: boolean;
   /** For a finding that rests on code the judge cannot see: the grade it earns once a check confirms that code is as the finding says. */
   ifConfirmed?: 'blocker' | 'warning';
+  /** For a finding whose trigger decides it: whether the review posts it, or keeps it in the round record only for want of a realistic trigger. */
+  posted?: boolean;
 }
+
+/** Whether the review posts each trigger fixture: a rare window with a minor cost is recorded only, and a serious consequence or a common trigger is posted. */
+const POSTED: Readonly<Record<string, boolean>> = { 'rare-window-minor': false, 'rare-trigger-severe': true, 'noticed-common-slowdown': true };
 
 /** The grade each doubted fixture earns once its doubt holds: serious damage blocks, and a wrong figure in a line of text does not. */
 const IF_CONFIRMED: Readonly<Record<string, GradingFixture['ifConfirmed']>> = {
@@ -6753,7 +6832,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, and a cost nobody would notice beside a consequence someone would, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, a missing-test note that cites the test file, a finding on unseen code that does or does not earn a blocker once that code is confirmed, a cost nobody would notice beside a consequence someone would, and a rare trigger with a minor or a serious consequence beside a common one, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
@@ -6761,7 +6840,7 @@ describe('judge grading fixture corpus', () => {
     const diff = parsePRDiff(fixture.prDiff);
     expect(extractCodeContext(fixture.finding, diff)).toContain(`>>> ${fixture.finding.line}:`);
     expect(diff.files.map(f => f.path).filter(path => !shownFiles(fixture.finding).includes(path))).toEqual([]);
-    expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse' || fixture.case.startsWith('noticed-'));
+    expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse' || fixture.case === 'rare-trigger-severe' || fixture.case.startsWith('noticed-'));
     // A cost nobody would notice is a note. A consequence someone would notice stays a warning or above.
     const noticeGrades = fixture.case.startsWith('unnoticed-') ? ['note'] : fixture.case.startsWith('noticed-') ? ['warning', 'blocker'] : fixture.allowed;
     expect(fixture.allowed).toEqual(noticeGrades);
@@ -6769,6 +6848,7 @@ describe('judge grading fixture corpus', () => {
     expect(fixture.pr !== undefined).toBe(fixture.case === 'declared-gap');
     expect(fixture.proven).toBe({ 'proven-warning': true, 'unproven-warning': false }[fixture.case as string]);
     expect(fixture.ifConfirmed).toBe(IF_CONFIRMED[fixture.case]);
+    expect(fixture.posted).toBe(POSTED[fixture.case]);
     const appliesFix = computeProvenanceMap(gradingPriorRounds(fixture), fixture.prDiff)
       .some(e => e.file === fixture.finding.file && fixture.finding.line >= e.lineStart && fixture.finding.line <= e.lineEnd);
     expect(appliesFix).toBe(fixture.case.startsWith('own-proposal-'));
@@ -6800,6 +6880,8 @@ describe('judge grading fixture corpus', () => {
     if (fixture.proven === false) expect(unreached).toBe('not_checked');
     // Without tools the doubt holds the finding at a warning either way. What differs is whether a check that confirms the doubt raises it.
     if (fixture.ifConfirmed) expect(graded && pendingGrade(graded) === 'blocker' ? 'blocker' : 'warning').toBe(fixture.ifConfirmed);
+    // A warning without a realistic trigger is kept in the round record only. One with a serious consequence or a common trigger is posted.
+    if (fixture.posted !== undefined) expect(graded.severity !== 'ignore' && !lacksTrigger(graded)).toBe(fixture.posted);
   }, 600_000);
 });
 
