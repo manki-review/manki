@@ -3036,12 +3036,12 @@ export interface CitedLine {
 }
 
 /**
- * Why a warning carried from an earlier review body is no longer listed: its line reads differently or its file is gone
- * (`line_changed`), or a finding the judge graded this round names it. That finding is listed (`restated`), a note the
+ * Why a warning carried from an earlier review body is no longer listed: a finding the judge graded this round names
+ * it. That finding is listed (`restated`), a note the
  * review leaves out (`hidden_note`), dropped by the judge (`judge_dropped`) or left out by a later step (`left_out`).
  * A warning left out because nothing proves it ends none. A warning the judge evaluated as addressed ends as `fixed`.
  */
-export type CarriedEndReason = 'line_changed' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out' | 'fixed';
+export type CarriedEndReason = 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out' | 'fixed';
 
 export interface CarriedEnd {
   /** The fingerprint key of the warning. */
