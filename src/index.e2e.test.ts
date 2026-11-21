@@ -1399,7 +1399,7 @@ describe('runFullReview end to end', () => {
     const warning = { ...BLOCKER, severity: 'warning' };
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([warning]),
-      judge: JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', reasoning: 'Only very large sums are off.' }] }),
+      judge: JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', trigger: 'When an invoice sums very large amounts', reasoning: 'Only very large sums are off.' }] }),
     });
     await reviewRound();
 
@@ -1415,7 +1415,7 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.roundContext(late).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', origin: 'reviewed', posted: 'thread' })]);
 
     // The next round names it again. It stays in its thread, which still holds the approval.
-    mockLLM.replies.judge = JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', reasoning: 'Only very large sums are off.', sameAs: 'P1' }] });
+    mockLLM.replies.judge = JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', trigger: 'When an invoice sums very large amounts', reasoning: 'Only very large sums are off.', sameAs: 'P1' }] });
     await forcedRound();
 
     // The judge reads the thread's finding without the sentence.
