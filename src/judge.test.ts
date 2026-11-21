@@ -265,7 +265,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toMatch(/confidence/i);
     const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
     expect(warningTests(withTools)).toContain('For one you cannot prove from the code shown or your tools, follow When You Are Unsure.');
-    expect(warningTests(withTools)).toContain('When two finders ran and only one reported a `degraded` warning, Manki checks its trigger with tools and posts the warning only when the check confirms it.');
+    expect(warningTests(withTools)).toContain('When two finders ran and fewer than two of them reported a `degraded` warning, Manki checks its trigger with tools and posts the warning only when the check confirms it.');
     expect(prompt).toContain('"trigger": "When X happens in normal use, or empty",');
     expect(withTools).toContain('and say it in `reasoning`. Manki checks the premise with tools and posts the warning only when the check confirms it.\n');
     expect(withTools).not.toContain('No tool check runs on this review');
@@ -1911,6 +1911,7 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Rare wrong result', severity: 'warning', line: 11, reviewers: ['First'] }),
       makeFinding({ title: 'Same title', severity: 'warning', line: 13, reviewers: ['First'] }),
       makeFinding({ title: 'Same title', severity: 'warning', line: 14, reviewers: ['Second'] }),
+      makeFinding({ title: 'Sweep only', severity: 'warning', line: 15, reviewers: ['Sweep 1'] }),
     ];
     const entries = [
       { id: 1, title: 'One finder', row: 'degraded', reasoning: 'r', trigger },
@@ -1922,6 +1923,7 @@ describe('runJudgeAgent', () => {
       // The judge marks no duplicate here, so the merge by title and file folds the two copies.
       { id: 7, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
       { id: 8, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
+      { id: 9, title: 'Sweep only', row: 'degraded', reasoning: 'r', trigger },
     ];
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-trigger-'));
     const refuter = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'unsettled', reason: 'r' }) }) } as unknown as LLMClient;
@@ -1939,10 +1941,12 @@ describe('runJudgeAgent', () => {
       ['Security', trigger, undefined, undefined],
       ['Rare wrong result', trigger, 'blocker', [REACH_DOUBT.premise]],
       ['Same title', trigger, undefined, undefined],
+      // A sweep is no finder, so a warning only it found has fewer than two finders behind it too.
+      ['Sweep only', trigger, 'warning', [triggerDoubt(trigger).premise]],
     ]);
     // With one finder there is no second one to agree, so no warning gets the check.
     expect((await graded(['First'])).map(([title, , , doubts]) => [title, doubts])).toEqual([
-      ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]], ['Same title', undefined],
+      ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]], ['Same title', undefined], ['Sweep only', undefined],
     ]);
     // Without a refuter no check could confirm the trigger, so a warning that cites its lines stays proven.
     expect((await graded(['First', 'Second'], false)).find(([title]) => title === 'One finder')).toEqual(['One finder', trigger, undefined, undefined]);
