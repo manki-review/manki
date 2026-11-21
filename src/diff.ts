@@ -594,6 +594,35 @@ export function replacementOf(file: DiffFile, oldLine: number): [number, number]
   return undefined;
 }
 
+/**
+ * Returns the line of the old file, with its text, that `line` of the new file replaced: the line at the same place in
+ * its run of changed lines, so the first line a run adds replaced the first line it removes, and so on. Returns
+ * `undefined` for a line the diff keeps, and for a line a run adds past the lines it removes.
+ */
+export function replacedLineOf(file: DiffFile, line: number): { line: number; text: string } | undefined {
+  for (const hunk of file.hunks) {
+    let [oldAt, newAt] = [hunk.oldStart, hunk.newStart];
+    let run: { removed: Array<{ line: number; text: string }>; added: number[] } = { removed: [], added: [] };
+    for (const content of [...hunk.content.split('\n'), ' ']) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-')) {
+        run.removed.push({ line: oldAt++, text: content.slice(1) });
+        continue;
+      }
+      if (content.startsWith('+')) {
+        run.added.push(newAt++);
+        continue;
+      }
+      const at = run.added.indexOf(line);
+      if (at >= 0) return run.removed[at];
+      run = { removed: [], added: [] };
+      oldAt++;
+      newAt++;
+    }
+  }
+  return undefined;
+}
+
 /** Whether a run of changed lines sits right before or right after `oldLine` of the old file. */
 export function changesNextTo(file: DiffFile, oldLine: number): boolean {
   for (const hunk of file.hunks) {
