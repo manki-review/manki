@@ -238,9 +238,9 @@ function openAfterRound(
  * so a change that round already judged cannot show a fix, or else `postedOn`, the commit the thread was posted on.
  * Returns `undefined` when a round record could not be read, since it may hold such a judgment.
  */
-function changesCountFrom(rounds: Pick<RecapState, 'priorRounds' | 'priorRoundsIncomplete' | 'unreadRecords'>, threadId: string | undefined, postedOn: string | undefined): string | undefined {
+function changesCountFrom(rounds: Pick<RecapState, 'priorRounds' | 'priorRoundsIncomplete' | 'unreadRecords'>, threadId: string, postedOn: string | undefined): string | undefined {
   if (rounds.priorRoundsIncomplete || rounds.unreadRecords?.length) return undefined;
-  const judgedOpen = threadId ? rounds.priorRounds.filter(r => r.judge.threadEvaluations?.some(e => e.threadId === threadId && e.status !== 'addressed')).at(-1) : undefined;
+  const judgedOpen = rounds.priorRounds.filter(r => r.judge.threadEvaluations?.some(e => e.threadId === threadId && e.status !== 'addressed')).at(-1);
   return judgedOpen?.meta.commitSha ?? postedOn;
 }
 
@@ -578,9 +578,10 @@ export async function handleReviewCommentReply(
       lookupFailed = true;
       return undefined;
     });
-    // A merged or closed PR has no live thread, so no round's judgment of it moves where its changes count from.
-    const rounds = closed ? undefined : await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber);
-    const since = rounds ? changesCountFrom(rounds, live?.id, root.comment.original_commit_id) : root.comment.original_commit_id;
+    // Only the live thread's id finds the rounds that judged it. A merged or closed PR has none, and nothing there reads
+    // a "Fixed." again. On an open PR a thread that could not be found may have such a judgment, so no change counts.
+    const rounds = live ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : undefined;
+    const since = live && rounds ? changesCountFrom(rounds, live.id, root.comment.original_commit_id) : closed ? root.comment.original_commit_id : undefined;
     const sincePosted = since && head ? await fetchChangesSince(octokit, owner, repo, since, head, [filePath, ...evidenceFiles ?? []]) : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext + sinceContext(sincePosted), tools, related);
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.

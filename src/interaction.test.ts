@@ -877,13 +877,13 @@ describe('handleReviewCommentReply', () => {
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { original_commit_id: POSTED_ON, user: MANKI_USER, body: findingComment('blocker'), path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
-    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Fixed. The guard now runs first.') });
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: structured('Agreed. The guard is not needed here.') });
     jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
-    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'lookup_failed' }]);
+    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Agreed', thread: 'lookup_failed' }]);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read the thread of the reply'));
   });
 
@@ -1295,7 +1295,7 @@ describe('handleReviewCommentReply', () => {
     expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([settles ? { outcome: 'Fixed', thread: 'resolves' } : undefined]);
   });
 
-  it('counts the change for a "Fixed." from the latest round that kept the thread open, and no change when the rounds cannot be read', async () => {
+  it('counts the change for a "Fixed." from the latest round that kept the thread open, and no change when the rounds or the thread cannot be read', async () => {
     const head = 'a'.repeat(40);
     const judged = 'c'.repeat(40);
     setContext({
@@ -1330,6 +1330,15 @@ describe('handleReviewCommentReply', () => {
     const body = await reply(Promise.reject(new Error('Server Error')));
     expect(ghUtils.fetchChangesSince).not.toHaveBeenCalled();
     expect(body.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${UNPROVEN}`);
+    // Without the thread no round's judgment of it can be found, so no change counts either.
+    const judgedOpen = Promise.resolve([{ id: 7, body: `Changes requested.\n\n${formatReviewRecord(round('not_addressed'))}`, user: { login: 'manki-review[bot]' } }]);
+    for (const lookup of [() => jest.mocked(state.fetchBotReviewThreads).mockResolvedValueOnce([]), () => jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'))]) {
+      lookup();
+      const unknown = await reply(judgedOpen);
+      expect(ghUtils.fetchChangesSince).not.toHaveBeenCalled();
+      expect(unknown.split('\n\n<!-- manki -->')[0]).toBe(`Unverified. The guard now runs first. ${UNPROVEN}`);
+      expect(unknown).not.toContain('<!-- manki-fixed:');
+    }
   });
 
   // A statement about the PR description rests on the description GitHub returns when the reply is answered, never on the event's copy.
