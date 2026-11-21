@@ -13,13 +13,21 @@ const MAX_RECORD_BYTES = 16 * 1024 * 1024;
  * characters, otherwise gzip compressed and base64 encoded.
  */
 export function formatReviewRecord(context: RoundContext, room: number = Infinity): string {
-  const ctx = context.judge.threadEvaluations?.length === 0
-    ? { ...context, judge: { ...context.judge, threadEvaluations: undefined } }
-    : context;
-  const json = recordJson(ctx);
+  const json = reviewRecordJson(context);
   const plain = `<!-- manki-context: ${sanitizeHtmlCommentJson(json)} -->`;
   if (plain.length <= room) return plain;
   return `<!-- manki-context-gzip: ${gzipSync(json).toString('base64')} -->`;
+}
+
+/** Returns the round context gzip compressed and base64 encoded, as a compressed round record holds it. */
+export function compressReviewRecord(context: RoundContext): string {
+  return gzipSync(reviewRecordJson(context)).toString('base64');
+}
+
+function reviewRecordJson(context: RoundContext): string {
+  return recordJson(context.judge.threadEvaluations?.length === 0
+    ? { ...context, judge: { ...context.judge, threadEvaluations: undefined } }
+    : context);
 }
 
 /** Returns a reply-handler run's record as a hidden HTML comment. */
