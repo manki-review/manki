@@ -1025,17 +1025,16 @@ describe('oldLineOf, replacementOf, extendedLineOf and changesNextTo', () => {
 
   it('pairs a line a run adds with the one line it removes that the new line only extends', () => {
     const run = (...lines: string[]) => parsePRDiff(['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', `@@ -1,4 +1,${lines.filter(l => !l.startsWith('-')).length} @@`, ...lines].join('\n')).files[0];
-    // An argument added to a call or a signature, and a line indented again, keep the old line.
+    // An argument added to a call or a signature keeps the old line.
     expect(extendedLineOf(run(' one', '-send(peer, [id]);', '+send(peer, [id, at]);', ' three'), 2)).toEqual({ line: 2, text: 'send(peer, [id]);' });
     expect(extendedLineOf(run(' one', '-def load(path):', '+def load(path, strict):', ' three'), 2)).toEqual({ line: 2, text: 'def load(path):' });
-    expect(extendedLineOf(run(' one', '-  read();', '+    read();', ' three'), 2)).toEqual({ line: 2, text: '  read();' });
     // A line inserted before the extended one is new, so only the extended line maps.
     expect([2, 3].map(line => extendedLineOf(run(' one', '-b(x);', '+new();', '+b(x, y);', ' three'), line))).toEqual([undefined, { line: 2, text: 'b(x);' }]);
     // Removed and added lines out of order still pair by their text.
     expect([2, 3].map(line => extendedLineOf(run(' one', '-a(1)', '+a(1, 2)', '-b(1)', '+b(1, 2)', ' four'), line))).toEqual([{ line: 2, text: 'a(1)' }, { line: 3, text: 'b(1)' }]);
     // A rewritten line, a condition negated, inverted, narrowed or widened past the list, a changed number, a change of
-    // whitespace inside the line, a blank removed line, a kept line and an old line two added lines both extend map to
-    // nothing.
+    // whitespace, a comma outside any bracket, a blank removed line, a kept line and an old line two added lines both
+    // extend map to nothing.
     expect(extendedLineOf(run(' one', '-foo(x);', '+bar(x);', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-if (x) {', '+if (!x) {', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-if (ok) {', '+if (ok === false) {', ' three'), 2)).toBeUndefined();
@@ -1043,6 +1042,8 @@ describe('oldLineOf, replacementOf, extendedLineOf and changesNextTo', () => {
     expect(extendedLineOf(run(' one', '-if (isAllowed(user)) {', '+if (isAllowed(user, role) || isAdmin()) {', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-parts = s.split(" ");', '+parts = s.split("");', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-let a b;', '+let ab;', ' three'), 2)).toBeUndefined();
+    expect(extendedLineOf(run(' one', '-  read();', '+    read();', ' three'), 2)).toBeUndefined();
+    expect(extendedLineOf(run(' one', '-return a', '+return a, b', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-ok = x > 0;', '+ok = x >= 0;', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-timeout = 5;', '+timeout = 50;', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-limit = 1;', '+limit = 1.5;', ' three'), 2)).toBeUndefined();

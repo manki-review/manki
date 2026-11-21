@@ -3814,12 +3814,12 @@ describe('runReview', () => {
 
     // The judge's pre-existing call alone lowers nothing. Checks that find the failure the PR's own or leave it open, a
     // security finding without both refuters, a workspace without the base, a line the base
-    // does not hold, no citation of the flagged line at its base line, a re-indented flagged line cited at a line it did
-    // not extend, a flagged comment line the PR only added, and a round with no check at all keep the blocker its cell gives.
+    // does not hold, no citation of the flagged line at its base line, a flagged line the PR re-indented, a flagged comment
+    // line the PR only added, and a round with no check at all keep the blocker its cell gives.
     const kept: Array<[RefutationOutcome, Options]> = [
       ['confirmed', {}], ['unsettled', {}], ['disproved', { pairModel: 'judge-model', security: true }],
       ['disproved', { readsBase: false }], ['disproved', { baseProof: ['src/queue.ts:2', 'src/queue.ts:6'] }], ['disproved', { baseProof: [] }],
-      ['disproved', { baseProof: ['src/queue.ts:3'] }], ['disproved', { line: 4, baseProof: ['src/queue.ts:2'] }],
+      ['disproved', { baseProof: ['src/queue.ts:3'] }], ['disproved', { line: 4 }],
       ['disproved', { line: 2, baseProof: ['src/queue.ts:1', 'src/queue.ts:2'] }], ['disproved', { repoTools: false }],
     ];
     for (const [sameBefore, options] of kept) {
@@ -3831,12 +3831,6 @@ describe('runReview', () => {
     // Both refuters, on different models, lower a security blocker.
     const both = await run('disproved', { security: true });
     expect([both.result.outcome, both.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['security', 'pre-existing', 'follow-up']]]]);
-    // The PR re-indented the flagged head line 4, which extends base line 3. Both answers cite that line, so the failure
-    // is the same before this PR. One answer only notes that the blocker may be older.
-    const reindented = await run('disproved', { line: 4 });
-    expect([reindented.result.outcome, reindented.result.findings.map(f => [f.severity, f.tags])]).toEqual(['READY', [['warning', ['pre-existing', 'follow-up']]]]);
-    const [noted] = (await run('disproved', { line: 4, pairModel: null })).result.findings;
-    expect([noted.severity, formatFindingComment(noted, TEST_LINKS).includes('**Possibly older than this PR.**')]).toEqual(['blocker', true]);
   }, GIT_TEST_TIMEOUT_MS);
 
   it('keeps a warning or a note out of the review once one check finds its failure on the base, also on a line the PR only extended', async () => {
