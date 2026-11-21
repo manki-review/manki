@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import * as core from '@actions/core';
 
 import { holdsLines } from './code-window';
-import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { addedLines, isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { readFileInRoot, resolveInRoot } from './mcp-server';
@@ -735,4 +735,38 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     progress?.ended(agreedOutcome([refutation, pairRefutation].filter((r): r is Refutation => !!r)));
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
   });
+}
+
+/**
+ * Returns the IDs of the `threads` whose fix the judge placed in another file the push changed, `fixedIn`, when both
+ * refuters disprove the thread's failure at the head. Each disproof must come from its own model and cite a line that
+ * `pushDiff` adds to `fixedIn`. Without a `pair`, an unsure or failed call, or a disproof that rests on other lines, the
+ * thread stays open.
+ */
+export async function confirmFixesElsewhere(
+  client: LLMClient,
+  pair: LLMClient | undefined,
+  threads: ReadonlyArray<{ thread: OpenThread; fixedIn: string }>,
+  pushDiff: ParsedDiff,
+  options: Pick<RefuteOptions, 'workspace' | 'related' | 'diff' | 'effort' | 'excludedPaths'>,
+): Promise<Set<string>> {
+  if (!pair || threads.length === 0) return new Set();
+  const findings = threads.map(({ thread, fixedIn }): Finding => ({
+    severity: 'blocker', title: thread.title, file: thread.file, line: thread.line, reviewers: [],
+    description: `${thread.description ?? thread.title} The push since the last review changed ${fixedIn}.`,
+  }));
+  const checked = await refuteBlockers(client, findings, { ...options, pair });
+  const confirmed = threads.filter(({ thread, fixedIn }, i) => {
+    const changed = pushDiff.files.find(f => f.path === fixedIn);
+    const added = changed ? addedLines(changed) : new Map<number, string>();
+    const citesFix = (check: Refutation | undefined): check is Refutation => check?.outcome === 'disproved' && !!check.model && (check.proof ?? []).some(at => {
+      const [start, end] = locationLines(at);
+      return locationFile(at) === fixedIn && [...added.keys()].some(line => start <= line && line <= end);
+    });
+    const { refutation, pairRefutation } = checked[i];
+    const agreed = citesFix(refutation) && citesFix(pairRefutation) && refutation.model !== pairRefutation.model;
+    core.info(`The fix of the thread ${thread.threadId} in ${fixedIn} is ${agreed ? 'confirmed by two refuters' : 'not confirmed, so the thread stays open'}`);
+    return agreed;
+  });
+  return new Set(confirmed.map(({ thread }) => thread.threadId));
 }

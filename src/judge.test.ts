@@ -847,7 +847,7 @@ describe('buildJudgeUserMessage', () => {
     // did not change. That includes an agreed blocker and a security thread below blocker.
     expect(unpushed).toContain('"Agreed later" at src/baz.ts:5 (stays open: the push did not change this file)\n');
     expect(unpushed).toContain('"Token logged" at src/log.ts:7 (stays open: the push did not change this file)\n');
-    const staysOpenRule = 'A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.';
+    const staysOpenRule = 'A thread marked "stays open" is not resolved this round unless you name the file of its fix in `fixedIn` and later checks confirm it. In the summary, say that it is still open, and never write that its problem is fixed.';
     expect(unpushed).toContain(staysOpenRule);
     // A thread on another file than its finding's can name no file, and GitHub reports it on line 1.
     const nowhere = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [{ ...openThreads[0], file: '', line: 1 }], rounds, '');
@@ -1415,14 +1415,15 @@ describe('parseJudgeResponse', () => {
       summary: 'Follow-up review.',
       findings: [],
       threadEvaluations: [
-        { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' },
-        { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Still applies' },
+        { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff', fixedIn: ' ' },
+        { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Still applies', fixedIn: 'src/caller.ts' },
         { threadId: 'PRRT_ghi', status: 'uncertain', reason: 'No clear evidence' },
         { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: ' The upload still has no timeout. ', row: ' Degraded ', grade: 'note' },
         { threadId: 'PRRT_mno', status: 'partly_addressed', reason: 'r', remaining: 'Still slow.', row: 'ignore', grade: 'note' },
         { threadId: 'PRRT_pqr', status: 'partly_addressed', reason: 'Some of it', row: 'degraded' },
         { threadId: 'PRRT_stu', status: 'partly_addressed', reason: 'r', remaining: 'A slow client still holds the connection.', row: 'wrong', column: 'rare' },
         { threadId: 'PRRT_vwx', status: 'partly_addressed', reason: 'r', remaining: 'The retry still logs twice.', row: 'degraded', column: 'Rare' },
+        { threadId: 'PRRT_yz', status: 'addressed', reason: 'The caller returns early.', fixedIn: ' src/caller.ts ' },
       ],
     });
 
@@ -1437,6 +1438,8 @@ describe('parseJudgeResponse', () => {
       // Nothing checks a `rare` claim on a thread, so where the column decides the block what remains is graded as `normal`.
       { threadId: 'PRRT_stu', status: 'partly_addressed', reason: 'r', remaining: 'A slow client still holds the connection.', cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, grade: 'blocker' },
       { threadId: 'PRRT_vwx', status: 'partly_addressed', reason: 'r', remaining: 'The retry still logs twice.', cell: { row: 'degraded', column: 'rare' }, grade: 'note' },
+      // Only an addressed thread names the file of its fix, and an empty name is none.
+      { threadId: 'PRRT_yz', status: 'addressed', reason: 'The caller returns early.', fixedIn: 'src/caller.ts' },
     ]);
     result.threadEvaluations!.length = 3;
     expect(result.threadEvaluations![0]).toEqual({ threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' });

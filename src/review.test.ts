@@ -5688,6 +5688,53 @@ describe('runReview', () => {
     expect(await gradeAfter({ ...partly('note'), threadId: 'T9' }, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
   });
 
+
+  it('clears a blocker thread on a fix in another changed file only when two refuters on different models confirm it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-fix-elsewhere-'));
+    try {
+      mkdirSync(join(workspace, 'src'));
+      writeFileSync(join(workspace, 'src', 'x.ts'), Array.from({ length: 12 }, (_, i) => `line${i + 1}();`).join('\n') + '\n');
+      writeFileSync(join(workspace, 'src', 'y.ts'), 'guard();\nif (bad) return;\n');
+      const push = 'diff --git a/src/y.ts b/src/y.ts\n--- a/src/y.ts\n+++ b/src/y.ts\n@@ -1 +1,2 @@\n guard();\n+if (bad) return;\n';
+      const answer = (outcome: string) => JSON.stringify({ outcome, reason: 'The caller returns before the bad value reaches it.', proof: ['src/y.ts:2'] });
+      const fixed: ThreadEvaluation = { threadId: 'T1', status: 'addressed', reason: 'The caller now returns early.', fixedIn: 'src/y.ts' };
+      const clientsWith = (pairOutcome?: string, pairModel = 'gpt-6.1-sol') => {
+        const clients = makeClients();
+        Object.assign(clients.judge, { repoTools: true });
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system, _message, options) => (options?.repoTools ? { content: answer('disproved'), model: 'claude-opus-5-5' } : { content: READY_VERDICT }));
+        const refuterPair = pairOutcome ? { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: answer(pairOutcome), model: pairModel }) } as unknown as LLMClient : undefined;
+        return { ...clients, ...(refuterPair && { refuterPair }) };
+      };
+      const runWith = (clients: ReviewClients, evaluation: ThreadEvaluation = fixed, thread = makePriorOpenThread({ severity: 'blocker' }), interRoundDiff = push) => {
+        mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Fixed.', threadEvaluations: [evaluation] });
+        return runReview(clients, {
+          config: makeConfig(), diff: diffChanging('src/y.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, workspace,
+          openThreads: [thread], previousFindings: [], priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })])], interRoundDiff, headSha: 'sha2',
+        });
+      };
+
+      const confirmed = await runWith(clientsWith('disproved'));
+      expect([confirmed.outcome, confirmed.threadEvaluations]).toEqual(['READY', [fixed]]);
+
+      // One refuter alone, two answers from one model, an unsure or failed second check, no file named, a file the push
+      // did not change and a security thread all keep the thread open.
+      const failing = clientsWith('disproved');
+      jest.mocked(failing.refuterPair!.sendMessage).mockRejectedValue(new Error('timeout'));
+      const { fixedIn: _, ...unnamed } = fixed;
+      for (const [clients, evaluation, thread, diff] of [
+        [clientsWith()], [clientsWith('disproved', 'claude-opus-5-5')], [clientsWith('unsettled')], [failing],
+        [clientsWith('disproved'), unnamed], [clientsWith('disproved'), { ...fixed, fixedIn: 'src/z.ts' }],
+        [clientsWith('disproved'), fixed, makePriorOpenThread({ severity: 'blocker', isSecurity: true })],
+        // A disproof that cites no line the push added there confirms nothing either.
+        [clientsWith('disproved'), fixed, undefined, 'diff --git a/src/y.ts b/src/y.ts\n--- a/src/y.ts\n+++ b/src/y.ts\n@@ -1,2 +1,3 @@\n guard();\n if (bad) return;\n+done();\n'],
+      ] as Array<[ReviewClients, ThreadEvaluation?, OpenThread?, string?]>) {
+        const open = await runWith(clients, evaluation, thread, diff);
+        expect([open.outcome, open.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {
     const prior = buildPriorRound(1, [
       makePriorWarningFinding({ title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
