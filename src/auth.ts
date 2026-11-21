@@ -139,9 +139,10 @@ function leavesAnswerUnknown(status: number, error: string | undefined, refusals
 
 /**
  * Posts `body` to the token service at `url` with the workflow's OIDC token, and reads the JSON reply of a 2xx response.
- * The timeout covers the reply too. Returns `null` when the run has no OIDC token. A failed reply is unknown unless its
- * status is one of `refusals`, as `leavesAnswerUnknown` decides. Each call is logged under `endpoint` in
- * `tokenServiceCalls`.
+ * The timeout covers the reply too. Returns `null` when the run has no OIDC token, which is the case without
+ * `id-token: write`. Throws when GitHub fails to hand out the OIDC token, like any other failed request. A failed reply
+ * is unknown unless its status is one of `refusals`, as `leavesAnswerUnknown` decides. Each call is logged under
+ * `endpoint` in `tokenServiceCalls`.
  */
 async function postToTokenService(url: string, body: unknown, endpoint: string, refusals: readonly number[]): Promise<TokenServiceResponse | null> {
   const start = Date.now();
@@ -149,7 +150,13 @@ async function postToTokenService(url: string, body: unknown, endpoint: string, 
   let oidcToken: string;
   try {
     oidcToken = await core.getIDToken(OIDC_AUDIENCE);
-  } catch {
+  } catch (error) {
+    // The runner sets these only when the workflow grants `id-token: write`. With them set, the request itself failed.
+    if (process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
+      const failure = `GitHub gave no OIDC token: ${error instanceof Error ? error.message : String(error)}`;
+      logCall({ error: failure.slice(0, MAX_CALL_ERROR_CHARS) });
+      throw new Error(failure);
+    }
     logCall({ error: 'no OIDC token' });
     return null;
   }
