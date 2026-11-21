@@ -1152,8 +1152,12 @@ export function oneCheckOnBase(finding: Pick<Finding, 'refutation' | 'pairRefuta
  */
 export function foundOnBase(f: Finding): PremiseCheck | undefined {
   if (f.severity === 'ignore') return undefined;
-  const lone = f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isSecurityFinding(f.tags, f.reviewers);
-  return sameOnBase(f) ?? (lone ? oneCheckOnBase(f) : undefined);
+  return sameOnBase(f) ?? (oneCheckSettlesBase(f) ? oneCheckOnBase(f) : undefined);
+}
+
+/** Whether one check's answer about the base is enough for `foundOnBase` to keep `f` out of the review. */
+export function oneCheckSettlesBase(f: Finding): boolean {
+  return f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isSecurityFinding(f.tags, f.reviewers);
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
