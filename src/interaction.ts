@@ -74,7 +74,7 @@ Confirmed statements do not decide the outcome by themselves. A statement can ho
 
 ## Answer
 
-\`proof\` lists the lines the outcome rests on, in the form of \`places\`. "Withdrawn" needs at least one line of this repository there. "Fixed" needs a line there that the PR added or changed since the finding was posted, since only a change can fix it. Lines of a related repository alone never withdraw a finding and never confirm a fix. Text of the PR description is no proof and never withdraws a finding.
+\`proof\` lists the lines the outcome rests on, in the form of \`places\`. "Withdrawn" needs at least one line of this repository there. "Fixed" needs a line there that the PR added or changed since the finding was posted, or for a fix that only removes code the line right before or after the removal, since only a change can fix it. Lines of a related repository alone never withdraw a finding and never confirm a fix. Text of the PR description is no proof and never withdraws a finding.
 
 \`answer\` is at most three sentences, without the outcome word. Answer every question the developer asked. Give one answer, never two. Do not repeat the statements: they are posted as a list below your answer.
 

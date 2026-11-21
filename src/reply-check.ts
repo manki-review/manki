@@ -108,12 +108,26 @@ function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Whether `location` cites a line that one of `changed` adds. */
-function citesAddedLine(location: string, changed: readonly DiffFile[] = []): boolean {
+/** Returns the lines of the new file that `file` adds, and the lines right before and after each removal. */
+function changedLineNumbers(file: DiffFile): Set<number> {
+  const lines = new Set(addedLines(file).keys());
+  for (const hunk of file.hunks) {
+    let next = hunk.newStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (!content.startsWith('-')) next++;
+      else lines.add(next - 1).add(next);
+    }
+  }
+  return lines;
+}
+
+/** Whether `location` cites a line that one of `changed` adds, or a line right next to code it removes. */
+function citesChangedLine(location: string, changed: readonly DiffFile[] = []): boolean {
   const file = changed.find(f => f.path === locationFile(location));
   if (!file) return false;
   const [start, end] = locationLines(location);
-  return [...addedLines(file).keys()].some(line => line >= start && line <= end);
+  return [...changedLineNumbers(file)].some(line => line >= start && line <= end);
 }
 
 /**
@@ -244,7 +258,7 @@ export function checkReply(content: string, developerReply: string, sources: Rep
 
   const { own } = shownPlaces(parsed.proof, sources);
   // A fix is a change, so only a line the PR changed since the thread was posted can show one.
-  const unproven = outcome === 'Withdrawn' ? own.length === 0 : outcome === 'Fixed' && !own.some(at => citesAddedLine(at, sources.changedSincePosted));
+  const unproven = outcome === 'Withdrawn' ? own.length === 0 : outcome === 'Fixed' && !own.some(at => citesChangedLine(at, sources.changedSincePosted));
   // Only a pull request the developer's own words name is checked, so the model cannot pick one.
   const fixedIn = outcome === 'FixedElsewhere' && sources.repo && typeof parsed.fixed_in === 'number' && parsed.fixed_in !== sources.pr && namedPullRequests(developerReply, sources.repo).includes(parsed.fixed_in)
     ? parsed.fixed_in : undefined;

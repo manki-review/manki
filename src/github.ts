@@ -484,7 +484,8 @@ export async function fetchChangesSince(octokit: Octokit, owner: string, repo: s
   try {
     const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base, head });
     if (data.status !== 'ahead' && data.status !== 'identical') return undefined;
-    return listedFilesDiff((data.files ?? []).filter(f => files.includes(f.filename)));
+    // A file renamed since keeps its old name only in `previous_filename`.
+    return listedFilesDiff((data.files ?? []).filter(f => files.includes(f.filename) || (!!f.previous_filename && files.includes(f.previous_filename))));
   } catch (error) {
     core.warning(`Failed to compare ${base} with ${head}: ${error}`);
     return undefined;
