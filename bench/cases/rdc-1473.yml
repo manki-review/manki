@@ -1,0 +1,36 @@
+id: rdc-1473
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1473, first review by Manki 7.7.0, every comment checked against the code
+base: a3e26429874a2931bfa717b83bc4023b57aef973
+head: 7f3fe33c04b4adaac8c12f03d078925a170b3299
+title: "fix(dash-spv): hedge the filter batch that blocks the store"
+body: |
+  Filters are verified and stored in height order, so one filter batch stuck at a silent peer holds back every batch downloaded above it. Nothing asked another peer for it until the request timed out. Blocks already get a second copy in this case (`Broker::hedge`), filter batches did not.
+
+  The flow controller now calls `Broker::hedge_filters`, which sends a second copy of the lowest filter batch not yet delivered once its peer has answered nothing for `HEDGE_AFTER`. A lower batch still queued goes out next, so it suppresses the hedge. The copy goes to the peer that answers soonest rather than the one with the most free cap, because bulk download keeps every peer at its cap. The first copy to arrive settles the request, and dropping a peer clears the hedges it held, so a lost copy can be sent again.
+
+  `hedge` and `hedge_filters` share `lowest_on_wire` and `send_hedge`.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`PeerHandle::send` charges the peer's ledger (`self.ledger.charge`) before it takes the writer lock, and the lock does not keep arrival order. Before this PR only the router's sequential loop sent `GetCFilters`. The PR adds a second sender, the filter hedge from the flow controller task (`hedge_filters` through `send_hedge`). When a routed batch and a hedge batch to the same peer are charged in one order and written in the other, `Ledger::settle` in `costs.rs` attaches each `cfilter` to the oldest awaited filter entry and settles it only when the stop hash matches. The batch answered first then never settles, every later filter batch to that peer piles onto that stale entry, the peer's in-flight bytes grow to its cap, the router stops using it and the stall monitor kicks a healthy peer. Fix: charge inside the writer lock, or settle a filter reply by its stop hash instead of the oldest entry."
+    locations: ["dash-spv/src/network/peer.rs", "send", "dash-spv/src/network/costs.rs", "settle", "dash-spv/src/network/broker.rs", "hedge_filters", "send_hedge"]
+    source: "owner review of the Manki 7.7.0 comments"
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "`not_found` re-queues only requests whose original peer sent the `notfound` and leaves `o.hedge` set, so a hedge peer that answers `notfound` blocks any further hedge of that request. The PR clears the hedge when the hedge peer departs but not on its `notfound`. The gap is older than the PR."
+    locations: ["dash-spv/src/network/broker.rs", "not_found", "requeue_from", "hedge"]
+  - id: N2
+    severity: note
+    mechanism: "`dash-spv/AGENTS.md` asks for a dashd test for a change to sync or disconnect handling. The single-node dashd harness cannot reach a hedge, so a flow-controller unit test would cover the new call."
+    locations: ["dash-spv/src/network/manager.rs", "hedge_filters"]
+  - id: N3
+    severity: note
+    mechanism: "A test pops the broker's private queue by hand (`broker.queue.pop_n(1)`), which is redundant because `release` of a queued key already drops it."
+    locations: ["dash-spv/src/network/broker.rs", "pop_n", "release"]
+  - id: N4
+    severity: note
+    mechanism: "`hedge_filters` is `pub` where `pub(super)` compiles, and its doc comment runs past the repository's three-line limit."
+    locations: ["dash-spv/src/network/broker.rs", "hedge_filters"]
