@@ -3609,7 +3609,7 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.judge.mergedDuplicates).toBe(1);
   });
 
-  it('surfaces crossRoundSuppressed and crossRoundDemoted counts in judgeMetrics', async () => {
+  it('surfaces the crossRoundSuppressed count in judgeMetrics', async () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
@@ -3632,7 +3632,6 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: [...findings],
       rawFindings: [...findings],
       crossRoundSuppressed: 1,
-      crossRoundDemoted: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -3640,7 +3639,6 @@ describe('runFullReview orchestration', () => {
 
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
     expect(statsArg!.judge.crossRoundSuppressed).toBe(1);
-    expect(statsArg!.judge.crossRoundDemoted).toBe(1);
   });
 
   it('aligns keptCount with keptSeverities sum when test-nit suppression fires', async () => {
@@ -5191,7 +5189,6 @@ describe('runFullReview orchestration', () => {
         tagged('A', 'suppressed-by-ratchet'),
         tagged('B', 'suppressed-by-ratchet'),
         tagged('C', 'suppressed-by-resolved-thread'),
-        tagged('D', 'contradicts-prior-round', 'note'),
         tagged('E', 'own-proposal-followup', 'note'),
         tagged('F', 'own-proposal-followup', 'note'),
       ],
@@ -5204,7 +5201,6 @@ describe('runFullReview orchestration', () => {
     const [,,,,,,,rc] = jest.mocked(ghUtils.postReview).mock.calls[0];
     expect(rc!.judge.ratchetSuppressedCount).toBe(2);
     expect(rc!.judge.resolvedThreadSuppressedCount).toBe(1);
-    expect(rc!.judge.contradictionDemotedCount).toBe(1);
     expect(rc!.judge.ownProposalDemotedCount).toBe(2);
     expect(rc!.judge.interRoundDiffEmptyOverride).toEqual({ applied: true, affectedThreadCount: 3 });
   });

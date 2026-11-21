@@ -3570,12 +3570,8 @@ describe('runReview', () => {
     const hidden: Array<{ step: string; title: string; finding?: object; verdict?: object; options?: Partial<Parameters<typeof runReview>[1]>; ends: (r: ReviewResult) => unknown; as: unknown }> = [
       {
         step: 'cross-round suppression', title: 'Agreed last round',
-        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Reverses the agreed fix', 12), agreed('Agreed sum stays a warning', 21), agreed('Agreed total no finder filed as a blocker', 23)] })] },
+        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Agreed sum stays a warning', 21), agreed('Agreed total no finder filed as a blocker', 23)] })] },
         ends: r => judged(r, 'Agreed last round'), as: [['ignore', ['suppressed-by-ratchet']]],
-      },
-      {
-        step: 'contradiction of an agreed finding', title: 'Reverses the agreed fix', finding: { description: 'Remove the guard again.' },
-        ends: r => r.findings.filter(f => f.title === 'Reverses the agreed fix').map(f => [f.severity, f.tags?.includes('contradicts-prior-round')]), as: [['note', true]],
       },
       {
         // A finder's blocker passes the dedup against the resolved thread, so only the suppression after the judge drops it.
