@@ -1144,22 +1144,6 @@ export function oneCheckOnBase(finding: Pick<Finding, 'refutation' | 'pairRefuta
   return [finding.refutation, finding.pairRefutation].find(failsOnBase)?.base;
 }
 
-/**
- * Returns the answer of the checks that the code before this PR fails the same way as `f`. Both refuters must give it
- * (`sameOnBase`), except on a finding that would never block and is no security finding. One check's answer
- * (`oneCheckOnBase`) is enough there, since it only keeps the finding out of the review. A warning whose cell gives a
- * blocker (`staysWarningIfConfirmed`) needs both, as a blocker does.
- */
-export function foundOnBase(f: Finding): PremiseCheck | undefined {
-  if (f.severity === 'ignore') return undefined;
-  return sameOnBase(f) ?? (oneCheckSettlesBase(f) ? oneCheckOnBase(f) : undefined);
-}
-
-/** Whether one check's answer about the base is enough for `foundOnBase` to keep `f` out of the review. */
-export function oneCheckSettlesBase(f: Finding): boolean {
-  return f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isSecurityFinding(f.tags, f.reviewers);
-}
-
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
 export function confirmsAll(checks: readonly Refutation[]): boolean {
   return checks.length > 0 && checks.every(r => r.defect === 'confirmed' && r.outcome === 'confirmed');
@@ -1194,7 +1178,7 @@ export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
   note_cap: 'over the `review.notes` limit',
-  pre_existing: 'older than this PR',
+  pre_existing: 'on code this PR did not change',
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
   no_trigger: 'it names no trigger that happens in realistic use',

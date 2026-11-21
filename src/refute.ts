@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import * as core from '@actions/core';
 
 import { holdsLines } from './code-window';
-import { extendedLineOf, isLineInDiff, oldLineOf, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { isLineInDiff, oldLineOf, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { readBaseText, readFileInRoot, resolveInRoot } from './mcp-server';
@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { parseProof, sameProblem, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, BASE_QUESTION, cellGrade, foundOnBase, oneCheckSettlesBase, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { BASE_REF, baseReadsOf, runGit } from './workspace';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -35,8 +35,7 @@ const LINE_TOLERANCE = 5;
 // Blockers posted as warnings for want of proof a tool could find.
 const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNBUILT_TAG];
 /**
- * The warnings a round checks because nothing proves them yet, and the warnings and notes a reviewer calls older than
- * the PR, one refuter call each. Every other check runs uncapped.
+ * The warnings a round checks because nothing proves them yet, one refuter call each. Every other check runs uncapped.
  * A round posts about one warning on average, so this binds only on a round with many such warnings.
  */
 export const MAX_DOUBT_CHECKS = 8;
@@ -47,7 +46,7 @@ type RefutationField = 'refutation' | 'pairRefutation';
 function refuteSystemPrompt(readsBase: boolean): string {
   return `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
-The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade, a blocker the judge dropped because of how code outside the diff behaves, or a warning or note a reviewer calls older than this PR. Try to refute it, then follow the failure path from its trigger to the damage.
+The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade, or a blocker the judge dropped because of how code outside the diff behaves. Try to refute it, then follow the failure path from its trigger to the damage.
 
 For an open lead, the message says what the reviewer checked so far and what is left to check. Start with what is left: read the code that decides it before anything else, so your tool steps are not used up before you reach it. What the reviewer says was checked is a claim like any other, so check the part of it your answer rests on as well, after the open point.
 
@@ -62,7 +61,7 @@ To refute it:
 - For a blocker the judge dropped, the message marks the premise the drop rests on, such as other code already checking every input that reaches the changed lines. The finding is posted only when you disprove that premise. Confirm it only when every path it covers holds it. Disprove it with one path it covers that does not, such as an input that reaches the changed code without that check, and cite the lines of that path, including the changed line it reaches.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
-- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does${readsBase ? '' : ', or the change shown is cut'}, answer \`base\` unsettled.${readsBase ? ' When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.' : ''} In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path${readsBase ? ' at the base, with the line the finding flags as it is numbered at the base. When this PR only extended the flagged line, keeping the old line and adding items to a list in it, cite the old line, as numbered at the base. A change that leaves the failure as it was does not make it the PR\'s own, but a failure that comes from what this PR added to the line, such as a new argument, is the PR\'s own. Any other flagged line this PR added or changed never fails the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them, and a line the base does not hold leaves the answer unsettled' : ''}. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
+- The message can ask whether the failure is this PR's own, as the question about the base. Answer it by comparing with the code at the PR's base. A file the message does not name as changed by this PR is the same at the base, unless the list says it leaves files out. When it does${readsBase ? '' : ', or the change shown is cut'}, answer \`base\` unsettled.${readsBase ? ' When the change shown is cut, read the cited files at the base with `read_file` and `ref` set to `base` before you answer.' : ''} In a file whose change the message shows, only the lines that change shows differ. Follow the failure path at the base from the same input. Confirm that the failure is the PR's own when the base does not fail that way, when the PR makes the path newly reachable, such as a new caller of old code or a removed check, or when it makes the failure worse. Disprove it only when the base fails the same way for the same input through the same path and the PR does neither, and cite in \`proof\` the lines that show that path${readsBase ? ' at the base, with the line the finding flags as it is numbered at the base. Only a flagged line this PR left unchanged can fail the same way at the base. Every line in the `proof` of `base` is a line of the base, numbered as `read_file` with `ref` set to `base` shows them, and a line the base does not hold leaves the answer unsettled' : ''}. Say in \`reason\` which of these you found. When the path runs through a changed file whose change the message does not show, read ${readsBase ? 'that file at the base with `read_file` and `ref` set to `base`, or ' : ''}how this PR changed those lines with \`git_history\`, or answer unsettled.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
 - **confirmed**: the failure path holds. Cite the lines that show the failure in \`proof\`.
@@ -246,17 +245,9 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
   return undefined;
 }
 
-/**
- * Whether `finding` is a warning or a note that a reviewer calls older than this PR. A security finding is not, since
- * the check of the base never keeps one out of the review.
- */
-function claimsOlder(finding: Finding): boolean {
-  return !!finding.preExisting && (finding.severity === 'warning' || finding.severity === 'note') && !isSecurityFinding(finding.tags, finding.reviewers);
-}
-
-/** Whether a check of `finding` asks `BASE_QUESTION` in its own `base` answer: it is a blocker, a confirmation makes it one, or it `claimsOlder`. */
+/** Whether a check of `finding` asks `BASE_QUESTION` in its own `base` answer: it is a blocker, or a confirmation makes it one. */
 function asksBase(finding: Finding): boolean {
-  return finding.severity === 'blocker' || confirmedGrade(finding) === 'blocker' || claimsOlder(finding);
+  return finding.severity === 'blocker' || confirmedGrade(finding) === 'blocker';
 }
 
 /** Returns the files of `diff` whose change a check of `finding` shows: those it cites, when the judge doubts it or the check `asksBase`. */
@@ -294,7 +285,6 @@ function findingKind(finding: Finding): string {
   if (dropsOnPremise(finding)) return 'Blocker the judge dropped because of code outside the diff';
   if (finding.gradeIfConfirmed) return 'Finding the judge could not settle without tools';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
-  if (claimsOlder(finding)) return `${finding.severity === 'note' ? 'Note' : 'Warning'} a reviewer calls older than this PR`;
   if (finding.severity === 'warning' && !finding.tags?.includes(UNPROVEN_TAG)) {
     return 'Warning no cited line proves';
   }
@@ -356,32 +346,23 @@ function parseBase(answer: unknown, cut: boolean, workspace: string, related?: R
 }
 
 /**
- * Returns where the line `finding` flags sat at the PR's base, as git's path and line, with the text that line has
- * there. A line the PR left as it was stands for itself, with its text at the head. A line the PR only extended stands
- * for the line it extends by `extendedLineOf`, with its text in the diff. Any other line the PR added or changed, a file
- * the PR added, and a change the diff does not show have no such line. A changed file whose patch GitHub left out, as
- * `binarySkipped` or as a file listed without lines, is one of those.
+ * Returns where the line `finding` flags sat at the PR's base, as git's path and line, when the PR left that line as it
+ * was. A line the PR added or changed, a file the PR added, and a change the diff does not show have no such line. A
+ * changed file whose patch GitHub left out, as `binarySkipped` or as a file listed without lines, is one of those.
  */
-function flaggedLineAtBase(finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { file: string; line: number; text: string } | undefined {
+function flaggedLineAtBase(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { file: string; line: number } | undefined {
   if (!diff || excludedPaths.includes(finding.file) || diff.binarySkipped?.some(f => f.path === finding.file)) return undefined;
   const changed = diff.files.find(f => f.path === finding.file);
-  if (changed && (changed.changeType === 'added' || changed.hunks.length === 0)) return undefined;
-  const file = changed ? changed.oldPath ?? changed.path : finding.file;
-  const line = changed ? oldLineOf(changed, finding.line) : finding.line;
-  if (changed && line === undefined) {
-    const extended = extendedLineOf(changed, finding.line);
-    return extended && { file, ...extended };
-  }
-  const head = readFileInRoot(workspace, finding.file);
-  const text = head && head !== 'too large' ? head.lines[finding.line - 1] : undefined;
-  return line === undefined || text === undefined ? undefined : { file, line, text };
+  if (!changed) return { file: finding.file, line: finding.line };
+  const line = changed.changeType === 'added' || changed.hunks.length === 0 ? undefined : oldLineOf(changed, finding.line);
+  return line === undefined ? undefined : { file: changed.oldPath ?? changed.path, line };
 }
 
 /**
  * Returns `check` with its `base` answer checked against the PR's base commit, which `BASE_REF` in `workspace` points
  * at. Only the `proof` lines that their file holds there are kept, with the `commit` they were found at. A disproof
- * can lower a finding, so it stands only when every line it cites is there and one of them stands for the flagged line
- * at the base by `flaggedLineAtBase`, with the same text. So only a line the PR left unchanged or only extended can be
+ * lowers a blocker, so it stands only when every line it cites is there and one of them is the line the finding flags,
+ * which the PR left unchanged, at its place in the base with the same text. So a line the PR added or changed is never
  * lowered. Any doubt leaves it unsettled: a workspace without a base, a file that cannot be read there, a line it does
  * not hold, or no citation of the flagged line. An answer that the failure is the PR's own stands as given, since it
  * keeps the blocker. An unsettled answer needs one line that is there, or a line of a related repo, as a premise does.
@@ -395,10 +376,12 @@ async function checkBase(check: Refutation, finding: Finding, workspace: string,
   const held = excludePaths && commit ? await linesAtBase(workspace, cited, excludePaths) : [];
   const found = held.map(h => h.location);
   const citesFlaggedLine = (): boolean => {
-    const at = flaggedLineAtBase(finding, workspace, diff, excludedPaths);
-    return !!at && held.some(h => {
+    const at = flaggedLineAtBase(finding, diff, excludedPaths);
+    const file = readFileInRoot(workspace, finding.file);
+    const text = file && file !== 'too large' ? file.lines[finding.line - 1] : undefined;
+    return !!at && text !== undefined && held.some(h => {
       const [start, end] = locationLines(h.location);
-      return locationFile(h.location) === at.file && start <= at.line && at.line <= end && h.lines[at.line - start] === at.text;
+      return locationFile(h.location) === at.file && start <= at.line && at.line <= end && h.lines[at.line - start] === text;
     });
   };
   const outcome = !commit ? 'unsettled'
@@ -663,11 +646,8 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
  * whether the defect exists, and one no cited line proves. Then come such warnings that `restatesEarlier` accepts,
- * which an earlier finding keeps posted, then the warnings that `older` accepts, whose check of the base can keep them
- * out of the review. Then come the findings the judge doubts that are posted without proof: a security finding and one
- * `gradedByRule` under `rules`. The notes `older` accepts come last, since a later step can leave a note out anyway.
- * The findings checked only because `older` accepts them are also returned as `baseOnly`. A round can judge findings
- * in several calls, so only the first group is returned for a judge
+ * which an earlier finding keeps posted. Last come the findings the judge doubts that are posted without
+ * proof: a security finding and one `gradedByRule` under `rules`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding with a
  * `gradeIfConfirmed` above its grade is always checked: that check is how a warning with a blocker cell becomes a
@@ -677,15 +657,12 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  */
 function doubtsToCheck(
   findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
-  older: (finding: Finding) => boolean, roundEnd = false, rules?: RulesMode,
-): { checked: Finding[]; reused: Finding[]; over: Finding[]; baseOnly: Finding[] } {
-  const unchecked = (f: Finding): boolean => !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation;
-  const warnings = findings.filter(f => f.severity === 'warning' && unchecked(f));
+  roundEnd = false, rules?: RulesMode,
+): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
+  const warnings = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation);
   const unproven = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f)));
   const statusOnly = warnings.filter(f => !needsProof(f, rules) && doubtsDefect(f));
-  const olderNotes = findings.filter(f => f.severity === 'note' && unchecked(f) && older(f));
-  const groups = roundEnd ? [...new Set([...unproven.filter(restatesEarlier), ...warnings.filter(older), ...statusOnly, ...olderNotes])] : unproven.filter(f => !restatesEarlier(f));
-  const baseOnly = roundEnd ? [...warnings, ...olderNotes].filter(f => older(f) && !unproven.includes(f) && !statusOnly.includes(f)) : [];
+  const groups = roundEnd ? [...unproven.filter(restatesEarlier), ...statusOnly] : unproven.filter(f => !restatesEarlier(f));
   const open = groups.filter(f => !noCheck(f));
   const reused = open.filter(needsNoCall);
   const ordered = open.filter(f => !reused.includes(f));
@@ -693,7 +670,7 @@ function doubtsToCheck(
   for (const skipped of over) {
     core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of warnings are used up`);
   }
-  return { checked: ordered.slice(0, limit), reused, over, baseOnly };
+  return { checked: ordered.slice(0, limit), reused, over };
 }
 
 /**
@@ -866,14 +843,9 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
   const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
-  // A claim of being older is worth a check only when its answer can count: the workspace holds the base, the flagged
-  // line has a place there, and one check is enough or a second refuter runs.
-  const older = (finding: Finding): boolean => readsBase && claimsOlder(finding) && (!!pair || oneCheckSettlesBase(finding))
-    && !!flaggedLineAtBase(finding, workspace, diff, excludedPaths ?? []);
-  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, older, roundEnd, rules);
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, roundEnd, rules);
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);
-  const baseOnly = new Set(picked.baseOnly);
   const overLimit = new Set(picked.over);
   const checked = new Set(reopened.filter(finding => {
     if (overLimit.has(finding)) return false;
@@ -890,11 +862,6 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (!checked.has(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
     progress?.ended(agreedOutcome([refutation, pairRefutation].filter((r): r is Refutation => !!r)));
-    if (baseOnly.has(finding)) {
-      // The check ran for the question about the base alone, so only an answer that keeps the finding out of the review changes it.
-      const answered = { ...finding, ...(refutation && { refutation }), ...(pairRefutation && { pairRefutation }) };
-      return foundOnBase(answered) ? answered : finding;
-    }
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
   });
 }

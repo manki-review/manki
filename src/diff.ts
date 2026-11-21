@@ -594,63 +594,6 @@ export function replacementOf(file: DiffFile, oldLine: number): [number, number]
   return undefined;
 }
 
-/** Returns how many brackets `part` leaves open, or `undefined` when it closes one it did not open. */
-function openBrackets(part: string): number | undefined {
-  let depth = 0;
-  for (const char of part) {
-    depth += '([{'.includes(char) ? 1 : ')]}'.includes(char) ? -1 : 0;
-    if (depth < 0) return undefined;
-  }
-  return depth;
-}
-
-/**
- * Whether `text` only adds items to a list in `old`: it is `old` with a part put in before the closing brackets and
- * separators `old` ends in. That part starts with a comma, leaves its brackets balanced, and goes inside a bracket the
- * rest of `old` leaves open.
- */
-function appendsTo(text: string, old: string): boolean {
-  let end = old.length;
-  while (end > 0 && /[)\]}>;,:{\s]/.test(old[end - 1])) end--;
-  const [kept, tail] = [old.slice(0, end), old.slice(end)];
-  if (!kept.trim() || text.length <= old.length || !text.startsWith(kept) || !text.endsWith(tail)) return false;
-  const added = text.slice(kept.length, text.length - tail.length);
-  return added.startsWith(',') && openBrackets(added) === 0 && (openBrackets(kept) ?? 0) > 0;
-}
-
-/**
- * Returns the line of the old file, with its text, that `line` of the new file only extends: the one line its run of
- * changed lines removes that the new line `appendsTo`. That old line must fit no other line the run adds. Returns
- * `undefined` for a line the diff keeps, and when the pair is not unique.
- */
-export function extendedLineOf(file: DiffFile, line: number): { line: number; text: string } | undefined {
-  for (const hunk of file.hunks) {
-    let [oldAt, newAt] = [hunk.oldStart, hunk.newStart];
-    let run: { removed: Array<{ line: number; text: string }>; added: Map<number, string> } = { removed: [], added: new Map() };
-    for (const content of [...hunk.content.split('\n'), ' ']) {
-      if (content.startsWith('\\')) continue;
-      if (content.startsWith('-')) {
-        run.removed.push({ line: oldAt++, text: content.slice(1) });
-        continue;
-      }
-      if (content.startsWith('+')) {
-        run.added.set(newAt++, content.slice(1));
-        continue;
-      }
-      const text = run.added.get(line);
-      if (text !== undefined) {
-        const fits = run.removed.filter(removed => appendsTo(text, removed.text));
-        const added = [...run.added.values()];
-        return fits.length === 1 && added.filter(other => appendsTo(other, fits[0].text)).length === 1 ? fits[0] : undefined;
-      }
-      run = { removed: [], added: new Map() };
-      oldAt++;
-      newAt++;
-    }
-  }
-  return undefined;
-}
-
 /** Whether a run of changed lines sits right before or right after `oldLine` of the old file. */
 export function changesNextTo(file: DiffFile, oldLine: number): boolean {
   for (const hunk of file.hunks) {
