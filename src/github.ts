@@ -2095,6 +2095,12 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
   return `<details>\n<summary>Checked and left out: ${countOf(total, 'finding')}${split}</summary>\n\n${[...sections, ...log].join('\n\n')}\n\n</details>`;
 }
 
+/** Returns the line that counts the pre-existing findings of `unposted`, which the round record keeps without posting them. */
+function formatUnpostedPreExisting(unposted: readonly Finding[]): string | null {
+  if (unposted.length === 0) return null;
+  return `<sub>${countOf(unposted.length, 'older problem')} not posted: the code before this PR already had ${unposted.length === 1 ? 'it' : 'them'}.</sub>`;
+}
+
 /**
  * Returns the notes the body lists as one collapsed section of suggestions, a fold per note, in the order given. A line
  * under it says how many notes of `unposted` are over the `review.notes` limit.
@@ -2413,6 +2419,7 @@ export async function postReview(
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       formatUnthreadedWarnings(unthreadedWarnings, links),
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
+      formatUnpostedPreExisting(result.unpostedPreExisting ?? []),
       formatCarriedWarnings(carried),
       // Without their threads, the suggestions are listed in full with the other notes.
       formatNotesSection(withoutLineThreads ? notes : listedNotes, result.unposted ?? [], links),

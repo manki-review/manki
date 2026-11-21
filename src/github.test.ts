@@ -6003,7 +6003,7 @@ describe('postReview non-blocking findings', () => {
     const link = (line: number, file = 'src/a.ts'): string => `[\`${file}:${line}\`](https://github.com/owner/repo/blob/abc1234/${file}#L${line})`;
     const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
     const capped = nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' });
-    // A pre-existing finding left out of the review is in the round record only, so the fold lists none of them.
+    // A pre-existing finding left out of the review is in the round record only. The body counts them in one line, and the fold lists none of them.
     const unpostedPreExisting = [nonBlocking('warning', 'Old loop', 18), nonBlocking('note', 'Old name', 19)];
     const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
     const overflow = { title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.\nBoth inputs are bounded. A third sentence stays in the log.' };
@@ -6013,6 +6013,10 @@ describe('postReview non-blocking findings', () => {
     const all = await bodyOf({ unposted: [...unproven, capped], unpostedPreExisting, openLeads: leads }, [overflow]);
     expect(all).toContain([
       'Summary',
+      '',
+      '---',
+      '',
+      '<sub>2 older problems not posted: the code before this PR already had them.</sub>',
       '',
       '---',
       '',
@@ -6074,6 +6078,8 @@ describe('postReview non-blocking findings', () => {
     // An incomplete round's progress comment has no judge decisions, so its review has no fold. Neither has a round that left nothing out.
     expect(await bodyOf({ reviewComplete: false, unposted: unproven, openLeads: leads }, [overflow])).not.toContain('Checked and left out');
     expect(await bodyOf({ unposted: [capped], unpostedPreExisting })).not.toContain('Checked and left out');
+    expect(await bodyOf({ unpostedPreExisting: unpostedPreExisting.slice(0, 1) })).toContain('<sub>1 older problem not posted: the code before this PR already had it.</sub>');
+    expect(await bodyOf({ unposted: [capped] })).not.toContain('older problem');
   });
 
   it('posts every warning on a changed line inline, at most five security findings below a warning besides, lists the rest, and posts every suggestion on a changed line', async () => {
