@@ -44,7 +44,7 @@ body: |
   - **Catch-up.** A PR without a Manki review is queued (state lane, `pull_request.synchronize`, the head, the `catch-up-` delivery, alarm set). Drafts, forks, PRs not updated for a day and reviewed heads are skipped. A head the coordinator received or the reconciler checked is not queried again. The first pass after an opt-in reviews no PR whose head has a Manki review, a bot push is skipped without a query, a failing repository is passed over and one whose installation is gone is dropped.
   - **Budget.** Three repositories with 61 candidate PRs: the first pass makes exactly 40 calls, and the second reaches the remaining repositories.
   - **Cron.** `scheduled` runs one pass, through `createScheduledController`.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -77,3 +77,9 @@ nice_to_have:
     mechanism: "Nothing stops a new `reconcile()` from starting while the previous pass still waits on GitHub, since a Durable Object takes the next call during outgoing I/O. Two overlapping passes read the same failures and each redelivers them, using up `MAX_REDELIVERIES` at once."
     locations: ["src/reconciler.ts", "reconcile"]
     fix: "1c5ac1e317d5c074f1c60ae17d2b251e32f11b74"
+  - id: N2
+    severity: warning
+    mechanism: "`receive` records `last_seen_head` as soon as a push is queued, and `needsCatchUp` returns false for that head whatever became of its work. A review that `start` finished as `skipped`, for a stale cached opt-in, dispatch turned off or a missing `actions: write`, or as `dropped` by the hourly dispatch limit, is therefore never caught up by the cron while the coordinator keeps its state, although catching up missed heads is what the change is for."
+    locations: ["src/coordinator.ts", "needsCatchUp", "last_seen_head", "receive", "src/reconciler.ts", "catchUpRepository"]
+    fix: "1e187c4538890810e1d5b97ffe04a8abe7f296d8"
+    source: "hold-out pass on the bench runs 44712446217, 43784302924 and 43828805084"
