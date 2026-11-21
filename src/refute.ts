@@ -14,7 +14,7 @@ import { fetchedRelatedRepos, relatedNames, repoTools } from './related-repos';
 import { parseProof, sameProblem, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, BASE_QUESTION, cellGrade, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
+import { agreedOutcome, BASE_QUESTION, cellGrade, foundOnBase, DiffFile, SCOPE_READER_NAME, SCOPE_SPLIT_TITLE, CheckProgress, CheckStatus, confirmsAll, confirmsDefect, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, isSweepName, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, restsOnDrop, RoundContext, ruleGrade, RulesMode, SECURITY_TAG, SEVERITY_ORDER, towardFinding, triggerDoubt, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, gradedByRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { BASE_REF, baseReadsOf, runGit } from './workspace';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -665,7 +665,8 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  * whether the defect exists, and one no cited line proves. Then come such warnings that `restatesEarlier` accepts,
  * which an earlier finding keeps posted, then the warnings that `claimsOlder`, whose check of the base can keep them
  * out of the review. Then come the findings the judge doubts that are posted without proof: a security finding and one
- * `gradedByRule` under `rules`. The notes that `claimsOlder` come last, since a later step can leave a note out anyway. A round can judge findings in several calls, so only the first group is returned for a judge
+ * `gradedByRule` under `rules`. The notes that `claimsOlder` come last, since a later step can leave a note out anyway.
+ * The findings checked only because they `claimsOlder` are also returned as `baseOnly`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding with a
  * `gradeIfConfirmed` above its grade is always checked: that check is how a warning with a blocker cell becomes a
@@ -676,13 +677,14 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
 function doubtsToCheck(
   findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
   roundEnd = false, rules?: RulesMode,
-): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
+): { checked: Finding[]; reused: Finding[]; over: Finding[]; baseOnly: Finding[] } {
   const unchecked = (f: Finding): boolean => !alwaysChecked(f) && !f.toolSource && !f.refutation && !f.pairRefutation;
   const warnings = findings.filter(f => f.severity === 'warning' && unchecked(f));
   const unproven = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f)));
   const statusOnly = warnings.filter(f => !needsProof(f, rules) && doubtsDefect(f));
   const olderNotes = findings.filter(f => f.severity === 'note' && unchecked(f) && claimsOlder(f));
   const groups = roundEnd ? [...new Set([...unproven.filter(restatesEarlier), ...warnings.filter(claimsOlder), ...statusOnly, ...olderNotes])] : unproven.filter(f => !restatesEarlier(f));
+  const baseOnly = roundEnd ? [...warnings, ...olderNotes].filter(f => claimsOlder(f) && !unproven.includes(f) && !statusOnly.includes(f)) : [];
   const open = groups.filter(f => !noCheck(f));
   const reused = open.filter(needsNoCall);
   const ordered = open.filter(f => !reused.includes(f));
@@ -690,7 +692,7 @@ function doubtsToCheck(
   for (const skipped of over) {
     core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of warnings are used up`);
   }
-  return { checked: ordered.slice(0, limit), reused, over };
+  return { checked: ordered.slice(0, limit), reused, over, baseOnly };
 }
 
 /**
@@ -866,6 +868,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, roundEnd, rules);
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);
+  const baseOnly = new Set(picked.baseOnly);
   const overLimit = new Set(picked.over);
   const checked = new Set(reopened.filter(finding => {
     if (overLimit.has(finding)) return false;
@@ -882,6 +885,11 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (!checked.has(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
     progress?.ended(agreedOutcome([refutation, pairRefutation].filter((r): r is Refutation => !!r)));
+    if (baseOnly.has(finding)) {
+      // The check ran for the question about the base alone, so only an answer that keeps the finding out of the review changes it.
+      const answered = { ...finding, ...(refutation && { refutation }), ...(pairRefutation && { pairRefutation }) };
+      return foundOnBase(answered) ? answered : finding;
+    }
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
   });
 }
