@@ -3673,7 +3673,7 @@ describe('runReview', () => {
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);
       const confirmed = { outcome: 'confirmed', reason: 'It leaks.', proof: ['src/app.ts:1'] };
-      return { content: JSON.stringify({ ...confirmed, premises: [confirmed, confirmed] }) };
+      return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     mockedApplySuppressions.mockImplementation(jest.requireActual<typeof import('./memory')>('./memory').applySuppressions);

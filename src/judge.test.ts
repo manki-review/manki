@@ -1909,6 +1909,8 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'No trigger', severity: 'warning', line: 7, reviewers: ['First'] }),
       makeFinding({ title: 'Security', severity: 'warning', line: 9, reviewers: ['First'] }),
       makeFinding({ title: 'Rare wrong result', severity: 'warning', line: 11, reviewers: ['First'] }),
+      makeFinding({ title: 'Same title', severity: 'warning', line: 13, reviewers: ['First'] }),
+      makeFinding({ title: 'Same title', severity: 'warning', line: 14, reviewers: ['Second'] }),
     ];
     const entries = [
       { id: 1, title: 'One finder', row: 'degraded', reasoning: 'r', trigger },
@@ -1917,6 +1919,9 @@ describe('runJudgeAgent', () => {
       { id: 4, title: 'No trigger', row: 'degraded', reasoning: 'r' },
       { id: 5, title: 'Security', row: 'degraded', security: true, reasoning: 'r', trigger },
       { id: 6, title: 'Rare wrong result', row: 'wrong', column: 'rare', reasoning: 'r', trigger },
+      // The judge marks no duplicate here, so the merge by title and file folds the two copies.
+      { id: 7, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
+      { id: 8, title: 'Same title', row: 'degraded', reasoning: 'r', trigger },
     ];
     const graded = async (finderNames: string[]) => {
       mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: entries }) });
@@ -1929,10 +1934,11 @@ describe('runJudgeAgent', () => {
       ['No trigger', undefined, undefined, undefined],
       ['Security', trigger, undefined, undefined],
       ['Rare wrong result', trigger, 'blocker', [REACH_DOUBT.premise]],
+      ['Same title', trigger, undefined, undefined],
     ]);
     // With one finder there is no second one to agree, so no warning gets the check.
     expect((await graded(['First'])).map(([title, , , doubts]) => [title, doubts])).toEqual([
-      ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]],
+      ['One finder', undefined], ['Both finders', undefined], ['No trigger', undefined], ['Security', undefined], ['Rare wrong result', [REACH_DOUBT.premise]], ['Same title', undefined],
     ]);
   });
 
@@ -5507,7 +5513,7 @@ describe('buildJudgeUserMessage with linked issues', () => {
 });
 
 describe('deduplicateFindings', () => {
-  it('removes findings with identical title and file, keeps a pre-existing mark only when every copy has it, and keeps the first rule a copy quotes', () => {
+  it('removes findings with identical title and file, keeps the reviewers of both, keeps a pre-existing mark only when every copy has it, and keeps the first rule a copy quotes', () => {
     const findings = [
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 10, reviewers: ['R1'], preExisting: 'Old code.' }),
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 20, reviewers: ['R2'] }),
@@ -5515,7 +5521,7 @@ describe('deduplicateFindings', () => {
 
     const result = deduplicateFindings(findings);
     expect(result).toHaveLength(1);
-    expect(result[0].reviewers).toEqual(['R1']);
+    expect(result[0].reviewers).toEqual(['R1', 'R2']);
     expect(result[0].preExisting).toBeUndefined();
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
     // A dropped copy's security tag stays on the kept finding, next to the tags it has.
@@ -5552,7 +5558,7 @@ describe('deduplicateFindings', () => {
     // The kept finding takes the highest grade a finder gave any copy, read from where a copy's grade path starts.
     const raised: Finding = { ...findings[0], severity: 'blocker', reviewerSeverity: 'note', gradePath: [{ from: 'note', to: 'blocker', by: 'judge' }] };
     const capped: Finding = { ...findings[1], severity: 'warning', gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] };
-    expect(deduplicateFindings([raised, capped])[0]).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note', reviewers: ['R1'] });
+    expect(deduplicateFindings([raised, capped])[0]).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', lowestReviewerSeverity: 'note', reviewers: ['R1', 'R2'] });
     expect(deduplicateFindings([raised, { ...findings[1], severity: 'warning' }])[0]).toMatchObject({ reviewerSeverity: 'warning', lowestReviewerSeverity: 'note' });
     expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0]).toMatchObject({ reviewerSeverity: 'note' });
     expect(deduplicateFindings([raised, { ...findings[1], severity: 'note' }])[0]).not.toHaveProperty('lowestReviewerSeverity');
@@ -5562,7 +5568,7 @@ describe('deduplicateFindings', () => {
     const read: Finding = { ...findings[1], severity: 'blocker', reviewers: ['Second read 1'] };
     for (const order of [[raised, read], [read, raised]]) {
       const [kept] = deduplicateFindings(order);
-      expect(kept).toMatchObject({ line: 10, reviewers: ['R1'], severity: 'blocker', reviewerSeverity: 'note' });
+      expect(kept).toMatchObject({ line: 10, reviewers: ['R1', 'Second read 1'], severity: 'blocker', reviewerSeverity: 'note' });
       expect(kept).not.toHaveProperty('lowestReviewerSeverity');
     }
     expect(deduplicateFindings([read, { ...read, severity: 'note' }])[0]).toMatchObject({ reviewers: ['Second read 1'], lowestReviewerSeverity: 'note' });
