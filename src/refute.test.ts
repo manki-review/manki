@@ -1186,7 +1186,8 @@ describe('refuteBlockers', () => {
 
     // A warning or a note a reviewer calls older than this PR is checked at the round's end, and its check asks the
     // question about the base. A warning comes before a doubted security finding, and a note after it. A security
-    // finding that claims to be older is not checked for that, nor one a later step leaves out.
+    // finding that claims to be older is not checked for that, nor one a later step leaves out, nor one in a file the PR
+    // added, which has no place at the base.
     const claim = { preExisting: 'The send came before the peer was recorded already.' };
     const claimed = [
       finding('Older note', { severity: 'note', ...claim }),
@@ -1194,15 +1195,18 @@ describe('refuteBlockers', () => {
       finding('Older warning', { severity: 'warning', ...claim }),
       finding('Older security warning', { severity: 'warning', tags: ['security'], ...claim }),
       finding('Older warning left out', { severity: 'warning', ...claim }),
+      finding('Older warning in an added file', { severity: 'warning', file: 'src/new.ts', line: 1, evidence: { checks: [], proof: ['src/new.ts:1'] }, ...claim }),
     ];
+    writeFileSync(join(workspace, 'src', 'new.ts'), 'send(peer);\n');
+    const grown: ParsedDiff = { ...diff, files: [...diff.files, { path: 'src/new.ts', changeType: 'added', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, content: '+send(peer);' }] }] };
     const leftOut = (f: Finding) => f.title.endsWith('left out');
     const olderOrder = ['Older warning', 'Security with a doubt', 'Older note'];
     for (const left of [1, 2, 3]) {
       const older = fakeClient(Object.fromEntries(claimed.map(f => [f.title, answer('unsettled')])));
       const budget = { left };
-      const judged = await refuteBlockers(older, claimed, { workspace, diff, doubtBudget: budget, unpostedLater: leftOut });
+      const judged = await refuteBlockers(older, claimed, { workspace, diff: grown, doubtBudget: budget, unpostedLater: leftOut });
       expect(older.calls).toHaveLength(0);
-      await refuteBlockers(older, judged, { workspace, diff, doubtBudget: budget, unpostedLater: leftOut, roundEnd: true });
+      await refuteBlockers(older, judged, { workspace, diff: grown, doubtBudget: budget, unpostedLater: leftOut, roundEnd: true });
       expect(older.calls.map(([title]) => title).sort()).toEqual(olderOrder.slice(0, left).sort());
       expect(older.calls.find(([title]) => title === 'Older warning')![2]).toContain('## Warning a reviewer calls older than this PR: Older warning\n');
       const asked = older.calls.filter(([title]) => title.startsWith('Older')).map(([, , user]) => user.includes(`- **Question about the base**, to answer in \`base\`: ${BASE_QUESTION}`));
