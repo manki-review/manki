@@ -917,6 +917,8 @@ describe('handleReviewCommentReply', () => {
     // A "Fixed." confirms no fix for a later round either, should the PR be opened again on this head.
     expect(body).not.toContain('<!-- manki-fixed:');
     expect(state.fetchBotReviewThreads).not.toHaveBeenCalled();
+    // Without a live thread no round record changes the answer, so none is read.
+    expect(octokit.paginate).not.toHaveBeenCalledWith(octokit.rest.pulls.listReviews, expect.anything());
     expect(state.authorResolvedNote).not.toHaveBeenCalled();
     expect(state.reopenThread).not.toHaveBeenCalled();
     expect(state.resolveReviewThread).not.toHaveBeenCalled();

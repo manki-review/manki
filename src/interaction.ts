@@ -578,8 +578,9 @@ export async function handleReviewCommentReply(
       lookupFailed = true;
       return undefined;
     });
-    const rounds = await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber);
-    const since = changesCountFrom(rounds, live?.id, root.comment.original_commit_id);
+    // A merged or closed PR has no live thread, so no round's judgment of it moves where its changes count from.
+    const rounds = closed ? undefined : await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber);
+    const since = rounds ? changesCountFrom(rounds, live?.id, root.comment.original_commit_id) : root.comment.original_commit_id;
     const sincePosted = since && head ? await fetchChangesSince(octokit, owner, repo, since, head, [filePath, ...evidenceFiles ?? []]) : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext + sinceContext(sincePosted), tools, related);
     // From here on the answer is the plain "Outcome. text" again, so nothing below reads a statement's status.
@@ -610,7 +611,7 @@ export async function handleReviewCommentReply(
     const outcome = replyOutcome(reply);
     const thread = outcome ? live : undefined;
     // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
-    const contradicted = outcome === 'Fixed' && thread && isGuarded(thread)
+    const contradicted = outcome === 'Fixed' && thread && rounds && isGuarded(thread)
       ? openAfterRound(rounds.priorRounds, thread, head, comment.created_at)
       : undefined;
     if (contradicted) {
