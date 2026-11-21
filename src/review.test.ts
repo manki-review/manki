@@ -9552,9 +9552,9 @@ describe('carryBodyWarnings', () => {
     // holds. The warning then has no place reading like its line, so it names none.
     const edited = await carry([first], withX(x.map((line, i) => i === 2 ? '  return [];' : line)));
     expect([edited.titles, edited.lines, edited.ended]).toEqual([all, [undefined, undefined, undefined], undefined]);
-    // Neither does a file that is gone.
+    // A file that is gone ends its warnings, since no later diff shows that file to the judge.
     const gone = await carry([first], { 'src/y.ts': then['src/y.ts'] });
-    expect([gone.titles, gone.ended]).toEqual([all, undefined]);
+    expect([gone.titles, gone.ended]).toEqual([['Check runs twice (round 1)'], ['file_gone', 'file_gone']]);
 
     // A file that cannot be read keeps its warnings.
     const unread = await carry([first], withX(new Error('Server Error') as unknown as string[]));

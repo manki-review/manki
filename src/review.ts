@@ -3799,8 +3799,9 @@ export function bodyWarnings(priorRounds: RoundContext[]): FindingFingerprintEnt
 /**
  * Sets `result.carried` to the `bodyWarnings` of `priorRounds`, so a warning does not vanish because no finder raised
  * it again. A warning leaves the list only for certain, and `result.carriedEnded` says why: a finding the judge graded
- * this round names its problem, kept or not, or the judge found it fixed (`result.carriedFixed`). A changed `citedLine`
- * or a file that is gone ends nothing by itself, since an edit next to the line changes it too, so the judge decides.
+ * this round names its problem, kept or not, or its file is gone, or the judge found it fixed (`result.carriedFixed`).
+ * A changed `citedLine` ends nothing by itself, since an edit next to the line changes it too, so the judge decides. An
+ * `unread` warning has no line to compare, so only the judge or a fix ends it, also when its file is gone.
  * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a
  * pre-existing warning the review leaves out.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
@@ -3834,7 +3835,7 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
     const currentLine = places?.length === 1 ? places[0] : undefined;
     const located: Located = { title: entry.title ?? '', file, line: currentLine ?? entry.fingerprint.lineStart, evidence: entry.evidence };
     const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
-    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (fixed.has(key) ? 'fixed' : undefined);
+    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (entry.citedLine && lines?.length === 0 ? 'file_gone' : fixed.has(key) ? 'fixed' : undefined);
     if (reason) {
       core.info(`No longer carrying the warning "${entry.title}" on ${file}:${located.line}: ${reason}`);
       ended.push({ key, reason });
