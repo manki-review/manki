@@ -233,6 +233,16 @@ export const PRE_EXISTING_TAG = 'pre-existing' as const;
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
 /** Marks a blocker posted as a warning because it claims a build, type or test failure that no CI result on the commit reports. */
 export const UNBUILT_TAG = 'unconfirmed-build-claim' as const;
+/**
+ * Marks a blocker posted as a warning because every refuter disproved it. Its thread is guarded as a security finding's
+ * is: only a fix or someone allowed to clear it lifts it, never the PR author's answer alone.
+ */
+export const DISPROVED_TAG = 'disproved-blocker' as const;
+
+/** Whether the thread of a finding is guarded as a security finding's is: a security finding, or one `DISPROVED_TAG` marks. */
+export function isGuardedFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
+  return isSecurityFinding(tags, priorReviewers) || !!tags?.includes(DISPROVED_TAG);
+}
 
 export interface InterRoundDiffEmptyOverride {
   applied: boolean;
@@ -1911,6 +1921,8 @@ export interface OpenThread extends FindingMetadata, ThreadGrade {
   /** The other files the finding cited as evidence. A push to one counts as a push to the thread, as one to `file` does. */
   evidenceFiles?: string[];
   isSecurity?: boolean;
+  /** Whether the thread holds a blocker posted as a warning because every refuter disproved it, which is guarded as a security thread is. */
+  disprovedBlocker?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets
    * the judge ground its addressed/not-addressed decision in the actual code,

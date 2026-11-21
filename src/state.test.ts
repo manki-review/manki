@@ -302,18 +302,19 @@ describe('fetchBotReviewThreads', () => {
     expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
 
     // A round not posted yet grades the threads too: here it lowers a blocker to a warning and raises a warning to a blocker.
-    // It also backs Manki's resolve of the security warning it found fixed, so that thread holds nothing.
+    // It also backs Manki's resolve of the security warning and of the disproved blocker it found fixed, so neither thread holds anything.
     const pending = makeRoundContext(4, {
-      judge: { summary: '', threadEvaluations: [partly('b', 'warning'), { threadId: 'x', status: 'addressed', reason: 'r' }] },
+      judge: { summary: '', threadEvaluations: [partly('b', 'warning'), { threadId: 'x', status: 'addressed', reason: 'r' }, { threadId: 'd', status: 'addressed', reason: 'r' }] },
       findings: { count: 1, severityCounts: {}, entries: [{ fingerprint: { file: 'src/a.ts', lineStart: 3, lineEnd: 3, slug: 'x' }, severity: 'blocker', threadId: 'p' }] },
     });
     const pendingThreads = () => makeGraphqlFetchResponse([
       makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
       makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
       makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS), isResolved: true, resolvedBy: 'manki-review[bot]' }),
+      makeGraphqlFetchThreadNode({ id: 'd', body: formatFindingComment(finding('warning', 'Lost update', ['disproved-blocker']), TEST_LINKS), isResolved: true, resolvedBy: 'manki-review[bot]' }),
     ]);
     const graded = await fetchBotReviewThreads(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, pending);
-    expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true]]);
+    expect(graded.map(t => [t.id, t.isBlocking, !!t.isWarning, !!t.addressed])).toEqual([['b', false, true, false], ['p', true, false, false], ['x', false, true, true], ['d', false, true, true]]);
     const held = await fetchHeldWarnings(threadsOctokit(graphqlMock.mockResolvedValueOnce(pendingThreads()), reviews), TEST_BOT, 'owner', 'repo', 1, 'author', undefined, pending);
     expect(held.map(t => t.id)).toEqual(['b']);
     // Without every round record or without the threads, a warning thread could be missed, so the read fails rather than return none.
@@ -1378,6 +1379,9 @@ describe('checkAndAutoApprove', () => {
       ['a warning thread whose reply by someone without write access Manki accepted', [warning('t1', { replies: [reply('bob'), accepted('Agreed', 'no_permission')] })]],
       ['a security warning thread whose reply by the PR author Manki accepted', [warning('t1', { replies: [reply('author'), accepted()] }, ['security'])]],
       ['a security warning thread the PR author resolved without the role', [warning('t1', { isResolved: true, resolvedBy: 'author' }, ['security'])]],
+      // A blocker a check disproved is guarded as a security warning is, so the PR author's answer alone never clears it.
+      ['the thread of a disproved blocker whose reply by the PR author Manki accepted', [warning('t1', { replies: [reply('author'), accepted()] }, ['disproved-blocker'])]],
+      ['the thread of a disproved blocker the PR author resolved without the role', [warning('t1', { isResolved: true, resolvedBy: 'author' }, ['disproved-blocker'])]],
       ['a second warning thread nobody answered', [warning('t1', { isResolved: true, resolvedBy: manki, replies: [reply('author'), accepted()] }), warning('t2')]],
       ['a late warning thread with the header and note of a thread posted while warnings did not hold', [warning('t1', {
         body: formatFindingComment({ severity: 'warning', title: 'Retry t1', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], origin: 'reviewed', tags: ['follow-up'] }, TEST_LINKS)
@@ -1423,6 +1427,8 @@ describe('checkAndAutoApprove', () => {
       ['resolved by a person with the role `author_clear_role` allows', [warning('t1', { isResolved: true, resolvedBy: 'maria' })], 'maintain'],
       ['resolved by a PR author with the role', [warning('t1', { isResolved: true, resolvedBy: 'author', replies: [reply('author'), kept] })], 'admin'],
       ['a security warning a maintainer resolved', [warning('t1', { isResolved: true, resolvedBy: 'maria' }, ['security'])]],
+      ['the thread of a disproved blocker a maintainer resolved', [warning('t1', { isResolved: true, resolvedBy: 'maria' }, ['disproved-blocker'])]],
+      ['the thread of a disproved blocker a PR author with the role resolved', [warning('t1', { isResolved: true, resolvedBy: 'author', replies: [reply('author'), accepted()] }, ['disproved-blocker'])], 'admin'],
       ['the last of several, each cleared its own way', [warning('t1', { isResolved: true, resolvedBy: 'maria' }), warning('t2', { replies: [reply('author'), accepted()] })], 'maintain'],
       // Neither a pre-existing defect nor a suggestion holds, though nobody answered them.
       ['answered, beside an open pre-existing warning and an open suggestion', [

@@ -5970,6 +5970,16 @@ describe('runReview', () => {
     });
     expect(blockerThread.findings[0]).toEqual(expect.objectContaining({ ownThread: true }));
     expect(blockerThread.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
+    // The warning of a blocker a check disproved is guarded the same way, so it rides only a thread that is guarded too.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('warning', 'Retry never ends', 'src/x.ts', 10, {
+      tags: ['disproved-blocker'], gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation', reason: 'the refuter disproved it' }],
+    })] });
+    const disproved = (disprovedBlocker: boolean) => runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'warning', disprovedBlocker })], previousFindings: [], priorRounds: [prior], headSha: 'sha3',
+    });
+    expect((await disproved(false)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
+    expect((await disproved(true)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', threadId: 'T1' })]);
     // So it does when the judge's `sameAs` names that thread's blocker from far away, and the link is dropped.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends' })] });
     const named = await runReview(makeClients(), {

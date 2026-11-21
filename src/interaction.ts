@@ -11,7 +11,7 @@ import { fencePrText, truncateDiff } from './review';
 import { closeRawDiff, diffSections, parsePRDiff } from './diff';
 import { eventPrClosed } from './dispatch';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, RecapState, fixClaimMarker, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
+import { fetchPriorRoundContexts, RecapState, fixClaimMarker, guardedKind, isDisprovedThread, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace, withoutCode, BOT_PREFIX_PATTERN } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, recordDismissal, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads, warningHoldNote } from './state';
 import { AuthorClearRole, ParsedDiff, PrContext, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation, RoundContext } from './types';
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
@@ -159,18 +159,18 @@ const REPLY_TIMEOUT_MS = 300_000;
 const REPLY_RESOLUTION_REASONS: Record<string, ResolutionReason> = { Fixed: 'ADDRESSED', Agreed: 'WONT_FIX', Withdrawn: 'INVALID' };
 
 /**
- * Says why a blocking or security thread is not cleared, and who clears it. With `resolved`, the thread is resolved and
- * keeps blocking. `clearRole` is the repo's `author_clear_role`, and without it the note names no PR author.
+ * Says why a guarded thread is not cleared, and who clears it. With `resolved`, the thread is resolved and keeps
+ * blocking. `clearRole` is the repo's `author_clear_role`, and without it the note names no PR author.
  */
-function staysOpenNote(isSecurity: boolean, fixed: boolean, clearRole: AuthorClearRole | undefined, resolved = false): string {
+function staysOpenNote(thread: { isSecurity?: boolean; disprovedBlocker?: boolean }, fixed: boolean, clearRole: AuthorClearRole | undefined, resolved = false): string {
   const verb = resolved ? 'clear' : 'close';
   const other = `someone other than the PR author with write access ${verb}s it`;
   const until = fixed ? `the next review confirms the fix, or ${other}` : other;
   const author = !fixed && clearRole ? ` A PR author can ${verb} it only with ${rolePhrase(clearRole, true)}.` : '';
-  const kind = isSecurity ? 'security' : 'blocking';
+  const kind = guardedKind(thread);
   return (resolved
-    ? `This is a ${kind} finding, so resolving the thread does not clear it. It keeps blocking until ${until}.`
-    : `This is a ${kind} finding, so the thread stays open until ${until}.`) + author;
+    ? `This is a ${kind}, so resolving the thread does not clear it. It keeps blocking until ${until}.`
+    : `This is a ${kind}, so the thread stays open until ${until}.`) + author;
 }
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
@@ -590,6 +590,7 @@ export async function handleReviewCommentReply(
       ...(sincePosted !== undefined && { changedSincePosted: parsePRDiff(sincePosted).files }),
     });
     const isSecurity = isSecurityThread(findingBody);
+    const guard = { isSecurity, disprovedBlocker: isDisprovedThread(findingBody) };
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     // Only a blocking or security thread reads the result, so no other thread is checked. A thread that could not be read may be one.
     const checksElsewhere = checked.fixedIn !== undefined && (!live || isGuarded(live));
@@ -646,17 +647,17 @@ export async function handleReviewCommentReply(
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
       // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
-      const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
+      const reopened = noted && reopenNote ? [settled === 'Fixed' ? staysOpenNote(guard, true, config?.author_clear_role) : reopenNote] : [];
       // An answer that accepts nothing lifts no hold, and neither does one to someone Manki resolves no thread for, so a warning thread hears what does.
       const holdNote = (!outcome || !mayResolve) && live && !closed ? await warningHoldNote(octokit, bot, owner, repo, live, config?.author_clear_role) : undefined;
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
+      const notes = [...(staysOpen ? [staysOpenNote(guard, settled === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(closed && settled ? [REPLY_PR_CLOSED] : []), ...(holdNote ? [holdNote] : [])];
       const decision = replyDecision(settled, closed ? 'pr_closed' : lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       // Whether the finding still blocks once this answer is posted. Only a maintainer's settling answer clears it.
       const blocks = !!live && (noted || ((live.isResolved ? held : isGuarded(live)) && !(settled && mayClear)));
       const list = statementList(checked);
       // The checks never read as a verdict on the finding. A blocking thread that no other note covers says that it stays
       // open, and names a review as a way out only when a review can clear it.
-      const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(isSecurity, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
+      const checks = list ? [list, statementSummary(checked, blocks || !live), ...(blocks && !staysOpen && !noted ? [staysOpenNote(guard, !!filePath, config?.author_clear_role, live.isResolved)] : [])] : [];
       const text = [answer, ...checks, ...notes];
       const markers = [
         BOT_MARKER, response.record(decision, statementChecks(checked), comment.id),
@@ -961,7 +962,7 @@ async function resolveDismissedThread(
       return { resolved: true, changed: !thread.isResolved || held, ...(holds && { note: `The thread is resolved, but a dismissal does not lift a warning's hold. ${holds}${clearRole ? ' Reopen the thread before you resolve it by hand.' : ''}` }) };
     }
     // Without an override the PR author may not clear the thread. Anyone else's dismissal failed: an override was not recorded, or the thread was not reopened.
-    return { resolved: false, note: authorOverride || mayClear ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false, clearRole, thread.isResolved) };
+    return { resolved: false, note: authorOverride || mayClear ? DISMISS_FAILED : staysOpenNote(thread, false, clearRole, thread.isResolved) };
   } catch (error) {
     core.warning(`Failed to resolve the dismissed thread: ${error}`);
     return { resolved: false, note: DISMISS_FAILED };

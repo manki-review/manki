@@ -1995,7 +1995,7 @@ describe('postReview body lead', () => {
   it('holds the approval of a READY round as a COMMENT while a warning on this PR\'s code has a thread', async () => {
     const warning = (title: string, line: number, extra: Partial<Finding> = {}): Finding =>
       ({ severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: [], tags: ['follow-up'], ...extra });
-    const earlier = (title: string, extra: { isSecurity?: boolean } = {}) =>
+    const earlier = (title: string, extra: { isSecurity?: boolean; disprovedBlocker?: boolean } = {}) =>
       ({ findingTitle: title, place: { file: 'src/b.ts', line: 7 }, threadUrl: `https://github.com/owner/repo/pull/1#discussion_${title.length}`, ...extra });
     const listed = (...titles: string[]): string => `**Still open from earlier reviews:**\n${titles.map(t => `- \`src/b.ts:7\`: ${t} ([view thread](https://github.com/owner/repo/pull/1#discussion_${t.length}))`).join('\n')}`;
     const lastBody = (): string => (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body;
@@ -2054,8 +2054,16 @@ describe('postReview body lead', () => {
     expect(securityReview.body.split('\n')[0]).toBe('⚠️ **1 warning to address.** Fix it, or have a maintainer resolve its thread. Manki approves once every warning is handled.');
     expect(securityReview.comments[0].body).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
     expect(securityReview.comments[0].body).toContain('_An earlier round already reviewed these lines and missed this. It is in this PR\'s own code, so it still needs a fix or a maintainer to resolve it._');
+    // The warning of a blocker a check disproved is guarded the same way.
+    mockCreateReview.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [warning('Lost update', 3, { tags: ['follow-up', 'disproved-blocker'] })] }, diff);
+    const disprovedReview = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ body: string }> };
+    expect(disprovedReview.body.split('\n')[0]).toBe('⚠️ **1 warning to address.** Fix it, or have a maintainer resolve its thread. Manki approves once every warning is handled.');
+    expect(disprovedReview.comments[0].body).toMatch(/^⚠️ \*\*Warning, needs a fix\*\*\n/u);
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Lost update', { disprovedBlocker: true })] });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **1 warning to address.** Fix it, or have a maintainer resolve its thread. Manki approves once every warning is handled.');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: [earlier('Old retry'), earlier('Token in URL', { isSecurity: true })], autoApprove: false });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **2 warnings to address.** Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. A security warning needs a fix or a maintainer to resolve its thread. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n')[0]).toBe('⚠️ **2 warnings to address.** Fix each one, reply in its thread with a reason Manki accepts, or tick `Create an issue for this` to track it for later. A security warning, or a blocker a check disproved, needs a fix or a maintainer to resolve its thread. Once every warning is handled, tick the review box in the settings block. `auto_approve` is off, so Manki approves only in a review round, and that round approves the PR if nothing holds the approval.');
     expect(lastBody().split('\n\n')[1]).toBe(listed('Old retry', 'Token in URL'));
     // Warning threads that could not be read hold the approval too, in both wordings.
     const unread = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { openWarnings: 'unread' });

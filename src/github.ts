@@ -15,7 +15,7 @@ import { issueBox, ISSUE_BOX_LABEL, messageBox, withMessageBoxes } from './issue
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { FixClaim, PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedBlocker, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedBlocker, isGuardedFinding, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, gradedAbove, pendingGrade, SEVERITY_NAME, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, ownMarker, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { compressReviewRecord, extractApprovalRecords, formatReviewRecord, hasOwnMarker, smallerRecords } from './review-record';
 import { modelDisplayName } from './providers/model-registry';
@@ -273,11 +273,11 @@ export type ConfigHold = 'base' | 'head';
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, no
  * model read some of its files, or `count` warnings wait for a fix or an accepted answer. Of those, `unthreaded` have no thread
- * and `security` are security warnings with a thread. Without `count` the warning threads could not be read. `earlier`
+ * and `guarded` have a thread that no answer of the PR author clears: security warnings and blockers a check disproved. Without `count` the warning threads could not be read. `earlier`
  * are the warning threads of earlier rounds among them, which the review body lists under the line.
  */
 export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles }
-  | { reason: 'warnings'; count?: number; security?: number; unthreaded?: number; earlier?: HeldWarningEntry[] };
+  | { reason: 'warnings'; count?: number; guarded?: number; unthreaded?: number; earlier?: HeldWarningEntry[] };
 
 /** An earlier warning thread that holds the approval, as the review body lists it. */
 type HeldWarningEntry = Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>;
@@ -368,14 +368,14 @@ function holdLine(hold: ApprovalHold, autoApprove: boolean): { line: string; box
     const threaded = hold.count - unthreaded;
     const noThread = (n: number) => `${n === 1 ? 'has no thread and holds' : 'have no thread and hold'} until a later review round no longer finds ${n === 1 ? 'it' : 'them'}.`;
     if (threaded === 0) return { line: `${lead}. ${hold.count === 1 ? 'It' : 'They'} ${noThread(hold.count)}` };
-    // Neither a reply nor the issue box clears a security warning, which needs a fix or a resolve by someone allowed to
+    // Neither a reply nor the issue box clears a guarded warning, which needs a fix or a resolve by someone allowed to
     // clear it. The box is named only when every holding warning has a thread to tick it in. A reply lifts a hold only
     // when Manki accepts it, so the line promises nothing for an explanation alone.
-    const security = hold.security ?? 0;
+    const guarded = hold.guarded ?? 0;
     const explain = 'reply in its thread with a reason Manki accepts';
-    const ways = security === threaded ? 'or have a maintainer resolve its thread'
+    const ways = guarded === threaded ? 'or have a maintainer resolve its thread'
       : unthreaded > 0 ? `or ${explain}` : `${explain}, or tick \`${ISSUE_BOX_LABEL}\` to track it for later`;
-    const mixed = security > 0 && security < threaded ? ' A security warning needs a fix or a maintainer to resolve its thread.' : '';
+    const mixed = guarded > 0 && guarded < threaded ? ' A security warning, or a blocker a check disproved, needs a fix or a maintainer to resolve its thread.' : '';
     const line = `${lead}, ${ways}.${mixed}${unthreaded > 0 ? ` ${unthreaded} of them ${noThread(unthreaded)}` : ''}`;
     return autoApprove ? { line } : { line: `${line} Once every warning is handled, tick the review box in the settings block. ${ROUND_APPROVES_LINE}`, box: 'again' };
   }
@@ -2170,7 +2170,7 @@ export async function postReview(
     /** The `review.rules` setting, which decides whether a confirmed rule keeps a finding a check disproved. */
     rules?: RulesMode;
     /** The earlier warning threads that still hold the approval, or `unread` when they could not be read, which holds it too. */
-    openWarnings?: ReadonlyArray<{ isSecurity?: boolean; findingTitle: string; place?: { file: string; line: number; originalLine?: number; findingLine?: number }; threadUrl?: string }> | 'unread';
+    openWarnings?: ReadonlyArray<{ isSecurity?: boolean; disprovedBlocker?: boolean; findingTitle: string; place?: { file: string; line: number; originalLine?: number; findingLine?: number }; threadUrl?: string }> | 'unread';
     /** The `auto_approve` setting, which decides what the lines for a held draft and for warnings tell the reader to do. */
     autoApprove?: boolean;
     /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
@@ -2369,10 +2369,10 @@ export async function postReview(
   const holding = threadFindings.filter(holdsApproval);
   const holdingUnthreaded = unthreaded.filter(holdsApproval).length;
   const warnings = openWarnings === 'unread' ? undefined : openWarnings.length + holding.length + holdingUnthreaded;
-  const security = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity).length + holding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length;
+  const guarded = openWarnings === 'unread' ? 0 : openWarnings.filter(t => t.isSecurity || t.disprovedBlocker).length + holding.filter(f => isGuardedFinding(f.tags, f.reviewers)).length;
   const earlierWarnings = openWarnings === 'unread' ? [] : openWarnings.map(t => ({ file: t.place?.file ?? '', line: t.place ? currentFindingLine(t.place) || (t.place.findingLine ?? 0) : 0, title: t.findingTitle, threadUrl: t.threadUrl }));
   const warningHold: ApprovalHold | undefined = warnings === undefined ? { reason: 'warnings' }
-    : warnings > 0 ? { reason: 'warnings', count: warnings, ...(security > 0 && { security }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }), ...(earlierWarnings.length > 0 && { earlier: earlierWarnings }) } : undefined;
+    : warnings > 0 ? { reason: 'warnings', count: warnings, ...(guarded > 0 && { guarded }), ...(holdingUnthreaded > 0 && { unthreaded: holdingUnthreaded }), ...(earlierWarnings.length > 0 && { earlier: earlierWarnings }) } : undefined;
   // A draft or a conflict comes before the warnings, which the verdict line still names, so neither hides the other.
   // It is read beside a config or unread hold too, which comes first but gets a line of its own.
   const prHold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
@@ -2529,7 +2529,7 @@ export async function postReview(
       ? review.body.replace(holdLine(warningHold), () => holdLine({
         ...warningHold,
         unthreaded: (warningHold.unthreaded ?? 0) + refusedHolding.length,
-        security: (warningHold.security ?? 0) - refusedHolding.filter(f => isSecurityFinding(f.tags, f.reviewers)).length,
+        guarded: (warningHold.guarded ?? 0) - refusedHolding.filter(f => isGuardedFinding(f.tags, f.reviewers)).length,
       }))
       : review.body;
     // Truncate the existing body, never the findings appended to it or the round record.
@@ -3301,11 +3301,11 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 function formatFindingHeader(finding: Finding, noThread = false): string {
   const name = SEVERITY_NAME[finding.severity];
   const severity = `${name[0].toUpperCase()}${name.slice(1)}`;
-  // A reply clears neither a security warning nor a warning with no thread to reply in. Any other holding warning
+  // A reply clears neither a guarded warning nor a warning with no thread to reply in. Any other holding warning
   // carries a plain label, since the review's first line says how to clear it.
   const tail = isBlockingFinding(finding) ? ''
     : !holdsApproval(finding) ? ', not blocking'
-    : noThread || isSecurityFinding(finding.tags, finding.reviewers) ? ', needs a fix' : '';
+    : noThread || isGuardedFinding(finding.tags, finding.reviewers) ? ', needs a fix' : '';
   const label = `**${severity}${tail}**`;
   // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';

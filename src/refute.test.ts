@@ -374,6 +374,9 @@ describe('refuteBlockers', () => {
       ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'note'],
       ...cases.slice(4).map(([title]) => [title, title === 'Note raise' ? 'note' : toWarning.includes(title) ? 'warning' : 'blocker']),
     ]);
+    // A blocker lowered to a warning marks its thread as guarded. A raise of the judge's alone that two models send back
+    // to its finders' grade takes no such mark.
+    expect(result.filter(f => f.tags?.includes('disproved-blocker')).map(f => f.title)).toEqual(toWarning);
     const finderBlocker = result.find(f => f.title === 'Finder blocker')!;
     expect([finderBlocker.gradePath?.at(-1), finderBlocker.judgeNotes?.split('\n').at(-1)]).toEqual([
       { from: 'blocker', to: 'warning', by: 'refutation', reason: 'both refuters disproved it' }, 'Posted as a warning, since both refuters disproved it.',

@@ -1309,6 +1309,7 @@ async function collectOpenThreads(
         ...(f.peakGrade && { peakGrade: f.peakGrade }),
         ...(f.gradeUnknown && { gradeUnknown: true }),
         ...(f.isSecurity && { isSecurity: true }),
+        ...(f.disprovedBlocker && { disprovedBlocker: true }),
         description: f.description,
         suggestedFix: f.suggestedFix,
         howToFix: f.howToFix,
