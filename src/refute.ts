@@ -663,9 +663,9 @@ export function needsProof(finding: Finding, rules?: RulesMode): boolean {
  * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
  * whether the defect exists, and one no cited line proves. Then come such warnings that `restatesEarlier` accepts,
- * which an earlier finding keeps posted, then the warnings and after them the notes that `claimsOlder`, whose check
- * of the base can keep them out of the review. Last come the findings the judge doubts that are posted without
- * proof: a security finding and one `gradedByRule` under `rules`. A round can judge findings in several calls, so only the first group is returned for a judge
+ * which an earlier finding keeps posted, then the warnings that `claimsOlder`, whose check of the base can keep them
+ * out of the review. Then come the findings the judge doubts that are posted without proof: a security finding and one
+ * `gradedByRule` under `rules`. The notes that `claimsOlder` come last, since a later step can leave a note out anyway. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding with a
  * `gradeIfConfirmed` above its grade is always checked: that check is how a warning with a blocker cell becomes a
@@ -681,8 +681,8 @@ function doubtsToCheck(
   const warnings = findings.filter(f => f.severity === 'warning' && unchecked(f));
   const unproven = warnings.filter(f => needsProof(f, rules) && (doubtsDefect(f) || citesNoProof(f)));
   const statusOnly = warnings.filter(f => !needsProof(f, rules) && doubtsDefect(f));
-  const older = [...warnings, ...findings.filter(f => f.severity === 'note' && unchecked(f))].filter(claimsOlder);
-  const groups = roundEnd ? [...new Set([...unproven.filter(restatesEarlier), ...older, ...statusOnly])] : unproven.filter(f => !restatesEarlier(f));
+  const olderNotes = findings.filter(f => f.severity === 'note' && unchecked(f) && claimsOlder(f));
+  const groups = roundEnd ? [...new Set([...unproven.filter(restatesEarlier), ...warnings.filter(claimsOlder), ...statusOnly, ...olderNotes])] : unproven.filter(f => !restatesEarlier(f));
   const open = groups.filter(f => !noCheck(f));
   const reused = open.filter(needsNoCall);
   const ordered = open.filter(f => !reused.includes(f));
