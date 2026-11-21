@@ -413,7 +413,7 @@ describe('refuteBlockers', () => {
       finding('Unseen confirmed', { ...byJudge('warning', 'blocker'), judgeNotes: 'warning. The lock path sits outside the diff.' }),
       finding('Unseen and contradicted', {
         ...byJudge('warning', 'blocker', 'blocker'), severity: 'note',
-        gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'note', by: 'contradiction' }],
+        gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'note', by: 'own_proposal' }],
       }),
       finding('Unseen disproved', byJudge('note', 'warning', 'warning')),
       finding('Unseen unsettled', byJudge('warning', 'blocker', 'blocker')),

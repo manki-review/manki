@@ -1891,7 +1891,6 @@ export async function runReview(
   let judgeThreadEvaluations: ThreadEvaluation[] | undefined;
   let carriedFixed: string[] | undefined;
   let judgeCrossRoundSuppressed: number | undefined;
-  let judgeCrossRoundDemoted: number | undefined;
   let judgeInterRoundDiffEmptyOverride: { applied: boolean; affectedThreadCount: number } | undefined;
   let inPrSuppressedCount = 0;
   let judgeUsage: LLMUsage | undefined;
@@ -1959,7 +1958,6 @@ export async function runReview(
       judgeThreadEvaluations = judgeResult.threadEvaluations;
       carriedFixed = judgeResult.carriedFixed;
       judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
-      judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
       judgeInterRoundDiffEmptyOverride = judgeResult.interRoundDiffEmptyOverride;
       inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
       finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
@@ -1982,7 +1980,7 @@ export async function runReview(
   }
   Object.assign(recorded, {
     allJudgedFindings, ...(judgeSkipped && { judgeSkipped }), ...(judgeDurationMs != null && { judgeDurationMs }), judgeRetryCount,
-    crossRoundSuppressed: judgeCrossRoundSuppressed, crossRoundDemoted: judgeCrossRoundDemoted,
+    crossRoundSuppressed: judgeCrossRoundSuppressed,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }), ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
   });
   await checkpoint?.();
@@ -2379,7 +2377,6 @@ export async function runReview(
     judgeRetryCount,
     ...(dedupDurationMs != null && { dedupDurationMs }),
     crossRoundSuppressed: judgeCrossRoundSuppressed,
-    crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
