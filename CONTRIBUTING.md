@@ -69,10 +69,10 @@ Each finding of a bench report stores how it got its grade as its `route` (`grad
 
 The labelled set records only the posted finding and the judge's grade, and it stays that way. A replay of the refuter needs its tools in the repository at `commitSha`, which a set of findings cannot give, while the bench reports already record each finding's finder grade, doubts and refuter outcome next to the key item it matches.
 
-The check of whether a blocker was already on the PR's base has a replay of its own, over a recorded round in [`src/refute.fixtures`](src/refute.fixtures). `src/review.test.ts` runs it offline with the recorded answers. The live replay fetches the round's repository at its head and base, asks a real refuter about each blocker and checks which ones the base already had. It signs in like the live judge replay, and `REFUTE_LIVE_MODEL` picks another model:
+The origin check (`checkOrigins` in `src/origin.ts`), which asks whether the PR caused a blocker or warning, has a replay of its own over a recorded round in [`src/refute.fixtures`](src/refute.fixtures). `src/review.test.ts` runs it offline with the recorded answers. The live replay fetches the round's repository at its head and base, runs a real origin check on each blocker and checks which ones the base already had. It signs in like the live judge replay, and `REFUTE_LIVE_MODEL` picks another model:
 
 ```sh
-CLAUDE_CODE_OAUTH_TOKEN=<token from claude setup-token> RUN_REFUTE_LIVE_FIXTURES=1 npx jest src/refute.test.ts -t 'live refuter'
+CLAUDE_CODE_OAUTH_TOKEN=<token from claude setup-token> RUN_REFUTE_LIVE_FIXTURES=1 npx jest src/origin.test.ts -t 'live origin check'
 ```
 
 ## Commit and PR conventions
