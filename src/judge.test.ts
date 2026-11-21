@@ -5523,6 +5523,9 @@ describe('deduplicateFindings', () => {
     expect(result).toHaveLength(1);
     expect(result[0].reviewers).toEqual(['R1', 'R2']);
     expect(result[0].preExisting).toBeUndefined();
+    // The kept finding takes the trigger of a copy when it names none, so the merge never leaves a `degraded` warning without one.
+    expect(deduplicateFindings([findings[0], { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a page loads');
+    expect(deduplicateFindings([{ ...findings[0], trigger: 'When a user saves' }, { ...findings[1], trigger: 'When a page loads' }])[0].trigger).toBe('When a user saves');
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
     // A dropped copy's security tag stays on the kept finding, next to the tags it has.
     expect(deduplicateFindings([{ ...findings[0], tags: ['follow-up'] }, { ...findings[1], tags: ['security'] }])[0].tags).toEqual(['follow-up', 'security']);

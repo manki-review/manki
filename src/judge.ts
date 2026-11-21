@@ -2400,8 +2400,8 @@ function hasReversalWord(finding: Finding): boolean {
 const mergeKey = (f: Pick<Finding, 'title' | 'file'>): string => `${f.title}::${f.file}`;
 
 /**
- * Keeps the first finding per title and file, with the reviewers of every copy, the finder grades `mergedFinderGrades`
- * gives, the `mergedDropCheck` and the first rule a copy quotes. A finder's copy is kept over one only second reads reported. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
+ * Keeps the first finding per title and file, with the reviewers of every copy, the first trigger a copy names, the
+ * finder grades `mergedFinderGrades` gives, the `mergedDropCheck` and the first rule a copy quotes. A finder's copy is kept over one only second reads reported. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
  * marked so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
@@ -2416,7 +2416,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     const [first, copy] = bySecondReadsOnly(earlier) && !bySecondReadsOnly(f) ? [f, earlier] : [earlier, f];
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && copy.preExisting && (!staysPreExisting || staysPreExisting(copy));
-    kept.set(key, { ...unmarked, reviewers: [...new Set([...first.reviewers, ...copy.reviewers])], ...(stays && { preExisting }), ...mergedFinderGrades(first, copy), ...mergedDropCheck(first, copy), ...(copy.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, copy) });
+    kept.set(key, { ...unmarked, reviewers: [...new Set([...first.reviewers, ...copy.reviewers])], ...(stays && { preExisting }), ...(!first.trigger && copy.trigger && { trigger: copy.trigger }), ...mergedFinderGrades(first, copy), ...mergedDropCheck(first, copy), ...(copy.tags?.includes(SECURITY_TAG) && asSecurity(first)), ...mergedRule(first, copy) });
   }
   return [...kept.values()];
 }
