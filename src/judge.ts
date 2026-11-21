@@ -418,7 +418,7 @@ export function buildJudgeSystemPrompt(
     ? 'One of the Open Review Threads in the user message is an earlier blocker'
     : `${openBlockerCount} of the Open Review Threads in the user message are earlier blockers`;
   const openBlockerInstruction = openBlockerCount > 0
-    ? `\n\n${openBlockers}, marked "earlier blocker". Each one you do not mark \`addressed\` still blocks merge, and one marked "stays open" blocks merge${fixElsewhere ? ' unless you name the file of its fix in `fixedIn` and later checks confirm that fix' : ' whatever you decide'}. While one is still open, never write that nothing blocks merge or that the earlier problems are fixed. Say in plain words which earlier problem is still open and what still goes wrong because of it, for example: "The new comment matches \`memory.repo\`, but the earlier blocker is still open: the memory repo still sits in another account, so the App cannot write to it."`
+    ? `\n\n${openBlockers}, marked "earlier blocker". Each one you do not mark \`addressed\` still blocks merge, and one marked "stays open" blocks merge${fixElsewhere ? ' unless you name the file of its fix in `fixedIn` and later checks confirm that fix' : ' whatever you decide'}. While one is still open, never write that nothing blocks merge or that the earlier problems are fixed.${fixElsewhere ? ' For one whose fix you name in `fixedIn`, say that its fix in that file still awaits a check, since the check runs after your summary.' : ''} Say in plain words which earlier problem is still open and what still goes wrong because of it, for example: "The new comment matches \`memory.repo\`, but the earlier blocker is still open: the memory repo still sits in another account, so the App cannot write to it."`
     : '';
   const summaryInstruction = isFollowUp
     ? `Write one or two sentences on where the change stands now: whether the earlier problems are fixed, and what still goes wrong in practice. The review already shows each finding's title, so do not repeat a title word for word. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
@@ -882,7 +882,9 @@ export function buildJudgeUserMessage(
     }
     if (threads.length > 0) parts.push('');
     if (heldOpen.length > 0) {
-      parts.push(`A thread marked "stays open" is not resolved this round ${fixElsewhere ? 'unless you name the file of its fix in `fixedIn` and later checks confirm it' : 'whatever you decide'}. In the summary, say that it is still open, and never write that its problem is fixed.\n`);
+      parts.push(fixElsewhere
+        ? 'A thread marked "stays open" is not resolved this round unless it is tied to a file, is not a security thread, and you name the file of its fix in `fixedIn` and later checks confirm it. In the summary, say that it is still open, or, where you named the file of its fix in `fixedIn`, that this fix still awaits a check. Never write that its problem is fixed.\n'
+        : 'A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.\n');
     }
     if (carriedWarnings.length > 0) {
       parts.push(`## Earlier Warnings in the Review Body\n`);
