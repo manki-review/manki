@@ -227,7 +227,7 @@ export function canLeaveOut(f: Finding): boolean {
 
 /**
  * Marks a finding on lines outside every hunk of the PR's diff, which never blocks unless it is a security finding. It
- * also marks a finding whose failure the checks found at the PR's base by `sameOnBase`, which never blocks.
+ * also marks a finding whose failure the origin checks found at the PR's base by `foundOnBase`, which never blocks.
  */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
@@ -417,6 +417,8 @@ export interface Finding {
   refutation?: Refutation;
   /** How the second refuter, on `models.second_refuter`, came out. Set beside `refutation` when that model checked the finding. */
   pairRefutation?: Refutation;
+  /** The origin checks of whether the PR caused the failure. Set on blockers and warnings the round checked. */
+  originCheck?: OriginCheck;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
   /** Why the review leaves the finding out. Only the round record keeps such a finding. */
@@ -1017,12 +1019,6 @@ export function triggerDoubt(trigger: string): Doubt {
   return { premise: `This trigger happens in realistic use: ${trigger}`, decides: 'defect' };
 }
 
-/**
- * The question each check of a blocker answers in its own `base` answer, apart from the finding's doubts. A disproof
- * says the code at the PR's base fails the same way. It is never a doubt, so no grade waits on it.
- */
-export const BASE_QUESTION = 'The failure is this PR\'s own: the code at the PR\'s base does not fail the same way for the same input through the same path, or this PR makes that path newly reachable or the failure worse';
-
 /** Returns `doubts` with `REACH_DOUBT` in place of any doubt that words the same premise. */
 export function withReachDoubt(doubts: readonly Doubt[] = []): Doubt[] {
   return [...doubts.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT];
@@ -1038,8 +1034,33 @@ export interface PremiseCheck {
   proof?: string[];
   /** The lines of related repos that decide it, as `owner/name:path:line`. They can confirm, and never count toward a disproof. */
   relatedProof?: string[];
-  /** The PR's base commit that holds the `proof` lines of an answer to `BASE_QUESTION`, set once the code found them there. */
+}
+
+/**
+ * How an origin check answered whether a finding's failure is this PR's own: the PR `introduced` it, `worsened` an
+ * older one, or the base already failed the same way (`pre_existing`).
+ */
+export type OriginVerdict = 'introduced' | 'worsened' | 'pre_existing' | 'unsure';
+
+/** One origin check's answer about a finding. */
+export interface OriginAnswer {
+  verdict: OriginVerdict;
+  reason: string;
+  /** The lines that show the failure at the head, as the code found them there. */
+  head?: string[];
+  /** The lines that show the same failure at the base, in git's paths, as the code found them at `commit`. */
+  base?: string[];
+  /** The PR's base commit that holds the `base` lines. */
   commit?: string;
+  /** The model that answered. */
+  model?: string;
+}
+
+/** The origin checks of a finding. */
+export interface OriginCheck {
+  /** Whether the PR added or changed the flagged line, so the line has no place at the base. */
+  lineChanged: boolean;
+  answers: OriginAnswer[];
 }
 
 /** The outcome of the judge's attempt to refute a finding with tools. */
@@ -1061,8 +1082,6 @@ export interface Refutation {
   relatedProof?: string[];
   /** The answer to each premise in the finding's `doubts`, in order. The `outcome` follows from them. */
   premises?: PremiseCheck[];
-  /** The answer to `BASE_QUESTION`. It never changes the `outcome`. */
-  base?: PremiseCheck;
   /** The finding's own file and the files the outcome cites. */
   files: string[];
   /** SHA-256 over `files` at the commit checked. A later round reuses the outcome while it still matches. */
@@ -1117,31 +1136,46 @@ export function confirmsDefect(check: Refutation, finding: Pick<Finding, 'doubts
   return check.defect === 'confirmed' && !check.premises?.some(p => towardFinding(p) !== 'confirmed' && decides(p) !== 'grade');
 }
 
-/** Whether `check` answers that the code at the PR's base fails the same way, with lines the code found at the base `commit`. */
-function failsOnBase(check: Refutation | undefined): check is Refutation & { base: PremiseCheck } {
-  return check?.base?.outcome === 'disproved' && !!check.base.proof?.length && !!check.base.commit;
+/** Whether `answer` shows the failure at the base, with lines the code found at the base `commit`. */
+function failsOnBase(answer: OriginAnswer): boolean {
+  return answer.verdict === 'pre_existing' && !!answer.base?.length && !!answer.commit;
 }
 
 /**
- * Returns the answer that shows the code at the PR's base fails the same way as `finding`, when both refuters, on
- * different known models, give such an answer (`failsOnBase`). One model's answer, read from files the PR author
- * controls, never lowers a blocker, so one refuter alone, one whose call failed, or two on one model keep the finding as
- * it is.
+ * Returns the origin answer that shows the code at the PR's base fails the same way as `finding`, when two answers on
+ * different known models do so (`failsOnBase`) and none says otherwise. One model's answer, read from files the PR
+ * author controls, never lowers a blocker, so one answer alone, or two on one model, keep the finding as it is.
  */
-export function sameOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
-  const { refutation, pairRefutation } = finding;
-  if (!refutation?.model || !pairRefutation?.model || refutation.model === pairRefutation.model) return undefined;
-  return failsOnBase(refutation) && failsOnBase(pairRefutation) ? refutation.base : undefined;
+export function sameOnBase(finding: Pick<Finding, 'originCheck'>): OriginAnswer | undefined {
+  const answers = finding.originCheck?.answers ?? [];
+  const models = new Set(answers.filter(failsOnBase).map(a => a.model).filter(Boolean));
+  return models.size >= 2 && answers.every(failsOnBase) ? answers[0] : undefined;
 }
 
 /**
- * Returns the answer of one check that the code at the PR's base fails the same way as `finding`, when `sameOnBase`
- * does not make it pre-existing and neither check found the failure the PR's own. It changes no grade. The finding
- * only notes that it may be older than this PR.
+ * Returns the one origin answer that shows the code at the PR's base fails the same way as `finding`, when `sameOnBase`
+ * does not and no answer found the failure the PR's own. On its own it changes no grade. The finding only notes that it
+ * may be older than this PR, unless `foundOnBase` accepts one answer for it.
  */
-export function oneCheckOnBase(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): PremiseCheck | undefined {
-  if (sameOnBase(finding) || [finding.refutation, finding.pairRefutation].some(check => check?.base?.outcome === 'confirmed')) return undefined;
-  return [finding.refutation, finding.pairRefutation].find(failsOnBase)?.base;
+export function oneCheckOnBase(finding: Pick<Finding, 'originCheck'>): OriginAnswer | undefined {
+  const answers = finding.originCheck?.answers ?? [];
+  if (sameOnBase(finding) || answers.some(a => a.verdict === 'introduced' || a.verdict === 'worsened')) return undefined;
+  return answers.find(failsOnBase);
+}
+
+/** Whether one origin answer is enough to keep `f` out of the review: a warning or note that would never block and is no security finding. */
+export function oneAnswerSettles(f: Finding): boolean {
+  return f.severity !== 'blocker' && !wouldBlockIfTrue(f) && !staysWarningIfConfirmed(f) && !isSecurityFinding(f.tags, f.reviewers);
+}
+
+/**
+ * Returns the origin answer that makes `f` pre-existing. Two answers on different models must agree (`sameOnBase`),
+ * except on a flagged line the PR left unchanged of a finding `oneAnswerSettles`, where one answer does
+ * (`oneCheckOnBase`). A changed line has no place at the base to compare, so it always needs both.
+ */
+export function foundOnBase(f: Finding): OriginAnswer | undefined {
+  if (f.severity === 'ignore') return undefined;
+  return sameOnBase(f) ?? (f.originCheck && !f.originCheck.lineChanged && oneAnswerSettles(f) ? oneCheckOnBase(f) : undefined);
 }
 
 /** Whether every check in `checks` confirmed the defect and each premise, so none left one open or contradicted itself. */
@@ -2017,7 +2051,7 @@ export interface AgentProgressEntry {
 }
 
 /** A step of calls that run beside the finders, or after the judge for the sweeps. */
-export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'pattern' | 'fix' | 'sweep' | 'second_read';
+export type SideCheckKind = 'comparison' | 'related' | 'claim' | 'pattern' | 'fix' | 'sweep' | 'second_read' | 'origin';
 
 /** Hears of the checks of one step as they run. */
 export interface CheckProgress<R> {
@@ -2984,6 +3018,8 @@ export interface FindingFingerprintEntry {
   refutation?: Refutation;
   /** Mirrors `Finding.pairRefutation`. */
   pairRefutation?: Refutation;
+  /** Mirrors `Finding.originCheck`. */
+  originCheck?: OriginCheck;
   /** Mirrors `Finding.gradeIfConfirmed`. */
   gradeIfConfirmed?: FindingSeverity;
   /** Mirrors `Finding.judgeIfConfirmed`. */

@@ -957,7 +957,7 @@ function reviewHeading(routing: DashboardData['routing']): string {
   return `Review (${sanitizeMarkdown(route)})`;
 }
 
-const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', fix: 'fix checks', sweep: 'sweeps', second_read: 'second reads' };
+const SIDE_CHECK_NAMES: Record<SideCheckKind, string> = { comparison: 'comparisons', related: 'related checks', claim: 'claim checks', pattern: 'pattern checks', fix: 'fix checks', sweep: 'sweeps', second_read: 'second reads', origin: 'origin checks' };
 // `runReview` starts these five steps beside the finders in every round, the second reads after the finders and the sweeps after the judge, so the sweeps show under the judge.
 const BESIDE_FINDERS: SideCheckKind[] = ['comparison', 'related', 'claim', 'pattern', 'fix'];
 
@@ -994,6 +994,7 @@ function judgeLiveLines(data: DashboardData, now: number): string[] {
   return [
     graded && `${INDENT}graded ${countOf(graded.kept + graded.dropped + graded.merged, 'finding')}: ${graded.kept} kept · ${graded.dropped} dropped${graded.merged ? ` · ${graded.merged} merged` : ''} (${formatDuration(graded.durationMs)})`,
     refuterLine(data.refuter),
+    originLine(data),
     ...sweepLines(data),
     reader && `${INDENT}verdict reader: ${reader.durationMs === undefined ? `reading the diff · ${soFar(reader.startedAt, now)}` : `read the diff (${formatDuration(reader.durationMs)})`}`,
   ].filter((line): line is string => !!line);
@@ -1029,6 +1030,14 @@ function sweepLines(data: DashboardData): string[] {
     [data.sweepDedupCount ?? 0, 'sweep finding dropped as a repeat of an earlier resolved finding', 'sweep findings dropped as repeats of earlier resolved findings'],
   ] as const).filter(([count]) => count > 0).map(([count, singular, plural]) => countOf(count, singular, plural));
   return [line, ...(drops.length > 0 ? [`${INDENT}${drops.join(', ')}`] : [])];
+}
+
+/** The origin checks' line, such as `origin checks: 1 of 2 done`, under the judge since they run on the findings it kept. */
+function originLine(data: DashboardData): string | undefined {
+  const origin = data.sideChecks?.origin;
+  if (!origin || origin.total === 0) return undefined;
+  const took = origin.endedAt === undefined ? '' : ` (${formatDuration(origin.endedAt - origin.startedAt)})`;
+  return `${INDENT}origin checks: ${origin.ended} of ${origin.total} done${took}`;
 }
 
 /** The finished comment's lines on findings neither kept nor dropped, and on kept ones no judge call graded. */
@@ -1752,8 +1761,8 @@ function trackedNote(finding: Finding): string | undefined {
 const BASE_NOTE_RE = /^\*\*(?:Possibly older than this PR|Already broken before this PR)\.\*\* [^\n]*/;
 
 /**
- * Returns the line that says the checks found the failure of `finding` at the PR's base, with the base lines they cited,
- * linked at the base commit when `links` can. Two checks on different models (`sameOnBase`) say the failure was already
+ * Returns the line that says the origin checks found the failure of `finding` at the PR's base, with the base lines they
+ * cited, linked at the base commit when `links` can. Two checks on different models (`sameOnBase`) say the failure was already
  * there: on a pre-existing finding that no longer blocks, and on a security finding that still blocks, which a
  * maintainer decides. One check only says the finding may be older. A pre-existing finding that stopped blocking for
  * another reason needs neither.
@@ -1763,9 +1772,9 @@ function baseNote(finding: Finding, links?: CodeLinks): string | undefined {
   const both = sameOnBase(finding);
   const security = !stopped && !!both && isSecurityFinding(finding.tags, finding.reviewers);
   const base = stopped || security ? both : oneCheckOnBase(finding);
-  if (!base?.proof?.length) return undefined;
+  if (!base?.base?.length) return undefined;
   const linkTo = base.commit && links?.linkAt ? links.linkAt(base.commit) : () => undefined;
-  const lines = base.proof.flatMap(location => {
+  const lines = base.base.flatMap(location => {
     const [, file, range] = location.match(/^(.+):(\d+(?:-\d+)?)$/) ?? [];
     const at = file ? lineRange(file, range) : undefined;
     return at ? [linkedRange(at, linkTo)] : [];
