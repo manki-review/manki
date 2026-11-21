@@ -7,7 +7,7 @@ import { capUnconfirmedBuildClaim, carriedToJudge, cutFilesNote, cutInterRoundDi
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, formatResetTime, InstructionFile, LinkedIssue, MANKI_VERSION, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, pushTouchesThread, replyClassOf, titleOverlapType, dropWaivedRestatements } from './recap';
-import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
+import { canLeaveOut, CheckProgress, sameOnBase, disproof, GradedCounts, RefutationOutcome, SideCheckKind, findingKey, gradedAbove, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RulesMode, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundAgentMetric, RoundComparison, RoundContext, RoundDedupDuplicateMatch, RoundFix, RoundModelFallback, RoundNotStarted, RoundPlannerSource, RoundPrClaim, RoundRawFinding, RoundRelatedRepo, RoundReusedFrom, RoundStaticSignalMatch, RoundUnitLine, RoundUses, EarlierAttempt, DiffHunk, EffortLevel, Finder, FinderError, RelatedRepoTools, RelatedWork, SCOPE_DOUBT_TITLE, Triage, ThreadEvaluation, ThreadGrade, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType, secondReadName, RoundSecondReads } from './types';
 import { countChangedLines, diffSections, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, orderDiffSections, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff, UNTRUSTED_DIFF_NOTE, repoPath } from './diff';
 import { guessClaimTerms, translateNames } from './name-translation';
 import { dependencyOutcomes } from './dependency-sources';
@@ -179,6 +179,29 @@ const CLAIM_LINES_LIMIT_MS = 30_000;
 
 /** A finder reply that is not the JSON array of findings or holds no usable element, which a retry with `parseRetryNote` can correct. */
 class FinderReplyError extends Error {}
+
+/** Returns why one attempt of a finder failed, with `message` as `agentWarnings` keeps it. */
+function finderError(error: unknown, message: string): FinderError {
+  const { status, exitCode } = (error && typeof error === 'object' ? error : {}) as { status?: unknown; exitCode?: unknown };
+  // An SDK's error classes keep the name `Error`, so their class tells them apart.
+  const kind = error instanceof Error ? (error.name === 'Error' ? error.constructor.name : error.name) : typeof error;
+  return {
+    kind, message,
+    ...(typeof status === 'number' && { status }),
+    ...(typeof exitCode === 'number' && { exitCode }),
+    ...(error instanceof FinderReplyError && { parseFailed: true as const }),
+  };
+}
+
+/** Returns `cause` as a log line: its kind and codes, then its message unless `withMessage` is false. */
+export function formatFinderError(cause: FinderError, withMessage = true): string {
+  const codes = [
+    ...(cause.status !== undefined ? [`HTTP ${cause.status}`] : []),
+    ...(cause.exitCode !== undefined ? [`exit ${cause.exitCode}`] : []),
+    ...(cause.parseFailed ? ['reply did not parse'] : []),
+  ];
+  return `${cause.kind}${codes.length > 0 ? ` (${codes.join(', ')})` : ''}${withMessage ? `: ${cause.message}` : ''}`;
+}
 
 const MAX_ASK_AGAIN_FILES = 8;
 
@@ -1367,6 +1390,7 @@ export async function runReview(
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
   const agentWarnings = new Map<string, string[]>();
+  const agentErrors = new Map<string, FinderError[]>();
   const agentsAskedAgain: string[] = [];
   const agentUnitLines = new Map<string, RoundUnitLine[]>();
   const agentInputDigests = new Map<string, string>();
@@ -1378,7 +1402,7 @@ export async function runReview(
     agentInputDigests.set(name, finderDigests.get(name)!);
     agentFindingsReturned.set(name, findings);
   };
-  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentsAskedAgain, agentInputDigests, agentFindingsReturned, agentUnitLines });
+  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount, agentWarnings, agentErrors, agentsAskedAgain, agentInputDigests, agentFindingsReturned, agentUnitLines });
   const quotaErrors = new Map<string, QuotaError>();
   // Why a failed finder is not run again: a used-up limit, or its own time limit, which a retry from the start would meet again.
   const noRetry = new Map<string, string>();
@@ -1395,8 +1419,12 @@ export async function runReview(
     agentWarnings.set(name, [...(agentWarnings.get(name) ?? []), reason]);
     return reason;
   };
-  const recordFailure = (name: string, error: unknown): void => {
-    agentFailureReasons.set(name, recordWarning(name, error));
+  /** Records why an attempt of the finder `name` failed and returns the cause as a log line. */
+  const recordFailure = (name: string, error: unknown): string => {
+    const reason = recordWarning(name, error);
+    agentFailureReasons.set(name, reason);
+    const cause = finderError(error, reason);
+    appendTo(agentErrors, name, cause);
     if (error instanceof QuotaError) {
       quotaErrors.set(name, error);
       noRetry.set(name, error.limit);
@@ -1404,6 +1432,7 @@ export async function runReview(
     else noRetry.delete(name);
     if (error instanceof FinderReplyError) retryNotes.set(name, parseRetryNote(error, 'array'));
     else retryNotes.delete(name);
+    return formatFinderError(cause);
   };
   const retryable = (name: string): boolean => !noRetry.has(name);
   // The finder has the changed files in its message, so one it opens is no code outside the diff.
@@ -1555,8 +1584,7 @@ export async function runReview(
       core.info(`${running[i].name}: ${result.value.length} findings`);
     } else {
       failedAgents.push(running[i].name);
-      recordFailure(running[i].name, result.reason);
-      core.warning(`${running[i].name} failed: ${result.reason}`);
+      core.warning(`${running[i].name} failed: ${recordFailure(running[i].name, result.reason)}`);
     }
   }
 
@@ -1632,8 +1660,7 @@ export async function runReview(
         }
       } else {
         stillFailed.push(agent.name);
-        recordFailure(agent.name, error);
-        core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
+        core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed: ${recordFailure(agent.name, error)}`);
         if (onProgress) {
           onProgress({
             phase: 'agent-complete',
@@ -2335,6 +2362,7 @@ export async function runReview(
     agentDurationMs,
     agentRetryCount,
     agentWarnings,
+    agentErrors,
     agentsAskedAgain,
     agentInputDigests,
     agentFindingsReturned,

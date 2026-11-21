@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, cliHome, matchQuotaText, processFolder, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, cliHome, matchQuotaText, processFolder, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail, withExitCode, withPromptDir } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -230,7 +230,7 @@ export class GeminiClient implements LLMClient {
       });
       core.warning(`Gemini CLI failed (${msg})`);
       warnReplyTail('Gemini CLI', output);
-      throw new Error(`Gemini CLI invocation failed (${msg})`);
+      throw withExitCode(new Error(`Gemini CLI invocation failed (${msg})`), code);
     }
     const content = output.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));

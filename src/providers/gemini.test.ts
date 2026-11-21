@@ -538,6 +538,7 @@ describe('GeminiClient OAuth path', () => {
     const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
     expect(other).not.toBeInstanceOf(QuotaError);
     expect(other?.message).toMatch(/Gemini CLI invocation failed/);
+    expect(other).toMatchObject({ exitCode: 1 });
     warnSpy.mockRestore();
   });
 

@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse } from '../utils';
-import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, closedCallsFile, fileReadBy, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, toolServerReadings, warnReplyTail, withPromptDir } from './cli-utils';
+import { advisedWaitMs, buildExitDiagnostics, callWithTimeout, carryReadings, CliExit, cliEnv, cliHome, closedCallsFile, fileReadBy, HARD_TIMEOUT_MS, MankiCommand, matchQuotaText, pause, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, resultChars, runCli, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, toolServerReadings, warnReplyTail, withExitCode, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, oneRequest, QuotaError, readCount, RefusalError, SendMessageOptions, TimeoutError, ToolStep, withLargestRequest, ZERO_USAGE } from './types';
 import { checkLoginFilePath, withLoginFile } from './codex-login-file';
 
@@ -746,7 +746,7 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', events.reply ?? '');
-      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, closedCalls, ...fileReadings(), ...limits });
+      throw carryReadings(withExitCode(new Error(`Codex CLI invocation failed (${msg})`), code), { relatedReads, closedCalls, ...fileReadings(), ...limits });
     }
     const content = events.answer.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));

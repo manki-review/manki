@@ -1328,6 +1328,20 @@ export interface TestGuide {
   steps: string[];
 }
 
+/** Why one attempt of a finder failed. */
+export interface FinderError {
+  /** The error's class, such as `TimeoutError`, `QuotaError` or `FinderReplyError`. */
+  kind: string;
+  /** The error's message, as the round's `agentWarnings` keeps it. */
+  message: string;
+  /** The HTTP status of a failed SDK request. */
+  status?: number;
+  /** The exit code of a CLI run that failed. */
+  exitCode?: number;
+  /** Set when the call answered and its reply did not parse. */
+  parseFailed?: true;
+}
+
 export interface ReviewResult {
   verdict: ReviewVerdict;
   /** Required on what `runReview` returns. `verdict` is derived from it. */
@@ -1423,6 +1437,8 @@ export interface ReviewResult {
   agentRetryCount?: Map<string, number>;
   /** Why each failed attempt of an agent failed, in order, kept when a retry then succeeded. */
   agentWarnings?: Map<string, string[]>;
+  /** The cause of each attempt that failed a finder, in order, kept when a retry then succeeded. */
+  agentErrors?: Map<string, FinderError[]>;
   /** The finders asked once more, since their first answer opened none of the files outside the diff that the lists in their message name, or left a unit of the change without a line. */
   agentsAskedAgain?: string[];
   /** The `inputDigest` of each finder whose read finished, run this round or kept from an earlier attempt. */

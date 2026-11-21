@@ -664,6 +664,11 @@ export function resultChars(content: unknown): number {
   }, 0);
 }
 
+/** Puts the exit code of the CLI run that failed on `error` and returns it, so the record of a failed finder names it. */
+export function withExitCode<E extends Error>(error: E, exitCode: number | null): E {
+  return exitCode === null ? error : Object.assign(error, { exitCode });
+}
+
 /** What a call measured before it failed. */
 type CallReadings = Pick<LLMResponse, 'relatedReads' | 'closedCalls' | 'filesRead' | 'limits'>;
 

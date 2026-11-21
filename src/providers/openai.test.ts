@@ -1237,6 +1237,7 @@ describe('sendViaCLI (Codex CLI path)', () => {
       expect(plain).not.toBeInstanceOf(QuotaError);
       expect(plain?.message).toContain(`Codex CLI invocation failed (exit ${exitCode}: <empty stderr> [`);
       expect(plain?.message).toContain('<no result event>');
+      expect(plain).toMatchObject({ exitCode });
     }
   });
 
