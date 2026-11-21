@@ -218,7 +218,7 @@ class FakeGitHub {
       if (match[2]) return json({ id: this.nextId++, content: body.content }, 201);
       const isBot = `${comment.author.login}[bot]` === APP_LOGIN;
       return json({
-        id, body: comment.body, path: thread.path, line: thread.line, author_association: comment.authorAssociation,
+        id, body: comment.body, path: thread.path, line: thread.line, author_association: comment.authorAssociation, original_commit_id: thread.comments[0].originalCommit?.oid,
         user: { login: isBot ? APP_LOGIN : comment.author.login, type: isBot ? 'Bot' : 'User' },
         in_reply_to_id: comment === thread.comments[0] ? undefined : thread.comments[0].databaseId,
         pull_request_url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}`,
@@ -286,7 +286,11 @@ class FakeGitHub {
     if (method === 'GET' && route.startsWith('/compare/')) {
       const head = route.split('...').at(-1) ?? '';
       const commits = (this.pushedCommits[head] ?? [head]).map(sha => ({ sha, parents: [{ sha: 'parent' }] }));
-      return json({ status: 'ahead', total_commits: commits.length, commits, files: [], merge_base_commit: { sha: MERGE_BASE_SHA } });
+      // The files of a pushed head are those of its commit's diff, each with its patch.
+      const files = (this.commitDiffs[head] ?? '').split(/^diff --git /m).slice(1).map(part => ({
+        filename: /^\+\+\+ b\/(.+)$/m.exec(part)![1], status: 'modified', patch: part.slice(part.indexOf('@@')),
+      }));
+      return json({ status: 'ahead', total_commits: commits.length, commits, files, merge_base_commit: { sha: MERGE_BASE_SHA } });
     }
     if (method === 'GET' && (match = route.match(/^\/commits\/(\w+)$/)) && headers.get('accept')?.includes('diff')) return text(this.commitDiffs[match[1]] ?? '');
     const config = this.configs[searchParams.get('ref') ?? ''];

@@ -36,7 +36,8 @@ describe('checkReply', () => {
       cacheDir: join(root, 'cache'),
       stateDir,
     };
-    sources = { workspace, related, relatedNames: ['acme/reports', 'acme/billing'], diff: DIFF, description: DESCRIPTION };
+    // Line 3 of `src/ledger.rs` changed since the thread was posted.
+    sources = { workspace, related, relatedNames: ['acme/reports', 'acme/billing'], diff: DIFF, description: DESCRIPTION, changedSincePosted: DIFF.files };
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -210,8 +211,11 @@ describe('checkReply', () => {
     ['Withdrawn', 'becomes Unverified on a line that does not exist', ['src/ledger.rs:99'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Withdrawn', 'becomes Unverified without proof', undefined, `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Withdrawn', 'becomes Unverified on text of the PR description', [HELD], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
-    ['Fixed', 'holds without proof', undefined, 'Fixed. The exporter writes CSV.'],
-    ['Fixed', 'holds on a line of the PR next to a related line', ['src/ledger.rs:3', 'acme/reports:lib/rows.py:2'], 'Fixed. The exporter writes CSV.'],
+    ['Fixed', 'holds on a line changed since the thread was posted next to a related line', ['acme/reports:lib/rows.py:2', 'src/ledger.rs:2-4'], 'Fixed. The exporter writes CSV.'],
+    // A fix is a change, so a line the PR has not changed since the thread was posted shows none.
+    ['Fixed', 'becomes Unverified without proof', undefined, `Unverified. The exporter writes CSV. ${UNPROVEN}`],
+    ['Fixed', 'becomes Unverified on a line not changed since the thread was posted', ['src/ledger.rs:4'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
+    ['Fixed', 'becomes Unverified on text of the PR description', [HELD], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Fixed', 'becomes Unverified on related lines alone', ['acme/reports:lib/rows.py:2'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Fixed', 'becomes Unverified on a related line that was not fetched', ['acme/billing:lib/rows.py:2'], `Unverified. The exporter writes CSV. ${UNPROVEN}`],
     ['Agreed', 'needs no proof', ['acme/reports:lib/rows.py:2'], 'Agreed. The exporter writes CSV.'],
@@ -228,6 +232,11 @@ describe('checkReply', () => {
       { quote: snapshot, status: 'confirmed', description: HELD },
     ];
     expect(checkReply(JSON.stringify({ outcome, answer: `${outcome}. The exporter writes CSV.`, proof, statements }), REPLY, sources).text).toBe(text);
+    // When what changed since the thread was posted could not be read, no line shows a fix.
+    if (outcome === 'Fixed') {
+      const unread = checkReply(JSON.stringify({ outcome, answer: 'The guard runs first.', proof: ['src/ledger.rs:3'] }), REPLY, { ...sources, changedSincePosted: undefined });
+      expect(unread.text).toBe(`Unverified. The guard runs first. ${UNPROVEN}`);
+    }
   });
 
   it('sets `fixedIn` only to a pull request of this repository that the developer\'s own words name', () => {
