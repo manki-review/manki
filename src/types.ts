@@ -1178,7 +1178,7 @@ export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
   note_cap: 'over the `review.notes` limit',
-  pre_existing: 'on code this PR did not change',
+  pre_existing: 'older than this PR',
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
   no_trigger: 'it names no trigger that happens in realistic use',

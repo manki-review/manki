@@ -1,5 +1,5 @@
 {
-  "about": "Round 3 of a rust-dashcore PR, whose six blockers Manki posted on code the base already had in five cases. Each finding holds the answer a refuter gave about the base, recorded from the code at the base commit. `lineCounts` sizes the files of the offline workspace at the base and the head, and `hunks` holds the headers of the PR's diff of each file without context, which place the lines it removes and adds. The check of the base passes only when this PR left the flagged line unchanged and the answer cites that line at its place in the base. That holds for the finding on `masternodes/manager.rs` and the security finding on `instantsend/manager.rs`, which two refuters on different models make pre-existing. The other four flag lines this PR added or changed and keep blocking.",
+  "about": "Round 3 of a rust-dashcore PR, whose six blockers Manki posted on code the base already had in five cases. Each finding holds the answer a refuter gave about the base, recorded from the code at the base commit. `lineCounts` sizes the files of the offline workspace at the base and the head, and `hunks` holds the headers of the PR's diff of each file without context, which place the lines it removes and adds. The check of the base passes only when the answer cites the flagged line at its place in the base, or for a line this PR changed, a line its change replaced. That holds for the finding on `masternodes/manager.rs`, the security finding on `instantsend/manager.rs`, and the findings on `instantsend/manager.rs` line 162 and on `sml_engine.rs`, which two refuters on different models make pre-existing. The other two keep blocking.",
   "repository": "https://github.com/dashpay/rust-dashcore.git",
   "base": "d9e4ce3fddb5c246a702f8afa99bab14e9cc46af",
   "head": "696b9fd48bc7818ff38c46b91fe34fa26634a3f7",
@@ -174,7 +174,7 @@
         "dash-spv/src/sync/instantsend/manager.rs:181",
         "dash-spv/src/sync/instantsend/manager.rs:196"
       ],
-      "expected": "blocker",
+      "expected": "pre-existing",
       "recorded": {
         "outcome": "confirmed",
         "reason": "process_instantlock caches a lock under its txid even when verification returned MissingQuorumData (validated=false).",
@@ -214,7 +214,7 @@
         "dash-spv/src/sml_engine.rs:987-989",
         "dash-spv/src/sml_engine.rs:1017-1024"
       ],
-      "expected": "blocker",
+      "expected": "pre-existing",
       "recorded": {
         "outcome": "confirmed",
         "reason": "Only two places store a cycle: the tip set (sml_engine.rs:1019) and the work-block list at h (sml_engine.rs:727).",
