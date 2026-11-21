@@ -131,9 +131,8 @@ function citesChangedLine(location: string, changed: readonly DiffFile[] = []): 
   const file = changed.find(f => f.path === locationFile(location));
   if (!file) return false;
   const [start, end] = locationLines(location);
-  const lines = changedLineNumbers(file);
-  const range = Array.from({ length: end - start + 1 }, (_, i) => start + i);
-  return range.length <= MAX_QUOTED_RANGE ? range.some(line => lines.has(line)) : range.every(line => lines.has(line));
+  const cited = [...changedLineNumbers(file)].filter(line => line >= start && line <= end).length;
+  return end - start + 1 <= MAX_QUOTED_RANGE ? cited > 0 : cited === end - start + 1;
 }
 
 /**
