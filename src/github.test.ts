@@ -1766,7 +1766,7 @@ describe('postReview with context', () => {
       findings: {
         count: 100, severityCounts: { warning: 100 }, entries: Array.from({ length: 100 }, (_, i) => ({
           fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: `finding-${i}` }, severity: 'warning' as const, title: `Finding ${i}`, threadId: `T_${i}`,
-          judgeNotes: noises(2), refutation, suggestedFix: noises(2), evidence: { checks: [noises(2)], proof: [`src/${i}.ts:${i}`] }, description: noise(),
+          judgeNotes: noises(2), refutation, suggestedFix: noises(2), evidence: { checks: [noises(4)], proof: [`src/${i}.ts:${i}`] }, description: noise(),
         })),
       },
       judge: { summary: 'Fine.', threadEvaluations },
