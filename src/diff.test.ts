@@ -1033,16 +1033,21 @@ describe('oldLineOf, replacementOf, extendedLineOf and changesNextTo', () => {
     expect([2, 3].map(line => extendedLineOf(run(' one', '-b(x);', '+new();', '+b(x, y);', ' three'), line))).toEqual([undefined, { line: 2, text: 'b(x);' }]);
     // Removed and added lines out of order still pair by their text.
     expect([2, 3].map(line => extendedLineOf(run(' one', '-a(1)', '+a(1, 2)', '-b(1)', '+b(1, 2)', ' four'), line))).toEqual([{ line: 2, text: 'a(1)' }, { line: 3, text: 'b(1)' }]);
-    // A rewritten line, a condition negated, inverted or narrowed, a changed number, a blank removed line, a kept line
-    // and an old line two added lines both extend map to nothing.
+    // A rewritten line, a condition negated, inverted, narrowed or widened past the list, a changed number, a change of
+    // whitespace inside the line, a blank removed line, a kept line and an old line two added lines both extend map to
+    // nothing.
     expect(extendedLineOf(run(' one', '-foo(x);', '+bar(x);', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-if (x) {', '+if (!x) {', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-if (ok) {', '+if (ok === false) {', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-if (ready) {', '+if (ready && open) {', ' three'), 2)).toBeUndefined();
+    expect(extendedLineOf(run(' one', '-if (isAllowed(user)) {', '+if (isAllowed(user, role) || isAdmin()) {', ' three'), 2)).toBeUndefined();
+    expect(extendedLineOf(run(' one', '-parts = s.split(" ");', '+parts = s.split("");', ' three'), 2)).toBeUndefined();
+    expect(extendedLineOf(run(' one', '-let a b;', '+let ab;', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-ok = x > 0;', '+ok = x >= 0;', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-timeout = 5;', '+timeout = 50;', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-limit = 1;', '+limit = 1.5;', ' three'), 2)).toBeUndefined();
     expect(extendedLineOf(run(' one', '-', '+next();', ' three'), 2)).toBeUndefined();
+    expect([2, 3].map(line => extendedLineOf(run(' one', '-f(a);', '+f(a, b);', '+f(a, c);', ' three'), line))).toEqual([undefined, undefined]);
     expect([1, 2, 3, 4].map(line => extendedLineOf(file, line))).toEqual([undefined, undefined, undefined, undefined]);
   });
 
