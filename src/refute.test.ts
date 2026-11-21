@@ -140,8 +140,8 @@ describe('refuteBlockers', () => {
     const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff, usesOutsideDiff });
 
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([
-      // PR content the refuter reads could steer a disproof, so it never lowers a blocker. The reason is kept.
-      ['Disproved', 'blocker', 'disproved'],
+      // A blocker the refuter disproved is posted as a warning with the reason, which still holds the approval.
+      ['Disproved', 'warning', 'disproved'],
       ['Confirmed', 'blocker', 'confirmed'],
       // An unsettled blocker keeps blocking, since only proof may unblock it.
       ['Confirmed without proof', 'blocker', 'unsettled'],
@@ -180,11 +180,12 @@ describe('refuteBlockers', () => {
     expect(['Confirmed without proof', 'Unsettled', 'Lead unsettled', 'Disproved by an unrelated file', 'Blocking lead unsettled', 'Disproved without proof'].map(stepsUsedUp))
       .toEqual(['no', 'no', 'yes', 'yes', 'yes', 'unknown']);
     expect(['Disproved in its own file', 'Disproved', 'Confirmed'].map(stepsUsedUp)).toEqual([undefined, undefined, undefined]);
-    expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.');
+    expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.\nPosted as a warning, since the refuter disproved it.');
     // A cut reason or rule ends in an ellipsis, so the next text never reads as its continuation.
     expect(result[3].judgeNotes).toBe(`Refutation unsettled: ${`The callers are generated${' and long'.repeat(60)}`.slice(0, 500)}... Rule checked: ${'r'.repeat(500)}...`);
     // Each severity change the refutation makes is a step of the grade path, with the refuter's reason.
     expect(Object.fromEntries(result.filter(f => f.gradePath).map(f => [f.title, f.gradePath]))).toEqual({
+      'Disproved': [{ from: 'blocker', to: 'warning', by: 'refutation', reason: 'the refuter disproved it' }],
       'Unproven lead confirmed': [{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'It overflows.' }],
       'Unproven disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
       'Lead disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
@@ -274,13 +275,13 @@ describe('refuteBlockers', () => {
 
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.pairRefutation?.outcome, disproof(f)?.reason])).toEqual([
       ['Both confirm', 'blocker', 'confirmed', 'confirmed', undefined],
-      // Two disproofs still leave a blocker a finder filed blocking, since PR content could steer both.
-      ['Both disprove', 'blocker', 'disproved', 'disproved', 'Both inputs are checked.'],
+      // Two disproofs make a blocker a finder filed a warning, which still holds the approval.
+      ['Both disprove', 'warning', 'disproved', 'disproved', 'Both inputs are checked.'],
       // Only a confirmation changes a security finding, however many refuters disprove it.
       ['Security both disprove', 'blocker', 'disproved', 'disproved', 'A comment says it is intended.'],
       // A split never lowers a blocker, and the finding keeps both reasons.
       ['Confirm and disprove', 'blocker', 'confirmed', 'disproved', undefined],
-      // An unsettled check abstains, and a single disproof never lowers a blocker.
+      // A blocker is lowered only when every check that ran disproved it, so an unsettled one keeps it.
       ['Disprove and abstain', 'blocker', 'disproved', 'unsettled', 'Both inputs are checked.'],
       // A split keeps a lead's grade, where one disproof alone would drop it.
       ['Lead split', 'warning', 'disproved', 'confirmed', undefined],
@@ -290,7 +291,7 @@ describe('refuteBlockers', () => {
       ['Unseen confirm and abstain', 'blocker', 'confirmed', 'unsettled', undefined],
       ['Unseen split', 'warning', 'confirmed', 'disproved', undefined],
       // A failed call leaves the grade to the other refuter.
-      ['First fails', 'blocker', undefined, 'disproved', 'Both inputs are checked.'],
+      ['First fails', 'warning', undefined, 'disproved', 'Both inputs are checked.'],
       // A disproved premise that only decides the grade leaves its own check unsettled, but the other refuter's confirmation
       // still never raises the finding or moves it out of the `rare` column.
       ['Reach confirmed and disproved', 'warning', 'confirmed', 'unsettled', undefined],
@@ -304,8 +305,8 @@ describe('refuteBlockers', () => {
       [{ row: 'wrong', column: 'rare' }, 'confirmed', 'disproved'], [{ row: 'wrong', column: 'normal' }, 'confirmed', 'disproved'],
     ]);
     expect(result[0].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
-    expect(result[1].gradePath).toBeUndefined();
-    expect(result[1].judgeNotes).toBe('Refutation disproved: Both inputs are checked.\nPair refutation disproved: Only checked inputs reach it.');
+    expect(result[1].gradePath).toEqual([{ from: 'blocker', to: 'warning', by: 'refutation', reason: 'both refuters disproved it' }]);
+    expect(result[1].judgeNotes).toBe('Refutation disproved: Both inputs are checked.\nPair refutation disproved: Only checked inputs reach it.\nPosted as a warning, since both refuters disproved it.');
     expect(result[3].judgeNotes).toBe('Refutation confirmed: It overflows at src/math.ts:2.\nPair refutation disproved: Both inputs are checked.');
     expect(result[6].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);
     // Both refuters get the same question with the same budget.
@@ -319,7 +320,7 @@ describe('refuteBlockers', () => {
     expect(message('Both confirm')).not.toMatch(/The PR's change/i);
   });
 
-  it('puts a blocker only the judge raised back at its finders\' grade when two refuters on different models disprove it', async () => {
+  it('posts a blocker every refuter disproved as a warning, and one only the judge raised at its finders\' grade when two refuters on different models disprove it', async () => {
     const cell = { row: 'wrong', column: 'normal' } as const;
     const raised = (from: Finding['severity'] = 'warning'): Partial<Finding> => ({ reviewerSeverity: from, gradePath: [{ from, to: 'blocker', by: 'judge' }], cell });
     const disproved = (reason: string) => ({ outcome: 'disproved', reason, proof: ['src/api.ts:9'] });
@@ -332,10 +333,11 @@ describe('refuteBlockers', () => {
       // With `review.rules: warn` a confirmed rule alone gives a warning, so the finding goes no lower than that, whatever its finder filed.
       ['Breaks a rule', { ...raised('note'), rule: { file: 'AGENTS.md', quote: 'Every bound must be checked.', verdict: 'confirmed' } }],
       ['Merged finder blocker', { ...raised(), reviewerSeverity: 'blocker' }],
-      // A finder filed it as a blocker, so the judge did not raise it alone, also when another finder filed a warning.
+      // A finder filed it as a blocker, so the judge did not raise it alone, also when another finder filed a warning. It
+      // goes no lower than a warning.
       ['Split finder blocker', { ...raised(), reviewerSeverity: 'blocker', lowestReviewerSeverity: 'warning' }],
       ['Finder blocker', {}],
-      // Any second answer but a disproof keeps the blocker.
+      // A second answer that is no disproof keeps the blocker. A failed or unusable second call leaves it to the first.
       ['Second unsure', raised(), { outcome: 'unsettled', reason: 'Could not tell.' }],
       ['Second confirms', raised(), { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] }],
       ['Second fails', raised(), new Error('CLI crashed')],
@@ -352,6 +354,7 @@ describe('refuteBlockers', () => {
       ['Same as a finding no record holds', { ...raised(), sameAs: 'src/old.ts:9:9:gone' }],
       // A later step on the grade means more than the judge's raise decided it.
       ['Raised by a check', { reviewerSeverity: 'note', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], cell }],
+      ['Note raise', raised('note')],
     ];
     const first = fakeClient(Object.fromEntries(cases.map(([title]) => [title, disproved('Both inputs are checked.')])), 'claude-opus-5-5');
     const replies = Object.fromEntries(cases.map(([title, , reply]) => [title, reply ?? disproved('Only checked inputs reach it.')]));
@@ -366,27 +369,36 @@ describe('refuteBlockers', () => {
     // Pins the two message lines the prompt's paragraph on open leads depends on: it tells the refuter to start with
     // what is left to check.
     expect(first.messages.find(([, user]) => user.includes(': Open lead\n'))?.[1]).toContain('- **Checked so far**: read src/math.ts:2\n- **Left to check**: find the callers');
+    const toWarning = ['Merged finder blocker', 'Split finder blocker', 'Finder blocker', 'Second fails', 'Second unusable', 'Raised by a check'];
     expect(result.map(f => [f.title, f.severity])).toEqual([
-      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'note'], ...cases.slice(4).map(([title]) => [title, 'blocker']),
+      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'note'],
+      ...cases.slice(4).map(([title]) => [title, title === 'Note raise' ? 'note' : toWarning.includes(title) ? 'warning' : 'blocker']),
     ]);
+    const finderBlocker = result.find(f => f.title === 'Finder blocker')!;
+    expect([finderBlocker.gradePath?.at(-1), finderBlocker.judgeNotes?.split('\n').at(-1)]).toEqual([
+      { from: 'blocker', to: 'warning', by: 'refutation', reason: 'both refuters disproved it' }, 'Posted as a warning, since both refuters disproved it.',
+    ]);
+    expect(result.find(f => f.title === 'Second fails')!.gradePath?.at(-1)?.reason).toBe('the refuter disproved it');
     // With `auto`, the default, the rule gives no grade, so the finding goes back to its finder's note. With `warn` it
     // goes no lower than a warning, and with `block` the rule alone gives a blocker, so it stays one.
     const byRules = async (rules: RulesMode) => (await run(fakeClient(replies, 'gpt-6.1-sol'), cases.slice(2, 4), undefined, rules)).map(f => f.severity);
     expect([await byRules('auto'), await byRules('warn'), await byRules('block')]).toEqual([['warning', 'note'], ['warning', 'warning'], ['warning', 'blocker']]);
-    const [lowered, , , , merged] = result;
+    const [lowered] = result;
+    const kept = result.find(f => f.title === 'Second unsure')!;
     const reason = 'claude-opus-5-5 and gpt-6.1-sol both disproved it, and no finder graded it a blocker';
     expect(lowered.gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation', reason }]);
     expect([lowered.refutation?.model, lowered.pairRefutation?.model]).toEqual(['claude-opus-5-5', 'gpt-6.1-sol']);
     expect(lowered.judgeNotes).toBe(`Refutation disproved: Both inputs are checked.\nPair refutation disproved: Only checked inputs reach it.\nPosted as a warning, since ${reason}.`);
     // The blocker cell goes, so a later round does not restate the blocker from it. The record keeps it apart.
     expect([lowered.cell, lowered.judgeCell]).toEqual([undefined, cell]);
-    expect([merged.cell, merged.judgeCell, merged.gradePath]).toEqual([cell, undefined, raised().gradePath]);
+    expect([kept.cell, kept.judgeCell, kept.gradePath]).toEqual([cell, undefined, raised().gradePath]);
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(`Posting blocker "Judge raise" as a warning: ${reason}`);
 
-    // Two answers from one model, or from a model the reply does not name, are not two checks.
+    // Two answers from one model, or from a model the reply does not name, are not two checks, so they give a warning
+    // and not the finder's note.
     const judgeRaise = cases.slice(0, 1);
     for (const pairModel of ['claude-opus-5-5', undefined]) {
-      expect((await run(fakeClient(replies, pairModel), judgeRaise))[0].severity).toBe('blocker');
+      expect((await run(fakeClient(replies, pairModel), cases.slice(-1)))[0].severity).toBe('warning');
     }
     // A later step folds a finding with the title of an open thread that blocks nearby into it, so it stays a blocker
     // there. Another blocker thread in its file is another defect, so the finding is lowered.
@@ -555,8 +567,8 @@ describe('refuteBlockers', () => {
       ['One premise confirmed', 'warning', 'unsettled', ['confirmed', 'unsettled']],
       ['Defect disproved', 'ignore', 'disproved', ['disproved']],
       ['Lowering premise holds', 'warning', 'unsettled', ['disproved']],
-      // A disproof never lowers a blocker.
-      ['Blocker defect disproved', 'blocker', 'disproved', ['disproved']],
+      // A disproof lowers a blocker to a warning and never drops it.
+      ['Blocker defect disproved', 'warning', 'disproved', ['disproved']],
       ['Disproved beside a confirmed premise', 'ignore', 'disproved', ['disproved', 'confirmed']],
       ['Defect confirmed beside a disproved premise', 'warning', 'unsettled', ['disproved']],
       ['Defect and premise disproved', 'ignore', 'disproved', ['disproved']],
@@ -589,8 +601,8 @@ describe('refuteBlockers', () => {
       ...keptDown.map(title => [title, normal, 'confirmed']), [unsettledDown, normal, 'unsettled'], ['Restates an earlier warning', normal, undefined],
       ...raised.slice(1).map(title => [title, normal, 'confirmed']),
     ]);
-    // Only a finding the check drops or raises has a `refutation` step, and a confirmed reach leaves the finding as the judge graded it.
-    expect(result.filter(f => f.gradePath?.some(step => step.by === 'refutation')).map(f => f.title)).toEqual(['Defect disproved', 'Disproved beside a confirmed premise', 'Defect and premise disproved', ...raised]);
+    // Only a finding the check drops, lowers or raises has a `refutation` step, and a confirmed reach leaves the finding as the judge graded it.
+    expect(result.filter(f => f.gradePath?.some(step => step.by === 'refutation')).map(f => f.title)).toEqual(['Defect disproved', 'Blocker defect disproved', 'Disproved beside a confirmed premise', 'Defect and premise disproved', ...raised]);
     expect([result[0].gradePath, result[0].gradeIfConfirmed, result[0].doubts, result[0].evidence?.proof]).toEqual([undefined, 'blocker', [exists, REACH_DOUBT], findings[0].evidence?.proof]);
     const keptWarning = result.find(f => f.title === 'Doubt confirmed where the judge keeps a warning')!;
     expect([keptWarning.gradePath, keptWarning.gradeIfConfirmed, checkStatus(keptWarning)]).toEqual([undefined, 'warning', 'confirmed']);
@@ -1453,7 +1465,7 @@ describe('refuteBlockers', () => {
 
     expect(first.refutation?.files).toEqual(['src/api.ts', 'src/math.ts']);
     const [again] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds, diff });
-    expect([client.calls.length, again.severity, again.refutation]).toEqual([1, 'blocker', first.refutation]);
+    expect([client.calls.length, again.severity, again.refutation]).toEqual([1, 'warning', first.refutation]);
 
     // A second refuter reuses its own stored outcome the same way, and is asked when none is stored.
     const pair = fakeClient({ 'Sum overflows': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] } });
