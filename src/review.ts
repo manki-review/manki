@@ -3602,13 +3602,7 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined): Promise<{ findings: Finding[]; blockers: Finding[] }> {
   const merged = blockers.map(b => ({ ...b }));
   // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
-  const matched = findings.map(f => blockers.findIndex(b => sameProblem(b, f)));
-  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => mayRestate(b, f) ? [{ i, j }] : []) : []);
-  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} finding pairs that may restate each other stay apart unchecked, since the round has no dedup model`);
-  const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [blockers[j], findings[i]]), dedup) : [];
-  pairs.forEach(({ i, j }, k) => {
-    if (answers[k] && matched[i] === -1) matched[i] = j;
-  });
+  const matched = await sameDefectIndexes(findings, blockers, dedup);
   const kept = findings.filter((f, i) => {
     const index = matched[i];
     if (index === -1) return true;
@@ -3621,6 +3615,22 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     return false;
   });
   return { findings: kept, blockers: merged };
+}
+
+/**
+ * Returns, for each of `findings`, the index of the first of `earlier` that names the same defect, or -1. `sameProblem`
+ * settles a pair at once. The pairs `mayRestate` makes go to the `dedup` model in one call, and only its explicit yes
+ * links them, so a failed call or no dedup model links none.
+ */
+async function sameDefectIndexes(findings: readonly Finding[], earlier: ReadonlyArray<Located & { description?: string }>, dedup: LLMClient | undefined): Promise<number[]> {
+  const matched = findings.map(f => earlier.findIndex(e => sameProblem(e, f)));
+  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? earlier.flatMap((e, j) => mayRestate(e, f) ? [{ i, j }] : []) : []);
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} finding pairs that may restate each other stay apart unchecked, since the round has no dedup model`);
+  const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [earlier[j], findings[i]]), dedup) : [];
+  pairs.forEach(({ i, j }, k) => {
+    if (answers[k] && matched[i] === -1) matched[i] = j;
+  });
+  return matched;
 }
 
 /** An earlier finding still present, which a finding of this round can restate. */
