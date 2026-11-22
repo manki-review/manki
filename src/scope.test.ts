@@ -104,7 +104,7 @@ describe('runScopeReader', () => {
   });
 
   it('splits one file between PRs by its hunks, and drops a split that leaves a hunk out, puts one in two PRs or names lines no hunk has', async () => {
-    const hunks = parsePRDiff([
+    const hunkDiff = [
       'diff --git a/src/app.ts b/src/app.ts',
       '--- a/src/app.ts',
       '+++ b/src/app.ts',
@@ -123,15 +123,25 @@ describe('runScopeReader', () => {
       '-const FLAG = "--old";',
       '+const FLAG = "--new";',
       '',
-    ].join('\n'));
+    ].join('\n');
+    const hunks = parsePRDiff(hunkDiff);
     const read = (split: object[], topics: object[] = []) => runScopeReader(client({ useful: true, topics, split }), { diff: hunks, rawDiff: RAW_DIFF, trivial: false });
 
     // A range takes each hunk it overlaps, and a whole file takes all its hunks, so old and new entries mix in one split.
     const byHunk = [{ name: 'Feature flag', files: ['src/app.ts:2', 'src/cli.ts'] }, { name: 'Total fix', files: ['src/app.ts:20-25'] }];
     const topics = [{ name: 'Feature flag', files: ['src/app.ts:1-3', 'src/gone.ts:1-3'] }];
-    expect(await read(byHunk, topics)).toEqual({ topics: [{ name: 'Feature flag', files: ['src/app.ts:1-3'] }], split: byHunk, purpose: expect.any(String), issues: expect.any(String) });
+    const kept = await read(byHunk, topics);
+    expect(kept).toEqual({ topics: [{ name: 'Feature flag', files: ['src/app.ts:1-3'] }], split: byHunk, purpose: expect.any(String), issues: expect.any(String), hunks: expect.any(String) });
     const byFile = [{ name: 'App', files: ['src/app.ts'] }, { name: 'Flag rename', files: ['src/cli.ts'] }];
-    expect((await read(byFile)).split).toEqual(byFile);
+    expect(await read(byFile)).not.toHaveProperty('hunks');
+
+    // A rebase that only moves the hunks keeps the `changeDigest`, so a split by line ranges is asked for again then.
+    const ran = [makeRoundContext(1, { scope: kept, diff: { changeDigest: 'same', lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} } })];
+    const again = client({ useful: true, topics: [], split: [] });
+    const carry = (moved: typeof hunks) => runScopeReader(again, { diff: moved, rawDiff: RAW_DIFF, trivial: false, changeDigest: 'same', priorRounds: ran });
+    expect(await carry(hunks)).toEqual({ ...kept, skipped: 'unchanged', since: 1 });
+    expect((await carry(parsePRDiff(hunkDiff.replace('+21,2', '+31,2')))).skipped).toBeUndefined();
+    expect(again.sendMessage).toHaveBeenCalledTimes(1);
 
     const dropped = [
       [{ name: 'Feature flag', files: ['src/app.ts:1-3'] }, { name: 'Flag rename', files: ['src/cli.ts'] }],

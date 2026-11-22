@@ -142,6 +142,11 @@ function citedDigest(proof: readonly string[], workspace: string): string | unde
   return codeDigest(workspace, [...new Set(proof.flatMap(at => parseLocation(at)?.file ?? []))].sort());
 }
 
+/** Returns the `hunks` digest of where each hunk of `diff` sits on the head side, which `changeDigest` leaves out. */
+function hunkPositions(diff: ParsedDiff): string {
+  return digestOf(diff.files.map(f => [f.path, f.hunks.map(h => [h.newStart, h.newLines])]));
+}
+
 /** Returns the `purpose` digest of the PR title and description in `prContext`. */
 function purposeOf(prContext: PrContext | undefined): string {
   return digestOf([prContext?.title ?? '', prContext?.body ?? '']);
@@ -190,8 +195,8 @@ export interface ScopeOptions {
 
 /**
  * Asks one call whether the PR is useful and covers one topic, and returns the round's record of it. It is skipped for a
- * trivial change, and when the diff, the PR title and description, the linked issues and the lines a doubt cites are
- * those of the last round with an answer, whose answer it carries then. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
+ * trivial change, and when the diff, the PR title and description, the linked issues, the lines a doubt cites and the
+ * hunk positions a split by line ranges names are those of the last round with an answer, whose answer it carries then. The answer is checked by `checkScope`. A call that fails, or a reply that cannot be used, is recorded as `failed`.
  * It never throws.
  */
 export async function runScopeReader(client: LLMClient, { diff, rawDiff, prContext, linkedIssues, workspace, trivial, changeDigest, priorRounds = [] }: ScopeOptions): Promise<RoundScope> {
@@ -201,7 +206,7 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
   const tools = !!workspace && !!client.repoTools;
   const last = lastScopeRound(priorRounds);
   const carried = last?.scope;
-  if (changeDigest && carried && last.diff.changeDigest === changeDigest && carried.purpose === purpose && carried.issues === issues && citedUnchanged(carried, diff, tools ? workspace : undefined)) {
+  if (changeDigest && carried && last.diff.changeDigest === changeDigest && carried.purpose === purpose && carried.issues === issues && (!carried.hunks || carried.hunks === hunkPositions(diff)) && citedUnchanged(carried, diff, tools ? workspace : undefined)) {
     const since = carried.since ?? last.meta.round;
     core.info(`Scope reader: the diff, the PR text, the linked issues and the cited lines did not change since round ${since}, so it is not asked again`);
     const { dropped, ...answer } = carriedAnswer(carried);
@@ -219,7 +224,9 @@ export async function runScopeReader(client: LLMClient, { diff, rawDiff, prConte
       },
       error => core.warning(`Scope reader reply could not be used (${error}), asking once more`),
     );
-    const scope = { ...checkScope(answer, diff, tools ? workspace : undefined), purpose, issues };
+    const checked = checkScope(answer, diff, tools ? workspace : undefined);
+    const ranged = checked.split?.some(part => part.files.some(f => namedPart(f, diff)?.lines));
+    const scope = { ...checked, purpose, issues, ...(ranged && { hunks: hunkPositions(diff) }) };
     core.info(`Scope reader: ${scope.doubt ? 'a usefulness doubt' : 'no usefulness doubt'}, ${scope.topics?.length ?? 0} topic(s)${scope.split ? `, a split into ${scope.split.length} PRs` : ''}${scope.dropped ? `, ${scope.dropped.length} part(s) dropped by the check` : ''}`);
     return scope;
   } catch (error) {

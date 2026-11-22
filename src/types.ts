@@ -913,6 +913,8 @@ export interface RoundScope {
   purpose?: string;
   /** SHA-256 over the linked issues the answer was given for. */
   issues?: string;
+  /** SHA-256 over where each hunk sits on the head side, set when `split` names a line range, which a rebase can move. */
+  hunks?: string;
   /** The `codeDigest` of the files a doubt's `proof` cites, when the reader checked them in a checkout. */
   cited?: string;
   /** Why the call failed or its reply could not be used. */
