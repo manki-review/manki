@@ -1051,8 +1051,9 @@ describe('checkAndAutoApprove', () => {
       ['an open warning thread on a head no review covers',
         { threads: [thread('t1', 'warning', undefined, { commit: testSha('01d') })], existingReviews: [{ id: 7, body: roundBody(blockingRound(testSha('01d'))), state: 'CHANGES_REQUESTED', commit_id: testSha('01d'), user }] },
         `${NOT_REVIEWED_YET}${AGAIN_BOX}\n\n${WARNING_THREAD}`],
+      // The open blocking thread blocks the draft too, so the check names no hold, which a waiting check would report as neutral.
       ['an open blocking thread and an open warning thread on a draft that conflicts', { threads: [thread('t1', 'blocker'), thread('t2', 'warning', undefined, { title: 'Retry never stops' })], draft: true, mergeable: false },
-        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}${CHECK_BOX}`, undefined, 'draft'],
+        `1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}\n\n${WARNING_THREAD.replace('Lock is never released', 'Retry never stops')}\n\n${DRAFT}${CHECK_BOX}`],
       ['an open warning thread on a PR that conflicts', { threads: [thread('t1', 'warning')], mergeable: false },
         `${WARNING_THREAD}\n\n**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment \`/manki review\`.`, undefined, 'warnings'],
     // A rest parameter, since jest takes a named one the row lacks for its `done` callback.

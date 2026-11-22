@@ -1032,20 +1032,21 @@ async function approveOrSayWhy(
       hold && withMessageBoxes(approvalHoldLine(hold, config?.auto_approve), [!(instead && holdBox === 'again') && holdBox]),
     ].filter((line): line is string => !!line).join('\n\n');
   };
-  if (pr.draft) {
-    core.info('Skipping auto-approve — the PR is a draft');
-    return withheld(async () => explain(await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole)), 'draft');
-  }
-
   const prAuthorRole = await overrideRole(octokit, owner, repo, threads, prAuthorLogin, clearRole);
   const why = () => explain(prAuthorRole);
+  const uncleared = (named?: ReadonlySet<string>) => unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole, named);
+  if (pr.draft) {
+    core.info('Skipping auto-approve — the PR is a draft');
+    // A blocking thread holds a draft too, and a block names no hold.
+    return withheld(why, uncleared().length > 0 ? false : 'draft');
+  }
+
   const overrides = threads.flatMap(t => {
     const o = securityOverrideOf(t, prAuthorLogin, prAuthorRole);
     return o ? [{ ...o, thread: t.id, title: t.findingTitle, threadUrl: t.threadUrl }] : [];
   });
   await announceSecurityOverrides(octokit, overrides.filter(o => !o.announced));
 
-  const uncleared = (named?: ReadonlySet<string>) => unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole, named);
   if (uncleared().length > 0) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
     return withheld(why, false);
