@@ -121,6 +121,7 @@ describe('formatFindingComment', () => {
     const disprovedPremise = { ...refutation.premises![1], outcome: 'disproved' as const };
     const plain = `**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n`;
     expect(render({ ...cited, refutation: { ...refutation, premises: [disprovedPremise] } })).toContain(plain);
+    expect(render({ ...cited, refutation: { ...refutation, premises: [disprovedPremise, refutation.premises![1]] } })).toContain(plain);
     expect(render({ ...cited, refutation, pairRefutation: { ...refutation, outcome: 'disproved', defect: 'disproved', premises: [] } })).toContain(plain);
     expect(render({ ...cited, evidence: { checks: [], proof: [], relatedProof: ['acme/lib:src/a.ts:3'] } })).toContain(plain);
     expect(open).toContain(`**${baseFinding.title}**\n\n_Manki confirmed the code path but could not check: The caller passes \`null\` here when the cache is cold._\n\n`);

@@ -1168,13 +1168,15 @@ export function confirmsCodePath(check: Refutation, finding: Pick<Finding, 'doub
 }
 
 /**
- * Returns the first unsettled premise about code that a check which confirmed the defect of `finding` left open. Returns
- * none when a check disproved the finding, since then the code path is not confirmed.
+ * Returns the first premise about code that a check which confirmed the defect of `finding` left unsettled. Returns none
+ * when a check disproved the finding. A check that also disproved a premise the defect rests on contradicts itself, so
+ * it names none either.
  */
 export function openCodePremise(finding: Pick<Finding, 'doubts' | 'refutation' | 'pairRefutation'>): string | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   if (checks.some(check => outcomeOf(check) === 'disproved')) return undefined;
-  return checks.filter(check => check.defect === 'confirmed').flatMap(check => openPremises(check, finding)).find(p => p.outcome === 'unsettled' && !p.outsideCode)?.premise;
+  const open = checks.filter(check => check.defect === 'confirmed').map(check => openPremises(check, finding));
+  return open.filter(premises => premises.every(p => p.outcome === 'unsettled')).flat().find(p => !p.outsideCode)?.premise;
 }
 
 /** Whether `answer` shows the failure at the base, with lines the code found at the base `commit`. */
