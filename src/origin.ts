@@ -20,8 +20,8 @@ const ORIGIN_STEPS = 10;
 // A safety net. The step budget is what normally ends the call.
 const ORIGIN_TIMEOUT_MS = 300_000;
 const MAX_REASON_CHARS = 500;
-// The other changed files the message names, so a large PR does not fill it.
-const MAX_CHANGED_PATHS = 50;
+// Room for about 1,000 typical paths in about 12k tokens, so only a very large PR leaves changed files unnamed.
+const MAX_CHANGED_PATHS_CHARS = 50_000;
 const VERDICTS: readonly OriginVerdict[] = ['introduced', 'worsened', 'pre_existing', 'unsure'];
 
 const ORIGIN_SYSTEM_PROMPT = `You decide whether a defect a code review found on a pull request is this PR's own, using read-only tools on the PR's head commit. \`read_file\` with \`ref\` set to \`base\` reads a file as it is at the PR's base, the merge base with the branch the PR targets.
@@ -97,9 +97,17 @@ function otherChangedPaths(finding: Finding, diff: ParsedDiff | undefined, exclu
   return [...new Set([...(diff?.files ?? []).map(f => f.path), ...(diff?.binarySkipped ?? []).map(f => f.path), ...excludedPaths])].filter(p => !shown.includes(p));
 }
 
+/** Returns the paths of `otherChangedPaths` that fit in `MAX_CHANGED_PATHS_CHARS`, ready for the message, and how many are left out. */
+function namedChangedPaths(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): { named: string[]; unnamed: number } {
+  const others = otherChangedPaths(finding, diff, excludedPaths).map(p => sanitizeForPromptEmbed(p));
+  let chars = 0;
+  const over = others.findIndex(p => (chars += p.length + 2) > MAX_CHANGED_PATHS_CHARS);
+  const named = over < 0 ? others : others.slice(0, over);
+  return { named, unnamed: others.length - named.length };
+}
+
 function buildOriginMessage(finding: Finding, diff: ParsedDiff | undefined, excludedPaths: readonly string[]): string {
-  const others = otherChangedPaths(finding, diff, excludedPaths);
-  const rest = others.length - MAX_CHANGED_PATHS;
+  const { named, unnamed } = namedChangedPaths(finding, diff, excludedPaths);
   const lines = [
     `## ${finding.severity === 'blocker' ? 'Blocker' : 'Warning'}: ${sanitizeForPromptEmbed(finding.title)}`,
     '',
@@ -107,7 +115,7 @@ function buildOriginMessage(finding: Finding, diff: ParsedDiff | undefined, excl
     `- **Description**: ${sanitizeForPromptEmbed(finding.description)}`,
     ...(finding.evidence?.proof.length ? [`- **Proving lines cited**: ${finding.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
     ...(finding.preExisting ? [`- **A reviewer's claim that it is older than this PR**, to check: ${sanitizeForPromptEmbed(finding.preExisting)}`] : []),
-    `- **Other files this PR changes**: ${others.slice(0, MAX_CHANGED_PATHS).map(p => sanitizeForPromptEmbed(p)).join(', ') || 'none'}${rest > 0 ? `, and ${rest} more it does not name` : ''}`,
+    `- **Other files this PR changes**: ${named.join(', ') || 'none'}${unnamed > 0 ? `, and ${unnamed} more it does not name` : ''}`,
   ];
   return [lines.join('\n'), changeSection(citedChanges(finding, diff), diff)].filter(Boolean).join('\n\n');
 }
@@ -135,7 +143,7 @@ function parseOrigin(text: string): Omit<RawOrigin, 'model'> {
  * head, and every `base` line it cites is at the base. On a flagged line the PR left unchanged, one of those must be that
  * line at its place in the base, with the same text. On any other line, one must be a line of the finding's own file at
  * the base, so a finding in a file the PR added never stands. Any doubt makes it `unsure`, as does a workspace without a
- * base.
+ * base and a message whose list of other changed files is cut, since a change it leaves out looks the same at the base.
  */
 async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[], related?: RelatedRepoTools): Promise<OriginAnswer> {
   const { verdict: claimed, reason, model } = raw;
@@ -159,7 +167,8 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
       return locationFile(h.location) === at.file && start <= at.line && at.line <= end && h.lines[at.line - start] === flagged;
     });
   };
-  const proven = !!commit && head.some(location => locationFile(location) === finding.file) && base.length > 0 && base.length === cited.length && citesFlaggedLine();
+  const cut = namedChangedPaths(finding, diff, excludedPaths).unnamed > 0;
+  const proven = !cut && !!commit && head.some(location => locationFile(location) === finding.file) && base.length > 0 && base.length === cited.length && citesFlaggedLine();
   const verdict = claimed === 'pre_existing' && !proven ? 'unsure' : claimed;
   return { verdict, reason, ...(head.length > 0 && { head }), ...(base.length > 0 && { base, commit }), ...(model && { model }) };
 }
@@ -168,15 +177,13 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
  * Returns `findings` with the `originCheck` of each blocker and warning the round checks, at most what `budget` has left,
  * the largest grades first. Each check asks `client` whether the PR caused the failure. The `pair` asks too when the
  * rules need two answers: on a flagged line the PR changed, and on a finding `oneAnswerSettles` rejects. A tool alert, a
- * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check. Neither
- * does a finding whose message would cut the list of other changed files, since a change it leaves out looks the same
- * at the base. A finding whose calls all never started keeps no `originCheck`.
+ * file the workspace cannot read, a workspace without the PR's base, and a finding `skip` accepts take no check. A
+ * finding whose calls all never started keeps no `originCheck`.
  */
 export async function checkOrigins(client: LLMClient, findings: readonly Finding[], { workspace, diff, excludedPaths = [], related, effort, pair, skip, budget, progress }: OriginOptions): Promise<Finding[]> {
   if (!baseReadsOf(workspace)) return [...findings];
   const asked = findings
-    .filter(f => (f.severity === 'blocker' || f.severity === 'warning') && !f.toolSource && !skip?.(f) && !!codeDigest(workspace, [f.file])
-      && otherChangedPaths(f, diff, excludedPaths).length <= MAX_CHANGED_PATHS)
+    .filter(f => (f.severity === 'blocker' || f.severity === 'warning') && !f.toolSource && !skip?.(f) && !!codeDigest(workspace, [f.file]))
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
   const limit = Math.max(0, budget?.left ?? MAX_ORIGIN_CHECKS);
   const checked = new Set(asked.slice(0, limit));
