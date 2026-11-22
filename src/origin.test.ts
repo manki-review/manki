@@ -47,8 +47,11 @@ describe('checkOrigins', () => {
       'Introduced': { origin: 'introduced', reason: 'This PR adds the caller.', head: ['src/api.ts:9'] },
       'Note': same,
       'Tool alert': same,
-      // A line the PR added has no place at the base, so any line the base holds can show the same failure there.
+      // A line the PR added has no place at the base, so the base must show the failure in the finding's own file. A file
+      // the PR added has none there.
       'In a file the PR added': { ...same, head: ['src/new.ts:1'], base: ['src/math.ts:2'] },
+      'Added to a changed file': { ...same, head: ['src/api.ts:9'], base: ['src/api.ts:8'] },
+      'Added, with the base cited elsewhere': { ...same, head: ['src/api.ts:9'], base: ['src/math.ts:2'] },
     };
     const client = originClient(replies, 'first-model');
     const pair = originClient(replies, 'pair-model');
@@ -74,7 +77,13 @@ describe('checkOrigins', () => {
       ['Claimed older', false, ['first-model:pre_existing']],
       ['Note', undefined, undefined],
       ['Tool alert', undefined, undefined],
-      ['In a file the PR added', true, ['first-model:pre_existing', 'pair-model:pre_existing']],
+      ['In a file the PR added', true, ['first-model:unsure', 'pair-model:unsure']],
+    ]);
+    const added = await checkOrigins(client, ['Added to a changed file', 'Added, with the base cited elsewhere'].map(title => finding(title, {
+      file: 'src/api.ts', line: 9, evidence: { checks: [], proof: ['src/api.ts:9'] },
+    })), { workspace: root, diff, pair });
+    expect(added.map(f => [f.title, f.originCheck?.lineChanged, f.originCheck?.answers.map(a => a.verdict)])).toEqual([
+      ['Added to a changed file', true, ['pre_existing', 'pre_existing']], ['Added, with the base cited elsewhere', true, ['unsure', 'unsure']],
     ]);
     expect(checked[0].originCheck?.answers[0]).toEqual({ verdict: 'pre_existing', reason: same.reason, head: ['src/math.ts:2'], base: ['src/math.ts:2'], commit: baseCommit, model: 'first-model' });
     // A line the base does not hold is dropped, so no answer links a line of the head as one of the base.

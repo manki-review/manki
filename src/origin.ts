@@ -133,7 +133,9 @@ function parseOrigin(text: string): Omit<RawOrigin, 'model'> {
  * Returns the answer `raw` with its lines checked by the code. Only `head` lines the head holds and `base` lines the
  * base `commit` holds are kept. A `pre_existing` answer stands only when it cites a line of the finding's own file at the
  * head, and every `base` line it cites is at the base. On a flagged line the PR left unchanged, one of those must be that
- * line at its place in the base, with the same text. Any doubt makes it `unsure`, as does a workspace without a base.
+ * line at its place in the base, with the same text. On any other line, one must be a line of the finding's own file at
+ * the base, so a finding in a file the PR added never stands. Any doubt makes it `unsure`, as does a workspace without a
+ * base.
  */
 async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, diff: ParsedDiff | undefined, excludedPaths: readonly string[], related?: RelatedRepoTools): Promise<OriginAnswer> {
   const { verdict: claimed, reason, model } = raw;
@@ -145,7 +147,11 @@ async function checkLines(raw: RawOrigin, finding: Finding, workspace: string, d
   const base = held.map(h => h.location);
   const at = flaggedLineAtBase(finding, diff, excludedPaths);
   const citesFlaggedLine = (): boolean => {
-    if (!at) return true;
+    if (!at) {
+      const changed = diff?.files.find(f => f.path === finding.file);
+      const basePath = changed && changed.changeType !== 'added' ? changed.oldPath ?? changed.path : undefined;
+      return !!basePath && held.some(h => locationFile(h.location) === basePath);
+    }
     const file = readFileInRoot(workspace, finding.file);
     const flagged = file && file !== 'too large' ? file.lines[finding.line - 1] : undefined;
     return flagged !== undefined && held.some(h => {
